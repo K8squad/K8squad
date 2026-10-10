@@ -1,0 +1,41 @@
+-- 0035_discussion_party_round_voices.sql — ISI-5638 (ISI-5624 C1, ruling ADR-0031 Ruling A §3.1):
+-- the per-round voice roster the coordinator-SEQUENCED advancer walks one turn at a time.
+--
+-- ADR-0027 shipped a facilitator that is sequential BETWEEN rounds but PARALLEL within a round: the
+-- round's 2–4 voices were all dispatched at once ("one work item per voice"). ADR-0031 Ruling A narrows
+-- that to STRICTLY sequential — at most one voice run in flight at a time, each voice dispatched only
+-- after the previous one SETTLED, so voice N reacts to voice N-1's freshly-landed turn (Henrik's ask on
+-- ISI-5587/ISI-5624). The mechanism is S-direct: keep the round as the rotation/coverage unit (the
+-- facilitator still plans the whole round's roster in one @-mention post), but the advancer walks that
+-- roster sequentially off each voice's settle marker (ADR-0020), carrying a per-round voice cursor.
+--
+-- This migration adds the ONE piece of durable state S-direct needs so the level-triggered advancer holds
+-- NO in-memory round state (§3.1 — the whole reason the long-lived facilitator run was rejected):
+--
+--   round_voices text[] — the current round's ORDERED, already-resolved + budget-capped voice roster.
+--       The apiserver's party-facilitator dispatch hook resolves the coordinator's @-mentions against the
+--       roster (opt-out / self-exclusion / de-dupe) and clamps them to VoicesAllowedThisRound, then stamps
+--       the surviving ordered names here atomically with current_round_message_id (0034). The advancer's
+--       cursor is DERIVED — it is simply how many of these voices already have a discussion.mention_dispatch
+--       row under the facilitator message (RoundVoiceSettlement.Dispatched) — so no second counter column is
+--       needed: the roster + the ledger ARE the cursor. The advancer dispatches round_voices[Dispatched]
+--       once every earlier turn has settled, and the round is complete only when all len(round_voices)
+--       turns have settled. Reset to '{}' when a new round is minted (0034's current_round_message_id clear).
+--
+-- The paid-run budget is UNCHANGED vs ADR-0027 (ADR-0031 §3.1): sequencing adds latency, not runs — the
+-- same ≤ max_voices_per_round voices are charged per round, just dispatched one at a time instead of together.
+--
+-- ────────────────────────────────────────────────────────────────────────────────────────────────
+-- FENCE (ADR-0019 / 0004 header, reasoned in ADR-0027 §4.2, preserved verbatim by ADR-0031 §3.4):
+-- round_voices is facilitation-session bookkeeping — the names of the agents a round's facilitator chose to
+-- hear from — NOT work-item custody. It is not a claim/lease/fence_token/holder/assignee/state/status/
+-- custody column; the 0004 fence contract test's forbidden-token list is untouched (exact column-name
+-- match; 'round_voices' is not on it). No work-item custody is expressed here; every voice run is still
+-- minted + fenced only in coord. FR-B3 exempts the whole discussion schema.
+--
+-- Forward-only, additive, NOT NULL with a '{}' default so pre-existing rows (closed debates, or sessions
+-- opened before this lands) read as "no roster for the current round yet" without a backfill. Applied once
+-- by the apiserver migration runner in filename order.
+
+ALTER TABLE discussion.party_session
+    ADD COLUMN round_voices text[] NOT NULL DEFAULT '{}';

@@ -53,7 +53,7 @@ func openPartyTestDB(t *testing.T) (*Store, func()) {
 	// Apply base discussion schema (0004+0024+0026 from integration_test.go).
 	applyMigration(t, db)
 	// Apply mention_dispatch (0027), decision_request (0031), decision_read_marker (0032),
-	// party_session (0033), party_round_facilitator (0034).
+	// party_session (0033), party_round_facilitator (0034), party_round_voices (0035).
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, name := range []string{
@@ -62,6 +62,7 @@ func openPartyTestDB(t *testing.T) (*Store, func()) {
 		"0032_decision_read_marker.sql",
 		"0033_discussion_party_session.sql",
 		"0034_discussion_party_round_facilitator.sql",
+		"0035_discussion_party_round_voices.sql",
 	} {
 		applyOneMigration(t, ctx, db, name)
 	}
@@ -200,8 +201,8 @@ func TestPartySession_SetRoundFacilitatorMessage(t *testing.T) {
 		t.Fatalf("PostMessage (facilitator): %v", postErr)
 	}
 
-	// SetRoundFacilitatorMessage — first writer wins.
-	afterSet, won, err := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, fMsg.ID)
+	// SetRoundFacilitatorMessage — first writer wins, and it stamps the ordered voice roster (ISI-5638).
+	afterSet, won, err := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, fMsg.ID, []string{"voice1", "voice2"})
 	if err != nil {
 		t.Fatalf("SetRoundFacilitatorMessage: %v", err)
 	}
@@ -211,10 +212,13 @@ func TestPartySession_SetRoundFacilitatorMessage(t *testing.T) {
 	if afterSet.CurrentRoundMessageID == nil || *afterSet.CurrentRoundMessageID != fMsg.ID {
 		t.Errorf("CurrentRoundMessageID = %v, want %v", afterSet.CurrentRoundMessageID, fMsg.ID)
 	}
+	if got := afterSet.RoundVoices; len(got) != 2 || got[0] != "voice1" || got[1] != "voice2" {
+		t.Errorf("RoundVoices = %v, want [voice1 voice2] in order", got)
+	}
 
-	// Second write for the same round — should lose (first-writer-wins CAS).
+	// Second write for the same round — should lose (first-writer-wins CAS), leaving the roster unchanged.
 	otherMsgID := uuid.New()
-	_, won2, err2 := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, otherMsgID)
+	_, won2, err2 := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, otherMsgID, []string{"voice3"})
 	if err2 != nil {
 		t.Fatalf("SetRoundFacilitatorMessage (second): %v", err2)
 	}

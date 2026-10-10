@@ -71,6 +71,7 @@ import (
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/internal/issuedispatch"
 	"github.com/K8squad/K8squad/internal/memory"
+	"github.com/K8squad/K8squad/internal/mentiondispatch"
 	"github.com/K8squad/K8squad/internal/reviewdispatch"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
 	cifailure "github.com/K8squad/K8squad/pkg/controller/cifailure"
@@ -1468,7 +1469,14 @@ func main() {
 				Writer:     coordAdvancerWriter{store: partyWriteStore},
 				Dispatcher: coordAdvancerDispatcher{store: partyDispatchStore},
 				Roster:     teamCoordinatorRoster{resolver: partyTeamResolver},
-				Principal:  rundrive.OperatorPrincipal,
+				// ISI-5638 (ADR-0031 Ruling A §3.1) — sequential voice dispatch. The advancer walks the
+				// round's roster one turn at a time through the SAME @-mention run-minting path the apiserver
+				// wires (internal/mentiondispatch), over the coord create/dispatch stores the facilitator mint
+				// already rides. A nil project resolver means the room's "namespace/name" slug passes through
+				// verbatim — identical to how the facilitator mint (coordAdvancerWriter) hands coord the slug,
+				// so a voice run is created in the same project the same way, just board-hidden + ledger-bound.
+				VoiceDispatcher: mentiondispatch.New(partyWriteStore, partyDispatchStore, nil, db),
+				Principal:       rundrive.OperatorPrincipal,
 			}
 			if err := mgr.Add(partyAdvancer); err != nil {
 				ctrl.Log.Error(err, "unable to register party advancer")

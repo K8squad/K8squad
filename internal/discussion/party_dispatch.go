@@ -1,16 +1,22 @@
 // ISI-5615 (ISI-5569 WS-D.1, ADR-0027 §3.3) — party-mode facilitator dispatch (P2 mint-gate).
+// ISI-5638 (ISI-5624 C1, ADR-0031 Ruling A §3.1) — narrows the per-round fan-out from N→1 (sequenced).
 //
 // When the Coordinator (facilitator) posts a party @-mention message the normal mention dispatch
 // fires BUT hits D4 (multi-mention → coordinator redirect), which short-circuits because the
 // coordinator IS the author — treating itself as unavailable and returning the D3 picker fallback.
 // That would leave voices un-dispatched.
 //
-// This file is the party-aware dispatch path the REST handler calls FIRST: it detects the
-// coordinator-facilitator case, bypasses D4, caps the fan-out via VoicesAllowedThisRound (the server
-// budget gate, not agent-trusted), assembles the WS-C PartyContext per voice, records the round's
-// facilitator message via SetRoundFacilitatorMessage, and dispatches each voice. Only after this
-// returns false (not a party facilitator post) does the handler fall through to the normal
-// DispatchMentionsFrom path.
+// This file is the party-aware path the REST handler calls FIRST: it detects the coordinator-facilitator
+// case, bypasses D4, resolves the @-mentioned voices against the roster (opt-out / self-exclusion /
+// de-dupe), caps them via VoicesAllowedThisRound (the server budget gate, not agent-trusted), and RECORDS
+// the round — the facilitator message id AND the ordered, capped voice roster — via SetRoundFacilitatorMessage.
+//
+// It no longer dispatches the voices itself. Under ADR-0031 Ruling A the voices take turns STRICTLY
+// sequentially (one run in flight at a time, each reacting to the prior's freshly-landed reply), which can
+// only be driven off the ADR-0020 settle markers — i.e. by the operator advancer, not synchronously in this
+// one HTTP handler. So this hook resolves + persists the roster; the advancer walks RoundVoices one turn at
+// a time (advancer_runner.go dispatchVoice). Only after this returns false (not a party facilitator post)
+// does the handler fall through to the normal DispatchMentionsFrom path.
 package discussion
 
 import (
@@ -19,10 +25,10 @@ import (
 	"strings"
 )
 
-// dispatchPartyMentions handles the party-facilitator dispatch path. It returns true when it handled
-// dispatch (whether or not any voices were actually minted — best-effort throughout, message already
-// durable), and false when this is not a party facilitator post, in which case the caller should
-// fall through to the normal DispatchMentionsFrom path.
+// dispatchPartyMentions handles the party-facilitator path. It returns true when it handled the post
+// (whether or not any voices were recorded — best-effort throughout, the message is already durable), and
+// false when this is not a party facilitator post, in which case the caller should fall through to the
+// normal DispatchMentionsFrom path.
 //
 // The detection criteria (all must hold):
 //  1. The message was posted by an agent (author is coordinator, never a human).
@@ -94,68 +100,33 @@ func (h *Handler) dispatchPartyMentions(ctx context.Context, projectID string, a
 		return true // budget exhausted — handled (no dispatch)
 	}
 
-	// Record this message as the round's facilitator dispatch message (first-writer-wins, CAS).
-	// Best-effort: a failure here means RoundVoiceSettlement can't read completeness, but the
-	// message is already durable and the voices will still run.
-	_, won, serr := h.store.SetRoundFacilitatorMessage(ctx, sess.ID, sess.Round, msg.ID)
+	// Record this message as the round's facilitator dispatch message AND stamp the ordered, capped voice
+	// roster the advancer will walk (first-writer-wins, CAS; ADR-0031 Ruling A §3.1). Best-effort on error:
+	// the message is already durable, but without the stamp RoundVoiceSettlement can't key completeness and
+	// the advancer has no roster to sequence — so the round would stall until the facilitator-post timeout.
+	voices := make([]string, 0, len(resolved))
+	for _, a := range resolved {
+		voices = append(voices, a.Name) // canonical roster casing, facilitator's @-mention order
+	}
+	_, won, serr := h.store.SetRoundFacilitatorMessage(ctx, sess.ID, sess.Round, msg.ID, voices)
 	if serr != nil {
 		slog.WarnContext(ctx, "discussion: party SetRoundFacilitatorMessage failed (best-effort)",
 			"sessionID", sess.ID, "round", sess.Round, "messageID", msg.ID, "err", serr)
+		return true
 	}
 	if !won {
-		// Another writer (e.g. a concurrent request) won the CAS — do not double-dispatch.
-		slog.InfoContext(ctx, "discussion: party facilitator message already set for this round — skip re-dispatch",
+		// Another writer (e.g. a concurrent request) won the CAS — do not double-record.
+		slog.InfoContext(ctx, "discussion: party facilitator message already set for this round — skip",
 			"sessionID", sess.ID, "round", sess.Round)
 		return true
 	}
 
-	// Build per-voice PartyContext. PeersThisRound is empty on the first dispatch in a round
-	// (no voices have run yet); the rolling summary is currently empty (a later enhancement
-	// could seed it from prior rounds). PersonaBlurb uses only Name (roster has no icon/identity
-	// fields yet — degrades gracefully per WS-C spec).
-	personaOf := func(agentID string) PersonaBlurb {
-		a, ok := byName[strings.ToLower(agentID)]
-		if !ok {
-			return PersonaBlurb{Name: agentID}
-		}
-		return PersonaBlurb{Name: a.Name}
-	}
-
-	// Read the thread's messages to supply the "What Others Said This Round" block for later
-	// rounds (round 1 will have empty peers — correct).
-	thread, terr := h.store.GetThread(ctx, projectID, auth.TeamID, msg.ThreadID)
-	var roundMsgs []Message
-	if terr == nil && thread != nil {
-		// Collect messages since the previous facilitator post (best approximation of "this round's
-		// voices"). Use all thread messages; AssemblePeerTurns filters to agent-authored non-empty.
-		roundMsgs = flattenMessages(thread.Messages)
-	}
-
-	// Dispatch each voice.
-	nextHop := 1 // facilitator is minted at hop 0 (by the advancer, not via mention dispatch)
-	for _, voice := range resolved {
-		peers := AssemblePeerTurns(roundMsgs, voice.Name, personaOf)
-		partyCtx := &PartyContext{
-			Round:          sess.Round,
-			Persona:        PersonaBlurb{Name: voice.Name},
-			PeersThisRound: peers,
-		}
-		d := MentionDispatch{
-			ProjectID:            projectID,
-			ThreadID:             msg.ThreadID,
-			MessageID:            msg.ID,
-			TeamID:               auth.TeamID,
-			AgentName:            voice.Name,
-			HopDepth:             nextHop,
-			TriggeredByPrincipal: auth.Principal,
-			TriggeredByAgentID:   auth.AgentID,
-			Party:                partyCtx,
-		}
-		if err := h.dispatcher.DispatchMention(ctx, d); err != nil {
-			slog.WarnContext(ctx, "discussion: party voice dispatch failed (best-effort)",
-				"sessionID", sess.ID, "round", sess.Round, "agent", voice.Name, "err", err)
-		}
-	}
+	// The voices are NOT dispatched here. ADR-0031 Ruling A: they take turns strictly sequentially (one run
+	// in flight, each reacting to the prior's reply), which is driven off settle markers by the operator
+	// advancer — it walks RoundVoices one turn at a time, pushing each voice the cross-talk context of every
+	// turn taken so far (advancer_runner.go dispatchVoice). This hook's job ends at recording the roster.
+	slog.InfoContext(ctx, "discussion: party round roster recorded — advancer will sequence voices",
+		"sessionID", sess.ID, "round", sess.Round, "voices", len(voices))
 	return true
 }
 
