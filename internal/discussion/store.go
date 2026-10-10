@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -86,6 +87,17 @@ type Message struct {
 	Payload         *json.RawMessage `json:"payload,omitempty"`
 	CreatedAt       time.Time        `json:"createdAt"`
 	InvalidatedAt   *time.Time       `json:"invalidatedAt,omitempty"`
+
+	// Party-mode round linkage (ISI-5616, ISI-5613 Gap 1; ADR-0027 addendum). READ-DERIVED by GetThread
+	// from the party_round ledger (0035) + party_session + the voice dispatch chain — NOT stored columns
+	// on discussion.message (the message row is append-only and unchanged). All three are nil/"" on every
+	// non-party message, so an ordinary room read is byte-identical to before. They let the console group
+	// a thread's party messages into numbered rounds (it cannot off the base wire — the facilitator's
+	// per-round grouping was never persisted). PartyRound is 1-based and mirrors PartySession.round; the
+	// party_start opener reports PartyRound=0 / PartyRoundKind="opener".
+	PartySessionID *uuid.UUID `json:"partySessionId,omitempty"` // the party session this message belongs to
+	PartyRound     *int       `json:"partyRound,omitempty"`     // 1-based facilitator round; 0 = the party_start opener
+	PartyRoundKind string     `json:"partyRoundKind,omitempty"` // "opener" | "round"
 
 	// Derived (not stored): threaded replies, built by GetThread.
 	Replies []Message `json:"replies,omitempty"`
@@ -240,8 +252,85 @@ func (s *Store) GetThread(ctx context.Context, projectID string, teamID, threadI
 	if err != nil {
 		return nil, err
 	}
+	// Enrich each message with its party-mode round linkage (ISI-5616) BEFORE nesting — buildThreadTree
+	// copies Message by value, so the derived fields must be set on the flat slice first. Best-effort: the
+	// room read is the critical path and the grouping is a display nicety, so a party subsystem that is not
+	// provisioned (party migrations not yet applied — e.g. a mid-rollout apiserver, or a partial-schema
+	// test) or any enrichment failure leaves the thread read fully intact, just without party tags.
+	s.enrichPartyRounds(ctx, threadID, msgs)
 	t.Messages = buildThreadTree(msgs)
 	return &t, nil
+}
+
+// enrichPartyRounds sets PartySessionID / PartyRound / PartyRoundKind on each party-mode message in a
+// thread (ISI-5616, ISI-5613 Gap 1; ADR-0027 addendum). It runs ONE query returning, per message, at most
+// one of the three mutually-exclusive party roles — the party_start opener (round 0 / "opener"), a
+// facilitator round post (party_round keyed by facilitator_message_id), or a dispatched voice reply (its
+// round recovered from the run that posted it, via the SAME join the reply-hop resolver /
+// ThreadForDispatchedRun use: author_run_id → coord.claim.run_id → work_item_id →
+// mention_dispatch.message_id = party_round.facilitator_message_id). It is kept OUT of the base message
+// read so that read stays unchanged (and partial-schema callers are unaffected), and it is BEST-EFFORT:
+// an error (incl. the party/coord relations being absent pre-migration) is logged and the messages are
+// returned unenriched — the room read never fails for want of a display grouping.
+func (s *Store) enrichPartyRounds(ctx context.Context, threadID uuid.UUID, msgs []Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ps.topic_message_id AS message_id, ps.id AS session_id, 0 AS round, 'opener'::text AS kind
+		  FROM discussion.party_session ps
+		 WHERE ps.thread_id = $1
+		UNION ALL
+		SELECT pr.facilitator_message_id, pr.session_id, pr.round, pr.kind
+		  FROM discussion.party_round pr
+		  JOIN discussion.party_session ps ON ps.id = pr.session_id
+		 WHERE ps.thread_id = $1
+		UNION ALL
+		SELECT m.id, pr.session_id, pr.round, pr.kind
+		  FROM discussion.message m
+		  JOIN coord.claim c                  ON c.run_id::text = m.author_run_id
+		  JOIN discussion.mention_dispatch md ON md.work_item_id = c.work_item_id
+		  JOIN discussion.party_round pr      ON pr.facilitator_message_id = md.message_id
+		 WHERE m.thread_id = $1 AND m.author_run_id IS NOT NULL`, threadID)
+	if err != nil {
+		slog.WarnContext(ctx, "discussion: party-round enrichment skipped (query failed)", "threadID", threadID, "err", err)
+		return
+	}
+	defer rows.Close()
+
+	type anchor struct {
+		sessionID uuid.UUID
+		round     int
+		kind      string
+	}
+	byMsg := make(map[uuid.UUID]anchor)
+	for rows.Next() {
+		var mid, sid uuid.UUID
+		var round int
+		var kind string
+		if err := rows.Scan(&mid, &sid, &round, &kind); err != nil {
+			slog.WarnContext(ctx, "discussion: party-round enrichment skipped (scan failed)", "threadID", threadID, "err", err)
+			return
+		}
+		// First writer wins per message (a message can only legitimately match one arm; the map guards
+		// against any accidental overlap deterministically).
+		if _, seen := byMsg[mid]; !seen {
+			byMsg[mid] = anchor{sessionID: sid, round: round, kind: kind}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		slog.WarnContext(ctx, "discussion: party-round enrichment skipped (rows error)", "threadID", threadID, "err", err)
+		return
+	}
+	for i := range msgs {
+		if a, ok := byMsg[msgs[i].ID]; ok {
+			sid := a.sessionID
+			r := a.round
+			msgs[i].PartySessionID = &sid
+			msgs[i].PartyRound = &r
+			msgs[i].PartyRoundKind = a.kind
+		}
+	}
 }
 
 // ----------------------------------------------------------------------------

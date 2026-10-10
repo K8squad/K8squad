@@ -15,9 +15,13 @@
 //      are the terminal `phase` and `closedAt`), so the card is assembled from the
 //      session + the thread transcript.
 //
-// SCOPE NOTE (honest, mirroring the shipped working.ts ISI-5283 decision): a true
-// per-ROUND grouping of individual voice messages was NOT built in the original
-// ISI-5589 cut, because the WS-B message DTO carried no message→round linkage.
+// SCOPE NOTE: per-ROUND grouping of voice messages is now wire-supported — ISI-5616
+// (ADR-0027 addendum) added read-derived `partySessionId` / `partyRound` /
+// `partyRoundKind` to the message DTO (see `types.ts#Message`), so voices group on a
+// stable server-provided round number rather than the old thread-window heuristic.
+// The thin grouping wire-up + vitest that consume those fields land in ISI-5617; the
+// session-derived helpers below (budget meter, takeaways card) are unchanged.
+//
 // ISI-5640 (ADR-0031 C4) adds `partyTurns` below: under the coordinator-SEQUENCED
 // dispatch (ISI-5638, one voice in flight at a time, each after the prior settles)
 // the agent turns land in the thread in strict dispatch order, so the console

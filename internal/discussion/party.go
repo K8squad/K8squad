@@ -378,6 +378,67 @@ func (s *Store) StartPartySession(ctx context.Context, projectID string, teamID,
 	return sess, &m, nil
 }
 
+// OpenPartySessionForMessage opens a facilitator session on an ALREADY-committed message (ADR-0031 Ruling
+// B, ISI-5639 C2) — the routing target for a DEFAULT human bare-party post. Unlike StartPartySession it
+// posts NO party_start message: the triggering post IS the topic (topic_message_id), so re-routing a plain
+// party post to the sequenced facilitator adds no duplicate artifact. The project/team scope is pulled from
+// the triggering message's OWN thread row (the INSERT ... SELECT below), so the session is always scoped
+// exactly as the message was committed — never the caller's session Team, which may differ for an admin
+// (ISI-5198) — and a mismatched thread/message/project matches no rows rather than opening a mis-scoped row.
+//
+// Idempotent on the active-session invariant: if a debate is already live on the thread the INSERT loses the
+// uq_party_session_active_thread partial-unique conflict (opened=false) and the EXISTING active session is
+// returned — the "feed" case: the new post is already in the thread for the next round's cross-talk, so no
+// second paid debate opens (§5.2). opened=true ⇒ a fresh session was created; the WS-D advancer kicks round
+// 1 on its next tick (PlanPartyTick round==0 → MintRound). Only a human may open a session
+// (PartyStartAllowed) — the anti-N² guarantee at the entry point. Budgets default from config unless a
+// coherent override is supplied (same discipline as StartPartySession).
+func (s *Store) OpenPartySessionForMessage(ctx context.Context, projectID string, threadID, topicMessageID uuid.UUID, auth AuthorContext, budget *PartyBudget) (*PartySession, bool, error) {
+	if err := PartyStartAllowed(auth); err != nil {
+		return nil, false, err
+	}
+	b := DefaultPartyBudget()
+	if budget != nil {
+		nb, err := budget.normalize()
+		if err != nil {
+			return nil, false, err
+		}
+		b = nb
+	}
+	// INSERT ... SELECT pulls project_id + team_id from the triggering message's OWN thread row and
+	// validates (the JOIN) that the topic message really belongs to that thread + room, so a mismatched
+	// thread/message/project matches no rows (n=0) and never opens a mis-scoped session. ON CONFLICT on the
+	// partial-unique active index makes a live debate an idempotent no-op (the feed case). A single
+	// statement auto-commits — no tx needed (unlike StartPartySession, which must atomically pair a message
+	// insert with the session open); the read-back below then sees the committed row.
+	tag, err := s.db.ExecContext(ctx, `
+		INSERT INTO discussion.party_session
+		    (thread_id, project_id, team_id, started_by, topic_message_id,
+		     max_rounds, max_voices_per_round, paid_run_budget)
+		SELECT t.id, t.project_id, t.team_id, $3, m.id, $4, $5, $6
+		  FROM discussion.thread t
+		  JOIN discussion.message m ON m.thread_id = t.id AND m.id = $2
+		 WHERE t.id = $1 AND t.project_id = $7
+		ON CONFLICT (thread_id) WHERE phase = 'active' DO NOTHING`,
+		threadID, topicMessageID, auth.Principal, b.MaxRounds, b.MaxVoicesPerRound, b.PaidRunBudget, projectID)
+	if err != nil {
+		return nil, false, fmt.Errorf("open party session for message: %w", err)
+	}
+	opened := false
+	if n, _ := tag.RowsAffected(); n > 0 {
+		opened = true
+	}
+	// Read back the live session. On an open this is the row we just inserted; on a conflict (feed) it is
+	// the pre-existing active debate. If n==0 AND no active session exists, the SELECT matched nothing (a
+	// mis-scoped thread/message/project) — ErrNoActivePartySession surfaces that so the caller falls back
+	// to the normal dispatch path rather than silently swallowing the post.
+	sess, err := s.ActivePartySession(ctx, threadID)
+	if err != nil {
+		return nil, false, err
+	}
+	return sess, opened, nil
+}
+
 // ActivePartySession returns the thread's live session, or ErrNoActivePartySession if none. This is
 // the advancer's / dispatch gate's single indexed read (ADR-0027 §4.4): active + within budget → the
 // facilitator may dispatch; no active session → the ordinary dispatch rules apply verbatim.
@@ -567,8 +628,23 @@ func (s *Store) MintRound(ctx context.Context, id uuid.UUID, fromRound int) (*Pa
 // the CAS and is reported won=false (nil err) — an idempotent no-op the hook skips without charging voices.
 // A real DB failure is returned as err. On a win the updated session is returned (with RoundVoices set) so
 // the advancer sees the roster to walk and can size the voice fan-out against the fresh paid-run headroom.
+//
+// ISI-5616: on a win it ALSO appends the durable discussion.party_round ledger row (session, round →
+// facilitator message) in the SAME transaction, so GetThread can later surface a stable round number + id on
+// each party message (current_round_message_id is overwritten each round and keeps no history — see the
+// 0035_discussion_party_round header). The ledger INSERT is ON CONFLICT DO NOTHING (the session CAS already
+// makes this the only writer for the round; the PK (session_id, round) is the belt-and-suspenders guard) and
+// shares the stamp's transaction — recording the round linkage is a correctness requirement of the read wire,
+// so a ledger failure rolls back the whole stamp (the hook retries on the round's next facilitator post,
+// current_round_message_id still NULL).
 func (s *Store) SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, forRound int, messageID uuid.UUID, voices []string) (sess *PartySession, won bool, err error) {
-	tag, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	tag, err := tx.ExecContext(ctx, `
 		UPDATE discussion.party_session
 		   SET current_round_message_id = $3,
 		       round_voices = $4
@@ -579,6 +655,16 @@ func (s *Store) SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, fo
 	}
 	if n, _ := tag.RowsAffected(); n == 0 {
 		return nil, false, nil
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO discussion.party_round (session_id, round, facilitator_message_id, kind)
+		VALUES ($1, $2, $3, 'round')
+		ON CONFLICT (session_id, round) DO NOTHING`,
+		id, forRound, messageID); err != nil {
+		return nil, false, fmt.Errorf("record party round ledger: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, false, err
 	}
 	updated, err := s.GetPartySession(ctx, id)
 	if err != nil {

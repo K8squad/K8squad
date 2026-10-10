@@ -8,6 +8,7 @@ package discussion
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,6 +64,7 @@ func openPartyTestDB(t *testing.T) (*Store, func()) {
 		"0033_discussion_party_session.sql",
 		"0034_discussion_party_round_facilitator.sql",
 		"0035_discussion_party_round_voices.sql",
+		"0035_discussion_party_round.sql", // ISI-5616: SetRoundFacilitatorMessage now writes the party_round ledger
 	} {
 		applyOneMigration(t, ctx, db, name)
 	}
@@ -124,6 +126,91 @@ func TestPartySession_StartAndRead(t *testing.T) {
 	}
 	if sess2.ID != sess.ID {
 		t.Errorf("idempotent StartPartySession: returned different session id")
+	}
+}
+
+// TestPartySession_OpenForMessage covers ISI-5639 C2 (ADR-0031 Ruling B): OpenPartySessionForMessage opens
+// a facilitator session on an ALREADY-committed bare-party post (no second party_start artifact), pulling
+// the project/team scope from the triggering message's own thread row, and is idempotent (a live debate is
+// FED, not re-opened). It also pins the human-only opt-in and the mis-scoped-input guard.
+func TestPartySession_OpenForMessage(t *testing.T) {
+	store, cleanup := openPartyTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	projectID := "test-ns/c2-project"
+	teamID := uuid.New()
+	auth := AuthorContext{Principal: "human-c2", TeamID: teamID}
+	thread, err := store.OpenThread(ctx, projectID, auth, "c2 thread", "topic")
+	if err != nil {
+		t.Fatalf("OpenThread: %v", err)
+	}
+
+	// Human posts a bare party text message (audience/kind default to party/text).
+	msg, err := store.PostMessage(ctx, projectID, teamID, thread.ID, auth, "what should we build?", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	// Open a facilitator session ON that message — the post itself is the topic (no party_start posted).
+	sess, opened, err := store.OpenPartySessionForMessage(ctx, projectID, thread.ID, msg.ID, auth, nil)
+	if err != nil {
+		t.Fatalf("OpenPartySessionForMessage: %v", err)
+	}
+	if !opened {
+		t.Fatal("first open: opened=false, want true (fresh session)")
+	}
+	if sess.TopicMessageID != msg.ID {
+		t.Errorf("topic_message_id = %v, want the triggering post %v", sess.TopicMessageID, msg.ID)
+	}
+	if sess.TeamID != teamID {
+		t.Errorf("team_id = %v, want the thread's team %v (pulled from the thread row)", sess.TeamID, teamID)
+	}
+	if sess.ProjectID != projectID {
+		t.Errorf("project_id = %q, want %q", sess.ProjectID, projectID)
+	}
+	if sess.Round != 0 || !sess.IsActive() {
+		t.Errorf("fresh session: round=%d phase=%q, want round 0 active", sess.Round, sess.Phase)
+	}
+
+	// Feeding: a second bare-party post on a live debate does NOT open a second session (§5.2).
+	msg2, err := store.PostMessage(ctx, projectID, teamID, thread.ID, auth, "actually, consider X", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("PostMessage 2: %v", err)
+	}
+	fed, opened2, err := store.OpenPartySessionForMessage(ctx, projectID, thread.ID, msg2.ID, auth, nil)
+	if err != nil {
+		t.Fatalf("OpenPartySessionForMessage (feed): %v", err)
+	}
+	if opened2 {
+		t.Fatal("second open on live debate: opened=true, want false (fed existing)")
+	}
+	if fed.ID != sess.ID {
+		t.Errorf("fed session id = %v, want the existing %v", fed.ID, sess.ID)
+	}
+	if fed.TopicMessageID != msg.ID {
+		t.Errorf("fed topic = %v, want the ORIGINAL topic %v (feed must not re-topic)", fed.TopicMessageID, msg.ID)
+	}
+
+	// An agent may not open a session (anti-N² at the entry point) — rejected before any DB write.
+	agentID := "bot"
+	agentAuth := AuthorContext{Principal: "agent:bot", TeamID: teamID, AgentID: &agentID}
+	if _, _, err := store.OpenPartySessionForMessage(ctx, projectID, thread.ID, msg.ID, agentAuth, nil); !errors.Is(err, ErrPartyStartForbidden) {
+		t.Fatalf("agent open: err = %v, want ErrPartyStartForbidden", err)
+	}
+
+	// A mismatched project matches no rows (the INSERT ... SELECT WHERE t.project_id=$7 guard) and opens
+	// nothing → ErrNoActivePartySession surfaces so the caller falls back to the normal dispatch path.
+	freshThread, err := store.OpenThread(ctx, projectID, auth, "empty", "topic")
+	if err != nil {
+		t.Fatalf("OpenThread (fresh): %v", err)
+	}
+	fmsg, err := store.PostMessage(ctx, projectID, teamID, freshThread.ID, auth, "hi", nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("PostMessage (fresh): %v", err)
+	}
+	if _, _, err := store.OpenPartySessionForMessage(ctx, "wrong/project", freshThread.ID, fmsg.ID, auth, nil); !errors.Is(err, ErrNoActivePartySession) {
+		t.Fatalf("mis-scoped open: err = %v, want ErrNoActivePartySession", err)
 	}
 }
 

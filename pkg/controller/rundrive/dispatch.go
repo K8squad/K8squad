@@ -390,7 +390,10 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 			// and the permit releases on the follow's clean OnDone or the
 			// driver's terminal fail/cancel paths — never here.
 			if gate := d.cfg.EndpointGate; gate != nil {
-				if holder, ok := gate.Acquire(endpoint.BaseURL, runID); !ok {
+				// ISI-5594: the endpoint's own declared capacity (Secret
+				// maxConcurrent) overrides the operator default; <= 0 falls
+				// back to it inside Acquire. Admission is FIFO by wait time.
+				if holder, ok := gate.Acquire(endpoint.BaseURL, runID, endpoint.MaxConcurrent); !ok {
 					return wire.Task{}, fmt.Errorf("rundrive: BYO model endpoint %s has no free slot (held by run %s); run %s waits: %w",
 						endpoint.BaseURL, holder, runID, errEndpointSlotBusy)
 				}

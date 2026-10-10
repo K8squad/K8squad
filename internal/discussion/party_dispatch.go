@@ -130,6 +130,46 @@ func (h *Handler) dispatchPartyMentions(ctx context.Context, projectID string, a
 	return true
 }
 
+// routeBarePartyToFacilitator implements ADR-0031 Ruling B (ISI-5639 C2): a human bare-party text post in
+// a room with a dispatchable Coordinator and ≥2 eligible agents OPENS (or feeds) a facilitator session and
+// lets the coordinator sequence turns (ISI-5638 C1), instead of the legacy resolveMentionTargets broadcast
+// that fanned the whole roster onto the one endpoint slot at once (the ISI-5587 thundering herd). It returns
+// true when it handled the post (a session was opened or an active one was fed), and false when this is not
+// a facilitator-route post OR the open failed — in which case the caller falls through to the normal
+// DispatchMentionsFrom path so the room is never left silent.
+//
+// It lives on the REST handler edge only: the MCP discussion_post edge is agent-authored, and an agent
+// bare-party post never classifies as facilitator-route (human-only, PartyStartAllowed) — so there is no
+// shared decision to hoist, unlike resolveMentionTargets. The decision (classifyPartyRoute) is pure +
+// unit-tested; only the open/feed is I/O.
+func (h *Handler) routeBarePartyToFacilitator(ctx context.Context, projectID string, auth AuthorContext, msg *Message, roster []TeamAgent) bool {
+	if h.store == nil || msg == nil {
+		return false
+	}
+	if classifyPartyRoute(msg, roster) != partyRouteFacilitator {
+		return false
+	}
+	// Open the session on the ALREADY-committed triggering post (its own message IS the topic — no second
+	// party_start artifact). Idempotent: an active debate on the thread is FED (opened=false), never
+	// re-opened — the new post is already in the thread for the next round to read.
+	sess, opened, err := h.store.OpenPartySessionForMessage(ctx, projectID, msg.ThreadID, msg.ID, auth, nil)
+	if err != nil {
+		// Best-effort: the message is durable. Fall back to the normal dispatch path rather than swallow
+		// the human's post — a transient open failure must not leave the room unanswered.
+		slog.WarnContext(ctx, "discussion: bare-party facilitator route failed — falling back to normal dispatch",
+			"projectID", projectID, "threadID", msg.ThreadID, "messageID", msg.ID, "err", err)
+		return false
+	}
+	if opened {
+		slog.InfoContext(ctx, "discussion: bare-party post opened a facilitator session — advancer will sequence voices (not broadcast)",
+			"projectID", projectID, "threadID", msg.ThreadID, "sessionID", sess.ID)
+	} else {
+		slog.InfoContext(ctx, "discussion: bare-party post fed an active facilitator session (no second debate)",
+			"projectID", projectID, "threadID", msg.ThreadID, "sessionID", sess.ID)
+	}
+	return true
+}
+
 // flattenMessages returns all messages in the thread tree in breadth-first order, unwrapping the
 // nested Replies structure GetThread builds. Used to collect the round's voice posts for the
 // "What Others Said This Round" cross-talk block.
