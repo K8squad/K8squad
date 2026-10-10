@@ -187,6 +187,20 @@ export interface DiscussionClient {
     projectId: string,
     threadId: string,
   ): Promise<PartySession | null>;
+  /**
+   * The thread's party sessions newest-first (ISI-5617, ISI-5613 Gap 2).
+   * `includeClosed` falsey → only the live session (the same set `/active`
+   * exposes, as an array); `includeClosed: true` → terminal rows too, so after a
+   * debate closes the console can still read its terminal session (phase reason,
+   * round count, paid-run tally) for the full takeaways. Resolves `[]` for a
+   * thread with no debate, and collapses a 404/deny to `[]` (no party framing),
+   * never a thrown 403.
+   */
+  listPartySessions(
+    projectId: string,
+    threadId: string,
+    includeClosed?: boolean,
+  ): Promise<PartySession[]>;
 }
 
 /** The BFF base path for a Project's discussion room (the §7.5 prefix). */
@@ -407,6 +421,26 @@ export function createDiscussionClient(
       } catch (err) {
         if (err instanceof DiscussionApiError && err.outcome === "not-found") {
           return null;
+        }
+        throw err;
+      }
+    },
+
+    async listPartySessions(projectId, threadId, includeClosed = false) {
+      // ISI-5617 (ISI-5613 Gap 2): GET …/party-sessions[?includeClosed=true] →
+      // the thread's sessions newest-first. Absence of a debate is [] (not 404)
+      // server-side; a 404/deny is collapsed to [] so the room simply shows no
+      // party framing rather than throwing.
+      const url = `${threadsBase(projectId)}/${encodeURIComponent(
+        threadId,
+      )}/party-sessions${includeClosed ? "?includeClosed=true" : ""}`;
+      const res = await fetchImpl(url, { method: "GET" });
+      if (res.status === 404) return [];
+      try {
+        return (await readJson<PartySession[]>(res)) ?? [];
+      } catch (err) {
+        if (err instanceof DiscussionApiError && err.outcome === "not-found") {
+          return [];
         }
         throw err;
       }

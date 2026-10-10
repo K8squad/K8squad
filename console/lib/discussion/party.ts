@@ -15,12 +15,17 @@
 //      are the terminal `phase` and `closedAt`), so the card is assembled from the
 //      session + the thread transcript.
 //
-// SCOPE NOTE: per-ROUND grouping of voice messages is now wire-supported — ISI-5616
-// (ADR-0027 addendum) added read-derived `partySessionId` / `partyRound` /
-// `partyRoundKind` to the message DTO (see `types.ts#Message`), so voices group on a
-// stable server-provided round number rather than the old thread-window heuristic.
-// The thin grouping wire-up + vitest that consume those fields land in ISI-5617; the
-// session-derived helpers below (budget meter, takeaways card) are unchanged.
+// ISI-5613 (WS-E follow-up) lands the two pieces WS-E could not build against the
+// original WS-B wire, now that both backend gaps are on main:
+//   - Gap 1 (ISI-5616): read-derived `partySessionId` / `partyRound` /
+//     `partyRoundKind` on the message DTO (see `types.ts#Message`). `partyRounds`
+//     below groups a thread's party messages into numbered rounds on that stable
+//     server-provided round number rather than the old thread-window heuristic.
+//   - Gap 2 (ISI-5617): a terminal party-session read (`GET …/party-sessions?
+//     includeClosed=true`). `newestTerminalSession` picks the closed session out
+//     of that list so the post-close takeaways carry the REAL phase reason + round
+//     count + paid-run tally (full `deriveTakeaways`), not the degraded
+//     transcript-only `endedTakeaways` fallback.
 
 import type { Message, PartyPhase, PartySession } from "./types";
 import { KIND_PARTY_START } from "./types";
@@ -128,12 +133,12 @@ export interface PartyTakeaways {
   phaseLabel: string;
   /**
    * True when the terminal reason + budget numbers are known (derived from a
-   * fetched session object). False when derived from the transcript alone —
-   * `GET /party-sessions/active` filters `phase='active'`, so a CLOSED session's
-   * object is unreachable (no get-by-id/list endpoint, no session-state SSE in
-   * WS-B scope); the console can still show the voices from the transcript but
-   * not the round/budget tallies or the exact terminal phase. See ISI-5589
-   * follow-up (backend gap).
+   * fetched session object — the live `/active` read, or the terminal session
+   * from the `?includeClosed=true` list, ISI-5617). False only on the degraded
+   * fallback that derives voices from the transcript alone (`endedTakeaways`),
+   * used when even the terminal list is unreachable (e.g. a pre-ISI-5617
+   * apiserver): the console still shows the voices but not the round/budget
+   * tallies or the exact terminal phase.
    */
   terminalReasonKnown: boolean;
   /** Number of rounds reached — present only when `terminalReasonKnown`. */
@@ -166,20 +171,17 @@ function inSessionWindow(
 }
 
 /**
- * Collect the distinct AGENT voices that contributed to the session, from the
- * thread transcript, within the session window. Humans and the opener's own
- * non-agent posts are excluded (a voice is a dispatched agent turn). Ordered by
- * contribution count desc, then principal asc, for a stable render. Pure.
+ * Reduce a set of messages to their distinct AGENT voices, ordered by
+ * contribution count desc then principal asc for a stable render. Humans (no
+ * `authorAgentId`) are excluded — a voice is a dispatched agent turn. Pure; the
+ * shared core of {@link partyVoices} (window-scoped) and {@link partyRounds}
+ * (round-scoped).
  */
-export function partyVoices(
-  session: Pick<PartySession, "openedAt" | "closedAt">,
-  messages: readonly Message[],
-): PartyVoice[] {
+function aggregateVoices(messages: Iterable<Message>): PartyVoice[] {
   const byAgent = new Map<string, PartyVoice>();
   for (const m of messages) {
     const agentId = m.authorAgentId;
     if (typeof agentId !== "string" || agentId === "") continue; // humans excluded
-    if (!inSessionWindow(m, session.openedAt, session.closedAt)) continue;
     const existing = byAgent.get(agentId);
     if (existing) {
       existing.contributions += 1;
@@ -196,6 +198,101 @@ export function partyVoices(
       b.contributions - a.contributions ||
       (a.principal < b.principal ? -1 : a.principal > b.principal ? 1 : 0),
   );
+}
+
+/**
+ * Collect the distinct AGENT voices that contributed to the session, from the
+ * thread transcript, within the session window. Humans and the opener's own
+ * non-agent posts are excluded (a voice is a dispatched agent turn). Ordered by
+ * contribution count desc, then principal asc, for a stable render. Pure.
+ */
+export function partyVoices(
+  session: Pick<PartySession, "openedAt" | "closedAt">,
+  messages: readonly Message[],
+): PartyVoice[] {
+  return aggregateVoices(
+    (function* () {
+      for (const m of messages) {
+        if (inSessionWindow(m, session.openedAt, session.closedAt)) yield m;
+      }
+    })(),
+  );
+}
+
+/**
+ * One numbered round of a party session (ISI-5613 Gap 1). Built from the
+ * server-stamped `partyRound` linkage, not a client heuristic:
+ *   - `round` 0 / `kind` "opener" — the `party_start` opener;
+ *   - `round` ≥ 1 / `kind` "round" — a facilitator post and its dispatched voice
+ *     replies (all stamped with that round by the backend voice-dispatch chain).
+ */
+export interface PartyRoundGroup {
+  /** The session these messages belong to. */
+  sessionId: string;
+  /** 1-based round; 0 is the opener. */
+  round: number;
+  /** `"opener"` | `"round"`. */
+  kind: string;
+  /** The messages tagged to this round, in transcript (input) order. */
+  messages: Message[];
+  /** The distinct agent voices in this round (facilitator + dispatched voices). */
+  voices: PartyVoice[];
+}
+
+/**
+ * Group a thread's party messages into numbered rounds on the server-stamped
+ * `partySessionId` / `partyRound` linkage (ISI-5616, ISI-5613 Gap 1). Messages
+ * without that linkage (ordinary room posts, or a thread read from a pre-ISI-5616
+ * apiserver that never stamps it) are skipped — so the result is `[]` for a
+ * non-party thread and degrades cleanly on an old wire. Ordered by session id
+ * then round ascending; within a round, input order is preserved. Pure.
+ */
+export function partyRounds(messages: readonly Message[]): PartyRoundGroup[] {
+  const byRound = new Map<string, PartyRoundGroup>();
+  for (const m of messages) {
+    const sessionId = m.partySessionId;
+    const round = m.partyRound;
+    if (typeof sessionId !== "string" || sessionId === "") continue;
+    if (typeof round !== "number" || !Number.isFinite(round)) continue;
+    const key = `${sessionId}#${round}`;
+    let g = byRound.get(key);
+    if (!g) {
+      g = {
+        sessionId,
+        round,
+        kind: m.partyRoundKind || (round === 0 ? "opener" : "round"),
+        messages: [],
+        voices: [],
+      };
+      byRound.set(key, g);
+    }
+    g.messages.push(m);
+  }
+  const groups = [...byRound.values()].sort((a, b) =>
+    a.sessionId < b.sessionId
+      ? -1
+      : a.sessionId > b.sessionId
+        ? 1
+        : a.round - b.round,
+  );
+  for (const g of groups) g.voices = aggregateVoices(g.messages);
+  return groups;
+}
+
+/**
+ * Pick the newest TERMINAL (closed/converged/budget_exhausted) session out of a
+ * newest-first session list (ISI-5617, ISI-5613 Gap 2). The list read returns
+ * sessions newest-first, so the first terminal row is the most recent closed
+ * debate; `null` when the list has no terminal session (e.g. a still-active
+ * debate, or an empty list). Pure.
+ */
+export function newestTerminalSession(
+  sessions: readonly PartySession[],
+): PartySession | null {
+  for (const s of sessions) {
+    if (isTerminalPhase(s.phase)) return s;
+  }
+  return null;
 }
 
 /**
