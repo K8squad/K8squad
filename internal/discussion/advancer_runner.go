@@ -87,8 +87,14 @@ type PartyAdvancer struct {
 	VoiceDispatcher MentionDispatcher
 
 	Tick     time.Duration // default DefaultPartyAdvancerTick
-	SettleTO time.Duration // default DefaultPartyVoiceSettleTimeout
-	PostTO   time.Duration // default DefaultPartyFacilitatorPostTimeout
+	SettleTO time.Duration // default DefaultPartyVoiceSettleTimeout (the hard backstop / parallel path)
+	// SeqSettleTO is the tightened stuck-voice guard for SEQUENCED sessions (ADR-0031 §3.4, ISI-5640 C4):
+	// a session with a RoundVoices roster dispatches one voice in flight at a time, so a dead turn stalls
+	// every later turn — this guard advances the cursor sooner than SettleTO. Default
+	// DefaultPartySequentialTurnSettleTimeout; the effective per-turn timeout is min(SeqSettleTO, SettleTO)
+	// so SettleTO always stays the hard backstop. Ignored for the no-roster (parallel round-sweep) path.
+	SeqSettleTO time.Duration
+	PostTO      time.Duration // default DefaultPartyFacilitatorPostTimeout
 }
 
 // Start implements manager.Runnable. It runs until ctx is done.
@@ -119,19 +125,42 @@ func (a *PartyAdvancer) tick(ctx context.Context) {
 	if settleTO <= 0 {
 		settleTO = DefaultPartyVoiceSettleTimeout
 	}
+	seqSettleTO := a.SeqSettleTO
+	if seqSettleTO <= 0 {
+		seqSettleTO = DefaultPartySequentialTurnSettleTimeout
+	}
 	postTO := a.PostTO
 	if postTO <= 0 {
 		postTO = DefaultPartyFacilitatorPostTimeout
 	}
 	for _, sess := range sessions {
-		a.advanceSession(ctx, sess, settleTO, postTO)
+		a.advanceSession(ctx, sess, settleTO, seqSettleTO, postTO)
 	}
 }
 
-func (a *PartyAdvancer) advanceSession(ctx context.Context, sess *PartySession, settleTO, postTO time.Duration) {
+// effectivePartySettleTimeout picks the stuck-voice guard for one session's settlement read (ADR-0031
+// §3.4, ISI-5640 C4). For a SEQUENCED session (RoundVoices roster present) a dead turn stalls every later
+// turn, so the tightened per-turn guard seqSettleTO applies — but bounded by the backstop, so the
+// effective value is min(seqSettleTO, backstop): lowering only the backstop below seqSettleTO still wins
+// (the backstop is always the hard ceiling), and a non-positive seqSettleTO falls back to the backstop. A
+// no-roster (parallel round-sweep) session always uses the full backstop. Pure, so the tiering is
+// exhaustively unit-testable without a DB.
+func effectivePartySettleTimeout(hasRoster bool, backstop, seqSettleTO time.Duration) time.Duration {
+	if hasRoster && seqSettleTO > 0 && seqSettleTO < backstop {
+		return seqSettleTO
+	}
+	return backstop
+}
+
+func (a *PartyAdvancer) advanceSession(ctx context.Context, sess *PartySession, settleTO, seqSettleTO, postTO time.Duration) {
 	var settle RoundSettlement
 	if sess.CurrentRoundMessageID != nil {
-		s, err := a.Store.RoundVoiceSettlement(ctx, *sess.CurrentRoundMessageID, settleTO)
+		// ISI-5640 (ADR-0031 §3.4) — a session with a RoundVoices roster is dispatched one turn in flight at
+		// a time, so a dead turn stalls every later turn; use the tightened per-turn guard for it, bounded by
+		// the hard backstop. A no-roster session (pre-0035 parallel round-sweep) keeps the full backstop — its
+		// voices run concurrently, so the original bound is right.
+		effectiveSettleTO := effectivePartySettleTimeout(len(sess.RoundVoices) > 0, settleTO, seqSettleTO)
+		s, err := a.Store.RoundVoiceSettlement(ctx, *sess.CurrentRoundMessageID, effectiveSettleTO)
 		if err != nil {
 			slog.WarnContext(ctx, "party advancer: RoundVoiceSettlement failed",
 				"sessionID", sess.ID, "round", sess.Round, "err", err)

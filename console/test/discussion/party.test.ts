@@ -8,9 +8,11 @@ import {
   isPartyStart,
   isTerminalPhase,
   partySessionView,
+  partyTurns,
   partyVoices,
   phaseLabel,
 } from "@/lib/discussion/party";
+import type { PartyTurnMessage } from "@/lib/discussion/party";
 
 function session(over: Partial<PartySession> = {}): PartySession {
   return {
@@ -75,9 +77,13 @@ describe("partySessionView", () => {
   });
 
   it("advances the current round with the server counter, clamped to maxRounds", () => {
-    expect(partySessionView(session({ round: 2, phase: "active" })).currentRound).toBe(3);
+    expect(
+      partySessionView(session({ round: 2, phase: "active" })).currentRound,
+    ).toBe(3);
     // counter can momentarily exceed before close; display never exceeds maxRounds
-    expect(partySessionView(session({ round: 5, phase: "active" })).currentRound).toBe(3);
+    expect(
+      partySessionView(session({ round: 5, phase: "active" })).currentRound,
+    ).toBe(3);
   });
 
   it("reports rounds reached (not +1) for a terminal session", () => {
@@ -89,9 +95,7 @@ describe("partySessionView", () => {
   });
 
   it("computes the paid-run meter, headroom, and exhausted flag", () => {
-    const v = partySessionView(
-      session({ paidRunsUsed: 9, phase: "active" }),
-    );
+    const v = partySessionView(session({ paidRunsUsed: 9, phase: "active" }));
     expect(v.remainingPaidRuns).toBe(3); // 12 - 9
     expect(v.paidRunProgress).toBeCloseTo(9 / 12);
 
@@ -127,9 +131,24 @@ describe("partyVoices (client-derived, thread-window correlation)", () => {
 
   it("collects distinct agent voices and counts contributions", () => {
     const voices = partyVoices(s, [
-      msg({ id: "a1", authorPrincipal: "alice", authorAgentId: "ag-alice", createdAt: "2026-10-08T10:10:00Z" }),
-      msg({ id: "a2", authorPrincipal: "alice", authorAgentId: "ag-alice", createdAt: "2026-10-08T10:20:00Z" }),
-      msg({ id: "b1", authorPrincipal: "bob", authorAgentId: "ag-bob", createdAt: "2026-10-08T10:15:00Z" }),
+      msg({
+        id: "a1",
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+        createdAt: "2026-10-08T10:10:00Z",
+      }),
+      msg({
+        id: "a2",
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+        createdAt: "2026-10-08T10:20:00Z",
+      }),
+      msg({
+        id: "b1",
+        authorPrincipal: "bob",
+        authorAgentId: "ag-bob",
+        createdAt: "2026-10-08T10:15:00Z",
+      }),
     ]);
     expect(voices).toHaveLength(2);
     // alice (2) before bob (1): ordered by contributions desc
@@ -139,8 +158,18 @@ describe("partyVoices (client-derived, thread-window correlation)", () => {
 
   it("excludes humans (no authorAgentId)", () => {
     const voices = partyVoices(s, [
-      msg({ id: "h1", authorPrincipal: "henrik", authorAgentId: null, createdAt: "2026-10-08T10:05:00Z" }),
-      msg({ id: "a1", authorPrincipal: "alice", authorAgentId: "ag-alice", createdAt: "2026-10-08T10:10:00Z" }),
+      msg({
+        id: "h1",
+        authorPrincipal: "henrik",
+        authorAgentId: null,
+        createdAt: "2026-10-08T10:05:00Z",
+      }),
+      msg({
+        id: "a1",
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+        createdAt: "2026-10-08T10:10:00Z",
+      }),
     ]);
     expect(voices).toHaveLength(1);
     expect(voices[0].agentId).toBe("ag-alice");
@@ -148,9 +177,21 @@ describe("partyVoices (client-derived, thread-window correlation)", () => {
 
   it("excludes messages outside the session window", () => {
     const voices = partyVoices(s, [
-      msg({ id: "before", authorAgentId: "ag-x", createdAt: "2026-10-08T09:59:00Z" }),
-      msg({ id: "after", authorAgentId: "ag-y", createdAt: "2026-10-08T11:30:00Z" }),
-      msg({ id: "in", authorAgentId: "ag-z", createdAt: "2026-10-08T10:30:00Z" }),
+      msg({
+        id: "before",
+        authorAgentId: "ag-x",
+        createdAt: "2026-10-08T09:59:00Z",
+      }),
+      msg({
+        id: "after",
+        authorAgentId: "ag-y",
+        createdAt: "2026-10-08T11:30:00Z",
+      }),
+      msg({
+        id: "in",
+        authorAgentId: "ag-z",
+        createdAt: "2026-10-08T10:30:00Z",
+      }),
     ]);
     expect(voices.map((v) => v.agentId)).toEqual(["ag-z"]);
   });
@@ -158,15 +199,29 @@ describe("partyVoices (client-derived, thread-window correlation)", () => {
   it("counts to the present for a still-active session (null closedAt)", () => {
     const live = session({ openedAt: "2026-10-08T10:00:00Z", closedAt: null });
     const voices = partyVoices(live, [
-      msg({ id: "a1", authorAgentId: "ag-a", createdAt: "2026-10-08T23:00:00Z" }),
+      msg({
+        id: "a1",
+        authorAgentId: "ag-a",
+        createdAt: "2026-10-08T23:00:00Z",
+      }),
     ]);
     expect(voices).toHaveLength(1);
   });
 
   it("orders ties by principal ascending", () => {
     const voices = partyVoices(s, [
-      msg({ id: "z", authorPrincipal: "zoe", authorAgentId: "ag-z", createdAt: "2026-10-08T10:10:00Z" }),
-      msg({ id: "a", authorPrincipal: "amy", authorAgentId: "ag-a", createdAt: "2026-10-08T10:11:00Z" }),
+      msg({
+        id: "z",
+        authorPrincipal: "zoe",
+        authorAgentId: "ag-z",
+        createdAt: "2026-10-08T10:10:00Z",
+      }),
+      msg({
+        id: "a",
+        authorPrincipal: "amy",
+        authorAgentId: "ag-a",
+        createdAt: "2026-10-08T10:11:00Z",
+      }),
     ]);
     expect(voices.map((v) => v.principal)).toEqual(["amy", "zoe"]);
   });
@@ -182,9 +237,23 @@ describe("deriveTakeaways (from a session object)", () => {
       closedAt: "2026-10-08T10:45:00Z",
     });
     const t = deriveTakeaways(s, [
-      msg({ id: "a1", authorPrincipal: "alice", authorAgentId: "ag-alice", createdAt: "2026-10-08T10:10:00Z" }),
-      msg({ id: "b1", authorPrincipal: "bob", authorAgentId: "ag-bob", createdAt: "2026-10-08T10:20:00Z" }),
-      msg({ id: "late", authorAgentId: "ag-late", createdAt: "2026-10-08T12:00:00Z" }), // outside window
+      msg({
+        id: "a1",
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+        createdAt: "2026-10-08T10:10:00Z",
+      }),
+      msg({
+        id: "b1",
+        authorPrincipal: "bob",
+        authorAgentId: "ag-bob",
+        createdAt: "2026-10-08T10:20:00Z",
+      }),
+      msg({
+        id: "late",
+        authorAgentId: "ag-late",
+        createdAt: "2026-10-08T12:00:00Z",
+      }), // outside window
     ]);
     expect(t.terminalReasonKnown).toBe(true);
     expect(t.phaseLabel).toMatch(/converged/i);
@@ -198,12 +267,31 @@ describe("deriveTakeaways (from a session object)", () => {
 
 describe("endedTakeaways (degraded, transcript-only post-close)", () => {
   it("derives voices from the opener onward, without round/budget numbers", () => {
-    const opener = msg({ id: "m0", kind: "party_start", authorAgentId: null, createdAt: "2026-10-08T10:00:00Z" });
+    const opener = msg({
+      id: "m0",
+      kind: "party_start",
+      authorAgentId: null,
+      createdAt: "2026-10-08T10:00:00Z",
+    });
     const t = endedTakeaways(opener, [
       opener,
-      msg({ id: "before", authorAgentId: "ag-pre", createdAt: "2026-10-08T09:50:00Z" }), // before opener
-      msg({ id: "a1", authorPrincipal: "alice", authorAgentId: "ag-alice", createdAt: "2026-10-08T10:10:00Z" }),
-      msg({ id: "a2", authorPrincipal: "alice", authorAgentId: "ag-alice", createdAt: "2026-10-08T10:12:00Z" }),
+      msg({
+        id: "before",
+        authorAgentId: "ag-pre",
+        createdAt: "2026-10-08T09:50:00Z",
+      }), // before opener
+      msg({
+        id: "a1",
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+        createdAt: "2026-10-08T10:10:00Z",
+      }),
+      msg({
+        id: "a2",
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+        createdAt: "2026-10-08T10:12:00Z",
+      }),
     ]);
     expect(t.terminalReasonKnown).toBe(false);
     expect(t.phaseLabel).toMatch(/ended/i);
@@ -211,5 +299,131 @@ describe("endedTakeaways (degraded, transcript-only post-close)", () => {
     expect(t.paidRunsUsed).toBeUndefined();
     expect(t.voices.map((v) => v.agentId)).toEqual(["ag-alice"]); // ag-pre excluded (pre-opener)
     expect(t.voices[0].contributions).toBe(2);
+  });
+});
+
+describe("partyTurns — sequential turn rendering (ISI-5640)", () => {
+  const sess = { openedAt: "2026-10-08T10:00:00Z", closedAt: null };
+
+  function turn(over: Partial<PartyTurnMessage> = {}): PartyTurnMessage {
+    return {
+      id: "m",
+      authorPrincipal: "agent:alice",
+      authorAgentId: "ag-alice",
+      createdAt: "2026-10-08T10:05:00Z",
+      ...over,
+    };
+  }
+
+  it("orders agent turns in dispatch (createdAt) order with 1-based indices", () => {
+    const turns = partyTurns(sess, [
+      turn({
+        id: "b",
+        authorAgentId: "ag-b",
+        createdAt: "2026-10-08T10:06:00Z",
+      }),
+      turn({
+        id: "a",
+        authorAgentId: "ag-a",
+        createdAt: "2026-10-08T10:05:00Z",
+      }),
+      turn({
+        id: "c",
+        authorAgentId: "ag-c",
+        createdAt: "2026-10-08T10:07:00Z",
+      }),
+    ]);
+    expect(turns.map((t) => t.messageId)).toEqual(["a", "b", "c"]);
+    expect(turns.map((t) => t.turnIndex)).toEqual([1, 2, 3]);
+    expect(turns.map((t) => t.agentId)).toEqual(["ag-a", "ag-b", "ag-c"]);
+  });
+
+  it("excludes humans and messages outside the session window", () => {
+    const turns = partyTurns(sess, [
+      turn({ id: "human", authorAgentId: null }), // human post
+      turn({
+        id: "pre",
+        authorAgentId: "ag-x",
+        createdAt: "2026-10-08T09:59:00Z",
+      }), // pre-open
+      turn({
+        id: "ok",
+        authorAgentId: "ag-ok",
+        createdAt: "2026-10-08T10:05:00Z",
+      }),
+    ]);
+    expect(turns.map((t) => t.messageId)).toEqual(["ok"]);
+    expect(turns[0].turnIndex).toBe(1);
+  });
+
+  it("respects the session close boundary", () => {
+    const closed = {
+      openedAt: "2026-10-08T10:00:00Z",
+      closedAt: "2026-10-08T10:10:00Z",
+    };
+    const turns = partyTurns(closed, [
+      turn({
+        id: "in",
+        authorAgentId: "ag-in",
+        createdAt: "2026-10-08T10:05:00Z",
+      }),
+      turn({
+        id: "after",
+        authorAgentId: "ag-after",
+        createdAt: "2026-10-08T10:11:00Z",
+      }),
+    ]);
+    expect(turns.map((t) => t.messageId)).toEqual(["in"]);
+  });
+
+  it("tags each turn with its round when the ISI-5616 wire is present", () => {
+    const turns = partyTurns(sess, [
+      turn({
+        id: "r0",
+        authorAgentId: "ag-a",
+        createdAt: "2026-10-08T10:05:00Z",
+        partyRound: 0,
+      }),
+      turn({
+        id: "r1",
+        authorAgentId: "ag-b",
+        createdAt: "2026-10-08T10:06:00Z",
+        partyRound: 1,
+      }),
+    ]);
+    expect(turns.map((t) => t.round)).toEqual([0, 1]);
+  });
+
+  it("leaves round undefined when the wire is absent (still sequenced)", () => {
+    const turns = partyTurns(sess, [
+      turn({
+        id: "a",
+        authorAgentId: "ag-a",
+        createdAt: "2026-10-08T10:05:00Z",
+      }),
+      turn({
+        id: "b",
+        authorAgentId: "ag-b",
+        createdAt: "2026-10-08T10:06:00Z",
+      }),
+    ]);
+    expect(turns.every((t) => t.round === undefined)).toBe(true);
+    expect(turns.map((t) => t.turnIndex)).toEqual([1, 2]);
+  });
+
+  it("breaks createdAt ties deterministically by message id", () => {
+    const turns = partyTurns(sess, [
+      turn({
+        id: "m2",
+        authorAgentId: "ag-2",
+        createdAt: "2026-10-08T10:05:00Z",
+      }),
+      turn({
+        id: "m1",
+        authorAgentId: "ag-1",
+        createdAt: "2026-10-08T10:05:00Z",
+      }),
+    ]);
+    expect(turns.map((t) => t.messageId)).toEqual(["m1", "m2"]);
   });
 });
