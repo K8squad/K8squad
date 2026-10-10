@@ -31,7 +31,25 @@ const (
 	// DefaultPartyVoiceSettleTimeout bounds the §3.3 residual: a voice-run whose a2a follow died on a
 	// mid-round restart never writes its settle marker. After this long the advancer counts that voice
 	// settled-with-no-output so one stuck voice can never wedge the debate (2× expected run wall-clock).
+	// Under PARALLEL round-sweep dispatch (ADR-0027, and the pre-0035 no-roster path) this is the single
+	// timeout: N voices run concurrently, so one dead voice costs at most this once for the whole round.
+	// It remains the HARD BACKSTOP — the upper bound on how long ANY turn can hold the debate (ADR-0031
+	// Ruling D: the ADR-0027 §5.1 guard applies unchanged, and a sequential debate is strictly less
+	// concurrent so the bound holds a fortiori).
 	DefaultPartyVoiceSettleTimeout = 10 * time.Minute
+
+	// DefaultPartySequentialTurnSettleTimeout tightens the stuck-voice guard for the SERIALIZED case
+	// (ADR-0031 Ruling D / §3.4, sized in ISI-5640 C4). Under sequencing only one voice is in flight at a
+	// time and every LATER turn waits behind it, so a single dead turn no longer costs one round-sweep — it
+	// stalls the ENTIRE remaining debate (a 4-voice × 3-round debate would wait 4×10m = 40m per dead turn
+	// under the round-sweep backstop). The advancer therefore counts a sequenced turn settled-with-no-output
+	// after this shorter interval so the cursor advances and the next voice runs, while the 10-minute
+	// DefaultPartyVoiceSettleTimeout is retained as the hard backstop (the effective per-turn timeout is
+	// min(this, the configured backstop), so lowering only the backstop still tightens turns, and a backstop
+	// below this value wins). The tradeoff (accepted, tunable via PartyAdvancer.SeqSettleTO): a legitimately
+	// long but still-alive turn that runs past this interval is abandoned early — raise SeqSettleTO toward
+	// the backstop if an endpoint's voice runs routinely exceed it. 5m ≈ 2× a single expected voice turn.
+	DefaultPartySequentialTurnSettleTimeout = 5 * time.Minute
 
 	// DefaultPartyFacilitatorPostTimeout bounds the symmetric gap this layer adds: a facilitator run that is
 	// minted but dies before posting its round dispatch (so current_round_message_id never gets stamped).
