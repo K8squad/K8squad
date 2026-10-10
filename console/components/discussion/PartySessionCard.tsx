@@ -14,16 +14,21 @@
 //     We render a DEGRADED takeaways derived from the transcript alone: the agent
 //     voices that contributed, without the round/budget tallies the wire drops.
 //
-// Per-ROUND grouping of individual voice messages is intentionally NOT rendered:
-// WS-B carries no message→round linkage (that is WS-C/WS-D, not landed). See the
-// party.ts module header + the ISI-5589 follow-up.
+// Turn SEQUENCE (ISI-5640 C4, ADR-0031): since ISI-5638 dispatches party voices
+// strictly sequentially (one in flight, the next only after the prior settles),
+// the card renders the session's agent turns IN ORDER — each voice's turn shown
+// after the prior one, reflecting the reactive dispatch order. The order is
+// inherent in the transcript's `createdAt`; the ISI-5616 round wire (when present)
+// additionally tags each turn with its round. See the party.ts `partyTurns` note.
 
 import type { Message, PartySession } from "@/lib/discussion/types";
 import {
   deriveTakeaways,
   endedTakeaways,
   partySessionView,
+  partyTurns,
   type PartyTakeaways,
+  type PartyTurn,
 } from "@/lib/discussion/party";
 
 export interface PartySessionCardProps {
@@ -76,6 +81,30 @@ function Takeaways({ takeaways }: { takeaways: PartyTakeaways }) {
   );
 }
 
+function TurnSequence({ turns }: { turns: readonly PartyTurn[] }) {
+  if (turns.length === 0) return null;
+  return (
+    <ol className="ksq-party__turns" data-testid="party-turns">
+      {turns.map((t) => (
+        <li
+          key={t.messageId}
+          className="ksq-party__turn"
+          data-turn={t.turnIndex}
+          data-round={t.round ?? undefined}
+        >
+          <span className="ksq-chip ksq-party__turn-idx" aria-hidden>
+            {t.turnIndex}
+          </span>
+          <span className="ksq-party__turn-name">{t.principal}</span>
+          {t.round != null ? (
+            <span className="ksq-party__turn-round">round {t.round + 1}</span>
+          ) : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 export function PartySessionCard({
   session,
   opener,
@@ -100,6 +129,12 @@ export function PartySessionCard({
             Debate ended
           </span>
         </header>
+        <TurnSequence
+          turns={partyTurns(
+            { openedAt: opener!.createdAt, closedAt: null },
+            messages,
+          )}
+        />
         <Takeaways takeaways={endedTakeaways(opener!, messages)} />
       </section>
     );
@@ -107,6 +142,7 @@ export function PartySessionCard({
 
   const view = partySessionView(session);
   const takeaways = view.isTerminal ? deriveTakeaways(session, messages) : null;
+  const turns = partyTurns(session, messages);
 
   return (
     <section
@@ -156,6 +192,8 @@ export function PartySessionCard({
           </span>
         </div>
       </div>
+
+      <TurnSequence turns={turns} />
 
       {takeaways ? <Takeaways takeaways={takeaways} /> : null}
     </section>

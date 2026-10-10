@@ -21,6 +21,14 @@
 // stable server-provided round number rather than the old thread-window heuristic.
 // The thin grouping wire-up + vitest that consume those fields land in ISI-5617; the
 // session-derived helpers below (budget meter, takeaways card) are unchanged.
+//
+// ISI-5640 (ADR-0031 C4) adds `partyTurns` below: under the coordinator-SEQUENCED
+// dispatch (ISI-5638, one voice in flight at a time, each after the prior settles)
+// the agent turns land in the thread in strict dispatch order, so the console
+// renders them in sequence from their `createdAt` ordering alone — the reactive
+// order is inherent, no heuristic needed. When the ISI-5616 round/session wire is
+// present on the message (`partyRound`), each turn is additionally tagged with its
+// round; absent it, turns are still correctly sequenced, just un-grouped.
 
 import type { Message, PartyPhase, PartySession } from "./types";
 import { KIND_PARTY_START } from "./types";
@@ -104,7 +112,8 @@ export function partySessionView(session: PartySession): PartySessionView {
     paidRunsUsed: Math.max(0, paidRunsUsed),
     paidRunBudget,
     remainingPaidRuns,
-    paidRunProgress: paidRunBudget > 0 ? clamp01(paidRunsUsed / paidRunBudget) : 0,
+    paidRunProgress:
+      paidRunBudget > 0 ? clamp01(paidRunsUsed / paidRunBudget) : 0,
     phase,
     phaseLabel: phaseLabel(phase),
     isActive: active,
@@ -234,7 +243,97 @@ export function endedTakeaways(
   return {
     phaseLabel: "Debate ended",
     terminalReasonKnown: false,
-    voices: partyVoices({ openedAt: opener.createdAt, closedAt: null }, messages),
+    voices: partyVoices(
+      { openedAt: opener.createdAt, closedAt: null },
+      messages,
+    ),
     closedAt: null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Sequential turn rendering (ISI-5640 WS-E, ADR-0031 C4).
+// ---------------------------------------------------------------------------
+
+/**
+ * The message fields `partyTurns` reads. Structural (not the full `Message`) so
+ * this projection is independent of the ISI-5616 round/session wire: today's
+ * messages supply only the window + author fields, and `partyRound` is simply
+ * `undefined`; once ISI-5616 lands its optional `partyRound` on `Message`, the
+ * same `Message[]` satisfies this shape and each turn is tagged with its round.
+ */
+export type PartyTurnMessage = Pick<
+  Message,
+  "id" | "createdAt" | "authorAgentId" | "authorPrincipal"
+> & {
+  /** 0-based party round, present once the ISI-5616 wire stamps it; else omitted. */
+  partyRound?: number | null;
+};
+
+/** One agent turn in a party session, in dispatch order. */
+export interface PartyTurn {
+  /** The message id of this turn (stable React key / deep-link). */
+  messageId: string;
+  /** 1-based position in the session's dispatch sequence (the reactive order). */
+  turnIndex: number;
+  /** The agent author id (a turn is always a dispatched agent run). */
+  agentId: string;
+  /** Display identity (the `authorPrincipal` badge label). */
+  principal: string;
+  createdAt: string;
+  /**
+   * 0-based round from the ISI-5616 wire (`partyRound`), or `undefined` when the
+   * wire is absent (turns stay sequenced, just un-grouped). 1-based for display is
+   * `round + 1`.
+   */
+  round?: number;
+}
+
+/**
+ * Project a session's AGENT turns into the sequence the console renders — one
+ * entry per dispatched voice turn, in dispatch (chronological) order within the
+ * session window. Because ISI-5638 dispatches party voices STRICTLY sequentially
+ * (one in flight, the next only after the prior settles), the thread's `createdAt`
+ * order IS the reactive dispatch order, so a caller renders `partyTurns` top-to-
+ * bottom and each voice's turn naturally shows after the prior one settled. Humans
+ * and non-agent posts are excluded (a turn is a dispatched agent run); the opener
+ * and facilitator coordinator posts are agent/human posts outside the voice set —
+ * callers that want only voices already filter by `authorAgentId`, which this does.
+ *
+ * Ties on `createdAt` are broken by message id for a stable, deterministic order
+ * (two turns never share a real dispatch instant under sequencing, but a projection
+ * must be total). Pure.
+ */
+export function partyTurns(
+  session: Pick<PartySession, "openedAt" | "closedAt">,
+  messages: readonly PartyTurnMessage[],
+): PartyTurn[] {
+  const voices = messages.filter(
+    (m) =>
+      typeof m.authorAgentId === "string" &&
+      m.authorAgentId !== "" &&
+      inSessionWindow(m, session.openedAt, session.closedAt),
+  );
+  voices.sort((a, b) =>
+    a.createdAt < b.createdAt
+      ? -1
+      : a.createdAt > b.createdAt
+        ? 1
+        : a.id < b.id
+          ? -1
+          : a.id > b.id
+            ? 1
+            : 0,
+  );
+  return voices.map((m, i) => ({
+    messageId: m.id,
+    turnIndex: i + 1,
+    agentId: m.authorAgentId as string,
+    principal: m.authorPrincipal || (m.authorAgentId as string),
+    createdAt: m.createdAt,
+    round:
+      typeof m.partyRound === "number" && m.partyRound >= 0
+        ? m.partyRound
+        : undefined,
+  }));
 }
