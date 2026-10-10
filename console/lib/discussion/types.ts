@@ -60,6 +60,16 @@ export interface Message {
   payload?: unknown;
   /** Soft-retraction tombstone timestamp; present ⇒ the message was retracted. */
   invalidatedAt?: string | null;
+  /**
+   * Party-mode round linkage (ISI-5616, ISI-5613 Gap 1; ADR-0027 addendum). Read-derived by the
+   * get-thread read; present ONLY on messages that belong to a party session, absent on every ordinary
+   * room message. Let the console group a thread's party messages into numbered rounds (`party.ts`).
+   */
+  partySessionId?: string | null;
+  /** 1-based facilitator round this message belongs to; 0 = the `party_start` opener. */
+  partyRound?: number | null;
+  /** `"opener"` (the party_start) or `"round"` (a facilitator post / its dispatched voices). */
+  partyRoundKind?: string;
   /** Derived: children nested by `parentId` (adjacency). */
   replies?: Message[];
 }

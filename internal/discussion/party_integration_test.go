@@ -63,6 +63,7 @@ func openPartyTestDB(t *testing.T) (*Store, func()) {
 		"0033_discussion_party_session.sql",
 		"0034_discussion_party_round_facilitator.sql",
 		"0035_discussion_party_round_voices.sql",
+		"0035_discussion_party_round.sql", // ISI-5616: SetRoundFacilitatorMessage now writes the party_round ledger
 	} {
 		applyOneMigration(t, ctx, db, name)
 	}
