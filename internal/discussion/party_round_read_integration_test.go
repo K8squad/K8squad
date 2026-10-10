@@ -129,7 +129,9 @@ func TestGetThreadStampsPartyRoundLinkage(t *testing.T) {
 	voiceWI := uuid.New()
 	voiceRun := uuid.New()
 	exec(`INSERT INTO coord.work_item (id, project_id, title, created_by) VALUES ($1,$2,'voice run','dispatch')`, voiceWI, coordProject)
-	exec(`INSERT INTO coord.claim (work_item_id, run_id) VALUES ($1,$2)`, voiceWI, voiceRun)
+	// coord.work_item auto-provisions its single claim row via the provision_claim trigger (0001), so set
+	// the run_id on that existing row rather than INSERTing a second (which collides on claim_pkey).
+	exec(`UPDATE coord.claim SET run_id = $2 WHERE work_item_id = $1`, voiceWI, voiceRun)
 	exec(`INSERT INTO discussion.mention_dispatch (message_id, agent_name, project_id, thread_id, hop_depth, work_item_id)
 	      VALUES ($1,'sam',$2,$3,1,$4)`, facID, projectSlug, threadID, voiceWI)
 	voiceMsgID := uuid.New()
