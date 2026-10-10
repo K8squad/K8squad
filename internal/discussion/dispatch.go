@@ -215,6 +215,27 @@ func DispatchHopOf(payload *json.RawMessage) int {
 	return wrapper.Dispatch.HopDepth
 }
 
+// partyBroadcastRequested reports whether a message explicitly opted into the DEMOTED simultaneous
+// broadcast affordance via the party-mode payload field {"_party":{"broadcast":true}} (ADR-0031 Ruling B
+// §3.2). This is the console's "ask everyone in parallel" opt-in — it merges alongside _dispatch /
+// references in the same JSON-object payload shape. Absent/malformed ⇒ false, so a plain human party post
+// defaults to the sequenced-facilitator route: the whole point of Ruling B is that the legacy one-shot
+// parallel fan-out is retired as the DEFAULT, kept only behind this explicit, rate-limited affordance.
+func partyBroadcastRequested(payload *json.RawMessage) bool {
+	if payload == nil || len(*payload) == 0 {
+		return false
+	}
+	var wrapper struct {
+		Party struct {
+			Broadcast bool `json:"broadcast"`
+		} `json:"_party"`
+	}
+	if err := json.Unmarshal(*payload, &wrapper); err != nil {
+		return false
+	}
+	return wrapper.Party.Broadcast
+}
+
 // ============================================================================
 // Ticket references (ISI-5165, plan ISI-5134 S1) — a LINK, NOT a dispatch
 // ============================================================================
@@ -503,6 +524,78 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 	return targets, dropped, false
 }
 
+// partyRouteClass classifies how a committed message's auto-dispatch is routed with respect to the
+// ADR-0031 Ruling B facilitator-vs-broadcast decision (ISI-5639 C2). It is derived PURELY (no I/O), like
+// resolveMentionTargets, so the handler can decide whether to open/feed a session BEFORE taking the DB
+// action and every branch is unit-testable without Postgres.
+type partyRouteClass int
+
+const (
+	// partyRouteNormal — handle via the ordinary resolveMentionTargets/DispatchMentionsFrom path exactly
+	// as before. Covers everything that is NOT a default bare-party debate: a direct:/@-mention post, an
+	// agent-authored post, a non-text kind, a room with <2 eligible agents or no dispatchable coordinator,
+	// and — crucially — the EXPLICIT demoted-broadcast affordance (§3.2), which keeps its legacy fan-out.
+	partyRouteNormal partyRouteClass = iota
+	// partyRouteFacilitator — a human bare-party text post (audience 'party', no @-mention, no explicit
+	// broadcast flag) in a room with a dispatchable Coordinator AND ≥2 eligible agents. The caller OPENs
+	// (or feeds) a facilitator session and lets the coordinator sequence turns (ISI-5638 C1) instead of
+	// the legacy simultaneous broadcast — closing the ISI-5587 thundering-herd path at its root (§3.2).
+	partyRouteFacilitator
+)
+
+// classifyPartyRoute decides whether a just-committed message should route to the sequenced facilitator
+// (ADR-0031 Ruling B) rather than the legacy simultaneous bare-party broadcast. It is the C2 counterpart
+// to resolveMentionTargets: that function still owns @-mention / direct / explicit-broadcast dispatch;
+// this one only re-routes the DEFAULT human bare-party post. Every other shape returns partyRouteNormal,
+// so the caller falls through to the unchanged dispatch path and no existing behaviour moves.
+func classifyPartyRoute(msg *Message, roster []TeamAgent) partyRouteClass {
+	if msg == nil {
+		return partyRouteNormal
+	}
+	// Human-authored only: an agent bare-party post already dispatches nobody (loop-safety), and only a
+	// human may open a session (PartyStartAllowed) — the anti-N² guarantee at the entry point (§5.2).
+	if msg.AuthorAgentID != nil {
+		return partyRouteNormal
+	}
+	// Bare PARTY post: audience 'party' (not a direct: reply). A direct:<agent> post is a targeted
+	// one-to-one reply, never a whole-room debate — unchanged (§3.2).
+	if msg.Audience != "party" {
+		return partyRouteNormal
+	}
+	// Only the plain discussion kind opens a debate; a structured/proposal/decision/vote party post keeps
+	// its legacy behaviour (ADR-0031 §3.2 targets kind='text'). Empty == the normalizeKind 'text' default.
+	if msg.Kind != "" && msg.Kind != "text" {
+		return partyRouteNormal
+	}
+	// A single/explicit @-mention is a targeted reply or a coordinator hand-off (D4), not a bare-party
+	// debate — resolveMentionTargets owns it unchanged (§3.2: single direct @-mention → direct dispatch).
+	if len(parseMentions(msg.Body)) > 0 {
+		return partyRouteNormal
+	}
+	// Explicit demoted broadcast affordance (§3.2): the caller opted into the one-shot parallel
+	// ask-everyone path — honour it (subject to the fan-out cap + ISI-5594 admission), do NOT re-route.
+	if partyBroadcastRequested(msg.Payload) {
+		return partyRouteNormal
+	}
+	// The facilitator path needs a dispatchable Coordinator to sequence the round; without one the debate
+	// cannot run, so fall back to the legacy broadcast rather than open an inert session (demote, not delete).
+	if _, ok := coordinatorOf(roster); !ok {
+		return partyRouteNormal
+	}
+	// Count the eligible (dispatchable) agents the legacy path WOULD have broadcast to. ≥2 ⇒ a real
+	// multi-agent room ⇒ sequence it; a 1-eligible-agent room stays a single direct dispatch (§3.2 test).
+	eligible := 0
+	for _, a := range roster {
+		if a.Name != "" && dispatchableStatus(a.Status) {
+			eligible++
+		}
+	}
+	if eligible < 2 {
+		return partyRouteNormal
+	}
+	return partyRouteFacilitator
+}
+
 // coordinatorOf returns the Team's single Coordinator-role agent (Role.Spec.Coordinator, ISI-4431 —
 // the Team-admission webhook enforces ≤1 per Team) if one is on the roster AND dispatchable. ok=false
 // when the Team configures no coordinator role, or its coordinator is opted out (paused/blocked) —
@@ -595,6 +688,13 @@ func (h *Handler) dispatchMentions(ctx context.Context, projectID string, auth A
 	// (bypassing D4, applying VoicesAllowedThisRound, assembling PartyContext) and returns true.
 	// On false the message is not a party facilitator post — fall through to the normal path.
 	if h.dispatchPartyMentions(ctx, projectID, auth, msg, roster) {
+		return
+	}
+	// ISI-5639 (ADR-0031 Ruling B): a human bare-party text post in a ≥2-eligible room with a coordinator
+	// routes to the sequenced facilitator (open/feed a session) instead of the legacy simultaneous
+	// broadcast — closing the ISI-5587 thundering-herd path at its root. On false (not a facilitator-route
+	// post, or the open failed) fall through to the unchanged broadcast / @-mention / direct dispatch.
+	if h.routeBarePartyToFacilitator(ctx, projectID, auth, msg, roster) {
 		return
 	}
 	DispatchMentionsFrom(ctx, h.dispatcher, roster, projectID, auth, msg)
