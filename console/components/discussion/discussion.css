@@ -900,3 +900,290 @@ a.ksq-ticket-chip:hover {
     top: 97px;
   }
 }
+
+/* ===========================================================================
+   ISI-5673 (ISI-5598 WS-C) — Discussions history panel + room layout.
+
+   The left "Discussions" rail lists the Project's threads (open-existing +
+   new-chat); `?thread={id}` in the URL drives which thread the room shows. The
+   panel is a self-contained adaptation of the ProjectsNavTree rail pattern
+   (ISI-4090) so it owns its active-row accent without depending on the
+   nav-scoped `.rail …` rules. Coexists with the ISI-5597/5623 room (sticky
+   composer dock + pinned roster) by nesting the existing `.ksq-room` inside a
+   new 3-column flex wrapper: rail │ (transcript + roster).
+   =========================================================================== */
+
+.ksq-roomlayout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  align-items: stretch;
+}
+.ksq-roomlayout__main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Panel shell — card surface matching the roster rail. */
+.ksq-dpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.ksq-dpanel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+}
+.ksq-dpanel__title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.ksq-dpanel__toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ksq-dpanel__toggle:hover {
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-2) 12%, transparent);
+}
+.ksq-dpanel__toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* New-chat affordance — full-width button; icon-only when collapsed. */
+.ksq-dpanel__new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ksq-dpanel__new:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.ksq-dpanel__new:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.ksq-dpanel__new-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.ksq-dpanel__draft-input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control);
+  background: var(--inset);
+  color: var(--text-hi);
+  font-size: 13px;
+}
+.ksq-dpanel__draft-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Honest states. */
+.ksq-dpanel__state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ksq-dpanel__state--muted {
+  opacity: 0.8;
+}
+.ksq-dpanel__spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--text-2) 40%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ksq-dpanel-spin 0.7s linear infinite;
+}
+@keyframes ksq-dpanel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ksq-dpanel__retry {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.ksq-dpanel__retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Thread rows. */
+.ksq-dpanel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ksq-dpanel__link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-control);
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1.25;
+}
+.ksq-dpanel__link:hover {
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-2) 12%, transparent);
+  text-decoration: none;
+}
+.ksq-dpanel__link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.ksq-dpanel__link[data-active] {
+  color: var(--text-hi);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent) 10%, var(--inset));
+}
+.ksq-dpanel__link[data-active]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.ksq-dpanel__rowtitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ksq-dpanel__rowts {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  opacity: 0.85;
+}
+.ksq-dpanel__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-running);
+}
+
+/* Collapsed icon-rail: ~52px strip of lettered tiles. */
+.ksq-dpanel[data-collapsed] {
+  align-items: stretch;
+}
+.ksq-dpanel__tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--text-2) 12%, transparent);
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 700;
+}
+.ksq-dpanel[data-collapsed] .ksq-dpanel__link {
+  justify-content: center;
+  padding: 6px;
+}
+.ksq-dpanel[data-collapsed] .ksq-dpanel__new {
+  justify-content: center;
+  padding: 7px;
+}
+
+/* Desktop ≥900px: the rail is a PINNED left column (mirror of the roster rail,
+   ISI-5623), beside the transcript+roster room. */
+@media (min-width: 900px) {
+  .ksq-roomlayout {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+  .ksq-dpanel {
+    flex: 0 0 244px;
+    position: sticky;
+    top: 16px;
+    align-self: flex-start;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+  }
+  .ksq-dpanel[data-collapsed] {
+    flex-basis: 52px;
+  }
+}
+/* 768–899px runs the desktop shell (taller stacked header); match the roster. */
+@media (min-width: 768px) and (max-width: 899px) {
+  .ksq-dpanel {
+    top: 97px;
+  }
+}
+
+/* Reduced motion: no caret/collapse motion, no spinner spin. */
+@media (prefers-reduced-motion: reduce) {
+  .ksq-dpanel__spinner {
+    animation: none;
+  }
+}

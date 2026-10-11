@@ -1,99 +1,219 @@
-// test/discussion/RoomClient.test.tsx — the Discussion route's room resolver.
-// Covers R1 empty-room bootstrap (auto-open the default General thread instead
-// of hanging on "Loading…"), first-thread adoption, the error state with
-// retry, and the racing-open re-list fallback.
+// Routing + new/open-chat coverage for the Discussion room client wrapper
+// (ISI-5673 / ISI-5598 WS-C): the active thread is driven by `?thread={id}`
+// (replacing the old hardcoded threads[0] pick); open-existing pushes the query;
+// new-chat POSTs a thread and selects it; the empty project bootstraps a thread.
+//
+// DiscussionRoom is mocked to a marker so these assertions stay on the wrapper's
+// thread-resolution + URL wiring, not the room's heavy load path.
 
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
+import type { DiscussionClient } from "@/lib/discussion/api";
 import type { Thread } from "@/lib/discussion/types";
 
-const { client } = vi.hoisted(() => ({
-  client: {
-    listThreads: vi.fn(),
-    openThread: vi.fn(),
-    searchMentions: vi.fn(),
-    getRoster: vi.fn(),
-  },
+// --- next/navigation: a controllable URL so router.push/replace are observable
+//     and the next render reads the updated ?thread param. -------------------
+const push = vi.fn((url: string) => {
+  params = new URLSearchParams(url.split("?")[1] ?? "");
+});
+const replace = vi.fn((url: string) => {
+  params = new URLSearchParams(url.split("?")[1] ?? "");
+});
+let params = new URLSearchParams();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push, replace }),
+  usePathname: () => "/projects/p1/discussion",
+  useSearchParams: () => params,
 }));
 
-vi.mock("@/lib/discussion/api", () => ({
-  createDiscussionClient: () => client,
-}));
+// DiscussionRoom → a marker echoing the threadId it was mounted with.
 vi.mock("@/components/discussion/DiscussionRoom", () => ({
   DiscussionRoom: ({ threadId }: { threadId: string }) => (
-    <div data-testid="discussion-room">{threadId}</div>
+    <div data-testid="mock-room">room:{threadId}</div>
   ),
 }));
 
 import { DiscussionRoomClient } from "@/app/(app)/projects/[projectId]/discussion/RoomClient";
 
-function thread(id: string): Thread {
+afterEach(cleanup);
+beforeEach(() => {
+  push.mockClear();
+  replace.mockClear();
+  params = new URLSearchParams();
+});
+
+function thread(id: string, title: string, createdAt: string): Thread {
   return {
     id,
     projectId: "p1",
     teamId: "t1",
-    title: id,
-    createdBy: "u",
-    createdAt: "2026-09-26T10:00:00Z",
-    messages: [],
-  } as Thread;
+    title,
+    createdBy: "alice",
+    createdAt,
+  };
 }
 
-afterEach(() => {
-  cleanup();
-  vi.clearAllMocks();
-});
+const THREADS = [
+  thread("newest", "Planning", "2026-10-12T11:30:00Z"),
+  thread("older", "Retro", "2026-10-10T12:00:00Z"),
+];
 
-describe("DiscussionRoomClient — room resolution", () => {
-  it("adopts the first existing thread", async () => {
-    client.listThreads.mockResolvedValue([thread("th-1"), thread("th-2")]);
-    render(<DiscussionRoomClient projectId="p1" />);
+function stubClient(over: Partial<DiscussionClient> = {}): DiscussionClient {
+  return {
+    listThreads: vi.fn(async () => THREADS),
+    openThread: vi.fn(async (_p, input) =>
+      thread("fresh", input.title, "2026-10-12T12:00:00Z"),
+    ),
+    getRoster: vi.fn(async () => []),
+    searchMentions: vi.fn(async () => []),
+    ...over,
+  } as unknown as DiscussionClient;
+}
+
+const noOverview = () => Promise.resolve({ ok: false } as Response);
+
+function renderClient(client: DiscussionClient) {
+  return render(
+    <DiscussionRoomClient
+      projectId="p1"
+      client={client}
+      loadOverview={noOverview}
+    />,
+  );
+}
+
+describe("<DiscussionRoomClient> — ISI-5673 routing", () => {
+  it("with no ?thread, selects the newest thread and canonicalizes the URL", async () => {
+    renderClient(stubClient());
     await waitFor(() =>
-      expect(screen.getByTestId("discussion-room").textContent).toBe("th-1"),
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:newest"),
     );
-    expect(client.openThread).not.toHaveBeenCalled();
+    // The URL is pinned to the resolved thread (replace — no history entry).
+    expect(replace).toHaveBeenCalledWith(
+      "/projects/p1/discussion?thread=newest",
+      { scroll: false },
+    );
   });
 
-  it("auto-opens the default General thread when the room is empty (R1 bootstrap)", async () => {
-    client.listThreads.mockResolvedValue([]);
-    client.openThread.mockResolvedValue(thread("th-new"));
-    render(<DiscussionRoomClient projectId="p1" />);
+  it("honours a ?thread param pointing at a non-first thread", async () => {
+    params = new URLSearchParams("thread=older");
+    renderClient(stubClient());
     await waitFor(() =>
-      expect(screen.getByTestId("discussion-room").textContent).toBe("th-new"),
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:older"),
     );
-    expect(client.openThread).toHaveBeenCalledWith("p1", {
-      title: "General",
-      body: expect.stringContaining("discussion room"),
+    // Already canonical → no replace churn.
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("open-existing: clicking a row pushes ?thread and loads that thread", async () => {
+    const { rerender } = renderClient(stubClient());
+    await waitFor(() => screen.getByTestId("discussions-row-older"));
+    fireEvent.click(screen.getByTestId("discussions-row-older"));
+    expect(push).toHaveBeenCalledWith(
+      "/projects/p1/discussion?thread=older",
+      { scroll: false },
+    );
+    // The push updated the URL; the next render shows the selected thread.
+    rerender(
+      <DiscussionRoomClient
+        projectId="p1"
+        client={stubClient()}
+        loadOverview={noOverview}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:older"),
+    );
+  });
+
+  it("new-chat: commits a POST with the typed title and selects the new thread", async () => {
+    const client = stubClient();
+    renderClient(client);
+    await waitFor(() => screen.getByTestId("discussions-new-chat"));
+    fireEvent.click(screen.getByTestId("discussions-new-chat"));
+    fireEvent.change(screen.getByTestId("discussions-new-chat-input"), {
+      target: { value: "Release prep" },
     });
+    fireEvent.keyDown(screen.getByTestId("discussions-new-chat-input"), {
+      key: "Enter",
+    });
+    await waitFor(() =>
+      expect(client.openThread).toHaveBeenCalledWith("p1", {
+        title: "Release prep",
+        body: expect.any(String),
+      }),
+    );
+    await waitFor(() =>
+      expect(push).toHaveBeenCalledWith(
+        "/projects/p1/discussion?thread=fresh",
+        { scroll: false },
+      ),
+    );
+  });
+
+  it("empty project: bootstraps the default thread via openThread", async () => {
+    const client = stubClient({
+      listThreads: vi.fn(async () => [] as Thread[]),
+      openThread: vi.fn(async () =>
+        thread("general", "General", "2026-10-12T12:00:00Z"),
+      ),
+    });
+    renderClient(client);
+    await waitFor(() =>
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:general"),
+    );
+    expect(client.openThread).toHaveBeenCalledWith(
+      "p1",
+      expect.objectContaining({ title: "General" }),
+    );
+  });
+
+  it("surfaces a list-read failure as the panel error state", async () => {
+    const client = stubClient({
+      listThreads: vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    });
+    renderClient(client);
+    await waitFor(() =>
+      expect(screen.getByTestId("discussions-panel-error")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("room-resolve-error")).toBeTruthy();
   });
 
   it("re-lists and adopts when a racing open already created the thread", async () => {
-    client.listThreads
+    const listThreads = vi
+      .fn<DiscussionClient["listThreads"]>()
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([thread("th-race")]);
-    client.openThread.mockRejectedValue(new Error("conflict"));
-    render(<DiscussionRoomClient projectId="p1" />);
+      .mockResolvedValueOnce([thread("race", "Race", "2026-10-12T12:00:00Z")]);
+    const client = stubClient({
+      listThreads,
+      openThread: vi.fn(async () => {
+        throw new Error("conflict");
+      }),
+    });
+    renderClient(client);
     await waitFor(() =>
-      expect(screen.getByTestId("discussion-room").textContent).toBe("th-race"),
-    );
-  });
-
-  it("shows an error with retry instead of an infinite Loading… when listing fails", async () => {
-    client.listThreads.mockRejectedValue(new Error("boom"));
-    render(<DiscussionRoomClient projectId="p1" />);
-    await waitFor(() => screen.getByTestId("room-resolve-error"));
-
-    client.listThreads.mockResolvedValue([thread("th-back")]);
-    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
-    await waitFor(() =>
-      expect(screen.getByTestId("discussion-room").textContent).toBe("th-back"),
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:race"),
     );
   });
 
   it("errors when the room is empty and the auto-open cannot complete", async () => {
-    client.listThreads.mockResolvedValue([]);
-    client.openThread.mockRejectedValue(new Error("down"));
-    render(<DiscussionRoomClient projectId="p1" />);
-    await waitFor(() => screen.getByTestId("room-resolve-error"));
+    const client = stubClient({
+      listThreads: vi.fn(async () => [] as Thread[]),
+      openThread: vi.fn(async () => {
+        throw new Error("down");
+      }),
+    });
+    renderClient(client);
+    await waitFor(() =>
+      expect(screen.getByTestId("room-resolve-error")).toBeTruthy(),
+    );
   });
 });
