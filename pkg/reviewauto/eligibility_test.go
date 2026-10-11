@@ -19,12 +19,16 @@ package reviewauto
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 )
@@ -205,5 +209,53 @@ func TestEligibleReviewers_NoTeamIsEmptyNotError(t *testing.T) {
 	}
 	if len(refs) != 0 {
 		t.Fatalf("want empty roster, got %+v", refs)
+	}
+}
+
+// --- ISI-5666: the SHIPPED roles must agree with D5 so the reviewer dropdown is
+// not empty by construction. This decodes the actual example Role manifests and
+// asserts, against the SAME predicate the apiserver dropdown and the write-time
+// 422 use, that exactly the dedicated Code Reviewer role is code_review-capable
+// and every other role stays non-capable (guarding the TRAP: naively phase-
+// binding a non-reviewer role here would narrow its E4 dispatch).
+func TestShippedBmadRolesMatchD5Capability(t *testing.T) {
+	// Repo-root-relative: pkg/reviewauto -> ../.. -> examples/bmad-team.
+	raw, err := os.ReadFile(filepath.Join("..", "..", "examples", "bmad-team", "05-roles.yaml"))
+	if err != nil {
+		t.Fatalf("read bmad-team roles manifest: %v", err)
+	}
+
+	// The role that MUST be code_review-capable so its agent (amelia, the
+	// dedicated Code Reviewer) is surfaced by EligibleReviewers.
+	const reviewerRole = "code-reviewer"
+
+	capable := map[string]bool{}
+	for _, doc := range strings.Split(string(raw), "\n---") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var role ksquadv1.Role
+		if err := yaml.Unmarshal([]byte(doc), &role); err != nil {
+			t.Fatalf("decode Role doc: %v\n---\n%s", err, doc)
+		}
+		if role.Kind != "" && role.Kind != "Role" {
+			continue // skip any non-Role document defensively
+		}
+		if role.Name == "" {
+			continue
+		}
+		capable[role.Name] = RoleCodeReviewCapable(&role)
+	}
+
+	if len(capable) == 0 {
+		t.Fatal("decoded no Role documents from the manifest")
+	}
+	if !capable[reviewerRole] {
+		t.Fatalf("role %q must declare activePhases:[code_review] so the reviewer dropdown is non-empty (D5)", reviewerRole)
+	}
+	for name, isCapable := range capable {
+		if name != reviewerRole && isCapable {
+			t.Fatalf("only %q should be code_review-capable, but %q also is — phase-binding a non-reviewer role narrows its E4 dispatch (ISI-5666 TRAP)", reviewerRole, name)
+		}
 	}
 }
