@@ -279,13 +279,29 @@ func TestFacilitatorRoundDirective_Content(t *testing.T) {
 		"hard-caps the round at 3 voices",
 		"Rotate",
 		"@alice, @bob",
-		"work_item_create + work_item_assign",
+		// ADR-0031 Ruling A §3.1 — the coordinator posts ONE @-mention reply the server sequences,
+		// NOT a work item per voice. Pin the sequenced-turn instruction.
+		"posting ONE reply",
+		"ORDER they should speak",
+		"ONE VOICE AT A TIME",
+		"Do NOT create work items",
 		"Do NOT paraphrase",
 		"PASS in one sentence",
 		"[party] facilitator round=2/3 voiceCap=3",
+		"dispatch=sequential",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("round directive missing %q\n---\n%s", want, body)
+		}
+	}
+	// The stale ADR-0027 PARALLEL fan-out instruction must be gone — if the coordinator is told to
+	// dispatch one work item per voice it starts the whole round at once and bypasses the C1 advancer.
+	for _, forbidden := range []string{
+		"work_item_create + work_item_assign",
+		"one work item per voice",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("round directive must not carry the old parallel instruction %q\n---\n%s", forbidden, body)
 		}
 	}
 }
