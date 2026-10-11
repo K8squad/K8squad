@@ -249,3 +249,45 @@ describe("createDiscussionClient — v2 wire (ISI-4929 / ISI-4926)", () => {
     expect(agents).toEqual([]);
   });
 });
+
+describe("createDiscussionClient — party sessions (ISI-5617 / ISI-5613 Gap 2)", () => {
+  it("getActivePartySession GETs …/party-sessions/active and 404 → null", async () => {
+    const { fetchImpl, urls } = recorder(404, null);
+    const client = createDiscussionClient(fetchImpl);
+    const ps = await client.getActivePartySession("ns/proj", "th-1");
+    expect(urls[0]).toBe(
+      "/api/projects/ns%2Fproj/discussion/threads/th-1/party-sessions/active",
+    );
+    expect(ps).toBeNull();
+  });
+
+  it("listPartySessions (default) hits the bare collection", async () => {
+    const { fetchImpl, urls, inits } = recorder(200, []);
+    const client = createDiscussionClient(fetchImpl);
+    await client.listPartySessions("ns/proj", "th-1");
+    expect(urls[0]).toBe(
+      "/api/projects/ns%2Fproj/discussion/threads/th-1/party-sessions",
+    );
+    expect(inits[0]?.method).toBe("GET");
+  });
+
+  it("listPartySessions(includeClosed) forwards the query and returns the rows", async () => {
+    const rows = [{ id: "s1", phase: "closed" }];
+    const { fetchImpl, urls } = recorder(200, rows);
+    const client = createDiscussionClient(fetchImpl);
+    const got = await client.listPartySessions("ns/proj", "th-1", true);
+    expect(urls[0]).toBe(
+      "/api/projects/ns%2Fproj/discussion/threads/th-1/party-sessions?includeClosed=true",
+    );
+    expect(got).toEqual(rows);
+  });
+
+  it("listPartySessions collapses a deny/404 and a null body to []", async () => {
+    expect(
+      await createDiscussionClient(stub(404, null)).listPartySessions("p", "t", true),
+    ).toEqual([]);
+    expect(
+      await createDiscussionClient(stub(200, null)).listPartySessions("p", "t"),
+    ).toEqual([]);
+  });
+});
