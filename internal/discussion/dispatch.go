@@ -130,13 +130,15 @@ const (
 	// that @-mentions the whole squad dispatches at most this many agents. Excess mentions are dropped.
 	maxMentionDispatchPerMessage = 5
 
-	// maxBroadcastDispatchPerMessage caps a whole-room broadcast (ISI-5265): a HUMAN party post with no
-	// @-mention wakes every eligible roster agent, and the 5-mention cap is too small for a full squad.
-	// This is sized for a realistic squad room and stays bounded — a broadcast that would exceed it
-	// dispatches the first this-many and counts the rest via `dropped` (a non-silent truncation the
-	// caller logs), never fanning out unbounded. Only the human hop-0 broadcast path uses this cap;
-	// an explicit @-mention party post still rides the smaller maxMentionDispatchPerMessage.
-	maxBroadcastDispatchPerMessage = 25
+	// The whole-room broadcast cap (ISI-5265): a HUMAN party post with no @-mention wakes every eligible
+	// roster agent, and the 5-mention cap is too small for a full squad. ISI-5670 lowers this to the HARD
+	// per-discussion concurrent-run ceiling (discussion.MaxConcurrentRunsPerDiscussion, default 4) — the
+	// same limit the run-minting backstop enforces — so a legacy/degraded broadcast never even SELECTS
+	// more targets than the discussion is allowed to run in parallel. A broadcast that would exceed it
+	// dispatches the first this-many and counts the rest via `dropped` (a non-silent truncation the caller
+	// logs), never fanning out unbounded. Only the human hop-0 broadcast path uses this cap; an explicit
+	// @-mention party post still rides the smaller maxMentionDispatchPerMessage. Read at resolve time via
+	// MaxConcurrentRunsPerDiscussion() so the env/Secret override applies here too.
 
 	// dispatchPayloadKey is the message-payload field carrying the in-band loop-guard hop counter
 	// (plan: "a per-thread hop counter in payload"). Human posts omit it (hop 0); a dispatched run
@@ -509,7 +511,7 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 	// `dropped`, never dispatched silently (ISI-5265 req 4).
 	dispatchCap := maxMentionDispatchPerMessage
 	if broadcast {
-		dispatchCap = maxBroadcastDispatchPerMessage
+		dispatchCap = MaxConcurrentRunsPerDiscussion() // ISI-5670: the per-discussion concurrent-run ceiling
 	}
 	for _, agent := range resolved {
 		if len(targets) >= dispatchCap {

@@ -35,7 +35,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -92,6 +94,13 @@ type ledger interface {
 	Release(ctx context.Context, messageID uuid.UUID, agentName string) error
 	// HopForDispatchedRun implements discussion.ReplyHopResolver (see NewReplyHopResolver).
 	HopForDispatchedRun(ctx context.Context, runID string) (hop int, ok bool, err error)
+	// CountInFlight reports how many runs are currently in flight for a discussion thread (ISI-5670): the
+	// mention_dispatch rows whose minted work item has NOT yet reached a terminal a2a settle marker and
+	// whose dispatch is younger than `staleness` (so a dead run that never settled eventually frees its
+	// slot instead of wedging the discussion at the cap forever — the same stuck-run reasoning as the
+	// §3.3 RoundVoiceSettlement timeout). This is the count the per-discussion concurrent-run backstop
+	// gates on, independent of endpoint gating and voices-per-round.
+	CountInFlight(ctx context.Context, threadID uuid.UUID, staleness time.Duration) (int, error)
 }
 
 // dispatcher implements discussion.MentionDispatcher — the run-minting half.
@@ -101,6 +110,17 @@ type dispatcher struct {
 	refs       ProjectResolver
 	ledger     ledger
 	markSource func(ctx context.Context, workItemID string) error // flips coord.work_item.source → 'discussion'
+
+	// maxInFlight is the HARD per-discussion concurrent-run ceiling (ISI-5670). Before minting, the
+	// dispatcher counts the thread's in-flight runs and sheds this one if the thread is already at the
+	// ceiling — the backstop that holds no matter which dispatch path (party voice, @-mention, or the
+	// legacy broadcast arm) funnels through here, independent of the per-endpoint FIFO gate and the
+	// voices-per-round bound. <=0 disables the cap (unit tests that pre-date it leave the zero value).
+	maxInFlight int
+	// inFlightStaleness bounds how long a run that never wrote a settle marker still counts against the
+	// cap, so a dead run cannot wedge the discussion at the ceiling forever (mirrors the advancer's §3.3
+	// stuck-voice timeout). Zero ⇒ the default (discussion.DefaultPartyVoiceSettleTimeout).
+	inFlightStaleness time.Duration
 }
 
 // New builds the run-minting implementation of discussion.MentionDispatcher, wired to the trusted board
@@ -109,11 +129,13 @@ type dispatcher struct {
 // surface via memory.NewDiscussionDispatch.
 func New(create WorkItemCreator, dispatch WorkItemDispatcher, refs ProjectResolver, db *sql.DB) discussion.MentionDispatcher {
 	return &dispatcher{
-		create:     create,
-		dispatch:   dispatch,
-		refs:       refs,
-		ledger:     pgLedger{db: db},
-		markSource: markSourceDiscussion(db),
+		create:            create,
+		dispatch:          dispatch,
+		refs:              refs,
+		ledger:            pgLedger{db: db},
+		markSource:        markSourceDiscussion(db),
+		maxInFlight:       discussion.MaxConcurrentRunsPerDiscussion(), // ISI-5670: env/Secret-configurable, default 4
+		inFlightStaleness: discussion.DefaultPartyVoiceSettleTimeout,
 	}
 }
 
@@ -168,6 +190,31 @@ func (r *ProposalThreadResolver) ThreadForDispatchedRun(ctx context.Context, run
 func (m *dispatcher) DispatchMention(ctx context.Context, d discussion.MentionDispatch) error {
 	if d.AgentName == "" {
 		return fmt.Errorf("mention dispatch: empty agent name")
+	}
+
+	// (0) HARD per-discussion concurrent-run backstop (ISI-5670). BEFORE claiming/minting, shed this
+	// dispatch if the thread is already at the ceiling — the one guarantee that holds across EVERY path
+	// (party voice, @-mention, legacy broadcast arm), independent of the per-endpoint FIFO gate and the
+	// voices-per-round bound. Checked before Claim so a shed dispatch leaves no ledger row to churn; the
+	// broadcast loop calls DispatchMention sequentially, so each successive call sees the prior mint's
+	// freshly-committed row and the count is accurate. A count error is treated as "do not mint" (fail
+	// closed): the backstop's whole job is to refuse to fan out when it cannot prove headroom.
+	if m.maxInFlight > 0 && d.ThreadID != uuid.Nil {
+		staleness := m.inFlightStaleness
+		if staleness <= 0 {
+			staleness = discussion.DefaultPartyVoiceSettleTimeout
+		}
+		inflight, err := m.ledger.CountInFlight(ctx, d.ThreadID, staleness)
+		if err != nil {
+			return fmt.Errorf("mention dispatch: count in-flight (thread %s): %w", d.ThreadID, err)
+		}
+		if inflight >= m.maxInFlight {
+			// Non-silent shed (never a silent truncation): a discipline the broadcast fan-out cap shares.
+			slog.WarnContext(ctx, "discussion: per-discussion concurrent-run cap reached — dispatch shed",
+				"threadID", d.ThreadID, "agent", d.AgentName, "messageID", d.MessageID,
+				"inFlight", inflight, "cap", m.maxInFlight)
+			return nil
+		}
 	}
 
 	// (1) Idempotency claim — first writer wins on (messageId, agentName). A redelivery no-ops here, so
@@ -362,6 +409,39 @@ func (l pgLedger) Release(ctx context.Context, messageID uuid.UUID, agentName st
 		DELETE FROM discussion.mention_dispatch WHERE message_id = $1 AND agent_name = $2`,
 		messageID, agentName)
 	return err
+}
+
+// CountInFlight counts a discussion thread's currently in-flight runs (ISI-5670): mention_dispatch rows
+// for the thread whose minted work item has NO settled a2a follow yet (coord.a2a_dispatch.settled_at IS
+// NULL — the SAME terminal signal RoundVoiceSettlement reads) AND whose dispatch is younger than
+// `staleness` (so a run that died without ever writing a settle marker eventually stops counting, rather
+// than wedging the discussion at the cap forever). A row claimed but not yet bound (work_item_id NULL)
+// counts as in-flight — conservative, so a concurrent fan-out cannot slip past the ceiling. This is a
+// cross-schema READ only (discussion ledger → coord settle marker, the ADR-0020 S3 join direction); no
+// custody is read or moved, so the ADR-0019 fence is untouched.
+func (l pgLedger) CountInFlight(ctx context.Context, threadID uuid.UUID, staleness time.Duration) (int, error) {
+	secs := staleness.Seconds()
+	if secs < 0 {
+		secs = 0
+	}
+	var n int
+	err := l.db.QueryRowContext(ctx, `
+		SELECT count(*)
+		FROM discussion.mention_dispatch md
+		LEFT JOIN LATERAL (
+		    SELECT max(settled_at) AS settled_at
+		    FROM coord.a2a_dispatch
+		    WHERE work_item_id = md.work_item_id
+		) ad ON md.work_item_id IS NOT NULL
+		WHERE md.thread_id = $1
+		  AND ad.settled_at IS NULL
+		  AND md.created_at >= now() - make_interval(secs => $2)`,
+		threadID, secs,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count in-flight runs for thread %s: %w", threadID, err)
+	}
+	return n, nil
 }
 
 func (l pgLedger) HopForDispatchedRun(ctx context.Context, runID string) (int, bool, error) {
