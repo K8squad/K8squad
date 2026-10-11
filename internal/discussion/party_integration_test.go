@@ -65,6 +65,7 @@ func openPartyTestDB(t *testing.T) (*Store, func()) {
 		"0034_discussion_party_round_facilitator.sql",
 		"0035_discussion_party_round_voices.sql",
 		"0035_discussion_party_round.sql", // ISI-5616: SetRoundFacilitatorMessage now writes the party_round ledger
+		"0036_discussion_reset.sql",       // ISI-5672: kind='reset' widening for the /reset reader-filter tests
 	} {
 		applyOneMigration(t, ctx, db, name)
 	}

@@ -141,6 +141,10 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/threads/{threadId}", h.getThread).Methods(http.MethodGet)                             // 3. get thread + messages
 	r.HandleFunc("/threads/{threadId}/messages", h.postMessage).Methods(http.MethodPost)                 // 4. post / reply
 	r.HandleFunc("/threads/{threadId}/messages/{messageId}", h.retractMessage).Methods(http.MethodPatch) // 5. soft-retract
+	// ISI-5672 (ADR-0030 Option 2): /reset appends a human-only kind='reset' marker that clears the
+	// visible transcript (reader-filtered post-marker) and closes any active party-session. The thread
+	// id is unchanged (?thread stays stable, §(d)).
+	r.HandleFunc("/threads/{threadId}/reset", h.resetThread).Methods(http.MethodPost)
 	// ISI-4928 (plan §4.4): the inert action-proposal card. Any authenticated principal may
 	// propose; the confirm/dismiss shells (apiserver) are what gate execution.
 	r.HandleFunc("/threads/{threadId}/proposals", h.postProposal).Methods(http.MethodPost)
@@ -246,7 +250,7 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 		errors.Is(err, ErrInvalidProposalPayload), errors.Is(err, ErrInvalidDecisionPayload),
 		errors.Is(err, ErrRejectReasonRequired), errors.Is(err, ErrInvalidPartyBudget):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrNotAuthor), errors.Is(err, ErrPartyStartForbidden):
+	case errors.Is(err, ErrNotAuthor), errors.Is(err, ErrPartyStartForbidden), errors.Is(err, ErrResetForbidden):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, ErrAlreadyRetracted), errors.Is(err, ErrProposalNotProposed),
 		errors.Is(err, ErrDecisionRequestNotOpen), errors.Is(err, ErrPartySessionNotActive):
@@ -449,6 +453,58 @@ func (h *Handler) retractMessage(w http.ResponseWriter, r *http.Request) {
 		h.roomStream.PublishMessageDeleted(projectID, messageID.String())
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "retracted"})
+}
+
+// ============================================================================
+// Reset endpoint (ISI-5672, ADR-0030 Option 2 "reset-marker")
+// ============================================================================
+
+// resetThreadReq carries only an OPTIONAL human-supplied reason stored on the marker payload. No
+// author_* fields (AC3) — the marker is server-stamped from the authenticated context.
+type resetThreadReq struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// resetThread answers POST /threads/{threadId}/reset: it appends a server-stamped kind='reset' marker
+// that clears the visible transcript (ADR-0030 Option 2 — the reader hides everything at/before the
+// marker) and closes any active party-session in the thread, atomically. Human-only: an agent principal
+// is 403 (ErrResetForbidden). The thread id is UNCHANGED, so ?thread stays stable (§(d)). The committed
+// marker is echoed onto the live SSE bus; the client contract is to CLEAR its local transcript on the
+// kind='reset' event (never render it as a bubble), so every open Room clears without a reload (§(c)).
+func (h *Handler) resetThread(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
+	if !ok {
+		return
+	}
+	// Only an optional reason is read from the body — any author supplied there is ignored (AC3). An
+	// empty/absent body is fine: reset needs no payload, so a decode miss is tolerated, not a 400.
+	var req resetThreadReq
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	marker, hidden, err := h.store.ResetThread(r.Context(), projectID, teamID, threadID, auth, req.Reason)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	if h.roomStream != nil {
+		h.roomStream.PublishMessageCreated(projectID, marker)
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"status":      "reset",
+		"marker":      marker,
+		"resetAt":     marker.CreatedAt,
+		"hiddenCount": hidden,
+	})
 }
 
 // ============================================================================
