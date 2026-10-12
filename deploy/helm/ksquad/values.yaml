@@ -67,6 +67,25 @@ operator:
   sandbox:
     cpuRequest: ""
     memoryRequest: ""
+    # ISI-5686: pin the sandbox/shim runtime image so `helm upgrade` re-asserts
+    # the z.ai egress fix instead of reverting it. The ISI-5477 proxy-injection
+    # and ISI-5503 opencode.json fixes ship INSIDE the shim binary this image
+    # carries, so the out-of-band `kubectl set env KSQUAD_SANDBOX_IMAGE` overlay
+    # that hotfixed k8squad-test (ISI-5683) is wiped on the next Helm release —
+    # KSQUAD_SANDBOX_IMAGE was previously not a chart knob at all. Set `image`
+    # here (in the deploy-host values) to make the pin durable. Rendered as
+    # KSQUAD_SANDBOX_IMAGE on the operator: the default sandbox image for every
+    # runtime type (pkg/controller/rundrive RuntimeImagesFromEnv). Empty = unset
+    # (the warm pool stays inert and the image must resolve via the AgentRuntime
+    # chain). Pin a DIGEST, not a tag, and point at the cluster's own registry
+    # mirror when ghcr is proxy-cached (k8squad-test pulls shim refs from Harbor
+    # 10.0.0.13, e.g. 10.0.0.13/ghcr/k8squad/ksquad-shim-opencode@sha256:<digest>).
+    image: ""
+    # Per-runtime-type overrides keyed by AgentRuntime.spec.type
+    # (openclaw | claude-code | opencode | hermes | codex). Each entry renders
+    # KSQUAD_SANDBOX_IMAGE_<TYPE> (uppercased, '-' → '_'), which the operator
+    # prefers over `image` for that flavor. Empty map = default `image` only.
+    imagesByType: {}
     # ISI-5477 (ISI-5473 gap #3): per-squad egress forward proxy for the
     # sandbox agent's EXTERNAL model traffic. Rendered as the NAMESPACED
     # KSQUAD_SANDBOX_{HTTPS,HTTP,NO}_PROXY env on the operator; the shim reads
