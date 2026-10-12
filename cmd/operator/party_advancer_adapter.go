@@ -9,8 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/coord"
 )
@@ -50,35 +54,92 @@ func (d coordAdvancerDispatcher) RequestDispatch(ctx context.Context, in discuss
 	return err
 }
 
-// teamCoordinatorRoster implements discussion.AdvancerRosterReader using the Team-CR informer cache.
-// It resolves the Team's Coordinator-role agent by listing agents and finding the coordinator. Since
-// the informer cache (coord.TeamAgentResolver) only carries agent names (not roles), this adapter
-// uses a fallback: it tries the discussion OrgReader projection if available, else picks the first
-// agent in the team as a degraded default (best-effort for the MVP).
+// teamCoordinatorRoster implements discussion.AdvancerRosterReader by resolving the REAL Coordinator-role
+// agent of a Team from the CRs (ISI-5669 WS1, root-cause B). It reads the Team's agent composition, each
+// agent's referenced Role, and the Role.Spec.Coordinator flag through a cache-backed client.Reader (the
+// operator's mgr.GetClient()) — the exact Agent→Role→coordinator resolution the apiserver's roster
+// projection does (internal/apiserver/fleetlist.go Agents, cmd/apiserver hasCoordinatorRole).
+//
+// Why the flag matters: the advancer dispatches each round's facilitator run to whatever name this
+// returns. The mint-gate that turns the facilitator's @-mention post into a sequenced round
+// (internal/discussion/party_dispatch.go coordinatorOf) ONLY fires when the posting agent is the Team's
+// real Coordinator-role agent. The prior implementation returned the FIRST agent (the informer cache
+// carried names only), so the facilitator ran as a non-coordinator, coordinatorOf rejected its post, and
+// the handler fell through to the parallel DispatchMentionsFrom broadcast — the exact N-way fan-out
+// ISI-5662 reported. Resolving the real coordinator keeps the two seams in agreement so the round
+// sequences.
+//
+// No-coordinator-in-room case (fail safe, not silent broadcast): a Team with no Coordinator-role agent
+// returns ok=false, which the advancer (mintRound) logs and declines to mint — the session closes on the
+// facilitator-post timeout rather than dispatching the facilitator to an arbitrary agent whose post would
+// then broadcast. A dangling/absent Team uid is a hard error, surfaced not swallowed.
 type teamCoordinatorRoster struct {
-	resolver coord.TeamAgentResolver
+	reader client.Reader
 }
 
-// CoordinatorForTeam returns the coordinator agent name for teamID. It uses the Team-CR cache which
-// carries agent names but not the coordinator role flag, so it falls back to the first agent in the
-// team as a degrade. A more precise implementation would read the coordinator role from the Team CR
-// spec directly — that is a follow-up improvement once party mode is live.
-func (r teamCoordinatorRoster) CoordinatorForTeam(ctx context.Context, teamID string) (string, bool, error) {
-	if r.resolver == nil {
-		return "", false, errors.New("party advancer: teamCoordinatorRoster: nil resolver")
+// CoordinatorForTeam returns the name of teamUID's Coordinator-role agent. It lists the Team by uid for
+// its namespace + agent refs, indexes the namespace's Coordinator-role names, and returns the first team
+// agent whose referenced Role carries Coordinator=true (team @-mention / roster order). ok=false with a
+// nil error means the Team configures no Coordinator-role agent — an explicit fail-safe the caller treats
+// as "do not mint", never a degrade to an arbitrary agent. A uid that resolves to no Team CR is an error.
+func (r teamCoordinatorRoster) CoordinatorForTeam(ctx context.Context, teamUID string) (string, bool, error) {
+	if r.reader == nil {
+		return "", false, errors.New("party advancer: teamCoordinatorRoster: nil reader")
 	}
-	agents, err := r.resolver.TeamAgents(ctx, teamID)
-	if err != nil {
-		return "", false, fmt.Errorf("party advancer: TeamAgents(%q): %w", teamID, err)
+	if strings.TrimSpace(teamUID) == "" {
+		return "", false, errors.New("party advancer: teamCoordinatorRoster: empty team uid")
 	}
-	// The Team-CR informer cache doesn't surface which agent is the Coordinator role — return the
-	// first dispatchable agent as a best-effort degrade. This is intentionally imprecise: in a
-	// well-configured team the coordinator is typically the first/only special agent. A follow-up
-	// will expose the Coordinator flag from the Team CR spec directly (ISI-5615 known gap).
-	for _, name := range agents {
-		if strings.TrimSpace(name) != "" {
-			return name, true, nil
+
+	var teams ksquadv1.TeamList
+	if err := r.reader.List(ctx, &teams); err != nil {
+		return "", false, fmt.Errorf("party advancer: list teams: %w", err)
+	}
+	var team *ksquadv1.Team
+	for i := range teams.Items {
+		if string(teams.Items[i].UID) == teamUID {
+			team = &teams.Items[i]
+			break
 		}
 	}
+	if team == nil {
+		return "", false, fmt.Errorf("party advancer: team uid %s resolves to no Team CR", teamUID)
+	}
+
+	// Index the Coordinator-role names in the Team's namespace (ISI-5283 — the Team-admission webhook
+	// enforces ≤1 Coordinator role per Team, so at most one agent carries it). A dangling roleRef simply
+	// resolves to non-coordinator; the Role's own guard owns rejection, this never fabricates a badge.
+	var roles ksquadv1.RoleList
+	if err := r.reader.List(ctx, &roles, client.InNamespace(team.Namespace)); err != nil {
+		return "", false, fmt.Errorf("party advancer: list roles in %q: %w", team.Namespace, err)
+	}
+	coordinatorRole := make(map[string]bool, len(roles.Items))
+	for i := range roles.Items {
+		if roles.Items[i].Spec.Coordinator {
+			coordinatorRole[roles.Items[i].Name] = true
+		}
+	}
+
+	var agents ksquadv1.AgentList
+	if err := r.reader.List(ctx, &agents, client.InNamespace(team.Namespace)); err != nil {
+		return "", false, fmt.Errorf("party advancer: list agents in %q: %w", team.Namespace, err)
+	}
+	agentRole := make(map[string]string, len(agents.Items))
+	for i := range agents.Items {
+		agentRole[agents.Items[i].Name] = agents.Items[i].Spec.RoleRef.Name
+	}
+
+	// Walk the Team's agents in roster order; the first whose Role is the Coordinator role is the one the
+	// mint-gate will recognise as the facilitator author.
+	for _, ref := range team.Spec.Agents {
+		if ref.Name == "" {
+			continue
+		}
+		if role := agentRole[ref.Name]; role != "" && coordinatorRole[role] {
+			return ref.Name, true, nil
+		}
+	}
+
+	slog.WarnContext(ctx, "party advancer: team has no Coordinator-role agent — not minting facilitator (fail safe, no broadcast)",
+		"teamUID", teamUID, "namespace", team.Namespace, "agents", len(team.Spec.Agents))
 	return "", false, nil
 }

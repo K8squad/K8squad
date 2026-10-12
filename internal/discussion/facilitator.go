@@ -333,9 +333,14 @@ type FacilitatorRound struct {
 	Topic          string    // the raised topic, verbatim, for the brief
 }
 
-// FacilitatorRoundDirective renders the round-N facilitator brief (ADR-0027 §3.2). It instructs the
-// Coordinator to read the thread, select up to VoiceCap relevant voices (rotation + always-include the
-// user-named + 1–2 complementary), and dispatch them — and states plainly that the server caps the
+// FacilitatorRoundDirective renders the round-N facilitator brief (ADR-0027 §3.2, narrowed by ADR-0031
+// Ruling A §3.1 to sequenced turns). It instructs the Coordinator to read the thread, select up to
+// VoiceCap relevant voices (rotation + always-include the user-named + 1–2 complementary), and announce
+// them as ONE @-mention reply to the discussion thread — NOT to dispatch a work item per voice. Under
+// ADR-0031 the server sequences that roster STRICTLY one voice in flight at a time (the advancer walks
+// RoundVoices off the ADR-0020 settle markers, each turn reacting to the prior's freshly-landed reply),
+// so a work_item_create+assign-per-voice fan-out — the old ADR-0027 parallel instruction — would start
+// the whole round at once and bypass the sequencing entirely. It states plainly that the server caps the
 // round at VoiceCap voices (§3.3: the budget is enforced at the mint seam, the facilitator's count is
 // not trusted). It carries the liveliness mandate (§3 distilled from BMAD): never paraphrase the
 // agents; agents must disagree where warranted and may pass in one sentence.
@@ -356,12 +361,14 @@ func FacilitatorRoundDirective(d FacilitatorRound) string {
 	} else {
 		b.WriteString("  - Pick on relevance to the topic, plus 1–2 complementary voices for a real spread of views.\n")
 	}
-	b.WriteString("\nDispatch the selected voices (work_item_create + work_item_assign, as you do for a multi-mention), one work item per voice, pointing each at this thread.\n\n")
+	b.WriteString("\nAnnounce the round by posting ONE reply to THIS discussion thread that @-mentions the voices you selected, listed in the ORDER they should speak (lead voice first):\n")
+	b.WriteString("  - That single @-mention message is the ENTIRE action for this round. Do NOT create work items and do NOT assign the voices (no work_item_create / work_item_assign) — that would start the whole round at once.\n")
+	b.WriteString("  - The team answers STRICTLY ONE VOICE AT A TIME: the next agent is asked only after the previous one's reply has landed, so each reacts to what was just said. Order your @-mentions to put the voice that should open first.\n\n")
 	b.WriteString("Facilitation rules:\n")
 	b.WriteString("  - Do NOT paraphrase, merge, or summarise the agents' answers — the humans hear the agents directly, not your digest.\n")
 	b.WriteString("  - Tell each voice to disagree where warranted (no hedging to be polite) and to PASS in one sentence rather than manufacture an opinion.\n")
 	b.WriteString("  - You may add one short orchestrator note flagging a disagreement or who to bring in next — but never put words in an agent's mouth.\n")
-	fmt.Fprintf(&b, "\n[party] facilitator round=%d/%d voiceCap=%d\n", d.Round, d.MaxRounds, d.VoiceCap)
+	fmt.Fprintf(&b, "\n[party] facilitator round=%d/%d voiceCap=%d dispatch=sequential\n", d.Round, d.MaxRounds, d.VoiceCap)
 	return b.String()
 }
 

@@ -1468,7 +1468,11 @@ func main() {
 				Store:      discussion.NewStore(db),
 				Writer:     coordAdvancerWriter{store: partyWriteStore},
 				Dispatcher: coordAdvancerDispatcher{store: partyDispatchStore},
-				Roster:     teamCoordinatorRoster{resolver: partyTeamResolver},
+				// ISI-5669 WS1 (root-cause B) — resolve the REAL Coordinator-role agent from the CRs
+				// (Agent→Role→Coordinator flag), not the first team agent. The advancer dispatches the
+				// facilitator run to this name; the mint-gate (coordinatorOf) only sequences a round when
+				// the post's author IS the coordinator, so a wrong name falls through to parallel broadcast.
+				Roster: teamCoordinatorRoster{reader: mgr.GetClient()},
 				// ISI-5638 (ADR-0031 Ruling A §3.1) — sequential voice dispatch. The advancer walks the
 				// round's roster one turn at a time through the SAME @-mention run-minting path the apiserver
 				// wires (internal/mentiondispatch), over the coord create/dispatch stores the facilitator mint
