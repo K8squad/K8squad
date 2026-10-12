@@ -417,6 +417,15 @@ func optional(v string) *string {
 	return &v
 }
 
+// strVal is the inverse of optional: it flattens an optional identity pointer to a string ("" when nil),
+// for structured-log fields where a nil *string would print unhelpfully (ISI-5694 diagnostic).
+func strVal(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
