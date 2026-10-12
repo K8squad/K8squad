@@ -38,7 +38,14 @@ import {
   replaceTriggerFragment,
   type MentionTrigger,
 } from "@/lib/mentions";
+import {
+  matchSlashCommands,
+  resolveSlashCommand,
+  slashFragment,
+  type SlashCommand,
+} from "@/lib/discussion/slash";
 import { MentionPopover } from "./MentionPopover";
+import { SlashCommandMenu } from "./SlashCommandMenu";
 
 // The `@`-fragment matcher moved to the shared `lib/mentions` primitive (ISI-5159)
 // so the ticket composer reuses the exact same trigger semantics; re-exported here
@@ -64,6 +71,13 @@ export interface ComposerProps {
   directTargets?: readonly DirectTarget[];
   /** Mention search backing the `@` popover (ISI-4926 endpoint). */
   searchMentions?: (q: string) => Promise<MentionSuggestion[]>;
+  /**
+   * Slash-command handler (ISI-5674 WS-D). When wired, a leading `/` opens the
+   * command menu and a resolved command (e.g. `/reset`) is INTERCEPTED — passed
+   * here by name and NEVER posted as a literal message. Absent ⇒ no command menu
+   * and `/`-prefixed text posts verbatim (the pre-WS-D behaviour).
+   */
+  onCommand?: (name: string) => void;
 }
 
 const MENTION_DEBOUNCE_MS = 200;
@@ -74,6 +88,7 @@ export function Composer({
   placeholder,
   directTargets,
   searchMentions,
+  onCommand,
 }: ComposerProps) {
   const [body, setBody] = useState("");
   const [audience, setAudience] = useState<Audience>({ kind: "party" });
@@ -88,6 +103,14 @@ export function Composer({
   // Ticket links the `#` picker collected — carried into the outgoing payload
   // (a LINK, not a dispatch; ISI-5165 resolves/drops them server-side).
   const [refs, setRefs] = useState<TicketReference[]>([]);
+  // Slash-command menu (ISI-5674 WS-D): open while the body is a leading-`/`
+  // command context; `commandIndex` is the keyboard-highlighted row. Only when
+  // `onCommand` is wired — otherwise `/` text is ordinary and posts verbatim.
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [commandIndex, setCommandIndex] = useState(0);
+  const commands: SlashCommand[] = commandOpen
+    ? matchSlashCommands(slashFragment(body) ?? "")
+    : [];
   const caretRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -170,7 +193,63 @@ export function Composer({
     }
   };
 
+  // Intercept a resolved slash command (ISI-5674 WS-D): hand the name to the
+  // parent and clear the box — the command text is NEVER posted. Closes any open
+  // menu/popover and drops collected ticket refs (a `/reset` has none).
+  const runCommand = (cmd: SlashCommand) => {
+    if (!onCommand) return;
+    onCommand(cmd.name);
+    setBody("");
+    setRefs([]);
+    setCommandOpen(false);
+    setMentionOpen(false);
+    setFragment("");
+    textareaRef.current?.focus();
+  };
+
+  // Route a body change to the command menu (leading `/`) or the mention popover
+  // (`@`/`#`). The two are mutually exclusive: a command context is a LEADING
+  // slash with no space, so no `@`/`#` fragment can also be live.
+  const onBodyChange = (text: string, caret: number) => {
+    setBody(text);
+    if (onCommand && slashFragment(text) !== null) {
+      setCommandOpen(true);
+      setCommandIndex(0);
+      // A command context can't also be a mention fragment — close that popover.
+      setMentionOpen(false);
+      setFragment("");
+      return;
+    }
+    setCommandOpen(false);
+    syncMention(text, caret);
+  };
+
   const onBodyKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Command menu takes keyboard priority while open (ISI-5674 WS-D).
+    if (commandOpen) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setCommandOpen(false);
+        return;
+      }
+      if (commands.length === 0) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCommandIndex((i) => (i + 1) % commands.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCommandIndex((i) => (i - 1 + commands.length) % commands.length);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        runCommand(commands[commandIndex]);
+        return;
+      }
+      return;
+    }
     if (!mentionOpen) return;
     if (e.key === "Escape") {
       e.preventDefault();
@@ -195,11 +274,21 @@ export function Composer({
   };
 
   const submit = async () => {
+    // Intercept a bare slash command (e.g. `/reset`) BEFORE any post — it runs
+    // the command, never posts the literal text (ISI-5674 WS-D, plan §WS-D.1).
+    if (onCommand) {
+      const cmd = resolveSlashCommand(body);
+      if (cmd) {
+        runCommand(cmd);
+        return;
+      }
+    }
     if (!canSubmit(input)) return;
     await onPost(buildPostBody(input));
     setBody("");
     setRefs([]);
     setMentionOpen(false);
+    setCommandOpen(false);
   };
 
   return (
@@ -243,10 +332,9 @@ export function Composer({
             placeholder ?? (parentId ? "Reply…" : "Post to the room…")
           }
           value={body}
-          onChange={(e) => {
-            setBody(e.target.value);
-            syncMention(e.target.value, e.target.selectionStart ?? 0);
-          }}
+          onChange={(e) =>
+            onBodyChange(e.target.value, e.target.selectionStart ?? 0)
+          }
           onKeyDown={onBodyKeyDown}
         />
         <button
@@ -258,6 +346,14 @@ export function Composer({
           {parentId ? "Reply" : "Post"}
         </button>
       </div>
+      {commandOpen ? (
+        <SlashCommandMenu
+          commands={commands}
+          activeIndex={commandIndex}
+          onSelect={runCommand}
+          onDismiss={() => setCommandOpen(false)}
+        />
+      ) : null}
       {mentionOpen ? (
         <MentionPopover
           suggestions={suggestions}

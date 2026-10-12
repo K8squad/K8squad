@@ -5,7 +5,7 @@
 // that the server echo of a just-posted message (or an SSE replay) never
 // duplicates a row.
 
-import type { Message } from "./types";
+import { KIND_RESET, type Message } from "./types";
 
 export type RoomEvent =
   | { type: "message.created"; message: Message }
@@ -84,6 +84,31 @@ export function upsertMessage(list: readonly Message[], m: Message): Message[] {
   return next;
 }
 
+/**
+ * True when a message is the ADR-0030 reset MARKER (`kind='reset'`). The marker
+ * is the clear-signal (ISI-5672 WS-B): it is never rendered as a chat bubble, and
+ * its arrival clears the visible transcript (everything created at/before it).
+ */
+export function isResetMarker(m: Message): boolean {
+  return m.kind === KIND_RESET;
+}
+
+/**
+ * Apply an ADR-0030 reset marker to the flat list: drop every message created
+ * at/before the marker (the reset floor) and the marker itself — it is metadata,
+ * not a bubble. Messages created strictly AFTER the marker (a post-reset reply
+ * racing in over the same bus) survive. Since the marker is the newest row at
+ * reset time, this normally clears the whole transcript. Input is not mutated.
+ */
+export function applyResetMarker(
+  list: readonly Message[],
+  marker: Message,
+): Message[] {
+  return list.filter(
+    (x) => x.id !== marker.id && x.createdAt > marker.createdAt,
+  );
+}
+
 /** Fold a single room event into the flat message list. */
 export function applyRoomEvent(
   list: readonly Message[],
@@ -92,6 +117,11 @@ export function applyRoomEvent(
   switch (evt.type) {
     case "message.created":
     case "message.updated":
+      // ADR-0030 clear-signal: a reset marker is never a bubble — its arrival
+      // clears the visible transcript instead of appending a row (ISI-5674 WS-D).
+      if (isResetMarker(evt.message)) {
+        return applyResetMarker(list, evt.message);
+      }
       return upsertMessage(list, evt.message);
     case "message.deleted":
       return list.filter((x) => x.id !== evt.id);

@@ -20,6 +20,7 @@ import type {
   ProposalConfirmResponse,
   ProposalDismissResponse,
   ProposalPayload,
+  ResetResponse,
   RosterAgentDTO,
   Thread,
 } from "./types";
@@ -118,6 +119,19 @@ export interface DiscussionClient {
     threadId: string,
     messageId: string,
   ): Promise<void>;
+  /**
+   * Reset the thread's visible transcript (ISI-5672 WS-B, ADR-0030 Option 2):
+   * appends a server-stamped `kind='reset'` marker that hides every earlier
+   * message and closes any active party-session, atomically. Human-only (an agent
+   * caller is 403 server-side). The thread id is UNCHANGED — `?thread` stays
+   * stable. The returned marker is echoed on the live bus too; the client treats
+   * both as the clear-signal (idempotent by id).
+   */
+  resetThread(
+    projectId: string,
+    threadId: string,
+    reason?: string,
+  ): Promise<ResetResponse>;
   /**
    * List the thread's proposal cards joined with their lifecycle phase
    * (ISI-4930 story-6 read side). The transcript read stays phase-less; the
@@ -322,6 +336,21 @@ export function createDiscussionClient(
       if (!res.ok) {
         throw new DiscussionApiError(res.status, classifyStatus(res.status));
       }
+    },
+
+    async resetThread(projectId, threadId, reason) {
+      // ADR-0030 Option 2: POST …/threads/{id}/reset appends the reset marker.
+      // Only an optional reason rides the body — provenance is server-stamped and
+      // the human-only guard is enforced server-side (an agent caller → 403).
+      const url = `${threadsBase(projectId)}/${encodeURIComponent(
+        threadId,
+      )}/reset`;
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reason ? { reason } : {}),
+      });
+      return readJson<ResetResponse>(res);
     },
 
     async listProposals(projectId, threadId) {
