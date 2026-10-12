@@ -4,6 +4,7 @@
 export { StatTile, StatBand } from "./StatTile";
 export { RunStatusMixBar } from "./RunStatusMixBar";
 export { PanelCard, type PanelState } from "./PanelCard";
+export { AgentRunCard, AgentRunCardGrid } from "./AgentRunCard";
 export { StackedAreaChart, type AreaSeries } from "./StackedAreaChart";
 export { HBarChart, type HBarItem } from "./HBarChart";
 export {
