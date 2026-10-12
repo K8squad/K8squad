@@ -577,9 +577,39 @@ a.ksq-ticket-chip:hover {
   }
 }
 
-/* Live run thinking (ISI-5208): the streamed agent-progress rows rendered inline
- * beneath a message while its dispatched run is active — a muted, mono transcript
- * so it reads as machine progress, distinct from the human/agent message bodies. */
+/* Run activity (ISI-5208 stream, DEMOTED in ISI-5696): the raw per-run execution
+ * stream is no longer a top-level live log in the transcript — it is folded behind
+ * this collapsible, CLOSED by default, so the readable transcript shows only the
+ * agents' posted replies. The compact "{agent} is working…" WorkingIndicator is the
+ * primary in-flight signal; this toggle is the opt-in deep dive. */
+.ksq-activity {
+  margin: 4px 0 0;
+}
+.ksq-activity__summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-2);
+  list-style: none;
+  padding: 2px 0;
+  user-select: none;
+}
+.ksq-activity__summary::-webkit-details-marker {
+  display: none;
+}
+.ksq-activity__summary::before {
+  content: "▸ ";
+  color: var(--text-3, var(--text-2));
+}
+.ksq-activity[open] > .ksq-activity__summary::before {
+  content: "▾ ";
+}
+.ksq-activity__summary:hover {
+  color: var(--text-1);
+}
+
+/* Live run thinking (ISI-5208): the streamed agent-progress rows, rendered inside
+ * the collapsed Run activity affordance (ISI-5696) — a muted, mono transcript so it
+ * reads as machine progress, distinct from the human/agent message bodies. */
 .ksq-thinking-list {
   list-style: none;
   margin: 4px 0 0;

@@ -106,7 +106,7 @@ describe("DiscussionRoom — live chat (ISI-5208)", () => {
     expect(screen.getByText(/john is working/i)).toBeTruthy();
   });
 
-  it("streams the agent's thinking inline beneath the triggering message", async () => {
+  it("folds the raw run activity behind a collapsed toggle, stripping wire markers (ISI-5696)", async () => {
     const { emit } = await mountAndPost();
     await waitFor(() => screen.getByTestId("working-indicator"));
 
@@ -116,7 +116,7 @@ describe("DiscussionRoom — live chat (ISI-5208)", () => {
         row: {
           runId: "r1",
           author: "agent:john",
-          body: "[run r1] reading the thread",
+          body: "[run r1][tool:bash/result(ok)] reading the thread",
           seq: 1,
           at: "2026-09-29T10:00:30Z",
         },
@@ -126,8 +126,19 @@ describe("DiscussionRoom — live chat (ISI-5208)", () => {
     await waitFor(() => {
       const rows = screen.getAllByTestId("thinking-row");
       expect(rows).toHaveLength(1);
+      // The `[run …][tool:…/result]` wire markers are stripped — the row reads as
+      // plain progress text, never the raw EXECUTION stream (Henrik's feedback).
       expect(rows[0].textContent).toContain("reading the thread");
+      expect(rows[0].textContent).not.toContain("[run");
+      expect(rows[0].textContent).not.toContain("[tool:");
     });
+
+    // Demoted: the activity lives inside a <details> that is CLOSED by default, so
+    // none of the stream is visible in the default transcript. The compact
+    // "working" indicator is the primary in-flight signal instead.
+    const details = screen.getByTestId("activity-details");
+    expect(details.tagName).toBe("DETAILS");
+    expect((details as HTMLDetailsElement).open).toBe(false);
   });
 
   it("resolves the chip to 'replied' when the agent reply lands over the same channel", async () => {
