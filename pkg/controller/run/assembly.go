@@ -487,12 +487,30 @@ func (a *Assembler) ensureDiscussionToken(ctx context.Context, run *api.Run, eps
 		return err
 	}
 
+	// ISI-5688: bake the CapabilityCoordinator provenance marker alongside the
+	// discussion grant when this run's agent holds a coordinator Role, so the
+	// facilitator's discussion_post carries the coordinator identity the party
+	// dispatch hook needs on the MCP edge (the name-only roster there has no
+	// Coordinator flag). Re-resolving from the control plane here — a cheap,
+	// fail-closed read, mirroring ensureAuthoringToken's coordinator.propose
+	// derivation — keeps the token's caps agreeing with config by construction,
+	// never trusting the sandbox. A read error fails closed: refuse to mint rather
+	// than mint a token missing the marker (which would silently stall the round).
+	caps := []string{capability.CapabilityDiscussion}
+	isCoordinator, err := capability.RunHasCoordinatorAgent(ctx, a.Client, run)
+	if err != nil {
+		return fmt.Errorf("resolve coordinator marker for discussion token caps %s/%s: %w", run.Namespace, run.Name, err)
+	}
+	if isCoordinator {
+		caps = append(caps, capability.CapabilityCoordinator)
+	}
+
 	token, err := a.Minter.Mint(mcpauthtoken.Claims{
 		TeamID:       teamUID,
 		Principal:    string(run.GetOwnedBy()),
 		AgentID:      run.Spec.Agents[0].Name,
 		RunID:        string(run.UID),
-		Capabilities: []string{capability.CapabilityDiscussion},
+		Capabilities: caps,
 	})
 	if err != nil {
 		return fmt.Errorf("mint run discussion token for %s/%s: %w", run.Namespace, run.Name, err)

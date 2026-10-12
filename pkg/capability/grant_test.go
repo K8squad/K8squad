@@ -217,6 +217,54 @@ func TestResolveGrantCoordinatorDefaultUnionsWithTeamGrants(t *testing.T) {
 	assert.True(t, got.Has("extra.cap"), "explicit team grant for the IC role")
 }
 
+// TestRunHasCoordinatorAgentTrue (ISI-5688): a run whose dispatched agent holds a coordinator Role reports
+// true — the signal ensureDiscussionToken bakes CapabilityCoordinator into the discussion token from.
+func TestRunHasCoordinatorAgentTrue(t *testing.T) {
+	role := roleCR("role-manager", true)
+	agent := agentWithRole("sam", "role-manager")
+	run := grantRun("squad", "sam")
+
+	got, err := RunHasCoordinatorAgent(context.Background(), capClient(t, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got, "an agent on a coordinator role is a coordinator run")
+}
+
+// TestRunHasCoordinatorAgentFalse (ISI-5688): a non-coordinator Role reports false — no marker, no party
+// roster-stamp on that run's discussion posts.
+func TestRunHasCoordinatorAgentFalse(t *testing.T) {
+	role := roleCR("role-implementer", false)
+	agent := agentWithRole("ada", "role-implementer")
+	run := grantRun("squad", "ada")
+
+	got, err := RunHasCoordinatorAgent(context.Background(), capClient(t, role, agent), run)
+	require.NoError(t, err)
+	assert.False(t, got, "a non-coordinator role is not a coordinator run")
+}
+
+// TestRunHasCoordinatorAgentMissingAgentSkipped (ISI-5688): a dispatched agent CR that does not resolve is
+// skipped (not an error), mirroring ResolveGrant's NotFound tolerance — the run simply has no coordinator.
+func TestRunHasCoordinatorAgentMissingAgentSkipped(t *testing.T) {
+	run := grantRun("squad", "ghost")
+
+	got, err := RunHasCoordinatorAgent(context.Background(), capClient(t), run)
+	require.NoError(t, err)
+	assert.False(t, got)
+}
+
+// TestRunHasCoordinatorAgentOneOfManyCoordinator (ISI-5688): a fan-out run with a coordinator among its
+// agents reports true — the marker gates on ANY dispatched coordinator, exactly as ResolveGrant's union.
+func TestRunHasCoordinatorAgentOneOfManyCoordinator(t *testing.T) {
+	devRole := roleCR("role-implementer", false)
+	mgrRole := roleCR("role-manager", true)
+	dev := agentWithRole("ada", "role-implementer")
+	mgr := agentWithRole("sam", "role-manager")
+	run := grantRun("squad", "ada", "sam")
+
+	got, err := RunHasCoordinatorAgent(context.Background(), capClient(t, devRole, mgrRole, dev, mgr), run)
+	require.NoError(t, err)
+	assert.True(t, got)
+}
+
 // roleCRMode builds a coordinator Role CR with an explicit CoordinatorMode.
 func roleCRMode(name, mode string) *api.Role {
 	return &api.Role{

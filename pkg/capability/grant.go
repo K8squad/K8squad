@@ -52,6 +52,21 @@ const CapabilityCoordinatorPropose = "coordinator.propose"
 // ksquad-memory-discussion MCPServer (ADR-0024c D4, ISI-5138).
 const CapabilityDiscussion = "discussion"
 
+// CapabilityCoordinator is a server-authenticated PROVENANCE marker baked into a
+// discussion run's token when the run's dispatched agent holds a coordinator Role
+// (Role.Spec.Coordinator=true), regardless of CoordinatorMode (ISI-5688). It is a
+// DERIVED grant — never a Team.Spec.Grants entry — and rides the SAME trusted
+// capability channel work_item.author / coordinator.propose do (the run-token
+// claim), so a downstream MCP edge learns a discussion_post came from the Team
+// Coordinator FROM CONTROL-PLANE CONFIG ALONE — never a tool argument or a
+// client-settable field. It gates no tool; its sole consumer is the party-mode
+// facilitator dispatch hook (internal/discussion.DispatchPartyMentionsFrom), which
+// needs the coordinator identity on the MCP discussion_post edge where the
+// name-only roster carries no Coordinator flag. Without it a facilitator posting
+// its round directive through discussion_post never stamped the round roster and
+// the party round stalled with zero voices dispatched.
+const CapabilityCoordinator = "coordinator"
+
 // CapabilitySearch is the capability slug baked into the per-run HS256 token for
 // the built-in ksquad-memory-search MCPServer (ISI-5276, WS-B of ISI-5270). Unlike
 // work_item.author it is NOT a grant an agent must hold — the search endpoint is
@@ -224,4 +239,37 @@ func coordinatorRole(ctx context.Context, reader client.Reader, agent *api.Agent
 		return false, "", fmt.Errorf("read role %s/%s for coordinator default grant (fail-closed): %w", ns, agent.Spec.RoleRef.Name, err)
 	}
 	return role.Spec.Coordinator, role.Spec.CoordinatorMode, nil
+}
+
+// RunHasCoordinatorAgent reports whether any of the run's dispatched agents holds a
+// coordinator Role (Role.Spec.Coordinator=true). It is the NARROW, fail-closed read
+// ensureDiscussionToken uses to bake the CapabilityCoordinator provenance marker into
+// a discussion run's token (ISI-5688) WITHOUT widening the ResolveGrant GrantSet the
+// authoring gate reads — the marker gates no tool, so it has no business in the
+// authoring grant set. It mirrors ResolveGrant's agent→role walk exactly: an empty
+// roleRef or a Role deleted after admission is not a coordinator, a NotFound agent is
+// skipped, and only a TRANSIENT read error (not NotFound) fails closed (returned) so a
+// lookup glitch can never silently drop OR forge the coordinator marker.
+func RunHasCoordinatorAgent(ctx context.Context, reader client.Reader, run *api.Run) (bool, error) {
+	for _, agentRef := range run.Spec.Agents {
+		agentNS := agentRef.Namespace
+		if agentNS == "" {
+			agentNS = run.Namespace
+		}
+		var agent api.Agent
+		if err := reader.Get(ctx, client.ObjectKey{Namespace: agentNS, Name: agentRef.Name}, &agent); err != nil {
+			if isNotFound(err) {
+				continue
+			}
+			return false, fmt.Errorf("read agent %s/%s for coordinator token marker (fail-closed): %w", agentNS, agentRef.Name, err)
+		}
+		coordinator, _, err := coordinatorRole(ctx, reader, &agent)
+		if err != nil {
+			return false, err
+		}
+		if coordinator {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -522,6 +522,34 @@ func TestEnsureDiscussionToken(t *testing.T) {
 		assert.Equal(t, []string{capability.CapabilityDiscussion}, claims.Capabilities)
 	})
 
+	// ISI-5688: a coordinator run's discussion token carries the CapabilityCoordinator provenance marker
+	// alongside the discussion grant, so the MCP discussion_post edge can recognize a facilitator's round
+	// directive and stamp the party round roster. A non-coordinator run (the subtest above, agent "john"
+	// with no resolvable Role) carries ONLY [discussion].
+	t.Run("coordinator run's token carries the coordinator marker (ISI-5688)", func(t *testing.T) {
+		run := discussionRun()
+		role := &api.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "lead", Namespace: asmRunNS},
+			Spec:       api.RoleSpec{Coordinator: true},
+		}
+		agent := &api.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: "john", Namespace: asmRunNS},
+			Spec:       api.AgentSpec{RoleRef: api.ObjectRef{Name: "lead"}},
+		}
+		c := newAuthoringClient(t, run, teamCR("squad-a", "team-uid-squad-a"), role, agent)
+		asm := &Assembler{Client: c, Minter: minter}
+
+		eps := discussionEps()
+		asm.bindDiscussionCredential(run, eps)
+		require.NoError(t, asm.ensureDiscussionToken(context.Background(), run, eps))
+
+		var sec corev1.Secret
+		require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-discussion-token"}, &sec))
+		claims, err := minter.Verify(string(sec.Data[authoringTokenSecretKey]))
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{capability.CapabilityDiscussion, capability.CapabilityCoordinator}, claims.Capabilities)
+	})
+
 	// Fail-closed: a missing Team CR (no tenancy root to scope to) must reject
 	// assembly rather than mint a token that cannot authenticate.
 	t.Run("missing Team CR fails closed (no token minted)", func(t *testing.T) {

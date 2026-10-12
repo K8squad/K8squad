@@ -35,6 +35,26 @@ import (
 // cmd/memory would couple it to the apiserver read model; the parity that matters for agent↔agent chaining
 // (the @-mention resolves and dispatches, the hop is bounded) does not need presence.
 
+// CoordinatorCapability is the server-authenticated provenance marker (ISI-5688) a discussion run's token
+// carries when its dispatched agent holds the Team Coordinator role. It mirrors
+// pkg/capability.CapabilityCoordinator — kept as a local const so this package does not import the operator
+// capability package, matching CoordinatorProposeCapability's local mirror of its slug.
+const CoordinatorCapability = "coordinator"
+
+// SessionHasCoordinatorCapability reports whether the server-authenticated MCP session carries the
+// CoordinatorCapability marker — the un-spoofable "this post is from the Team Coordinator" signal the party
+// dispatch hook needs on the MCP edge (the name-only tool roster has no Coordinator flag). On the token
+// (sandbox) path the capability set is the VERIFIED token claims; on the header (BFF) path it is the
+// control-plane-stamped X-Agent-Capabilities. Either way the tool caller cannot forge it.
+func SessionHasCoordinatorCapability(capabilities []string) bool {
+	for _, c := range capabilities {
+		if c == CoordinatorCapability {
+			return true
+		}
+	}
+	return false
+}
+
 // RosterResolver resolves the dispatchable roster (agent names) for the caller's Team on the MCP tool
 // dispatch path. It is the narrow slice of the room roster resolveMentionTargets matches @-mentions
 // against. cmd/memory backs it with the SAME Team-CR informer cache that authorizes work_item_assign.
@@ -83,7 +103,21 @@ type DiscussionDispatch struct {
 	dispatcher  discussion.MentionDispatcher
 	hopResolver discussion.ReplyHopResolver
 	roster      RosterResolver
-	refResolver discussion.TicketRefResolver // ISI-5166: ticket-reference resolution seam; nil ⇒ references dropped
+	refResolver discussion.TicketRefResolver  // ISI-5166: ticket-reference resolution seam; nil ⇒ references dropped
+	partyStore  discussion.PartyDispatchStore // ISI-5688: party-session seam so the MCP edge fires the party-facilitator roster stamp; nil ⇒ party path off (unchanged)
+}
+
+// WithPartyStore wires the party-session seam (ISI-5688) onto the discussion_post dispatch bundle so a
+// facilitator run posting its round directive through the MCP tool stamps the party round roster — parity
+// with the apiserver REST Handler, whose dispatchMentions already runs DispatchPartyMentionsFrom. Without
+// it the MCP edge only ran the plain DispatchMentionsFrom and the party round stalled (zero voices). A nil
+// store leaves the party path off (the tool posts exactly as before). Returns the receiver for chaining.
+func (d *DiscussionDispatch) WithPartyStore(store discussion.PartyDispatchStore) *DiscussionDispatch {
+	if d == nil {
+		return d
+	}
+	d.partyStore = store
+	return d
 }
 
 // NewDiscussionDispatch bundles the run-minting dispatcher, the reply-hop resolver, the roster source, and
@@ -127,13 +161,25 @@ func (d *DiscussionDispatch) stampTicketRefs(ctx context.Context, projectID stri
 // the shared discussion.DispatchMentionsFrom, so a @-mention in a tool-posted message dispatches exactly
 // like the REST path. Best-effort — the message is already durable, so a roster or dispatch failure never
 // fails the tool call. No-ops when dispatch or the roster is unwired.
-func (d *DiscussionDispatch) dispatchMentions(ctx context.Context, projectID string, auth discussion.AuthorContext, msg *discussion.Message) {
+// authorIsCoordinator is the server-authenticated "the posting agent holds the Team Coordinator role"
+// signal (ISI-5688): the MCP tool caller derives it from the run token's CapabilityCoordinator marker,
+// because the name-only tool roster carries no Coordinator flag the party hook could read. It is false on
+// every non-token / non-coordinator post, which keeps the party path inert exactly as before.
+func (d *DiscussionDispatch) dispatchMentions(ctx context.Context, projectID string, auth discussion.AuthorContext, msg *discussion.Message, authorIsCoordinator bool) {
 	if d == nil || d.dispatcher == nil || d.roster == nil || msg == nil {
 		return
 	}
 	roster, err := d.roster.RosterForTeam(ctx, auth.TeamID)
 	if err != nil {
 		return // the roster is a projection, not a fence — a read failure degrades to no dispatch
+	}
+	// ISI-5688: fire the party-facilitator roster stamp FIRST (parity with the REST Handler.dispatchMentions
+	// order), so a coordinator's round directive posted through discussion_post records RoundVoices and the
+	// advancer can sequence the voices. On a non-party / non-coordinator post this returns false and we fall
+	// through to the unchanged normal dispatch. (The REST-only bare-party facilitator ROUTE — ADR-0031 Ruling
+	// B — never applies here: it is human-authored only, and an MCP post is always agent-authored.)
+	if d.partyStore != nil && discussion.DispatchPartyMentionsFrom(ctx, d.dispatcher, d.partyStore, projectID, auth, msg, roster, authorIsCoordinator) {
+		return
 	}
 	discussion.DispatchMentionsFrom(ctx, d.dispatcher, roster, projectID, auth, msg)
 }
