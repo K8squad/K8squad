@@ -815,7 +815,9 @@ func (m *ToolMCP) callDiscussionPost(ctx context.Context, sess mcpSession, raw j
 	}
 	// ISI-5125: after the row commits, fire dispatch-on-mention so a @-mention in a tool-posted reply
 	// dispatches the named agent — parity with the REST postMessage path. Best-effort (the row is durable).
-	m.mentions.dispatchMentions(ctx, projectID, auth, msg)
+	// ISI-5688: pass the server-authenticated coordinator marker from the session so a facilitator run's
+	// round directive stamps the party round roster (the name-only tool roster has no Coordinator flag).
+	m.mentions.dispatchMentions(ctx, projectID, auth, msg, SessionHasCoordinatorCapability(sess.capabilities))
 	return toolResult(msg)
 }
 

@@ -23,39 +23,56 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
-// dispatchPartyMentions handles the party-facilitator path. It returns true when it handled the post
-// (whether or not any voices were recorded — best-effort throughout, the message is already durable), and
-// false when this is not a party facilitator post, in which case the caller should fall through to the
-// normal DispatchMentionsFrom path.
+// PartyDispatchStore is the narrow party-session seam DispatchPartyMentionsFrom needs, so the hook can run
+// off EITHER room write edge without importing the full *Store: the apiserver REST Handler's store, or the
+// cmd/memory discussion_post MCP tool's store. *Store satisfies it.
+type PartyDispatchStore interface {
+	ActivePartySession(ctx context.Context, threadID uuid.UUID) (*PartySession, error)
+	SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, forRound int, messageID uuid.UUID, voices []string) (*PartySession, bool, error)
+}
+
+// DispatchPartyMentionsFrom is the SHARED party-facilitator dispatch hook BOTH room write edges call
+// (ISI-5688), mirroring DispatchMentionsFrom (ISI-5125): the apiserver REST Handler.postMessage AND the
+// cmd/memory discussion_post MCP tool — the transport a dispatched facilitator run actually posts its round
+// directive through (authed as the Run's own principal, e.g. ksquad-intake/<coordinator>). Hoisting it here
+// is what stops the party path drifting off the REST edge: before this, the round roster-stamp
+// (SetRoundFacilitatorMessage) fired ONLY on the REST handler, so a facilitator posting via discussion_post
+// never stamped RoundVoices / CurrentRoundMessageID and the operator advancer had no roster to sequence —
+// the round stalled with zero voices (the exact ISI-4919 / ISI-5125 "looks wired, isn't live" class).
+//
+// It returns true when it handled the post (whether or not any voices were recorded — best-effort
+// throughout, the message is already durable), and false when this is not a party facilitator post, in
+// which case the caller should fall through to the normal DispatchMentionsFrom path.
 //
 // The detection criteria (all must hold):
 //  1. The message was posted by an agent (author is coordinator, never a human).
 //  2. There is an active party session for the thread.
-//  3. The posting agent is the Team's Coordinator role.
+//  3. The posting agent is the Team's Coordinator role — supplied by the caller as authorIsCoordinator:
+//     the REST edge derives it from the roster's Coordinator flag (coordinatorOf + author-name match); the
+//     MCP edge derives it from the server-authenticated CapabilityCoordinator token marker, because the
+//     name-only MCP roster carries no Coordinator flag.
 //  4. The message has at least one resolvable @-mention (otherwise there is nothing to dispatch).
-func (h *Handler) dispatchPartyMentions(ctx context.Context, projectID string, auth AuthorContext, msg *Message, roster []TeamAgent) bool {
-	if h.dispatcher == nil || h.store == nil || msg == nil {
+func DispatchPartyMentionsFrom(ctx context.Context, dispatcher MentionDispatcher, store PartyDispatchStore, projectID string, auth AuthorContext, msg *Message, roster []TeamAgent, authorIsCoordinator bool) bool {
+	if dispatcher == nil || store == nil || msg == nil {
 		return false
 	}
 	// (1) Only agent authors can be coordinators.
 	if auth.AgentID == nil {
 		return false
 	}
+	// (3) Is the posting agent the Team's Coordinator role? (Criterion ordered before the session read so a
+	// non-coordinator post skips the DB hit, exactly as the roster check did on the REST edge.)
+	if !authorIsCoordinator {
+		return false // author is not the coordinator — ordinary voice post, fall through
+	}
 	// (2) Active party session for this thread?
-	sess, err := h.store.ActivePartySession(ctx, msg.ThreadID)
+	sess, err := store.ActivePartySession(ctx, msg.ThreadID)
 	if err != nil {
 		return false // ErrNoActivePartySession or real error — not party mode, fall through
-	}
-
-	// (3) Is the posting agent the Team's Coordinator role?
-	coord, ok := coordinatorOf(roster)
-	if !ok {
-		return false
-	}
-	if !strings.EqualFold(coord.Name, *auth.AgentID) {
-		return false // author is not the coordinator — ordinary voice post, fall through
 	}
 
 	// (4) Resolve @-mentions (no D4, no hop cap — the facilitator dispatches voices directly).
@@ -108,7 +125,7 @@ func (h *Handler) dispatchPartyMentions(ctx context.Context, projectID string, a
 	for _, a := range resolved {
 		voices = append(voices, a.Name) // canonical roster casing, facilitator's @-mention order
 	}
-	_, won, serr := h.store.SetRoundFacilitatorMessage(ctx, sess.ID, sess.Round, msg.ID, voices)
+	_, won, serr := store.SetRoundFacilitatorMessage(ctx, sess.ID, sess.Round, msg.ID, voices)
 	if serr != nil {
 		slog.WarnContext(ctx, "discussion: party SetRoundFacilitatorMessage failed (best-effort)",
 			"sessionID", sess.ID, "round", sess.Round, "messageID", msg.ID, "err", serr)
@@ -128,6 +145,20 @@ func (h *Handler) dispatchPartyMentions(ctx context.Context, projectID string, a
 	slog.InfoContext(ctx, "discussion: party round roster recorded — advancer will sequence voices",
 		"sessionID", sess.ID, "round", sess.Round, "voices", len(voices))
 	return true
+}
+
+// dispatchPartyMentions is the REST handler's thin binding of the shared DispatchPartyMentionsFrom: it
+// derives criterion (3) — author is the Team Coordinator — from the roster's Coordinator flag (the org
+// projection populates it on the REST edge, unlike the name-only MCP roster), exactly as the pre-ISI-5688
+// method did, and delegates the rest. Behaviour on the REST edge is unchanged.
+func (h *Handler) dispatchPartyMentions(ctx context.Context, projectID string, auth AuthorContext, msg *Message, roster []TeamAgent) bool {
+	authorIsCoordinator := false
+	if auth.AgentID != nil {
+		if coord, ok := coordinatorOf(roster); ok && strings.EqualFold(coord.Name, *auth.AgentID) {
+			authorIsCoordinator = true
+		}
+	}
+	return DispatchPartyMentionsFrom(ctx, h.dispatcher, h.store, projectID, auth, msg, roster, authorIsCoordinator)
 }
 
 // routeBarePartyToFacilitator implements ADR-0031 Ruling B (ISI-5639 C2): a human bare-party text post in

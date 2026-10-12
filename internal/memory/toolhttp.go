@@ -387,7 +387,9 @@ func (h *ToolHTTP) discussionPost(w http.ResponseWriter, r *http.Request) {
 	}
 	// ISI-5125: after the row commits, fire dispatch-on-mention so a @-mention in a tool-posted reply
 	// dispatches the named agent — parity with the REST postMessage path. Best-effort (the row is durable).
-	h.mentions.dispatchMentions(r.Context(), projectID, auth, msg)
+	// ISI-5688: the HTTP shim is the BFF/dev header path, never the sandbox facilitator token transport, so
+	// it carries no coordinator marker — pass false, leaving the party path inert here exactly as before.
+	h.mentions.dispatchMentions(r.Context(), projectID, auth, msg, false)
 	writeJSON(w, msg)
 }
 

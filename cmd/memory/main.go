@@ -356,7 +356,12 @@ func openDiscussionDispatch(dsn string, resolver coord.TeamAgentResolver, refs m
 	// edges resolve nothing and a referenced ticket degrades to a link-free (but durable) message — true
 	// parity, no regression. When S1b builds it, hand the same resolver in here and to the REST handler.
 	var refResolver discussion.TicketRefResolver // nil until ISI-5170
-	return memory.NewDiscussionDispatch(dispatcher, hop, roster, refResolver)
+	// ISI-5688: hand the SAME fenced discussion.Store the discussion_post tool posts through as the
+	// party-session seam, so a facilitator run's round directive posted via the MCP tool stamps the party
+	// round roster (SetRoundFacilitatorMessage) — parity with the apiserver REST handler. Without it the
+	// MCP edge only ran the plain mention dispatch and the party round stalled with zero voices dispatched.
+	return memory.NewDiscussionDispatch(dispatcher, hop, roster, refResolver).
+		WithPartyStore(discussion.NewStore(db))
 }
 
 // openWorkItemSearcher builds the pkg/search.Searcher backing the work_item_search MCP tool (ISI-5276)
