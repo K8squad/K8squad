@@ -125,6 +125,7 @@ export function AgentDetail({
         {runs.length === 0 ? (
           <p className="muted">No runs yet for this agent.</p>
         ) : (
+          <div className="run-history-wrap">
           <table className="run-history">
             <thead>
               <tr>
@@ -183,6 +184,7 @@ export function AgentDetail({
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

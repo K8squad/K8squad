@@ -60,8 +60,13 @@ export function AgentsTeamWorkspace({ team }: { team?: string }) {
   if (state.kind === "error") return <RosterError onRetry={retry} />;
   if (isEmpty(state.roster)) return <RosterEmpty />;
 
+  const workspaceClass = [
+    "roster-workspace",
+    selection ? "roster-workspace--detail-open" : "roster-workspace--rail-only",
+  ].join(" ");
+
   return (
-    <div className="roster-workspace">
+    <div className={workspaceClass}>
       <RosterRail
         roster={state.roster}
         selection={selection}
@@ -69,12 +74,22 @@ export function AgentsTeamWorkspace({ team }: { team?: string }) {
       />
       <div className="roster-workspace__detail">
         {selection ? (
-          <NodeDetail
-            roster={state.roster}
-            selection={selection}
-            team={team}
-            onRosterChanged={retry}
-          />
+          <>
+            {/* Mobile back affordance — hidden on desktop via CSS (display:none at >768px) */}
+            <button
+              className="roster-back-btn"
+              onClick={() => setSelection(null)}
+              aria-label="Back to agent list"
+            >
+              ← Back
+            </button>
+            <NodeDetail
+              roster={state.roster}
+              selection={selection}
+              team={team}
+              onRosterChanged={retry}
+            />
+          </>
         ) : (
           <DetailPlaceholder />
         )}

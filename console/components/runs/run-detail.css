@@ -668,3 +668,24 @@
   font-size: 11px;
   color: var(--muted);
 }
+
+/* RUND-2 P2: mono run-id title must wrap at narrow viewports instead of overflowing. */
+.run-detail__title {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* RUND-1 P2: lifecycle rail becomes horizontally scrollable at ≤768px to prevent
+ * node labels colliding in the narrow column. */
+@media (max-width: 768px) {
+  .run-rail__nodes {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    justify-content: flex-start;
+    gap: 0;
+  }
+  .run-rail__node {
+    flex: 0 0 auto;
+    min-width: 64px;
+  }
+}

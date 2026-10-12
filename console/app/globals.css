@@ -135,7 +135,29 @@ body {
 .shell__main {
   flex: 1;
   width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
   padding: 20px 16px calc(20px + 68px); /* bottom clears the fixed mobile bottom nav */
+}
+
+/* Systemic: every table scrolls horizontally on narrow viewports rather than forcing
+ * the shell to expand. Wrapping elements already use .xxx-table-wrap; this catches any
+ * bare table or missed wrapper. */
+@media (max-width: 768px) {
+  table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Touch-target floor for interactive controls (ISI-5714 TEAM-2, AGENT-1, CRED-1). */
+  button,
+  [role="button"],
+  select,
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-height: 44px;
+  }
 }
 
 /* Bright headings only inside the content surface (textHi ramp). Scoped to the shell so pre-auth
@@ -1676,10 +1698,27 @@ a:hover {
   font-size: 12px;
   margin: 0 0 12px;
 }
+/* ART-1 P1: artifact browser inline table needs an overflow-x scroll wrapper. */
+.artifact-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* AGENT-1 P1: overflow-x scroll wrapper so the 6-col run-history table doesn't
+ * push the page into horizontal scroll on mobile. */
+.run-history-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
 .run-history {
   width: 100%;
   border-collapse: collapse;
   font-size: 14px;
+}
+@media (max-width: 768px) {
+  .run-history {
+    min-width: 540px;
+  }
 }
 .run-history th,
 .run-history td {
@@ -1968,6 +2007,16 @@ a:hover {
 .users-grant__project {
   font-family: var(--font-mono);
   min-width: 160px;
+}
+
+/* USERS-2 P2: grant row must wrap at narrow widths; relax the 160px floor on mobile. */
+@media (max-width: 480px) {
+  .users-grant {
+    flex-wrap: wrap;
+  }
+  .users-grant__project {
+    min-width: 0;
+  }
 }
 
 .users-grant-form {
@@ -5181,6 +5230,47 @@ a:hover {
   min-width: 0;
 }
 
+/* TEAM-1 P0: collapse two-pane to single-column on mobile. Rail and detail stack
+ * vertically; JS toggling .roster-workspace--detail-open hides/shows panes. */
+.roster-back-btn {
+  display: none; /* hidden on desktop */
+}
+
+@media (max-width: 768px) {
+  .roster-workspace {
+    grid-template-columns: 1fr;
+  }
+  .roster-rail {
+    position: static; /* un-stick the rail so it doesn't overlap detail */
+  }
+  /* When detail panel is active, hide the rail so detail is full-width */
+  .roster-workspace--detail-open .roster-rail {
+    display: none;
+  }
+  /* When no agent selected, hide the empty detail pane */
+  .roster-workspace--rail-only .roster-workspace__detail {
+    display: none;
+  }
+  /* Back affordance */
+  .roster-back-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 8px 14px;
+    min-height: 44px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    font-size: 13px;
+    color: var(--text-1);
+    cursor: pointer;
+  }
+  .roster-back-btn:hover {
+    border-color: var(--accent);
+  }
+}
+
 /* ---- Left rail ---- */
 .roster-rail {
   background: var(--surface);
@@ -5379,9 +5469,10 @@ a:hover {
   color: var(--text-hi);
   border-bottom-color: var(--accent);
 }
+/* TEAM-2 P1: clamp the 260px floor so the grid doesn't overflow a 328px mobile column. */
 .roster-detail__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 14px;
 }
 .roster-detail__card {

@@ -263,3 +263,13 @@
   font-size: 12px;
   color: var(--text-2);
 }
+
+/* INBOX-1 P2: Approve/Reject are the primary action on this surface — they must clear
+ * the 44px touch-target floor on mobile to prevent mis-taps. */
+@media (max-width: 768px) {
+  .inbox__btn {
+    min-height: 44px;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+}
