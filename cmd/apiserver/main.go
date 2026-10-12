@@ -320,6 +320,10 @@ func main() {
 	// Constructed below, once the coord work-item read store exists — the PR cards
 	// join to their review work items through it (ISI-4767 E5).
 	var githubStatus *apiserver.GithubStatusService
+	// ISI-5705 (WS-1b): the fleet-wide GitHub summary read model, constructed
+	// below alongside githubStatus once both the mirror reader (DB) and the
+	// overview cache reader exist.
+	var githubSummary *apiserver.GithubSummaryService
 
 	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
 	// (Run→Team/owner/workspace from the coord store); until then a dev runs file lets the real
@@ -469,6 +473,19 @@ func main() {
 		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db), workItemReads, scm.NewSQLSyncHistoryStore(db), scm.NewSQLMirrorStore(db)).
 			WithIssueLocals(workItemReads) // ISI-5678: attach local block to issue cards
 		log.Printf("ksquad-apiserver: github-status read model ready (S5b scm mirror projection)")
+	}
+
+	// ISI-5705 (WS-1b) fleet-wide GitHub summary: GET /api/squad/github rolls up
+	// every visible Project's scm mirror into one totals + 7-day merge sparkline +
+	// per-repo breakdown. It reuses the SAME overview reader for admin/tenant
+	// scoping, the SAME mirror reader as the S5b per-project tab, and the SAME
+	// coord review-bridge seam (workItemReads) for the reviewed-PR count — making
+	// ZERO GitHub calls (the whole point: dodges the secondary rate limit). Needs
+	// the DB (mirror), the cache (project enumeration + UID resolution), and the
+	// overview reader; absent any, the route keeps the documented 501.
+	if db != nil && dashboardReader != nil && overview != nil {
+		githubSummary = apiserver.NewGithubSummaryService(dashboardReader, scm.NewSQLMirrorStore(db), overview, workItemReads)
+		log.Printf("ksquad-apiserver: github-summary read model ready (ISI-5705 fleet-wide mirror roll-up)")
 	}
 
 	// Project-overview time-series read model (ISI-4509 / ISI-4505 S4): runs-by-status +
@@ -818,6 +835,7 @@ func main() {
 		ComposeCRD:       composeCRD,
 		IssueLinks:       issueLinks,
 		GithubStatus:     githubStatus,
+		GithubSummary:    githubSummary,
 		Killer:           apiserver.NewProdRunKiller(db),
 		AuditLog:         auditLog,
 		// Epic D tool-usage panel read model (ISI-3288, D3): aggregates the

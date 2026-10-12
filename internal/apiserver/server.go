@@ -124,6 +124,11 @@ type Options struct {
 	// the /github route keeps answering the documented 501 (dev run without the mirror reader
 	// wired) so the S5c tab renders "not available yet".
 	GithubStatus *GithubStatusService
+	// GithubSummary is the ISI-5705 (WS-1b) fleet-wide GitHub roll-up read model
+	// over the scm mirror behind GET /api/squad/github. When nil the route keeps
+	// answering the documented 501 (dev run without the mirror reader + overview
+	// cache wired) so the Fleet overview's GitHub strip degrades honestly.
+	GithubSummary *GithubSummaryService
 	// GithubSync is the ISI-4011 "Sync now" write surface: POST
 	// /api/projects/{projectId}/github/sync bumps the scm-sync-trigger annotation on the
 	// Project CR so the reposync reconciler fires immediately. Requires contributor+
@@ -571,6 +576,22 @@ func (s *Server) routes(opts Options) {
 			squadSeries.HandleFunc("", s.squadOverviewSeries(opts.SquadSeries)).Methods(http.MethodGet)
 		} else {
 			squadSeries.HandleFunc("", notImplemented("fleet overview series read model", "ISI-5706: wire the informer cache + coord status-history seam to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// ISI-5705 (WS-1b): GET /api/squad/github is the fleet-wide GitHub roll-up
+		// the overview's GitHub strip renders — totals + 7-day merge sparkline +
+		// per-repo breakdown — sourced ENTIRELY from the synced scm mirror (never a
+		// live per-project fan-out, which would trip GitHub's secondary rate limit,
+		// memory github-rest-secondary-ratelimit). It rides the SAME §13 BFF choke
+		// point and admin/tenant scoping as squad-overview. A nil service keeps the
+		// documented 501 (cluster-less/DB-less dev run) so the strip degrades honestly.
+		squadGithub := s.router.Path("/api/squad/github").Subrouter()
+		squadGithub.Use(authz)
+		if opts.GithubSummary != nil {
+			squadGithub.HandleFunc("", s.squadGithubSummary(opts.GithubSummary)).Methods(http.MethodGet)
+		} else {
+			squadGithub.HandleFunc("", notImplemented("squad-github summary read model", "ISI-5705: wire a GithubSummaryService (scm mirror reader + overview cache) to enable")).
 				Methods(http.MethodGet)
 		}
 
