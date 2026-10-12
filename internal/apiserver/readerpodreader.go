@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readclient"
@@ -379,7 +380,11 @@ func (r *ReaderPodWorkspaceReader) launchBackground(projectID string, author dis
 		// degraded sentinels (busy / no-browse-target / not-provisioned) flow through here routinely
 		// and map to typed responses, so they stay off the error log to avoid noise.
 		if !isExpectedLaunchOutcome(err) {
-			log.Printf("ksquad-apiserver: reader launch for project %s failed with an untyped error (file explorer will 500): %v", projectID, err)
+			// projectID is a client-supplied URL path var (tainted): strip CR/LF/control
+			// bytes before logging so a crafted project name cannot forge log lines
+			// (gosec G706). %q defends the error the same way.
+			//nolint:gosec // G706: projectID is sanitised via sanitizeLogValue (CR/LF/control bytes stripped) so it cannot forge log lines; gosec's taint analysis cannot see through the sanitizer.
+			log.Printf("ksquad-apiserver: reader launch for project %q failed with an untyped error (file explorer will 500): %q", sanitizeLogValue(projectID), err.Error())
 		}
 	}
 	r.mu.Unlock()
@@ -396,6 +401,17 @@ func isExpectedLaunchOutcome(err error) bool {
 		errors.Is(err, ErrProjectNotFound) ||
 		errors.Is(err, ErrReaderPreparing) ||
 		isTimeout(err)
+}
+
+// sanitizeLogValue strips CR/LF and other control characters from a client-supplied
+// value so it cannot forge or split log lines when logged (gosec G706 log injection).
+func sanitizeLogValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // SweepIdle tears down every session idle for longer than r.idle, plus a cluster-side orphan sweep
