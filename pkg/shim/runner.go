@@ -357,7 +357,24 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	// fetch honors these natively, so no in-process undici ProxyAgent is needed.
 	// Proxy vars are NOT secrets (ADR-0007 minimal-env invariant holds). Child
 	// vars win over any inherited duplicate (exec: last assignment wins).
-	cmd.Env = append(cmd.Env, agentProxyEnv(os.Getenv)...)
+	proxyEnv := agentProxyEnv(os.Getenv)
+	cmd.Env = append(cmd.Env, proxyEnv...)
+	// ISI-5679: make the run self-explain its egress posture. The bound-run
+	// opencode→z.ai stall (665/682 party runs) is a connect-level hang whose
+	// ~134s latency is the Linux TCP SYN-retry timeout — the signature of a
+	// DIRECT dial to the model FQDN whose SYNs are black-holed by the egress
+	// NetworkPolicy, i.e. the child never got a working HTTPS_PROXY (a real gap
+	// when a provider is switched on by an agent-tier route patch without the
+	// operator also carrying KSQUAD_SANDBOX_HTTPS_PROXY). Log the proxy env the
+	// shim actually injected (values are non-secret, as asserted above) so the
+	// pod log shows, right next to the PR #858 stderr tail, whether the child
+	// was proxied at all — settling injected-but-bypassed vs never-injected
+	// without live pod archaeology.
+	if len(proxyEnv) == 0 {
+		fmt.Fprintf(os.Stderr, "shim: agent egress is DIRECT (no KSQUAD_SANDBOX_*_PROXY on the shim/operator env); an external model FQDN blocked by the egress NetworkPolicy will hang on a TCP SYN-retry timeout, not fail fast\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "shim: agent egress proxy injected: %s\n", strings.Join(proxyEnv, " "))
+	}
 	// ISI-4188 gap 5: an adapter-set Stdin is the prompt channel for CLIs that
 	// read their message from stdin (opencode `run`). The reader is handed to
 	// the process before Start; exec closes it when the buffer drains.
