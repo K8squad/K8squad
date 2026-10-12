@@ -200,7 +200,10 @@ jobs:
         run: |
           npm ci
           # Chromium only — console/playwright.config.ts declares no firefox/webkit
-          # projects. And NO --with-deps: that flag drives apt against
+          # projects. The ISI-5713 mobile lanes (mobile-pixel / mobile-iphone) ride the
+          # CHROMIUM engine too (device-descriptor emulation, browserName pinned to
+          # chromium), so this single install still covers every project — do NOT add a
+          # webkit install for the iPhone preset. And NO --with-deps: that flag drives apt against
           # archive.ubuntu.com, which mid-sync offers an unresolvable version skew
           # (gir1.2-glib-2.0 needing libglib2.0-0t64 =...3.4 while the index serves
           # ...3.8) that out-lasted every retry (ISI-2852 runs 11–12). The
