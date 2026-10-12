@@ -287,6 +287,18 @@ rules:
 - apiGroups: [""]
   resources: [services]
   verbs: [get, list, create, delete]
+# persistentvolumeclaims get (ISI-5685, regression from ISI-5574): the reader-spec
+# resolver (internal/apiserver/readerspec.go ResolveReaderSpec) GETs the per-Project
+# workspace PVC by name in the consuming Team's sandbox namespace BEFORE launching a
+# reader pod — the ISI-5574 guard that turns a missing PVC into a typed
+# ErrWorkspaceNotProvisioned instead of a wedged-Pending reader. ISI-5574 added the
+# Get call but never added this grant, so every file-explorer request hit a Forbidden
+# the handler mapped onto the untyped 500 fallback (fleet-wide HTTP 500). GET only —
+# the resolver reads one PVC by name on the DIRECT client (cache.go NewReaderPodClient),
+# never lists/watches/writes. Team namespaces are dynamic, so the grant is cluster-scoped.
+- apiGroups: [""]
+  resources: [persistentvolumeclaims]
+  verbs: [get]
 # secrets get (ISI-5420): the Model-Per-Role effective-model resolver
 # (pkg/modelendpoint, behind GET /api/squad/agents/{name}/effective-model) reads
 # the winning tier's BYO endpoint Secret. That Secret lives in the agent's TEAM

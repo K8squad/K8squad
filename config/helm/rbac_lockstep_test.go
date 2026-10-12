@@ -227,6 +227,12 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "create", "delete"}},
 		{APIGroups: []string{""}, Resources: []string{"services"}, Verbs: []string{"get", "list", "create", "delete"}},
+		// persistentvolumeclaims get (ISI-5685): the reader-spec resolver GETs the
+		// per-Project workspace PVC by name before launching a reader pod (the
+		// ISI-5574 missing-PVC guard). GET only — one PVC by name on the direct
+		// client, never list/watch/write. Missing this grant turned every
+		// file-explorer request into a fleet-wide untyped HTTP 500.
+		{APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"}, Verbs: []string{"get"}},
 		// secrets get (ISI-5420): the effective-model resolver reads the winning
 		// tier's BYO endpoint Secret (in the agent's dynamic team namespace or the
 		// operator namespace) through the DIRECT corev1 client. GET only — one

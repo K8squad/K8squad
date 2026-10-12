@@ -20,11 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readclient"
@@ -371,8 +373,45 @@ func (r *ReaderPodWorkspaceReader) launchBackground(projectID string, author dis
 		// ErrReaderPreparing. The error is consumed once (cleared on read) so the caller after
 		// that gets a fresh ErrReaderPreparing and a new launch attempt.
 		r.lastErr[projectID] = err
+		// ISI-5685: an UNTYPED launch error is the one the files routes map onto the opaque 500
+		// fallback — invisible until now (nothing logged at this seam, span marked Error with no
+		// description). Log it at error level so an RBAC/data regression like the missing PVC `get`
+		// grant is diagnosable from apiserver logs instead of a bare 33-byte body. The expected
+		// degraded sentinels (busy / no-browse-target / not-provisioned) flow through here routinely
+		// and map to typed responses, so they stay off the error log to avoid noise.
+		if !isExpectedLaunchOutcome(err) {
+			// projectID is a client-supplied URL path var (tainted): strip CR/LF/control
+			// bytes before logging so a crafted project name cannot forge log lines
+			// (gosec G706). %q defends the error the same way.
+			//nolint:gosec // G706: projectID is sanitised via sanitizeLogValue (CR/LF/control bytes stripped) so it cannot forge log lines; gosec's taint analysis cannot see through the sanitizer.
+			log.Printf("ksquad-apiserver: reader launch for project %q failed with an untyped error (file explorer will 500): %q", sanitizeLogValue(projectID), err.Error())
+		}
 	}
 	r.mu.Unlock()
+}
+
+// isExpectedLaunchOutcome reports whether a stored terminal launch error is one of the typed,
+// client-facing outcomes the files routes map to a non-500 response (ISI-5685). These flow through
+// lastErr routinely and are NOT regressions, so they stay off the error log. Everything else is an
+// untyped error that the routes surface as the opaque HTTP 500 fallback and is worth logging.
+func isExpectedLaunchOutcome(err error) bool {
+	return errors.Is(err, ErrWorkspaceBusy) ||
+		errors.Is(err, ErrNoBrowseTarget) ||
+		errors.Is(err, ErrWorkspaceNotProvisioned) ||
+		errors.Is(err, ErrProjectNotFound) ||
+		errors.Is(err, ErrReaderPreparing) ||
+		isTimeout(err)
+}
+
+// sanitizeLogValue strips CR/LF and other control characters from a client-supplied
+// value so it cannot forge or split log lines when logged (gosec G706 log injection).
+func sanitizeLogValue(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r == '\t' || unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // SweepIdle tears down every session idle for longer than r.idle, plus a cluster-side orphan sweep
