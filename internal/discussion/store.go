@@ -69,7 +69,21 @@ type Thread struct {
 	CreatedBy string    `json:"createdBy"`
 	CreatedAt time.Time `json:"createdAt"`
 
-	// Populated by GetThread — the thread's live messages, threaded via parent_id.
+	// LastActivityAt is the thread's most-recent LIVE-message timestamp, MARKER-INCLUSIVE (a reset
+	// marker counts as activity — ADR-0030 §(c)), so a freshly-reset thread sorts to the top of the
+	// chat list as recently-touched even though its visible content is now empty. Populated by
+	// ListThreads; the zero time on a thread whose every message is retracted. GetThread leaves it zero.
+	LastActivityAt time.Time `json:"lastActivityAt,omitempty"`
+
+	// Reset metadata (ADR-0030 §(c)) — populated by GetThread from the latest LIVE kind='reset' marker
+	// in the thread, so the client renders the post-reset empty state / "— discussion cleared {T} —"
+	// divider without re-fetching. All nil when the thread has never been reset (or its last reset was
+	// retracted — the undo-reset path), in which case GetThread returns the full transcript as before.
+	ResetAt     *time.Time `json:"resetAt,omitempty"`     // the latest live reset marker's created_at (the reset floor)
+	ResetBy     *string    `json:"resetBy,omitempty"`     // that marker's author_principal (who reset)
+	ResetReason *string    `json:"resetReason,omitempty"` // optional payload.reason captured at reset time
+
+	// Populated by GetThread — the thread's live messages (post-reset-floor), threaded via parent_id.
 	Messages []Message `json:"messages,omitempty"`
 }
 
@@ -151,8 +165,13 @@ const messageCols = `id, thread_id, parent_id, author_principal, author_agent_id
 // Threads
 // ----------------------------------------------------------------------------
 
-// ListThreads returns the room's threads for (projectID, caller's teamID), most-recent first, paged.
-// Fully-retracted threads (every message soft-retracted) are excluded. Tenancy is enforced in the
+// ListThreads returns the room's threads for (projectID, caller's teamID), MOST-RECENTLY-ACTIVE first,
+// paged. Fully-retracted threads (every message soft-retracted) are excluded; a reset-only thread is NOT
+// excluded, because its reset marker is a live message (ADR-0030 §(c): a freshly-reset thread stays in
+// the list, sorted to the top as recently-touched with an empty preview). Ordering is by last activity,
+// MARKER-INCLUSIVE — MAX(created_at) over live messages counts the reset marker — so "most-recently-active"
+// (ADR-0030 §(d)) and the just-reset-to-top rule agree; content, by contrast, is clamped to post-reset
+// in GetThread, so *activity* counts the marker while *content* does not. Tenancy is enforced in the
 // WHERE clause — the room never crosses Team boundaries (AC5, FR-J4).
 func (s *Store) ListThreads(ctx context.Context, projectID string, teamID uuid.UUID, limit, offset int) ([]Thread, error) {
 	if limit <= 0 || limit > 200 {
@@ -162,12 +181,18 @@ func (s *Store) ListThreads(ctx context.Context, projectID string, teamID uuid.U
 		offset = 0
 	}
 	const q = `
-		SELECT id, project_id, team_id, title, created_by, created_at
+		SELECT t.id, t.project_id, t.team_id, t.title, t.created_by, t.created_at,
+		       COALESCE(a.last_activity, t.created_at) AS last_activity
 		FROM discussion.thread t
+		JOIN LATERAL (
+		    SELECT MAX(m.created_at) AS last_activity
+		    FROM discussion.message m
+		    WHERE m.thread_id = t.id AND m.invalidated_at IS NULL
+		) a ON TRUE
 		WHERE t.project_id = $1 AND t.team_id = $2
 		  AND EXISTS (SELECT 1 FROM discussion.message m
 		               WHERE m.thread_id = t.id AND m.invalidated_at IS NULL)
-		ORDER BY t.created_at DESC
+		ORDER BY COALESCE(a.last_activity, t.created_at) DESC
 		LIMIT $3 OFFSET $4`
 	rows, err := s.db.QueryContext(ctx, q, projectID, teamID, limit, offset)
 	if err != nil {
@@ -177,7 +202,7 @@ func (s *Store) ListThreads(ctx context.Context, projectID string, teamID uuid.U
 	var threads []Thread
 	for rows.Next() {
 		var t Thread
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.TeamID, &t.Title, &t.CreatedBy, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.TeamID, &t.Title, &t.CreatedBy, &t.CreatedAt, &t.LastActivityAt); err != nil {
 			return nil, err
 		}
 		threads = append(threads, t)
@@ -239,10 +264,23 @@ func (s *Store) GetThread(ctx context.Context, projectID string, teamID, threadI
 		return nil, err
 	}
 
+	// Reset-floor filter (ADR-0030 §(c)): render only the live, non-marker messages created STRICTLY
+	// after the latest live reset marker. With no live marker the floor is -infinity, so the WHERE
+	// collapses to today's "all live messages" read exactly (and a thread that has never been reset —
+	// or whose kind column predates 0036 — is byte-identical to before). The marker itself is excluded
+	// from the bubble stream (kind <> 'reset'); its effect is surfaced via the reset metadata below.
 	rows, err := s.db.QueryContext(ctx, `
+		WITH r AS (
+		    SELECT COALESCE(MAX(created_at), '-infinity'::timestamptz) AS reset_at
+		    FROM discussion.message
+		    WHERE thread_id = $1 AND kind = 'reset' AND invalidated_at IS NULL
+		)
 		SELECT `+messageCols+`
-		FROM discussion.message
-		WHERE thread_id = $1 AND invalidated_at IS NULL
+		FROM discussion.message, r
+		WHERE thread_id = $1
+		  AND invalidated_at IS NULL
+		  AND kind <> 'reset'
+		  AND created_at > r.reset_at
 		ORDER BY created_at ASC`, threadID)
 	if err != nil {
 		return nil, err
@@ -250,6 +288,11 @@ func (s *Store) GetThread(ctx context.Context, projectID string, teamID, threadI
 	defer rows.Close()
 	msgs, err := scanMessages(rows)
 	if err != nil {
+		return nil, err
+	}
+	// Reset metadata (ADR-0030 §(c)): the latest live marker's created_at/author/reason, so the client
+	// can render the post-reset empty state + "— discussion cleared {T} —" divider without a refetch.
+	if err := s.loadResetMarker(ctx, threadID, &t); err != nil {
 		return nil, err
 	}
 	// Enrich each message with its party-mode round linkage (ISI-5616) BEFORE nesting — buildThreadTree
