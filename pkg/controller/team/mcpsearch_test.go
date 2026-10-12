@@ -59,7 +59,7 @@ func TestSearchMCPServerProvisioned(t *testing.T) {
 	if srv.Spec.Transport != api.MCPTransportStreamableHTTP {
 		t.Errorf("transport = %q, want streamable-http", srv.Spec.Transport)
 	}
-	wantEndpoint := "http://ksquad-memory." + SystemNamespace + ".svc.cluster.local:8080/mcp"
+	wantEndpoint := "http://ksquad-memory." + SystemNamespace + ".svc.cluster.local:8080/mcp/search"
 	if srv.Spec.Endpoint != wantEndpoint {
 		t.Errorf("endpoint = %q, want %q", srv.Spec.Endpoint, wantEndpoint)
 	}

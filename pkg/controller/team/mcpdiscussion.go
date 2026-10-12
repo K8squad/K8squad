@@ -59,7 +59,7 @@ func discussionMCPServer(ns string, teamObj *api.Team, controlPlaneNS string) *a
 		},
 		Spec: api.MCPServerSpec{
 			Transport: api.MCPTransportStreamableHTTP,
-			Endpoint:  authoringEndpoint(controlPlaneNS), // same in-cluster memory FQDN
+			Endpoint:  memoryEndpoint(controlPlaneNS, memory.MCPEndpointDiscussion), // distinct path (ISI-5694): keep opencode from collapsing same-URL memory servers
 			ToolFilter: &api.MCPToolFilter{
 				Allow: append([]string(nil), memory.DiscussionToolNames...),
 			},

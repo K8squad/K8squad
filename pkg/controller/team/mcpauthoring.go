@@ -76,7 +76,16 @@ const (
 // from a squad sandbox (ISI-4873: NXDOMAIN from ksquad-team-* pods; the
 // authoring MCP never connected and runs terminal-failed).
 func authoringEndpoint(controlPlaneNS string) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", memoryServiceName, controlPlaneNS, memoryServicePort, memory.MCPEndpoint)
+	return memoryEndpoint(controlPlaneNS, memory.MCPEndpointAuthoring)
+}
+
+// memoryEndpoint builds the streamable-http MCP URL of the in-cluster memory Service for a given
+// per-scope path. Each built-in server (authoring / discussion / search) MUST use a DISTINCT path
+// (ISI-5694): opencode's MCP client dedupes remote servers by URL, so same-URL endpoints collapse
+// into one connection with one token, and discussion_post loses its coordinator cap. The memory
+// handler serves all three alias paths and still scopes by the verified token's capabilities.
+func memoryEndpoint(controlPlaneNS, endpointPath string) string {
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", memoryServiceName, controlPlaneNS, memoryServicePort, endpointPath)
 }
 
 // authoringMCPServer renders the desired built-in server for a squad namespace:

@@ -165,13 +165,34 @@ func (m *ToolMCP) WithAuthoringTokenAuth(verifier AuthoringTokenVerifier) *ToolM
 // window has both surfaces live off the one ReadService/WriteService.
 const MCPEndpoint = "/mcp"
 
+// Per-scope alias paths for the JSON-RPC transport (ISI-5694). The three built-in memory MCPServers
+// (authoring / discussion / search) target the SAME memory Service, and opencode's MCP client dedupes
+// remote servers by URL — so three same-URL endpoints collapse into ONE connection presenting ONE
+// bearer token (observed: the search token, caps=[work_item.search]). Every tool call, including
+// discussion_post, then rides that single token and loses its scoped caps (the coordinator cap the
+// party fan-out needs), stalling the round at 0 voices. Giving each built-in server a DISTINCT URL
+// keeps opencode on three separate connections, each presenting its own scoped token. The handler is
+// path-agnostic and gates every tools/call by the verified token's capabilities, so these aliases
+// change only connection identity, not scoping. MCPEndpoint stays mounted for back-compat.
+const (
+	MCPEndpointAuthoring  = "/mcp/authoring"
+	MCPEndpointDiscussion = "/mcp/discussion"
+	MCPEndpointSearch     = "/mcp/search"
+)
+
 // mcpProtocolVersion is the MCP protocol revision this server implements. The initialize handshake
 // echoes the client's requested version when we support it, else falls back to this.
 const mcpProtocolVersion = "2025-06-18"
 
-// Mount registers the JSON-RPC endpoint on the given mux.
+// Mount registers the JSON-RPC endpoint on the given mux. The per-scope alias paths (ISI-5694) are
+// served by the same path-agnostic handler so opencode keeps three distinct same-host connections,
+// each presenting its own scoped token, instead of collapsing them by URL. They are exact-path routes
+// and do not overlap the thin per-tool /mcp/tools/* routes mounted by (*ToolHTTP).Mount.
 func (m *ToolMCP) Mount(mux *http.ServeMux) {
 	mux.HandleFunc(MCPEndpoint, m.handle)
+	mux.HandleFunc(MCPEndpointAuthoring, m.handle)
+	mux.HandleFunc(MCPEndpointDiscussion, m.handle)
+	mux.HandleFunc(MCPEndpointSearch, m.handle)
 }
 
 // ---------------------------------------------------------------------------
