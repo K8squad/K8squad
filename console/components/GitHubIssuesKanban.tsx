@@ -362,6 +362,25 @@ function IssueLink({ issue }: { issue: GithubIssue }) {
   );
 }
 
+/** runStateIcon returns the shape icon for the treated card status pill (ISI-5678).
+ * Shape alone disambiguates without colour (WCAG 1.4.1 redundancy). */
+function runStateIcon(runState: NonNullable<GithubIssue["local"]>["runState"]): string {
+  switch (runState) {
+    case "running": return "▶";
+    case "todo":    return "◴";
+    case "done":    return "✓";
+  }
+}
+
+/** runStateLabel returns the human-readable status label for the pill. */
+function runStateLabel(runState: NonNullable<GithubIssue["local"]>["runState"]): string {
+  switch (runState) {
+    case "running": return "Running";
+    case "todo":    return "Queued";
+    case "done":    return "Done";
+  }
+}
+
 function IssueCard({
   issue,
   now,
@@ -383,9 +402,20 @@ function IssueCard({
   // PURELY from `issue.local` and is NEVER merged into the mirrored `assignees`
   // line below. This render path issues no GitHub write of any kind.
   const localBadge = localRunBadge(issue);
+  // ISI-5678: treated-card detection. A card is "treated" when issue.local is
+  // present (the backend attached a local work-item block). Untreated cards
+  // receive zero visual treatment — no rail, no pill, no avatar, no marker.
+  const treated = !!issue.local;
+  const runState = issue.local?.runState;
+  const agentName = issue.local?.agent?.trim() ?? "";
+  const agentMonogram = agentName.charAt(0).toUpperCase() || "?";
   return (
     <article
-      className={`gh-kanban-card gh-kanban-card--clickable${isBlocked(issue) ? " gh-kanban-card--blocked" : ""}`}
+      className={[
+        "gh-kanban-card gh-kanban-card--clickable",
+        isBlocked(issue) ? "gh-kanban-card--blocked" : "",
+        treated && runState ? `gh-kanban-card--treated gh-kanban-card--treated-${runState}` : "",
+      ].filter(Boolean).join(" ")}
       data-testid="gh-issue-card"
       data-issue-number={issue.number}
       role="button"
@@ -399,13 +429,38 @@ function IssueCard({
         }
       }}
     >
+      {/* ① Left rail — runState hue bar (ISI-5678 channel 1). Absent on untreated cards. */}
+      {treated && runState && (
+        <div className={`gh-kanban-card__rail gh-kanban-card__rail--${runState}`} aria-hidden="true" />
+      )}
+      {/* ④ "ksq" provenance marker — top-right (ISI-5678 channel 4). */}
+      {treated && (
+        <span className="gh-issue-ksq-marker" aria-label="Paperclip-treated" data-testid="gh-issue-ksq-marker">
+          ksq
+        </span>
+      )}
       <div className="gh-kanban-card__title">
         <span className="gh-issue-title" data-testid="gh-issue-title">
           <span className="gh-issue-num">#{issue.number}</span> {issue.title}
         </span>
       </div>
       <div className="gh-kanban-card__tags">
-        {localBadge && (
+        {/* ② Status pill — shape + label + hue (ISI-5678 channel 2). Replaces the
+            existing flat chip with a richer pill on treated cards; untreated cards
+            still render the original flat chip below. */}
+        {treated && runState ? (
+          <span
+            className={`gh-local-badge gh-local-badge--pill gh-local-badge--${localBadge?.tone ?? runState}`}
+            data-testid="gh-issue-local-run"
+            aria-label={`Local Paperclip status: ${localBadge?.label ?? runStateLabel(runState)}`}
+          >
+            <span className="gh-local-badge__icon" aria-hidden="true">{runStateIcon(runState)}</span>
+            {runState === "running" && (
+              <span className="gh-local-badge__pulse" aria-hidden="true" />
+            )}
+            {localBadge?.label ?? runStateLabel(runState)}
+          </span>
+        ) : localBadge ? (
           <span
             className={`gh-local-badge gh-local-badge--${localBadge.tone}`}
             data-testid="gh-issue-local-run"
@@ -414,7 +469,7 @@ function IssueCard({
             <span className="gh-local-badge__dot" aria-hidden="true" />
             {localBadge.label}
           </span>
-        )}
+        ) : null}
         {priority && (
           <span
             className={`gh-priority-badge gh-priority-badge--${priority.tone}`}
@@ -436,12 +491,21 @@ function IssueCard({
         {chips.length > 4 && <span className="gh-label-chip muted">+{chips.length - 4}</span>}
       </div>
       <div className="gh-kanban-card__meta">
-        <span
-          className={`gh-issue-assignee${issue.assignees?.length ? "" : " muted"}`}
-          data-testid="gh-issue-assignee"
-        >
-          {issue.assignees?.length ? issue.assignees.join(", ") : "Unassigned"}
-        </span>
+        {/* ③ Agent avatar monogram (ISI-5678 channel 3). Shown on treated cards;
+            untreated cards render the provider assignees line unchanged. */}
+        {treated && agentName ? (
+          <span className="gh-issue-avatar" data-testid="gh-issue-avatar" title={agentName}>
+            <span className="gh-issue-avatar__mono" aria-hidden="true">{agentMonogram}</span>
+            <span className="gh-issue-avatar__name">{agentName}</span>
+          </span>
+        ) : (
+          <span
+            className={`gh-issue-assignee${issue.assignees?.length ? "" : " muted"}`}
+            data-testid="gh-issue-assignee"
+          >
+            {issue.assignees?.length ? issue.assignees.join(", ") : "Unassigned"}
+          </span>
+        )}
         {updated && (
           <span className="muted gh-issue-updated" data-testid="gh-issue-updated">
             {updated}

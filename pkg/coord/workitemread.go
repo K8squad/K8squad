@@ -285,6 +285,52 @@ func (s *WorkItemReadStore) FindWorkItemByLabel(ctx context.Context, teamID, pro
 	return rec, nil
 }
 
+// IssueLocalRecord is the enriched read model the GitHub-issues local-badge
+// join (ISI-5678) needs: work item id + raw state + the assigned agent name
+// (from coord.claim.assignee_agent, "" when unclaimed). It is read-only and
+// produces no side-effects, so it never crosses the ISI-4711 custody wall.
+type IssueLocalRecord struct {
+	WorkItemID string
+	State      string
+	Assignee   string // coord.claim.assignee_agent; "" when unclaimed
+}
+
+// FindIssueLocalByLabel is the enriched read-only seam for the GitHub-issues
+// treated-card join (ISI-5678). It resolves the work item anchored by label in
+// projectID, LEFT JOINing coord.claim for the assigned agent name. Team scoping
+// mirrors FindWorkItemByLabel exactly (empty ⇒ trusted fleet-admin path; a
+// scoped Team sees only its own items, a miss reads as ErrWorkItemNotFound —
+// never a cross-tenant 403). Best-effort: callers must tolerate ErrWorkItemNotFound
+// (honest absence) and transient errors identically — neither fabricates a badge.
+func (s *WorkItemReadStore) FindIssueLocalByLabel(ctx context.Context, teamID, projectID, label string) (IssueLocalRecord, error) {
+	if projectID == "" {
+		return IssueLocalRecord{}, fmt.Errorf("coord.FindIssueLocalByLabel: projectID required")
+	}
+	if label == "" {
+		return IssueLocalRecord{}, fmt.Errorf("coord.FindIssueLocalByLabel: label required")
+	}
+	var rec IssueLocalRecord
+	var assignee sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT wi.id::text, wi.state, c.assignee_agent
+		  FROM coord.work_item wi
+		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
+		 WHERE wi.project_id = $1::uuid
+		   AND ($2::uuid IS NULL OR wi.team_id = $2::uuid)
+		   AND $3 = ANY(wi.labels)
+		 ORDER BY wi.created_at, wi.id
+		 LIMIT 1`, projectID, nullUUID(teamID), label).
+		Scan(&rec.WorkItemID, &rec.State, &assignee)
+	if errors.Is(err, sql.ErrNoRows) {
+		return IssueLocalRecord{}, ErrWorkItemNotFound
+	}
+	if err != nil {
+		return IssueLocalRecord{}, fmt.Errorf("coord.FindIssueLocalByLabel: lookup %s in %s: %w", label, projectID, err)
+	}
+	rec.Assignee = assignee.String
+	return rec, nil
+}
+
 // WorkItemProjectRef is the minimal identity the discussion ticket-reference
 // resolver (ISI-5170) needs to validate a candidate link: the work item's
 // owning project (coord.work_item.project_id — the Project CR UID, NOT the

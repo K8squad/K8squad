@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -158,6 +159,22 @@ type GithubPRReview struct {
 	State      string `json:"state,omitempty"`
 }
 
+// GithubIssueLocal is the OPTIONAL local-bridge block for a GitHub issue
+// (ISI-5678 / ISI-4760). Present only when this issue is bridged to a
+// Paperclip work-item (label `ksquad.github.issue=<owner>/<repo>#N`); ABSENT
+// means "not locally assigned" — the honest default (ADR-0013 §D4), never
+// fabricated. WorkItemID deep-links to the ticket; Agent is the assigned agent
+// name (coord.claim.assignee_agent, "" when unclaimed); RunState maps the
+// work-item coord state onto the three-value badge vocabulary (running | todo |
+// done) used by the console's localRunBadge() projection. It is a LOCAL-ONLY
+// status derived from the work-item/run store; it is NEVER a GitHub assignee
+// and must never be merged into the provider's Assignees (ADR-0013 / §6).
+type GithubIssueLocal struct {
+	WorkItemID string `json:"workItemId"`
+	Agent      string `json:"agent,omitempty"`
+	RunState   string `json:"runState"` // "running" | "todo" | "done"
+}
+
 // GithubIssue is one mirrored issue. Labels + Assignees are the provider's own
 // normalized values (MirrorPayload.Labels/Assignees) projected verbatim so the
 // Issues Kanban board (ISI-4673) can render the real label set + assignees —
@@ -171,6 +188,11 @@ type GithubIssue struct {
 	Labels    []string   `json:"labels,omitempty"`
 	Assignees []string   `json:"assignees,omitempty"`
 	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
+	// Local is the OPTIONAL local-bridge block (ISI-5678 / ISI-4760 Epic 4).
+	// Present only when this issue is bridged to a Paperclip work-item (label
+	// `ksquad.github.issue=<owner>/<repo>#N`). ABSENT means "not locally
+	// assigned" — the honest default, never fabricated.
+	Local *GithubIssueLocal `json:"local,omitempty"`
 }
 
 // GithubCheck is one mirrored check-run. Conclusion is the CI verdict
@@ -246,6 +268,11 @@ type GithubStatusService struct {
 	// attached (the honest "not reviewed" default), so a deployment without the
 	// coord read store degrades cleanly rather than 500ing.
 	reviews ReviewItemFinder
+	// issueLocals is the OPTIONAL coord read seam that joins a GitHub issue to
+	// its local Paperclip work-item (ISI-5678). Nil ⇒ no local block is ever
+	// attached (the honest "not locally assigned" default), so a deployment
+	// without the coord read store degrades cleanly.
+	issueLocals IssueLocalFinder
 	// history is the OPTIONAL read seam over scm.github_sync_history (ISI-5309).
 	// Nil ⇒ the payload carries no syncHistory (the honest "no history" default),
 	// so a deployment without the sync-history store degrades cleanly. Read-only;
@@ -275,6 +302,17 @@ type ReviewItemFinder interface {
 	FindWorkItemByLabel(ctx context.Context, teamID, projectID, label string) (coord.WorkItemRecord, error)
 }
 
+// IssueLocalFinder is the coord read seam that resolves a GitHub issue's local
+// work-item by its anchor label (ksquad.github.issue=<owner>/<repo>#N). It
+// returns the richer IssueLocalRecord (work item id + state + assigned agent),
+// enabling the Issues Kanban card treatment (ISI-5678). Implemented by
+// *coord.WorkItemReadStore.FindIssueLocalByLabel. It is read-only and creates
+// nothing, so it never crosses the ISI-4711 custody wall. Nil ⇒ no local block
+// is ever attached (the honest "not locally assigned" default).
+type IssueLocalFinder interface {
+	FindIssueLocalByLabel(ctx context.Context, teamID, projectID, label string) (coord.IssueLocalRecord, error)
+}
+
 // NewGithubStatusService builds the read model. reader + mirror are required;
 // when the mirror reader is unavailable the caller leaves opts.GithubStatus nil
 // and the route answers the documented 501 (AC5) rather than constructing a
@@ -284,6 +322,17 @@ type ReviewItemFinder interface {
 // staleness fields are surfaced, ISI-5483).
 func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader, reviews ReviewItemFinder, history scm.SyncHistoryReader, repoHealth scm.RepoHealthReader) *GithubStatusService {
 	return &GithubStatusService{reader: reader, mirror: mirror, reviews: reviews, history: history, repoHealth: repoHealth, now: time.Now}
+}
+
+// WithIssueLocals wires the optional IssueLocalFinder seam (ISI-5678) onto an
+// existing GithubStatusService. This is a builder-style setter so the callers
+// that construct the service (main.go, tests) can opt into the feature without
+// changing the constructor signature: a service built without calling this
+// method never attaches local blocks (the honest default). Returns the receiver
+// for fluent chaining.
+func (s *GithubStatusService) WithIssueLocals(f IssueLocalFinder) *GithubStatusService {
+	s.issueLocals = f
+	return s
 }
 
 // GithubStatus composes the payload for one Project. Resolution and every read
@@ -357,6 +406,15 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 		if s.reviews != nil && uid != "" && repoURL != "" {
 			s.attachReviews(ctx, &out, reviewTeamID(auth), uid, repoURL)
 		}
+		// ISI-5678: join each GitHub issue to its local work-item via the anchor
+		// label `ksquad.github.issue=<owner>/<repo>#N`. Best-effort and optional: a
+		// nil seam, an unslug-able URL, or a miss all leave the issue honestly "not
+		// locally assigned" (no Local block) — never fabricated. The label is derived
+		// from the issue's own mirrored URL (canonical casing) so it matches the
+		// label the issuetrigger stamped on creation.
+		if s.issueLocals != nil && uid != "" {
+			s.attachIssueLocals(ctx, &out, reviewTeamID(auth), uid)
+		}
 	} else {
 		// No Project object at all (e.g. mirror rows but the CR is gone from the
 		// informer): the tab treats this as not-configured rather than a blank.
@@ -428,6 +486,65 @@ func (s *GithubStatusService) attachReviews(ctx context.Context, out *GithubStat
 		out.PullRequests[i].Review = &GithubPRReview{
 			WorkItemID: rec.ID,
 			State:      rec.State,
+		}
+	}
+}
+
+// ghIssueURLRe parses a GitHub issue URL of the form
+// https://github.com/owner/repo/issues/N into capture groups [owner/repo, N].
+var ghIssueURLRe = regexp.MustCompile(`(?i)github\.com/([^/]+/[^/]+)/issues/(\d+)`)
+
+// issueAnchorLabel builds the ksquad.github.issue= label for one mirrored
+// issue, mirroring issuetrigger.deriveIssueRef. It prefers the issue's own
+// mirrored URL (canonical casing, matching the label the issuetrigger stamped);
+// when absent/unparseable it falls back to the repo URL slug + number. Returns
+// "" when neither produces a usable owner/repo#N — callers skip the lookup.
+func issueAnchorLabel(issueURL string, number int) string {
+	if m := ghIssueURLRe.FindStringSubmatch(issueURL); m != nil {
+		return "ksquad.github.issue=" + m[1] + "#" + m[2]
+	}
+	if number <= 0 {
+		return ""
+	}
+	return ""
+}
+
+// issueRunState maps a coord work-item state onto the three-value runState
+// vocabulary the Issues Kanban card treatment uses (ISI-5678 / ISI-4760 §7).
+// "in_progress" is the live "running" state; any unknown/terminal adjacent
+// state degrades to "todo" so the card always shows an honest non-fabricated
+// value from the permitted set.
+func issueRunState(state string) string {
+	switch state {
+	case "done":
+		return "done"
+	case "in_progress":
+		return "running"
+	default:
+		return "todo"
+	}
+}
+
+// attachIssueLocals looks up each issue's local Paperclip work-item by its
+// anchor label (ksquad.github.issue=<owner>/<repo>#N) and attaches the local
+// block (work-item id + assigned agent + runState). Best-effort: any lookup
+// that misses (ErrWorkItemNotFound) or errors transiently leaves that issue
+// without a Local block — the honest "not locally assigned" default (ADR-0013
+// §D4). At most one indexed coord read per issue.
+func (s *GithubStatusService) attachIssueLocals(ctx context.Context, out *GithubStatus, teamID, projectUID string) {
+	for i := range out.Issues {
+		label := issueAnchorLabel(out.Issues[i].URL, out.Issues[i].Number)
+		if label == "" {
+			continue
+		}
+		rec, err := s.issueLocals.FindIssueLocalByLabel(ctx, teamID, projectUID, label)
+		if err != nil {
+			continue // not-found (honest absence) or transient error — never fabricate
+		}
+		out.Issues[i].Local = &GithubIssueLocal{
+			WorkItemID: rec.WorkItemID,
+			Agent:      rec.Assignee,
+			RunState:   issueRunState(rec.State),
 		}
 	}
 }

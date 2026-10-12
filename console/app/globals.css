@@ -4526,6 +4526,110 @@ a:hover {
   background: var(--text-2);
 }
 
+/* ============================================================================
+ * ISI-5678 — Treated GitHub-issue card treatment (four redundant channels).
+ * ZERO new design tokens — all colours from existing :root / [data-theme] above.
+ * Channel ① left rail, ② status pill upgrade, ③ agent avatar, ④ ksq marker.
+ * ==========================================================================*/
+
+/* ① Left rail — 3.5 px coloured bar on the card's left edge. The card must be
+ * position:relative so the absolute child rail doesn't escape. */
+.gh-kanban-card--treated {
+  position: relative;
+  padding-left: 14px; /* extra left indent so the rail doesn't overlap text */
+}
+.gh-kanban-card__rail {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 3.5px;
+  border-radius: var(--radius-control, 8px) 0 0 var(--radius-control, 8px);
+}
+.gh-kanban-card__rail--running {
+  background: #16a34a;
+}
+.gh-kanban-card__rail--todo {
+  background: #d97706;
+}
+.gh-kanban-card__rail--done {
+  background: var(--text-2, #64748b);
+}
+
+/* ④ "ksq" provenance marker — top-right corner, local-provenance violet. */
+.gh-issue-ksq-marker {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ksq-run, #a78bfa);
+  opacity: 0.85;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ② Status pill — upgraded from flat chip: shape icon + label + hue.
+ * Adds the icon span and optional running pulse without breaking existing chips. */
+.gh-local-badge--pill {
+  gap: 4px;
+}
+.gh-local-badge__icon {
+  font-size: 9px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+/* Running pulse dot (respects prefers-reduced-motion per spec). */
+.gh-local-badge__pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #16a34a;
+  flex: 0 0 auto;
+  animation: gh-pulse 1.4s ease-in-out infinite;
+}
+@keyframes gh-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.75); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gh-local-badge__pulse {
+    animation: none;
+  }
+}
+
+/* ③ Agent avatar — monogram + name on the meta line. */
+.gh-issue-avatar {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+}
+.gh-issue-avatar__mono {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ksq-run, #a78bfa) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ksq-run, #a78bfa) 45%, var(--border));
+  color: var(--ksq-run, #a78bfa);
+  font-size: 9px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.gh-issue-avatar__name {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
   .gh-kanban {
     grid-template-columns: repeat(4, minmax(220px, 1fr));
