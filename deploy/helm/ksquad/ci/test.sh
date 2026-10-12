@@ -227,4 +227,26 @@ render_ok "carveouts(opt-in): dataplaneNamespaceSelector is tunable" 'kubernetes
   "${CORE[@]}" "${LOCKDOWN[@]}" --show-only "$CARVE" \
   --set egress.networkPolicy.controlPlaneCarveOuts.dataplaneNamespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=envoy-gateway-system
 
+echo "== sandbox/shim image pin (ISI-5686) =="
+OP="templates/operator.yaml"
+# Default empty = KSQUAD_SANDBOX_IMAGE absent (unset: warm pool inert, image
+# resolves via the AgentRuntime chain — the pre-ISI-5686 posture).
+render_lacks "sandbox image: empty default omits KSQUAD_SANDBOX_IMAGE" "$OP" 'KSQUAD_SANDBOX_IMAGE' \
+  "${CORE[@]}"
+# A pinned default renders KSQUAD_SANDBOX_IMAGE so `helm upgrade` re-asserts the
+# z.ai egress fix instead of reverting the imperative overlay (ISI-5683).
+render_ok "sandbox image: pinned default renders KSQUAD_SANDBOX_IMAGE" 'name: KSQUAD_SANDBOX_IMAGE' \
+  "${CORE[@]}" --show-only "$OP" \
+  --set-string operator.sandbox.image=10.0.0.13/ghcr/k8squad/ksquad-shim-opencode@sha256:33229651
+render_ok "sandbox image: pinned digest carried verbatim" 'ksquad-shim-opencode@sha256:33229651' \
+  "${CORE[@]}" --show-only "$OP" \
+  --set-string operator.sandbox.image=10.0.0.13/ghcr/k8squad/ksquad-shim-opencode@sha256:33229651
+# Per-type overrides render KSQUAD_SANDBOX_IMAGE_<TYPE> (uppercased, '-'→'_').
+render_ok "sandbox image: per-type override normalizes claude-code → _CLAUDE_CODE" 'name: KSQUAD_SANDBOX_IMAGE_CLAUDE_CODE' \
+  "${CORE[@]}" --show-only "$OP" \
+  --set-string operator.sandbox.imagesByType.claude-code=reg/cc@sha256:bbb
+render_ok "sandbox image: per-type override renders KSQUAD_SANDBOX_IMAGE_OPENCODE" 'name: KSQUAD_SANDBOX_IMAGE_OPENCODE' \
+  "${CORE[@]}" --show-only "$OP" \
+  --set-string operator.sandbox.imagesByType.opencode=reg/oc@sha256:aaa
+
 echo "ALL CHECKS PASSED"

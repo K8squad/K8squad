@@ -131,6 +131,26 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- end }}
+            {{- /* ISI-5686: pin the sandbox/shim runtime image(s) so a
+                   `helm upgrade` re-asserts the z.ai egress fix (the ISI-5477
+                   proxy-injection + ISI-5503 opencode.json fixes ship IN the
+                   shim binary this image carries) instead of reverting to a
+                   stale pin or dropping KSQUAD_SANDBOX_IMAGE. The operator
+                   resolves KSQUAD_SANDBOX_IMAGE as the default sandbox image
+                   for every runtime type and KSQUAD_SANDBOX_IMAGE_<TYPE> as
+                   per-flavor overrides (pkg/controller/rundrive
+                   RuntimeImagesFromEnv). Empty = unset (warm pool inert; image
+                   must resolve via the AgentRuntime chain). */}}
+            {{- with .Values.operator.sandbox.image }}
+            - name: KSQUAD_SANDBOX_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $type, $img := .Values.operator.sandbox.imagesByType }}
+            {{- with $img }}
+            - name: KSQUAD_SANDBOX_IMAGE_{{ $type | upper | replace "-" "_" }}
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- /* ISI-4315: purpose-keyed sandbox priority + warm-pool
                    capacity governance. Empty priority class names disable
                    stamping (pre-ISI-4315 behavior); the numeric knobs are
