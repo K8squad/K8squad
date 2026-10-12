@@ -123,6 +123,17 @@
   border-radius: var(--radius-card);
   overflow: hidden;
 }
+
+/* RUNS-1 P0: allow horizontal scroll on narrow viewports instead of clipping */
+@media (max-width: 768px) {
+  .runs-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .runs-table {
+    min-width: 560px; /* keep columns readable; wrapper scrolls */
+  }
+}
 .runs-table {
   width: 100%;
   border-collapse: collapse;

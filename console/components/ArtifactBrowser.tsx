@@ -260,6 +260,7 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
             The coordination record holds no artifacts for this Run yet.
           </p>
         ) : (
+          <div className="artifact-table-wrap">
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr className="muted" style={{ textAlign: "left", fontSize: 12 }}>
@@ -293,6 +294,7 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </section>
 
