@@ -1,10 +1,11 @@
-// app/api/squad/agents/activity/route.ts — BFF proxy for the agent-activity read
-// model (ISI-5704 WS-1a; GET /api/squad/agents/activity, agentactivity.go). The
-// fleet recompose (ISI-5708 WS-3) consumes this for the current-runs agent-card
-// grid. GET-ONLY: the apiserver owns the authoritative Team scoping server-side
-// (admin ⇒ fleet-wide, tenant ⇒ fenced), and this route surfaces its response
-// VERBATIM (200 | 401 | 404 no-team | 501 read model not wired). No mutating verb
-// is routed (POST/PUT/PATCH/DELETE → 405).
+// app/api/squad/agents/activity/route.ts — BFF squad agent-activity proxy (ISI-5704 WS-1a,
+// consumed by the overview-UX redesign ISI-5697 / design ISI-5699).
+//
+// GET-ONLY. Proxies the apiserver's agent-activity read model (GET /api/squad/agents/activity,
+// agentactivity.go AgentActivityList) — per agent its current-or-last run with a SERVER-classified
+// last-thinking snippet, folding away the console's old N+1 GET /api/runs/{runId} fan-out. Scoping
+// is AUTHORITATIVE server-side (admin ⇒ fleet-wide; tenant ⇒ their own Team). Response surfaced
+// VERBATIM (401 / 404 / 501). No mutating verb is routed here → 405.
 
 import type { NextRequest } from "next/server";
 import { proxyJson } from "@/lib/bff";

@@ -414,3 +414,62 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ------------------------------------------------------------------------- */
+/* Per-project GitHub strip + Jump-in CTA row (ISI-5709 WS-4, mock D ②/④).   */
+/* Reuses the shipped surface/semantic tokens — no new color is introduced.  */
+/* ------------------------------------------------------------------------- */
+.ov-ghstrip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+@media (max-width: 720px) {
+  .ov-ghstrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.ov-ghstrip__chip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--inset);
+}
+.ov-ghstrip__value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.ov-ghstrip__label {
+  font-size: 11px;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ov-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.ov-cta {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  border: 1px solid transparent;
+}
+.ov-cta:hover { filter: brightness(1.05); }
+.ov-cta--ghost {
+  background: transparent;
+  color: var(--text-1);
+  border-color: var(--border);
+}

@@ -59,8 +59,8 @@ import {
 } from "@/lib/overview/projectSeries";
 import {
   fetchGithubSummary,
-  openPrsByRepo,
-  repoSlug,
+  selectRepoStat,
+  repoCount,
   type GithubSummaryState,
 } from "@/lib/overview/githubSummary";
 import "@/components/overview/overview.css";
@@ -383,16 +383,14 @@ function ProjectJumpRow({
   projects: OverviewProject[];
   github: GithubSummaryState;
 }) {
-  const prsByRepo = useMemo(
-    () => openPrsByRepo(github.kind === "ready" ? github.data : null),
-    [github],
-  );
+  const summary = github.kind === "ready" ? github.data : null;
   return (
     <PanelCard title="Projects" state={projects.length === 0 ? "empty" : "ready"} emptyLabel="No projects yet.">
       <ul className="ov-project-jump" data-testid="fleet-projects">
         {projects.map((p) => {
-          const slug = repoSlug(p.repoUrl);
-          const openPrs = slug ? prsByRepo.get(slug) : undefined;
+          // Reuse the WS-4 per-project selector (selectRepoStat + repoCount): the open-PR
+          // count is authoritative when the repo is mirrored, "—" otherwise (FR-I3).
+          const openPrs = repoCount(selectRepoStat(summary, p.repoUrl), "prs");
           return (
             <li key={`${p.namespace}/${p.name}`} className="ov-project-jump__row" data-testid="fleet-project-jump">
               <div className="ov-project-jump__id">
@@ -405,7 +403,7 @@ function ProjectJumpRow({
               <div className="ov-project-jump__metrics">
                 <span>{totalRuns(p)} runs</span>
                 <span data-testid="fleet-project-prs">
-                  {openPrs === undefined ? "— PRs" : `${openPrs} open PR${openPrs === 1 ? "" : "s"}`}
+                  {typeof openPrs === "number" ? `${openPrs} open PR${openPrs === 1 ? "" : "s"}` : "— PRs"}
                 </span>
               </div>
               <a

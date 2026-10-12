@@ -1,10 +1,12 @@
-// app/api/squad/github/route.ts — BFF proxy for the fleet-wide GitHub summary
-// (ISI-5705 WS-1b; GET /api/squad/github, githubsummary.go). The fleet recompose
-// (ISI-5708 WS-3) consumes this for the GitHub summary strip + the authoritative
-// per-project "Open PRs" count. GET-ONLY; the apiserver aggregates the synced scm
-// mirror server-side (no outbound GitHub call) under the §13 BFF authz choke
-// point, and this route surfaces its response VERBATIM (200 | 401 | 501 when the
-// mirror read model is not wired). No mutating verb is routed (→ 405).
+// app/api/squad/github/route.ts — BFF squad GitHub-summary proxy (ISI-5705 WS-1b,
+// consumed by the overview-UX redesign ISI-5697 / design ISI-5699).
+//
+// GET-ONLY. Proxies the apiserver's fleet-wide GitHub roll-up (GET /api/squad/github,
+// githubsummary.go GithubSummary) — issue/PR/check totals, a 7-day merge sparkline, and a
+// per-repo breakdown. Scoping is AUTHORITATIVE server-side (admin ⇒ every squad's repos; tenant
+// ⇒ their own Team). The summary is sourced ENTIRELY from the already-synced scm mirror, never a
+// live GitHub fan-out, so this path makes zero outbound GitHub calls. Response surfaced VERBATIM
+// (401 / 404 / 501). No mutating verb is routed here → 405.
 
 import type { NextRequest } from "next/server";
 import { proxyJson } from "@/lib/bff";

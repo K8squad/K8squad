@@ -1,55 +1,80 @@
-// test/overview/githubSummary.test.ts — pure projections behind the WS-3 GitHub
-// summary strip (ISI-5708): repo-URL → mirror slug normalization and the per-repo
-// open-PR lookup the project jump row keys on. No fetch, no DOM.
+// test/overview/githubSummary.test.ts — the WS-1b FE projections behind the project overview's
+// real Open-PRs count + GitHub strip (ISI-5709 WS-4). Pure: no fetch, no DOM.
 
 import { describe, it, expect } from "vitest";
 import {
   repoSlug,
-  openPrsByRepo,
+  selectRepoStat,
+  repoCount,
   classifyGithubStatus,
+  UNAVAILABLE,
   type GithubSummary,
+  type GithubRepoStat,
 } from "@/lib/overview/githubSummary";
 
 describe("repoSlug", () => {
-  it("normalizes https, scp-like, .git, and bare forms to lower-case owner/repo", () => {
-    expect(repoSlug("https://github.com/Acme/WebApp.git")).toBe("acme/webapp");
-    expect(repoSlug("https://github.com/acme/webapp")).toBe("acme/webapp");
-    expect(repoSlug("git@github.com:acme/webapp.git")).toBe("acme/webapp");
-    expect(repoSlug("github.com/acme/webapp")).toBe("acme/webapp");
-    expect(repoSlug("acme/webapp")).toBe("acme/webapp");
-    // Trailing slash + nested host path still resolve to the final owner/repo pair.
-    expect(repoSlug("https://git.example.com/org/acme/webapp/")).toBe("acme/webapp");
+  it("normalizes https github urls to a lower-cased owner/repo slug", () => {
+    expect(repoSlug("https://github.com/K8squad/K8squad")).toBe("k8squad/k8squad");
+    expect(repoSlug("https://github.com/K8squad/K8squad.git")).toBe("k8squad/k8squad");
+    expect(repoSlug("https://github.com/Acme/Web-App/")).toBe("acme/web-app");
   });
 
-  it("returns null when no owner/repo pair can be derived (renders '—', never a guess)", () => {
-    expect(repoSlug("")).toBeNull();
+  it("handles scp-form and bare owner/repo", () => {
+    expect(repoSlug("git@github.com:Acme/Web.git")).toBe("acme/web");
+    expect(repoSlug("Acme/Web")).toBe("acme/web");
+  });
+
+  it("returns null for anything that is not exactly owner/repo", () => {
     expect(repoSlug(null)).toBeNull();
-    expect(repoSlug(undefined)).toBeNull();
-    expect(repoSlug("justone")).toBeNull();
+    expect(repoSlug("")).toBeNull();
+    expect(repoSlug("   ")).toBeNull();
+    expect(repoSlug("https://github.com/OnlyOwner")).toBeNull();
+    expect(repoSlug("https://github.com/a/b/c")).toBeNull();
   });
 });
 
-describe("openPrsByRepo", () => {
-  const summary: GithubSummary = {
-    totals: { issuesAssigned: 0, issuesOpen: 0, prsOpened: 0, prsReviewed: 0, prsMerged: 0, checksRed: 0 },
-    mergeSparkline7d: [],
-    byRepo: [
-      { repo: "acme/webapp", assigned: 1, open: 2, prs: 3, reviewed: 2, checksRed: 0 },
-      { repo: "acme/infra", assigned: 0, open: 0, prs: 0, reviewed: 0, checksRed: 1 },
-    ],
-  };
-  it("maps each slug to its open-PR count (case-insensitive)", () => {
-    const m = openPrsByRepo(summary);
-    expect(m.get("acme/webapp")).toBe(3);
-    expect(m.get("acme/infra")).toBe(0);
-    expect(m.get(repoSlug("https://github.com/Acme/WebApp.git")!)).toBe(3);
+const summary: GithubSummary = {
+  totals: {
+    issuesAssigned: 3,
+    issuesOpen: 10,
+    prsOpened: 4,
+    prsReviewed: 2,
+    prsMerged: 7,
+    checksRed: 1,
+  },
+  mergeSparkline7d: [0, 1, 0, 2, 1, 0, 3],
+  byRepo: [
+    { repo: "k8squad/k8squad", assigned: 2, open: 6, prs: 4, reviewed: 2, checksRed: 1 },
+    { repo: "acme/web", assigned: 1, open: 4, prs: 0, reviewed: 0, checksRed: 0 },
+  ],
+};
+
+describe("selectRepoStat", () => {
+  it("matches the byRepo row for a project's repoUrl case-insensitively", () => {
+    const stat = selectRepoStat(summary, "https://github.com/K8squad/K8squad");
+    expect(stat?.prs).toBe(4);
+    expect(stat?.checksRed).toBe(1);
   });
-  it("is empty for a null summary", () => {
-    expect(openPrsByRepo(null).size).toBe(0);
+
+  it("returns null when the repo is not mirrored or the url is unparseable", () => {
+    expect(selectRepoStat(summary, "https://github.com/other/repo")).toBeNull();
+    expect(selectRepoStat(summary, "not-a-url")).toBeNull();
+    expect(selectRepoStat(null, "https://github.com/K8squad/K8squad")).toBeNull();
   });
 });
 
-describe("classifyGithubStatus", () => {
+describe("repoCount (FR-I3)", () => {
+  const stat: GithubRepoStat = summary.byRepo[1]; // acme/web, prs: 0
+  it("renders an authoritative zero as 0, not '—'", () => {
+    expect(repoCount(stat, "prs")).toBe(0);
+  });
+  it("renders '—' when the repo row is absent (unavailable, not fabricated 0)", () => {
+    expect(repoCount(null, "prs")).toBe(UNAVAILABLE);
+  });
+});
+
+// ISI-5708 WS-3: the reusable fetch client's degrade classification.
+describe("classifyGithubStatus (WS-3)", () => {
   it("treats 404/501 as degrade and everything else as a retryable error", () => {
     expect(classifyGithubStatus(404)).toEqual({ kind: "not-available", status: 404 });
     expect(classifyGithubStatus(501)).toEqual({ kind: "not-available", status: 501 });
