@@ -57,3 +57,49 @@ export const THEMES: Record<ThemeName, ThemeTokens> = {
 };
 
 export const DEFAULT_THEME: ThemeName = "dark";
+
+// --- Persistence (ISI-5701) -------------------------------------------------
+//
+// The toggle is a READ preference, not coord state — it persists per user via
+// localStorage (same floor as lib/tickets/viewState.ts). No server user-prefs
+// store exists for theme yet, so localStorage IS the durable store: the
+// provider reads it on every mount and a pre-hydration inline script (see
+// app/layout.tsx) applies it before paint, so a hard reload or a run-page mount
+// can no longer snap the shell back to the DARK default.
+
+export const THEME_STORAGE_KEY = "ksq.theme";
+
+export function isThemeName(v: string | null | undefined): v is ThemeName {
+  return v === "dark" || v === "light";
+}
+
+/** Resolve the persisted theme, falling back to the default. SSR-safe. */
+export function readStoredTheme(storage: Storage | null): ThemeName {
+  try {
+    const stored = storage?.getItem(THEME_STORAGE_KEY) ?? null;
+    if (isThemeName(stored)) return stored;
+  } catch {
+    // Private mode / storage disabled — fall through to the default.
+  }
+  return DEFAULT_THEME;
+}
+
+/** Persist the choice to localStorage (best-effort). */
+export function persistTheme(theme: ThemeName, storage: Storage | null): void {
+  try {
+    storage?.setItem(THEME_STORAGE_KEY, theme);
+  } catch {
+    // Best-effort only — the in-memory context still carries the choice.
+  }
+}
+
+/**
+ * Pre-hydration script body (ISI-5701). Injected verbatim into <head> so it runs
+ * BEFORE React hydrates and before first paint: it reads the stored theme and
+ * stamps `data-theme` on <html>, overriding the server's DEFAULT_THEME. This is
+ * what makes the persisted choice survive hard reloads and run-page mounts
+ * without a flash of the wrong theme.
+ */
+export const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem(${JSON.stringify(
+  THEME_STORAGE_KEY,
+)});if(t==="dark"||t==="light"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`;
