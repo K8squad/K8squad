@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -120,6 +121,66 @@ func parseDurationOrSeconds(v string) (time.Duration, bool) {
 		return time.Duration(secs) * time.Second, true
 	}
 	return 0, false
+}
+
+// stderrTapMax bounds the runtime-stderr tail the tap retains (ISI-5679): a few
+// KiB is enough to carry the last several `--print-logs` lines without
+// unbounded growth under a chatty runtime.
+const stderrTapMax = 4 << 10
+
+// stderrTapLines is how many trailing non-empty stderr lines the watchdog
+// diagnostic surfaces — enough to show the runtime's last provider-side action
+// (a connect error, a 401, or a mid-stream reasoning log) without dumping the
+// whole buffer.
+const stderrTapLines = 4
+
+// stderrTap forwards a runtime's stderr to the shim's own stderr (the pod log —
+// unchanged pass-through) while retaining a bounded tail of the most recent
+// bytes. The first-output watchdog reads that tail when it fires (ISI-5679):
+// opencode is launched with `--print-logs`, so even when it emits NO stdout
+// during a long model phase it streams its connection/auth/stream state to
+// stderr. The tail therefore distinguishes a genuine connect/auth hang from a
+// merely slow (reasoning-model) first token — the ISI-5310 class where a
+// reasoning model's first visible token legitimately lands past the 90s window.
+// The tap carries only what the runtime already prints to the pod log, so it
+// adds no new exposure (NFR-SEC3); it is written to the operator pod log, never
+// onto the user-facing A2A wire.
+type stderrTap struct {
+	w  io.Writer // pass-through sink (the shim's os.Stderr → pod log)
+	mu sync.Mutex
+	// buf holds at most the last stderrTapMax bytes written.
+	buf []byte
+}
+
+func (t *stderrTap) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	t.mu.Lock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > stderrTapMax {
+		// Copy the tail to the front of the same backing array: bounded, and the
+		// old head becomes unreachable on the next append.
+		t.buf = append(t.buf[:0], t.buf[len(t.buf)-stderrTapMax:]...)
+	}
+	t.mu.Unlock()
+	return n, err
+}
+
+// tail returns the last stderrTapLines non-empty lines the runtime wrote to
+// stderr, joined with " | " into a single legible line (empty if the runtime
+// was silent on stderr — itself a signal: a process that produced neither
+// stdout nor stderr never reached its provider call).
+func (t *stderrTap) tail() string {
+	t.mu.Lock()
+	raw := string(t.buf)
+	t.mu.Unlock()
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	kept := make([]string, 0, stderrTapLines)
+	for i := len(lines) - 1; i >= 0 && len(kept) < stderrTapLines; i-- {
+		if s := strings.TrimSpace(lines[i]); s != "" {
+			kept = append([]string{s}, kept...)
+		}
+	}
+	return strings.Join(kept, " | ")
 }
 
 const (
@@ -308,7 +369,12 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	if err != nil {
 		return Outcome{}, fmt.Errorf("shim: stdout pipe: %w", err)
 	}
-	cmd.Stderr = os.Stderr
+	// ISI-5679: tap the runtime's stderr so the first-output watchdog can read
+	// its last lines when it fires. Pass-through to the shim's own stderr is
+	// unchanged (the pod log still carries the full stream); the tap only
+	// retains a bounded tail.
+	stderrTail := &stderrTap{w: os.Stderr}
+	cmd.Stderr = stderrTail
 
 	if err := cmd.Start(); err != nil {
 		return Outcome{}, fmt.Errorf("shim: launch %s: %w", spec.Path, err)
@@ -432,10 +498,22 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 			}
 			window := r.firstOutputWindow()
 			r.killProcessGroup(cmd, scanned)
+			// ISI-5679: the runtime emitted no stdout, but opencode (--print-logs)
+			// streams the provider-side cause to stderr. Co-locate its tail with
+			// the kill in the pod log so a stalled z.ai/BYO run self-diagnoses
+			// (connect/auth hang vs a slow reasoning-model first token) instead of
+			// requiring separate pod-log archaeology after the fact. Kept off the
+			// user-facing Reason (NFR-SEC3): raw runtime stderr stays in the
+			// operator pod log, where it already is.
+			if tail := stderrTail.tail(); tail != "" {
+				fmt.Fprintf(os.Stderr, "shim: first-output watchdog fired after %s; last runtime stderr: %s\n", window, tail)
+			} else {
+				fmt.Fprintf(os.Stderr, "shim: first-output watchdog fired after %s; runtime wrote nothing to stderr either (never reached its provider call)\n", window)
+			}
 			return Outcome{
 				State: a2a.TaskFailed,
 				Reason: fmt.Sprintf("runtime produced no output within %s; model provider stream never started "+
-					"(endpoint unreachable, saturated, or not serving concurrent requests)", window),
+					"(endpoint unreachable, saturated, or not serving concurrent requests; see runtime stderr in the pod log for the provider-side cause)", window),
 			}, nil
 		case <-activity:
 			quiet := r.quietWindow()
