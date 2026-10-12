@@ -1472,8 +1472,20 @@ func main() {
 			ctrl.Log.Error(pdErr, "party advancer disabled (work-item dispatch store)")
 		default:
 			partyAdvancer := &discussion.PartyAdvancer{
-				Store:      discussion.NewStore(db),
-				Writer:     coordAdvancerWriter{store: partyWriteStore, resolver: partyProjectResolver},
+				Store: discussion.NewStore(db),
+				// ISI-5692 (ISI-5662 WS3) — markSource flips the facilitator/takeaways item to
+				// source=discussion so its Run is assembled as a DISCUSSION run (discussion_post tool +
+				// CapabilityCoordinator token), the one change that lets ISI-5688's MCP-edge party dispatch
+				// fire. Mirrors internal/mentiondispatch.markSourceDiscussion (the voice-run seam) rather than
+				// widening coord.CreateWorkItem (FR-B3). See coordAdvancerWriter.markSource.
+				Writer: coordAdvancerWriter{
+					store:    partyWriteStore,
+					resolver: partyProjectResolver,
+					markSource: func(ctx context.Context, workItemID string) error {
+						_, err := db.ExecContext(ctx, `UPDATE coord.work_item SET source = 'discussion' WHERE id = $1::uuid`, workItemID)
+						return err
+					},
+				},
 				Dispatcher: coordAdvancerDispatcher{store: partyDispatchStore},
 				// ISI-5669 WS1 (root-cause B) — resolve the REAL Coordinator-role agent from the CRs
 				// (Agent→Role→Coordinator flag), not the first team agent. The advancer dispatches the
