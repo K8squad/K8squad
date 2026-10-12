@@ -32,6 +32,27 @@ import (
 type coordAdvancerWriter struct {
 	store    *coord.WorkItemWriteStore
 	resolver mentiondispatch.ProjectResolver
+	// markSource flips the just-minted facilitator/takeaways work item's source to 'discussion' (ISI-5692).
+	//
+	// This is what makes the facilitator's minted Run a DISCUSSION run, and it is the whole fix for the
+	// ISI-5662 WS3 stall. The operator assembler injects the built-in memory-discussion endpoint — the
+	// discussion_post tool + a discussion capability token carrying capability.CapabilityCoordinator (when
+	// the dispatched agent holds the Team Coordinator role) — ONLY for a source=discussion run
+	// (pkg/capability.isDiscussionRun keys on the api.LabelWorkItemSource label the intake sweep stamps from
+	// THIS column, rundrive/intake.go). Without the flip the advancer mints a plain board item → an INTAKE
+	// run whose capability manifest has only work_item_* tools and NO discussion endpoint, so the
+	// coordinator cannot post its round directive through the MCP discussion_post edge ISI-5688 fixed; the
+	// directive never stamps RoundVoices and the advancer has no roster to sequence → the round stalls with
+	// zero voices (the live-smoke refutation ISI-5692 filed against ISI-5688).
+	//
+	// Kept as a direct UPDATE at this edge (NOT a new coord.CreateWorkItem parameter), mirroring
+	// internal/mentiondispatch.markSourceDiscussion — the voice-run mint seam that already board-hides its
+	// thread-runs the same way — so the create seam is reused verbatim and no new pkg/coord export is
+	// introduced (FR-B3). It runs inside CreateWorkItem, before the advancer's RequestDispatch moves the
+	// item onto the dispatch lane ('todo'), so the source is already 'discussion' by the time the intake
+	// sweep can select it — no window where the facilitator item surfaces as a board item or mints as an
+	// intake run. nil leaves the behaviour unchanged (an intake-sourced mint), so a test writer can omit it.
+	markSource func(ctx context.Context, workItemID string) error
 }
 
 func (w coordAdvancerWriter) CreateWorkItem(ctx context.Context, in discussion.AdvancerCreateInput) (discussion.AdvancerWorkItemResult, error) {
@@ -58,6 +79,15 @@ func (w coordAdvancerWriter) CreateWorkItem(ctx context.Context, in discussion.A
 	})
 	if err != nil {
 		return discussion.AdvancerWorkItemResult{}, err
+	}
+	// Flip the item to source=discussion so its Run is assembled as a discussion run (see markSource). A
+	// failure here is fatal to the mint: an intake-sourced facilitator cannot post its directive through the
+	// discussion_post edge, so proceeding would silently reproduce the ISI-5692 zero-voice stall — surface
+	// it so the advancer logs and the next tick retries rather than dispatch a structurally-wrong run.
+	if w.markSource != nil {
+		if serr := w.markSource(ctx, rec.ID); serr != nil {
+			return discussion.AdvancerWorkItemResult{}, fmt.Errorf("party advancer: mark facilitator item %s source=discussion: %w", rec.ID, serr)
+		}
 	}
 	return discussion.AdvancerWorkItemResult{ID: rec.ID}, nil
 }

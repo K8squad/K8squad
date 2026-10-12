@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,5 +189,110 @@ func TestPartyAdvancerWriter_NilResolverSlugErrors(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(err.Error()), "uuid") {
 		t.Fatalf("expected a uuid-cast error for the slug, got: %v", err)
+	}
+}
+
+// advResetCoordSchemaWithSource re-applies the base spine (0001) + create-time attributes (0020) + the
+// dispatch-on-mention source column (0027) into a clean coord schema. 0027's part (1) adds
+// coord.work_item.source; its part (2) creates discussion.mention_dispatch, so the discussion schema must
+// exist first. This is the schema the ISI-5692 source-flip test needs — the UPDATE markSource runs
+// touches the source column 0027 introduces.
+func advResetCoordSchemaWithSource(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`DROP SCHEMA IF EXISTS coord CASCADE`,
+		`DROP SCHEMA IF EXISTS discussion CASCADE`,
+		`CREATE SCHEMA discussion`,
+		advMigrationFile(t, "0001_coord_schema.sql"),
+		advMigrationFile(t, "0020_work_item_create_fields.sql"),
+		advMigrationFile(t, "0027_dispatch_on_mention_run_minting.sql"),
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("ISI-5692 gate: apply coord schema: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, _ = db.ExecContext(cctx, `DROP SCHEMA IF EXISTS coord CASCADE`)
+		_, _ = db.ExecContext(cctx, `DROP SCHEMA IF EXISTS discussion CASCADE`)
+	})
+}
+
+// TestPartyAdvancerWriter_FlipsSourceToDiscussion is the ISI-5692 fix: the facilitator/takeaways item the
+// advancer mints must be stamped source='discussion' so its Run is assembled as a DISCUSSION run
+// (discussion_post tool + CapabilityCoordinator token) and can post its round directive through the MCP
+// edge ISI-5688 fixed. Without the markSource flip the item defaults to 'board' → an INTAKE run with no
+// discussion endpoint → the round stalls with zero voices. This drives the real markSource UPDATE (the
+// closure the operator wires) through the shipped schema and asserts the column landed 'discussion'.
+func TestPartyAdvancerWriter_FlipsSourceToDiscussion(t *testing.T) {
+	ctx := context.Background()
+	db := advOpenDB(t, advDSNOrFatal(t))
+	advResetCoordSchemaWithSource(t, ctx, db)
+
+	store, err := coord.NewWorkItemWriteStore(db)
+	if err != nil {
+		t.Fatalf("NewWorkItemWriteStore: %v", err)
+	}
+	w := coordAdvancerWriter{
+		store:    store,
+		resolver: advFakeResolver{uid: advProjectUID, teamUID: advTeamUID},
+		markSource: func(ctx context.Context, workItemID string) error {
+			_, err := db.ExecContext(ctx, `UPDATE coord.work_item SET source = 'discussion' WHERE id = $1::uuid`, workItemID)
+			return err
+		},
+	}
+
+	res, err := w.CreateWorkItem(ctx, discussion.AdvancerCreateInput{
+		ProjectID: advRoomSlug,
+		TeamID:    advTeamUID,
+		Title:     "Party facilitation — round 1 of 3",
+		Body:      "facilitate",
+		Principal: advPrincipal,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkItem: %v", err)
+	}
+
+	var gotSource string
+	if err := db.QueryRowContext(ctx,
+		`SELECT source FROM coord.work_item WHERE id = $1::uuid`, res.ID,
+	).Scan(&gotSource); err != nil {
+		t.Fatalf("read back minted work item source: %v", err)
+	}
+	if gotSource != "discussion" {
+		t.Fatalf("facilitator work_item.source = %q, want %q — an intake-sourced facilitator has no "+
+			"discussion_post tool and stalls the round (ISI-5692)", gotSource, "discussion")
+	}
+}
+
+// TestPartyAdvancerWriter_MarkSourceErrorAbortsMint pins the fail-loud contract: if the source flip fails,
+// CreateWorkItem must return the error rather than hand back an intake-sourced facilitator that would
+// silently reproduce the ISI-5692 zero-voice stall. The advancer logs and retries the mint next tick.
+func TestPartyAdvancerWriter_MarkSourceErrorAbortsMint(t *testing.T) {
+	ctx := context.Background()
+	db := advOpenDB(t, advDSNOrFatal(t))
+	advResetCoordSchemaWithSource(t, ctx, db)
+
+	store, err := coord.NewWorkItemWriteStore(db)
+	if err != nil {
+		t.Fatalf("NewWorkItemWriteStore: %v", err)
+	}
+	boom := errors.New("mark source boom")
+	w := coordAdvancerWriter{
+		store:      store,
+		resolver:   advFakeResolver{uid: advProjectUID, teamUID: advTeamUID},
+		markSource: func(context.Context, string) error { return boom },
+	}
+
+	_, err = w.CreateWorkItem(ctx, discussion.AdvancerCreateInput{
+		ProjectID: advRoomSlug,
+		TeamID:    advTeamUID,
+		Title:     "Party facilitation — round 1 of 3",
+		Body:      "facilitate",
+		Principal: advPrincipal,
+	})
+	if err == nil || !errors.Is(err, boom) {
+		t.Fatalf("a markSource failure must abort the mint (wrapping the cause); got err=%v", err)
 	}
 }
