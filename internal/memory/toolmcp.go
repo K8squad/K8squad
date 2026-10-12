@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -813,11 +814,35 @@ func (m *ToolMCP) callDiscussionPost(ctx context.Context, sess mcpSession, raw j
 	if err != nil {
 		return toolError(err.Error())
 	}
+	// ISI-5694 diagnostic: the party round stalls when a facilitator's round directive posted through THIS
+	// edge reaches DispatchPartyMentionsFrom with authorIsCoordinator=false — the party path then falls
+	// through to the D3 no-coordinator fan-out suppression ("multi-mention with no coordinator") and no
+	// voices are sequenced. Four sequential WS3 live-smoke defects (ISI-5679→5680→5688→5692) all passed CI
+	// but failed the live smoke, and the ops side cannot see which input was wrong (llmInteractions carry
+	// only token/timing, no tool-call record). Log the server-authenticated dispatch inputs ONCE per
+	// discussion_post (low volume — only sandbox agents post here): whether this session was built from a
+	// VERIFIED run token vs the BFF header path, the capability set that credential carried, the derived
+	// coordinator signal, and the thread the message ACTUALLY landed in. Together these answer, in a single
+	// live-smoke pass: did discussion_post fire at all; did the coordinator marker reach this edge; and did
+	// the reply land in the party thread (vs opening a new one). Paired with the targeted gate logs in
+	// discussion.DispatchPartyMentionsFrom (which branch rejected a coordinator post).
+	authorIsCoordinator := SessionHasCoordinatorCapability(sess.capabilities)
+	slog.InfoContext(ctx, "discussion_post MCP edge: party dispatch inputs (ISI-5694 diag)",
+		"viaToken", sess.viaToken,
+		"capabilities", sess.capabilities,
+		"authorIsCoordinator", authorIsCoordinator,
+		"principal", sess.principal,
+		"agentID", strVal(sess.agentID),
+		"runID", strVal(sess.runID),
+		"projectID", projectID,
+		"messageID", msg.ID,
+		"threadID", msg.ThreadID,
+	)
 	// ISI-5125: after the row commits, fire dispatch-on-mention so a @-mention in a tool-posted reply
 	// dispatches the named agent — parity with the REST postMessage path. Best-effort (the row is durable).
 	// ISI-5688: pass the server-authenticated coordinator marker from the session so a facilitator run's
 	// round directive stamps the party round roster (the name-only tool roster has no Coordinator flag).
-	m.mentions.dispatchMentions(ctx, projectID, auth, msg, SessionHasCoordinatorCapability(sess.capabilities))
+	m.mentions.dispatchMentions(ctx, projectID, auth, msg, authorIsCoordinator)
 	return toolResult(msg)
 }
 

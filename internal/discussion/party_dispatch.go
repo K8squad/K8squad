@@ -72,12 +72,23 @@ func DispatchPartyMentionsFrom(ctx context.Context, dispatcher MentionDispatcher
 	// (2) Active party session for this thread?
 	sess, err := store.ActivePartySession(ctx, msg.ThreadID)
 	if err != nil {
+		// ISI-5694 diagnostic: this branch fires for a CONFIRMED coordinator post (we are past the
+		// authorIsCoordinator gate) that found no active party session for the thread it landed in — the
+		// prime suspect for the stalled WS3 round if the facilitator's directive opened a NEW thread (or
+		// replied to the wrong one) instead of the live party thread. Low volume (coordinator posts only).
+		slog.InfoContext(ctx, "discussion: coordinator post but no active party session for thread — falling through to normal dispatch (ISI-5694 diag)",
+			"projectID", projectID, "threadID", msg.ThreadID, "messageID", msg.ID,
+			"agentID", *auth.AgentID, "err", err)
 		return false // ErrNoActivePartySession or real error — not party mode, fall through
 	}
 
 	// (4) Resolve @-mentions (no D4, no hop cap — the facilitator dispatches voices directly).
 	mentions := parseMentions(msg.Body)
 	if len(mentions) == 0 {
+		// ISI-5694 diagnostic: a coordinator post in an ACTIVE party session that carried no parseable
+		// @-mentions — the facilitator ran but did not name voices in a form parseMentions recognises.
+		slog.InfoContext(ctx, "discussion: coordinator party post has no resolvable @-mentions — nothing to dispatch (ISI-5694 diag)",
+			"sessionID", sess.ID, "round", sess.Round, "threadID", msg.ThreadID, "messageID", msg.ID)
 		return false // no mentions in body — not a dispatch post
 	}
 	byName := make(map[string]TeamAgent, len(roster))
