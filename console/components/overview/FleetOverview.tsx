@@ -1,22 +1,27 @@
 "use client";
 
-// components/overview/FleetOverview.tsx — Frame 01, the fleet control-room global overview
-// (ISI-4507 S2; DESIGN-SPEC-ISI-4505 §3/§4, mock 01-global-overview-fleet). Replaces the old
-// SquadOverview as the post-onboarding Overview surface (mounted by OverviewSwitch for BOTH
-// / and /overview, preserving the D5/ISI-3674 onboarding gate). Composes the S1 primitives
-// (ISI-4506) and reads the SAME wire shapes as S3 (ProjectOverviewDashboard):
-//   • GET /api/squad/overview — every project with live runs + phaseCounts (the ONLY runs source);
-//   • GET /api/squad/agents — the agents-active tile;
-//   • GET /api/projects/{id}/work-items per project (allSettled) — the open-tickets tile,
-//     per-card open counts, and the Recent Ticket Work panel (rows deep-link to the
-//     ISI-4231 issue detail route, keyed by each item's own projectId);
-//   • the S4 series read (ISI-4509) per project (allSettled) — the tokens tile sums every
-//     available project's 30-day total; "—" when no project reports one (FR-I3: never invent).
+// components/overview/FleetOverview.tsx — the global/fleet overview, recomposed per
+// Mock A (ISI-5708 WS-3; parent plan ISI-5697 rev2, approved design ISI-5699). The
+// Paperclip-style control room, top to bottom:
 //
-// Every panel owns its async boundary and its loading/empty/error state via PanelCard, so a
-// slow or unrolled read degrades ONLY its own tile — never the page (degrade-don't-blank,
-// ISI-4229). Same-named projects from different squads (fleet mode) are disambiguated in the
-// card by their namespace; per-card links stay name-based until ISI-3967's qualified route.
+//   ① stat band        — agent states first (running / idle / blocked), then projects
+//                         and 30-day tokens — Henrik's "global stats first" ask.
+//   ② time-series row  — fleet tickets-by-status (stacked area) + in-window runs-by-
+//                         status (h-bars), from GET /api/squad/overview/series (WS-1c).
+//   ③ GitHub strip     — fleet issue/PR/check roll-up + 7-day merge sparkline, from
+//                         GET /api/squad/github (WS-1b).
+//   ④ agent-card grid  — the CURRENT-runs surface: one AgentRunCard per agent from
+//                         GET /api/squad/agents/activity (WS-1a + WS-2), replacing the
+//                         opaque intake-<uuid> run list with named agents + CLASSIFIED
+//                         thinking (never the raw [run]/[tool] stream — ISI-5695/5696).
+//   ⑤ project jump row — compact per-project rows: high-level details (runs mix, open
+//                         PRs) + deep links into each project overview and its issues.
+//
+// Every panel owns its own async boundary and loading/empty/error state, so a slow or
+// unrolled read degrades ONLY its own panel — never the page (degrade-don't-blank,
+// ISI-4229). Fabrication discipline (FR-I3): an unavailable source renders "—", an
+// authoritative zero renders "0", never an invented value. The page itself still gates
+// on the core squad-overview read (auth / no-team / not-wired) exactly as before.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -25,25 +30,43 @@ import {
   UNASSIGNED_PROJECT_BUCKET,
   type SquadOverviewData,
 } from "@/components/SquadOverview";
-import {
-  lastActivity,
-  recentRuns,
-  recentTickets,
-  ticketStats,
-  type OverviewProject,
-  type SquadAgentEntry,
-  type SquadAgentsData,
-} from "@/components/projects/ProjectLanding";
-import { ApiError, listWorkItems } from "@/lib/tickets/api";
-import { STATE_LABELS, type WorkItem } from "@/lib/tickets/types";
+import { type OverviewProject } from "@/components/projects/ProjectLanding";
 import { encodeProjectId } from "@/lib/projectId";
-import { StatBand, StatTile, PanelCard, RunStatusMixBar } from "@/components/overview";
-import { fetchProjectSeries, formatTokens } from "@/lib/overview/projectSeries";
+import {
+  StatBand,
+  StatTile,
+  PanelCard,
+  RunStatusMixBar,
+  AgentRunCard,
+  AgentRunCardGrid,
+  StackedAreaChart,
+  HBarChart,
+} from "@/components/overview";
+import {
+  fetchAgentActivity,
+  type AgentActivityState,
+} from "@/lib/overview/agentActivity";
+import {
+  fetchFleetSeries,
+  type FleetOverviewSeries,
+} from "@/lib/overview/fleetSeries";
+import {
+  areaXLabels,
+  formatTokens,
+  toAreaSeries,
+  toRunBars,
+  type SeriesState,
+} from "@/lib/overview/projectSeries";
+import {
+  fetchGithubSummary,
+  openPrsByRepo,
+  repoSlug,
+  type GithubSummaryState,
+} from "@/lib/overview/githubSummary";
 import "@/components/overview/overview.css";
 import "@/components/overview/dashboard.css";
 
-const CARD_RUNS_LIMIT = 3; // current runs listed inside a project card
-const PANEL_ROWS_LIMIT = 6; // rows in the recent-tickets / live-runs panels
+const AGENT_SKELETONS = 6; // placeholder cards while the activity read is in flight
 
 // ---------------------------------------------------------------------------
 // Pure projections (exported for unit tests — no fetch, no DOM).
@@ -74,7 +97,7 @@ export function activeRunCount(projects: OverviewProject[] | null): number {
   return n;
 }
 
-/** Flatten every project's runs, newest claim first (the Live Runs feed's source). */
+/** Flatten every project's runs, newest claim first. */
 export function fleetRuns(
   projects: OverviewProject[] | null,
   limit: number,
@@ -90,7 +113,7 @@ export function fleetRuns(
     .slice(0, limit);
 }
 
-/** "2026-09-16T15:04:05Z" → "2026-09-16 15:04" — compact, locale-neutral, no relative-time drift in tests. */
+/** "2026-09-16T15:04:05Z" → "2026-09-16 15:04" — compact, locale-neutral. */
 export function formatWhen(iso: string | null): string {
   if (!iso) return "—";
   const t = Date.parse(iso);
@@ -98,9 +121,13 @@ export function formatWhen(iso: string | null): string {
   return new Date(t).toISOString().slice(0, 16).replace("T", " ");
 }
 
+/** Total runs a project reports across every phase (its headline figure in the jump row). */
+export function totalRuns(project: OverviewProject): number {
+  return Object.values(project.phaseCounts ?? {}).reduce((a, b) => a + (b ?? 0), 0);
+}
+
 /** Split the fixed overview projection (ISI-4570) into real projects and the synthetic
- * "Unassigned/other" bucket. The bucket is not a project: no card, no fan-out reads — its
- * runs surface as a count on the Live Agent Runs panel (plan OQ1). */
+ * "Unassigned/other" bucket. The bucket is not a project: no row, no fan-out reads. */
 export function partitionProjects(projects: OverviewProject[] | null): {
   projects: OverviewProject[];
   unassigned: OverviewProject | null;
@@ -113,7 +140,7 @@ export function partitionProjects(projects: OverviewProject[] | null): {
 }
 
 // ---------------------------------------------------------------------------
-// Data hooks — each an independent async boundary (S3's discipline, verbatim shapes).
+// Data hooks — each an independent async boundary (degrade-don't-blank).
 // ---------------------------------------------------------------------------
 
 type OverviewState =
@@ -145,117 +172,39 @@ function useSquadOverview(): OverviewState {
   return state;
 }
 
-type AgentsState =
-  | { kind: "loading" }
-  | { kind: "not-available" }
-  | { kind: "error"; status: number }
-  | { kind: "ready"; agents: SquadAgentEntry[] };
-
-function useSquadAgents(): AgentsState {
-  const [state, setState] = useState<AgentsState>({ kind: "loading" });
+function useAgentActivity(): AgentActivityState {
+  const [state, setState] = useState<AgentActivityState>({ kind: "loading" });
   useEffect(() => {
-    let alive = true;
-    fetch("/api/squad/agents", { headers: { accept: "application/json" } })
-      .then(async (res) => {
-        if (!alive) return;
-        if (!res.ok) {
-          setState(
-            res.status === 501 || res.status === 404
-              ? { kind: "not-available" }
-              : { kind: "error", status: res.status },
-          );
-          return;
-        }
-        const data = (await res.json()) as SquadAgentsData;
-        setState({ kind: "ready", agents: data.agents ?? [] });
-      })
-      .catch(() => alive && setState({ kind: "error", status: 0 }));
-    return () => {
-      alive = false;
-    };
+    const ctrl = new AbortController();
+    fetchAgentActivity(ctrl.signal).then((s) => {
+      if (!ctrl.signal.aborted) setState(s);
+    });
+    return () => ctrl.abort();
   }, []);
   return state;
 }
 
-type WorkItemsState =
-  | { kind: "loading" }
-  | { kind: "not-available" }
-  | { kind: "error"; status: number }
-  | { kind: "ready"; byProject: Map<string, WorkItem[]> };
-
-/** Per-project work-items fan-out (allSettled): one project's failure never sinks the fleet —
- * a 501/404 everywhere degrades the tiles honestly, everything else surfaces per-panel error. */
-function useFleetWorkItems(projects: OverviewProject[]): WorkItemsState {
-  const [state, setState] = useState<WorkItemsState>({ kind: "loading" });
+function useFleetSeries(): SeriesState {
+  const [state, setState] = useState<SeriesState>({ kind: "loading" });
   useEffect(() => {
-    let alive = true;
-    if (projects.length === 0) {
-      setState({ kind: "ready", byProject: new Map() });
-      return;
-    }
-    Promise.allSettled(projects.map((p) => listWorkItems(p.name))).then((results) => {
-      if (!alive) return;
-      const byProject = new Map<string, WorkItem[]>();
-      let notWired = 0;
-      let failed = 0;
-      results.forEach((r, i) => {
-        if (r.status === "fulfilled") {
-          byProject.set(projects[i].name, r.value);
-        } else {
-          const status = r.reason instanceof ApiError ? r.reason.status : 0;
-          if (status === 501 || status === 404) notWired += 1;
-          else failed += 1;
-        }
-      });
-      if (byProject.size === 0 && notWired > 0) setState({ kind: "not-available" });
-      else if (byProject.size === 0 && failed > 0) setState({ kind: "error", status: 0 });
-      else setState({ kind: "ready", byProject });
+    const ctrl = new AbortController();
+    fetchFleetSeries("30d", ctrl.signal).then((s) => {
+      if (!ctrl.signal.aborted) setState(s);
     });
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- projects identity is stable per overview fetch
-  }, [projects]);
+    return () => ctrl.abort();
+  }, []);
   return state;
 }
 
-type TokensState =
-  | { kind: "loading" }
-  | { kind: "not-available" }
-  | { kind: "ready"; total: number };
-
-/** Sum every available project's 30-day token total (S4 series, allSettled). No project
- * reporting tokens ⇒ "—" (FR-I3: unavailable renders "—", never an invented 0). */
-function useFleetTokens(projects: OverviewProject[]): TokensState {
-  const [state, setState] = useState<TokensState>({ kind: "loading" });
+function useGithubSummary(): GithubSummaryState {
+  const [state, setState] = useState<GithubSummaryState>({ kind: "loading" });
   useEffect(() => {
-    let alive = true;
-    if (projects.length === 0) {
-      setState({ kind: "not-available" });
-      return;
-    }
-    Promise.allSettled(projects.map((p) => fetchProjectSeries(p.name, "30d"))).then(
-      (results) => {
-        if (!alive) return;
-        let total = 0;
-        let any = false;
-        for (const r of results) {
-          if (r.status === "fulfilled" && r.value.kind === "ready") {
-            const tokens = r.value.series.tokens;
-            if (tokens?.available && typeof tokens.total === "number") {
-              total += tokens.total;
-              any = true;
-            }
-          }
-        }
-        setState(any ? { kind: "ready", total } : { kind: "not-available" });
-      },
-    );
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- projects identity is stable per overview fetch
-  }, [projects]);
+    const ctrl = new AbortController();
+    fetchGithubSummary(ctrl.signal).then((s) => {
+      if (!ctrl.signal.aborted) setState(s);
+    });
+    return () => ctrl.abort();
+  }, []);
   return state;
 }
 
@@ -263,156 +212,213 @@ function useFleetTokens(projects: OverviewProject[]): TokensState {
 // Panels
 // ---------------------------------------------------------------------------
 
-function ProjectCard({
-  project,
-  items,
-}: {
-  project: OverviewProject;
-  items: WorkItem[] | null;
-}) {
-  const runs = recentRuns(project, CARD_RUNS_LIMIT);
-  const mix = mixFromPhaseCounts(project.phaseCounts);
-  const open = items ? ticketStats(items).open : null;
-  const totalRuns = Object.values(project.phaseCounts ?? {}).reduce((a, b) => a + (b ?? 0), 0);
+/** ② Time-series row: fleet tickets-by-status stacked area + in-window runs-by-status h-bars. */
+function TimeSeriesRow({ state }: { state: SeriesState }) {
+  const series: FleetOverviewSeries | null = state.kind === "ready" ? state.series : null;
+  const tickets = series?.ticketsByStatus;
+  const runs = series?.runsByStatus;
+
+  const ticketsPanelState =
+    state.kind === "loading"
+      ? "loading"
+      : state.kind === "error"
+        ? "error"
+        : tickets?.available
+          ? "ready"
+          : "empty";
+  const runsPanelState =
+    state.kind === "loading"
+      ? "loading"
+      : state.kind === "error"
+        ? "error"
+        : runs?.available
+          ? "ready"
+          : "empty";
+
+  const snapshots = tickets?.snapshots ?? [];
+
   return (
-    <a
-      className="ov-fleet-card"
-      href={`/projects/${encodeProjectId(project.name)}`}
-      data-testid="fleet-project-card"
-    >
-      <div className="ov-fleet-card__head">
-        <h3>{project.name}</h3>
-        <span className="muted ov-fleet-card__ns">{project.namespace}</span>
-      </div>
-      <div className="ov-fleet-card__metrics">
-        <span>{totalRuns} runs</span>
-        <span>{open === null ? "tickets …" : `${open} open`}</span>
-        <span>active {formatWhen(lastActivity(project, items ?? []))}</span>
-      </div>
-      <RunStatusMixBar counts={mix} />
-      {runs.length > 0 ? (
-        <ul className="ov-thinking" data-testid="fleet-card-runs">
-          {runs.map((r) => (
-            <li key={r.name} className="ov-thinking__row">
-              <div className="ov-thinking__head">
-                <span className="muted" title={r.workItem ?? undefined}>
-                  {r.name}
-                </span>
-                <span className="phase-chip" data-tone={phaseTone(r.phase)}>
-                  {r.phase}
-                </span>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted" style={{ margin: "8px 0 0" }}>
-          No runs.
-        </p>
-      )}
-    </a>
+    <div className="ov-charts-row" data-testid="fleet-series">
+      <PanelCard
+        title="Tickets by status · 30d"
+        state={ticketsPanelState}
+        emptyLabel="Ticket history not available yet on this deployment."
+        errorLabel="Couldn't load the ticket time series."
+      >
+        <StackedAreaChart
+          series={toAreaSeries(snapshots)}
+          xLabels={areaXLabels(snapshots)}
+          ariaLabel="Fleet tickets by status over the last 30 days"
+        />
+      </PanelCard>
+      <PanelCard
+        title="Runs by status · 30d"
+        state={runsPanelState}
+        emptyLabel="No runs in this window."
+        errorLabel="Couldn't load the runs breakdown."
+      >
+        <HBarChart
+          items={toRunBars(runs?.byPhase ?? {})}
+          ariaLabel="Fleet runs by status in the last 30 days"
+        />
+      </PanelCard>
+    </div>
   );
 }
 
-function RecentTicketWorkPanel({ state }: { state: WorkItemsState }) {
+/** A tiny inline 7-day merge sparkline (bars, oldest→newest). Pure SVG, no deps. */
+function MergeSparkline({ values }: { values: number[] }) {
+  const max = Math.max(1, ...values);
+  return (
+    <span className="ov-sparkline" role="img" aria-label={`PRs merged per day, last 7 days: ${values.join(", ")}`}>
+      {values.map((v, i) => (
+        <span
+          key={i}
+          className="ov-sparkline__bar"
+          style={{ height: `${Math.round((Math.max(0, v) / max) * 100)}%` }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/** ③ GitHub summary strip: fleet issue/PR/check roll-up + merge trend. */
+function GithubStrip({ state }: { state: GithubSummaryState }) {
+  const panelState =
+    state.kind === "loading"
+      ? "loading"
+      : state.kind === "error"
+        ? "error"
+        : state.kind === "not-available"
+          ? "empty"
+          : "ready";
+  const t = state.kind === "ready" ? state.data.totals : null;
+  const spark = state.kind === "ready" ? state.data.mergeSparkline7d : [];
+
   return (
     <PanelCard
-      title="Recent Ticket Work"
-      state={
-        state.kind === "loading"
-          ? "loading"
-          : state.kind === "error"
-            ? "error"
-            : state.kind === "not-available"
-              ? "empty"
-              : "ready"
-      }
-      emptyLabel="Ticket read model not available yet on this deployment."
-      errorLabel={`Tickets unavailable (HTTP ${state.kind === "error" ? state.status || "network error" : ""}).`}
+      title="GitHub"
+      state={panelState}
+      emptyLabel="GitHub summary not available on this deployment."
+      errorLabel={`GitHub summary unavailable (HTTP ${state.kind === "error" ? state.status || "network error" : ""}).`}
     >
-      {state.kind === "ready" ? (
-        (() => {
-          const merged = recentTickets(
-            [...state.byProject.values()].flat(),
-            PANEL_ROWS_LIMIT,
-          );
-          if (merged.length === 0) return <p className="muted" style={{ margin: 0 }}>No tickets yet.</p>;
-          return (
-            <ul className="ov-list" data-testid="fleet-recent-tickets">
-              {merged.map((t) => (
-                <li key={`${t.projectId}/${t.id}`} className="ov-list__row">
-                  <a
-                    href={`/projects/${encodeURIComponent(t.projectId)}/issues/${encodeURIComponent(t.id)}`}
-                    data-testid="fleet-recent-ticket-link"
-                  >
-                    {t.title}
-                  </a>
-                  <span className="ov-fleet-ticket__meta">
-                    <span className="muted">{t.projectId}</span>
-                    <span className="phase-chip" data-tone={t.state === "done" ? "idle" : "running"}>
-                      {STATE_LABELS[t.state]}
-                    </span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          );
-        })()
-      ) : null}
+      {t && (
+        <div className="ov-github-strip" data-testid="fleet-github">
+          <GithubStat label="Issues open" value={t.issuesOpen} />
+          <GithubStat label="Assigned" value={t.issuesAssigned} />
+          <GithubStat label="PRs open" value={t.prsOpened} />
+          <GithubStat label="Merged" value={t.prsMerged} />
+          <GithubStat label="Reviewed" value={t.prsReviewed} />
+          <GithubStat label="Checks red" value={t.checksRed} tone={t.checksRed > 0 ? "blocked" : undefined} />
+          <div className="ov-github-strip__spark">
+            <span className="ov-github-stat__label">Merged · 7d</span>
+            <MergeSparkline values={spark} />
+          </div>
+        </div>
+      )}
     </PanelCard>
   );
 }
 
-function LiveRunsPanel({
-  projects,
-  unassigned,
-}: {
-  projects: OverviewProject[] | null;
-  unassigned: OverviewProject | null;
-}) {
-  const runs = fleetRuns(projects, PANEL_ROWS_LIMIT);
-  const unassignedCount = (unassigned?.runs ?? []).length;
+function GithubStat({ label, value, tone }: { label: string; value: number; tone?: "blocked" }) {
+  return (
+    <div className="ov-github-stat" data-tone={tone} data-testid="fleet-github-stat">
+      <span className="ov-github-stat__value">{value}</span>
+      <span className="ov-github-stat__label">{label}</span>
+    </div>
+  );
+}
+
+/** ④ Current-runs agent-card grid (the Paperclip-style named-agent surface). */
+function AgentGrid({ state }: { state: AgentActivityState }) {
+  if (state.kind === "loading") {
+    return (
+      <PanelCard title="Current agent runs" state="ready">
+        <AgentRunCardGrid>
+          {Array.from({ length: AGENT_SKELETONS }, (_, i) => (
+            <AgentRunCard key={i} loading />
+          ))}
+        </AgentRunCardGrid>
+      </PanelCard>
+    );
+  }
+  const panelState =
+    state.kind === "error"
+      ? "error"
+      : state.kind === "not-available"
+        ? "empty"
+        : state.data.agents.length === 0
+          ? "empty"
+          : "ready";
   return (
     <PanelCard
-      title="Live Agent Runs"
+      title="Current agent runs"
       action={{ label: "View all runs →", href: "/runs" }}
-      state={
-        projects === null
-          ? "loading"
-          : runs.length === 0 && unassignedCount === 0
-            ? "empty"
-            : "ready"
+      state={panelState}
+      emptyLabel={
+        state.kind === "not-available"
+          ? "Agent activity read model not available yet on this deployment."
+          : "No agents yet."
       }
-      emptyLabel="No agent runs."
+      errorLabel={`Agent activity unavailable (HTTP ${state.kind === "error" ? state.status || "network error" : ""}).`}
     >
-      <ul className="ov-thinking" data-testid="fleet-live-runs">
-        {runs.map((r) => (
-          <li key={`${r.project.name}/${r.name}`} className="ov-thinking__row">
-            {/* ISI-4565: let the user open a run's detail directly from the
-               overview instead of routing through the full runs list. */}
-            <a
-              className="ov-thinking__link"
-              href={`/runs/${encodeURIComponent(r.name)}`}
-              data-testid="fleet-run-link"
-            >
-              <div className="ov-thinking__head">
-                <span title={r.workItem ?? undefined}>{r.name}</span>
-                <span className="phase-chip" data-tone={phaseTone(r.phase)}>
-                  {r.phase}
+      {state.kind === "ready" && (
+        <div data-testid="fleet-agent-grid">
+          <AgentRunCardGrid>
+            {state.data.agents.map((a) => (
+              <AgentRunCard key={a.agentId || a.name} agent={a} />
+            ))}
+          </AgentRunCardGrid>
+        </div>
+      )}
+    </PanelCard>
+  );
+}
+
+/** ⑤ Per-project jump row: high-level details + deep links to each project + its issues. */
+function ProjectJumpRow({
+  projects,
+  github,
+}: {
+  projects: OverviewProject[];
+  github: GithubSummaryState;
+}) {
+  const prsByRepo = useMemo(
+    () => openPrsByRepo(github.kind === "ready" ? github.data : null),
+    [github],
+  );
+  return (
+    <PanelCard title="Projects" state={projects.length === 0 ? "empty" : "ready"} emptyLabel="No projects yet.">
+      <ul className="ov-project-jump" data-testid="fleet-projects">
+        {projects.map((p) => {
+          const slug = repoSlug(p.repoUrl);
+          const openPrs = slug ? prsByRepo.get(slug) : undefined;
+          return (
+            <li key={`${p.namespace}/${p.name}`} className="ov-project-jump__row" data-testid="fleet-project-jump">
+              <div className="ov-project-jump__id">
+                <a className="ov-project-jump__name" href={`/projects/${encodeProjectId(p.name)}`}>
+                  {p.name}
+                </a>
+                <span className="muted ov-project-jump__ns">{p.namespace}</span>
+              </div>
+              <RunStatusMixBar counts={mixFromPhaseCounts(p.phaseCounts)} />
+              <div className="ov-project-jump__metrics">
+                <span>{totalRuns(p)} runs</span>
+                <span data-testid="fleet-project-prs">
+                  {openPrs === undefined ? "— PRs" : `${openPrs} open PR${openPrs === 1 ? "" : "s"}`}
                 </span>
               </div>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {r.project.name} · {formatWhen(r.claimedAt ?? null)}
-              </span>
-            </a>
-          </li>
-        ))}
+              <a
+                className="ov-project-jump__issues"
+                href={`/projects/${encodeProjectId(p.name)}/issues`}
+                data-testid="fleet-project-issues-link"
+              >
+                Issues →
+              </a>
+            </li>
+          );
+        })}
       </ul>
-      {unassignedCount > 0 && (
-        <p className="muted" style={{ fontSize: 12, margin: "8px 0 0" }} data-testid="fleet-unassigned-runs">
-          + {unassignedCount} unassigned {unassignedCount === 1 ? "run" : "runs"} (no resolvable project)
-        </p>
-      )}
     </PanelCard>
   );
 }
@@ -423,34 +429,29 @@ function LiveRunsPanel({
 
 export function FleetOverview() {
   const overview = useSquadOverview();
-  const agents = useSquadAgents();
-  // Split the synthetic unassigned bucket out of the project list (ISI-4570): cards, the
-  // Projects tile, and the per-project fan-out reads only ever see REAL projects; the bucket's
-  // runs surface as a count on the Live Agent Runs panel. Stable identity per overview fetch —
-  // the fan-out hooks key on it.
-  const { projects, unassigned } = useMemo(
-    () =>
-      partitionProjects(overview.kind === "ready" ? overview.data.projects : null),
+  const activity = useAgentActivity();
+  const series = useFleetSeries();
+  const github = useGithubSummary();
+
+  const { projects } = useMemo(
+    () => partitionProjects(overview.kind === "ready" ? overview.data.projects : null),
     [overview],
   );
-  const workItems = useFleetWorkItems(projects);
-  const tokens = useFleetTokens(projects);
 
   if (overview.kind === "loading") {
     return (
       <div className="ov-dashboard" data-testid="fleet-loading" aria-busy="true">
         <StatBand>
-          <StatTile label="Active Runs" value="" loading />
+          <StatTile label="Running" value="" loading />
+          <StatTile label="Idle" value="" loading />
+          <StatTile label="Blocked" value="" loading />
           <StatTile label="Projects" value="" loading />
-          <StatTile label="Open Tickets" value="" loading />
-          <StatTile label="Agents" value="" loading />
           <StatTile label="Tokens · 30d" value="" loading />
         </StatBand>
-        <PanelCard title="Projects" state="loading" />
+        <PanelCard title="Current agent runs" state="loading" />
       </div>
     );
   }
-
   if (overview.kind === "unauthenticated") {
     return <p className="muted" data-testid="fleet-unauthenticated">Sign in to see the fleet overview.</p>;
   }
@@ -472,20 +473,36 @@ export function FleetOverview() {
     );
   }
 
-  const openTickets =
-    workItems.kind === "ready"
-      ? ticketStats([...workItems.byProject.values()].flat()).open
-      : null;
+  const counts = activity.kind === "ready" ? activity.data.counts : null;
+  const tokens =
+    series.kind === "ready" && series.series.tokens?.available
+      ? formatTokens(series.series.tokens.total)
+      : "—";
 
   return (
     <div className="ov-dashboard" data-testid="fleet-overview">
+      {/* ① stat band — agent states first (Henrik's "global stats first"). */}
       <StatBand>
         <StatTile
-          label="Active Runs"
-          value={activeRunCount(overview.data.projects)}
+          label="Running"
+          value={counts ? counts.running : "—"}
+          loading={activity.kind === "loading"}
           tone="running"
-          sub="fleet-wide"
           glyph="⚡"
+          sub="agents"
+        />
+        <StatTile
+          label="Idle"
+          value={counts ? counts.idle : "—"}
+          loading={activity.kind === "loading"}
+          sub="agents"
+        />
+        <StatTile
+          label="Blocked"
+          value={counts ? counts.blocked : "—"}
+          loading={activity.kind === "loading"}
+          tone={counts && counts.blocked > 0 ? "blocked" : undefined}
+          sub="agents"
         />
         <StatTile
           label="Projects"
@@ -493,42 +510,24 @@ export function FleetOverview() {
           sub={overview.data.fleet ? "all squads" : overview.data.team.name}
         />
         <StatTile
-          label="Open Tickets"
-          value={openTickets ?? "—"}
-          loading={workItems.kind === "loading"}
-          sub={openTickets === null ? "read model unavailable" : "across projects"}
-        />
-        <StatTile
-          label="Agents"
-          value={agents.kind === "ready" ? agents.agents.length : "—"}
-          loading={agents.kind === "loading"}
-          sub={agents.kind === "ready" ? "in squad" : "unavailable"}
-        />
-        <StatTile
           label="Tokens · 30d"
-          value={tokens.kind === "ready" ? formatTokens(tokens.total) : "—"}
-          loading={tokens.kind === "loading"}
-          sub={tokens.kind === "ready" ? "consumed" : "no project reports"}
+          value={tokens}
+          loading={series.kind === "loading"}
+          sub={tokens === "—" ? "no runs report" : "consumed"}
         />
       </StatBand>
 
-      <div className="ov-fleet-grid" data-testid="fleet-projects">
-        {projects.map((p) => (
-          <ProjectCard
-            key={`${p.namespace}/${p.name}`}
-            project={p}
-            items={workItems.kind === "ready" ? (workItems.byProject.get(p.name) ?? []) : null}
-          />
-        ))}
-        {projects.length === 0 && (
-          <p className="muted">No projects yet.</p>
-        )}
-      </div>
+      {/* ② time-series row */}
+      <TimeSeriesRow state={series} />
 
-      <div className="ov-bottom-row">
-        <RecentTicketWorkPanel state={workItems} />
-        <LiveRunsPanel projects={projects} unassigned={unassigned} />
-      </div>
+      {/* ③ GitHub summary strip */}
+      <GithubStrip state={github} />
+
+      {/* ④ current-runs agent-card grid */}
+      <AgentGrid state={activity} />
+
+      {/* ⑤ per-project jump row */}
+      <ProjectJumpRow projects={projects} github={github} />
     </div>
   );
 }

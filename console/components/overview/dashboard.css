@@ -159,3 +159,115 @@
   font-size: 12px;
   white-space: nowrap;
 }
+
+/* ── ISI-5708 WS-3 fleet recompose (Mock A) ────────────────────────────────
+ * Pure layout over existing tokens — the GitHub summary strip ③ and the
+ * per-project jump row ⑤. Both wrap/stack cleanly on a mobile viewport (ISI-5711
+ * degrade-don't-blank: no horizontal overflow). */
+
+/* ③ GitHub summary strip — a wrap-friendly row of count chips + a merge sparkline. */
+.ov-github-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 20px;
+}
+.ov-github-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 64px;
+}
+.ov-github-stat__value {
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1;
+  color: var(--text-1);
+}
+.ov-github-stat[data-tone="blocked"] .ov-github-stat__value {
+  color: var(--status-blocked);
+}
+.ov-github-stat__label {
+  font-size: 11px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ov-github-strip__spark {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-left: auto;
+}
+.ov-sparkline {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 28px;
+}
+.ov-sparkline__bar {
+  width: 6px;
+  min-height: 2px;
+  border-radius: 2px;
+  background: var(--ksq-run, var(--status-running));
+}
+
+/* ⑤ Per-project jump row — compact rows: name/ns · mix bar · metrics · issues link. */
+.ov-project-jump {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ov-project-jump__row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.4fr) minmax(90px, 1fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ov-project-jump__row:last-child {
+  border-bottom: none;
+}
+.ov-project-jump__id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ov-project-jump__name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-project-jump__ns {
+  font-size: 11px;
+}
+.ov-project-jump__metrics {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ov-project-jump__issues {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  /* Mobile: rows stack to two lines — identity + mix on top, metrics + link below. */
+  .ov-project-jump__row {
+    grid-template-columns: 1fr auto;
+    gap: 6px 12px;
+  }
+  .ov-project-jump__id {
+    grid-row: 1;
+  }
+  .ov-github-strip__spark {
+    margin-left: 0;
+  }
+}

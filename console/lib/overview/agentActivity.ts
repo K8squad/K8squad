@@ -150,3 +150,68 @@ export function relativeActivityShort(iso: string | null | undefined, now: numbe
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
 }
+
+// ---------------------------------------------------------------------------
+// Fetch client (thin — the BFF proxies the §13 choke point). Added by the WS-3
+// fleet recompose (ISI-5708); kept here so WS-4's project overview folds the
+// same shape. Mirrors the apiserver AgentActivityList (agentactivity.go).
+// ---------------------------------------------------------------------------
+
+/** The fleet/Team rollup of agent states — running+idle+blocked == number of agents. */
+export interface ActivityCounts {
+  running: number;
+  idle: number;
+  blocked: number;
+}
+
+/** The GET /api/squad/agents/activity payload (WS-1a). */
+export interface AgentActivityList {
+  agents: AgentActivity[];
+  counts: ActivityCounts;
+  /** Set only for a global-admin caller (every squad's agents). */
+  fleet?: boolean;
+}
+
+/** The read-model resolves to one of these; `not-available` is the honest degrade
+ * (endpoint unrolled / caller can't see a Team) — NOT an error to surface loudly. */
+export type AgentActivityState =
+  | { kind: "loading" }
+  | { kind: "not-available"; status: number }
+  | { kind: "error"; status: number }
+  | { kind: "ready"; data: AgentActivityList };
+
+const ZERO_COUNTS: ActivityCounts = { running: 0, idle: 0, blocked: 0 };
+
+/** 404 (no team / endpoint not mounted) and 501 (read model unwired) degrade; the
+ * rest is a retryable error — mirrors classifySeriesStatus (projectSeries.ts). */
+export function classifyActivityStatus(
+  status: number,
+): Extract<AgentActivityState, { kind: "not-available" | "error" }> {
+  return status === 404 || status === 501
+    ? { kind: "not-available", status }
+    : { kind: "error", status };
+}
+
+/** Fetch the agent-activity aggregate from the BFF. Degrades honestly — never throws
+ * the page down (degrade-don't-blank, ISI-4229). */
+export async function fetchAgentActivity(signal?: AbortSignal): Promise<AgentActivityState> {
+  try {
+    const res = await fetch("/api/squad/agents/activity", {
+      headers: { accept: "application/json" },
+      signal,
+    });
+    if (!res.ok) return classifyActivityStatus(res.status);
+    const body = (await res.json()) as Partial<AgentActivityList>;
+    return {
+      kind: "ready",
+      data: {
+        agents: body.agents ?? [],
+        counts: body.counts ?? ZERO_COUNTS,
+        fleet: body.fleet,
+      },
+    };
+  } catch {
+    // AbortError / network failure — retryable, not a degrade seam.
+    return { kind: "error", status: 0 };
+  }
+}
