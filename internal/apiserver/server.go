@@ -79,6 +79,12 @@ type Options struct {
 	// ISI-3941 Phase 1). Admin ⇒ fleet-wide, tenant ⇒ own squad. Nil ⇒ the routes
 	// keep their documented 501 (cluster-less dev run), exactly like Overview.
 	FleetList FleetListReader
+	// AgentActivity is the ISI-5704 / WS-1a agent-activity aggregate read model
+	// (GET /api/squad/agents/activity): per-agent current-or-last run with a
+	// server-classified last-thinking snippet + running/idle/blocked counts, the
+	// server half that retires the overview's per-run N+1. Admin ⇒ fleet-wide,
+	// tenant ⇒ own squad. Nil ⇒ the route keeps its documented 501, like FleetList.
+	AgentActivity AgentActivityReader
 	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
 	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
 	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
@@ -632,6 +638,11 @@ func (s *Server) routes(opts Options) {
 		fleetTeamOne.Use(authz)
 		fleetAgents := s.router.Path("/api/squad/agents").Subrouter()
 		fleetAgents.Use(authz)
+		// ISI-5704 / WS-1a: the agent-activity aggregate. Registered BEFORE
+		// /api/squad/agents/{name} below so the literal `activity` segment wins over
+		// the {name} capture (gorilla/mux matches in registration order).
+		fleetAgentActivity := s.router.Path("/api/squad/agents/activity").Subrouter()
+		fleetAgentActivity.Use(authz)
 		fleetSkills := s.router.Path("/api/squad/skills").Subrouter()
 		fleetSkills.Use(authz)
 		// ISI-3961 S1: the single-skill VIEW rides the SAME /api/squad/* read
@@ -681,6 +692,16 @@ func (s *Server) routes(opts Options) {
 			fleetAgentEffective.HandleFunc("", h).Methods(http.MethodGet)
 			fleetRoleOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetProjectOne.HandleFunc("", h).Methods(http.MethodGet)
+		}
+
+		// ISI-5704 / WS-1a agent-activity aggregate. Bound independently of FleetList
+		// (its own reader): absent a reader it keeps the documented 501, matching the
+		// honest cluster/db-less contract of the other read models.
+		if opts.AgentActivity != nil {
+			fleetAgentActivity.HandleFunc("", s.squadAgentActivity(opts.AgentActivity)).Methods(http.MethodGet)
+		} else {
+			fleetAgentActivity.HandleFunc("", notImplemented("agent-activity read model",
+				"ISI-5704: wire an AgentActivityReader (informer cache + coord store) to enable")).Methods(http.MethodGet)
 		}
 
 		// ISI-3943 Projects-tab list: the fleet-aware Project list the console's Projects tab

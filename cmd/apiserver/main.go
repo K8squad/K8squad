@@ -498,6 +498,14 @@ func main() {
 		runsService = apiserver.NewRunsServiceWithDB(dashboardReader, db)
 	}
 
+	// ISI-5704 / WS-1a agent-activity aggregate: agents/runs from the same informer
+	// cache, last-thinking narration + work-item title/source from coord over the
+	// same *sql.DB. Nil informer cache ⇒ nil reader ⇒ documented 501.
+	var agentActivity apiserver.AgentActivityReader
+	if dashboardReader != nil {
+		agentActivity = apiserver.NewClientAgentActivityReader(dashboardReader, db)
+	}
+
 	// 8.18 global search read path (ISI-2912): the FTS searcher over coord.work_item
 	// (migration 0012). The DB is a hard start dependency here, so the searcher is
 	// always bound (the documented-501 fallback exists only for a searcher-less host
@@ -767,6 +775,7 @@ func main() {
 		Runs:                runsService,
 		Teams:               teams,
 		FleetList:           fleetList,
+		AgentActivity:       agentActivity,
 		Credentials:         credentials,
 		SecretWriter:        secretWriter,
 		CredentialTester:    credentialTester,
