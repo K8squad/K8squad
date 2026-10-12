@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -371,8 +372,30 @@ func (r *ReaderPodWorkspaceReader) launchBackground(projectID string, author dis
 		// ErrReaderPreparing. The error is consumed once (cleared on read) so the caller after
 		// that gets a fresh ErrReaderPreparing and a new launch attempt.
 		r.lastErr[projectID] = err
+		// ISI-5685: an UNTYPED launch error is the one the files routes map onto the opaque 500
+		// fallback — invisible until now (nothing logged at this seam, span marked Error with no
+		// description). Log it at error level so an RBAC/data regression like the missing PVC `get`
+		// grant is diagnosable from apiserver logs instead of a bare 33-byte body. The expected
+		// degraded sentinels (busy / no-browse-target / not-provisioned) flow through here routinely
+		// and map to typed responses, so they stay off the error log to avoid noise.
+		if !isExpectedLaunchOutcome(err) {
+			log.Printf("ksquad-apiserver: reader launch for project %s failed with an untyped error (file explorer will 500): %v", projectID, err)
+		}
 	}
 	r.mu.Unlock()
+}
+
+// isExpectedLaunchOutcome reports whether a stored terminal launch error is one of the typed,
+// client-facing outcomes the files routes map to a non-500 response (ISI-5685). These flow through
+// lastErr routinely and are NOT regressions, so they stay off the error log. Everything else is an
+// untyped error that the routes surface as the opaque HTTP 500 fallback and is worth logging.
+func isExpectedLaunchOutcome(err error) bool {
+	return errors.Is(err, ErrWorkspaceBusy) ||
+		errors.Is(err, ErrNoBrowseTarget) ||
+		errors.Is(err, ErrWorkspaceNotProvisioned) ||
+		errors.Is(err, ErrProjectNotFound) ||
+		errors.Is(err, ErrReaderPreparing) ||
+		isTimeout(err)
 }
 
 // SweepIdle tears down every session idle for longer than r.idle, plus a cluster-side orphan sweep

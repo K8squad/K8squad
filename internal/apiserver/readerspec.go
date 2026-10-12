@@ -154,7 +154,9 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 	// Guard: verify the workspace PVC exists before launching the reader pod (ISI-5574). Without
 	// this check a missing PVC causes the reader pod to wedge Pending forever with FailedScheduling
 	// "persistentvolumeclaim not found", and the route eternally returns 202 "warming up" with no
-	// diagnosable error. The r.pods client already has corev1 PVC list access from its ClusterRole.
+	// diagnosable error. This GET needs corev1 persistentvolumeclaims `get` on the apiserver
+	// ClusterRole (ISI-5685: the original ISI-5574 change added the Get but not the grant, so the
+	// Forbidden surfaced as a fleet-wide untyped 500 until the RBAC rule was added).
 	pvcName := workspace.ProjectPVCName(name)
 	var existingPVC corev1.PersistentVolumeClaim
 	if err := r.pods.Get(ctx, types.NamespacedName{Namespace: sandboxNS, Name: pvcName}, &existingPVC); err != nil {
