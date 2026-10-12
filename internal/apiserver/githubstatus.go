@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -490,21 +489,15 @@ func (s *GithubStatusService) attachReviews(ctx context.Context, out *GithubStat
 	}
 }
 
-// ghIssueURLRe parses a GitHub issue URL of the form
-// https://github.com/owner/repo/issues/N into capture groups [owner/repo, N].
-var ghIssueURLRe = regexp.MustCompile(`(?i)github\.com/([^/]+/[^/]+)/issues/(\d+)`)
-
-// issueAnchorLabel builds the ksquad.github.issue= label for one mirrored
-// issue, mirroring issuetrigger.deriveIssueRef. It prefers the issue's own
-// mirrored URL (canonical casing, matching the label the issuetrigger stamped);
-// when absent/unparseable it falls back to the repo URL slug + number. Returns
-// "" when neither produces a usable owner/repo#N — callers skip the lookup.
-func issueAnchorLabel(issueURL string, number int) string {
+// issueAnchorLabel builds the ksquad.github.issue= join label for one mirrored
+// issue from its own mirrored URL. It reuses the SAME ghIssueURLRe +
+// githubIssueLabelPrefix that githubIssueDispatchHandler used to STAMP the label
+// (see deriveGithubIssueRef), so the read join is byte-for-byte consistent with
+// what dispatch wrote. Returns "" when the URL is absent/unparseable — callers
+// skip the lookup rather than fabricate a badge.
+func issueAnchorLabel(issueURL string) string {
 	if m := ghIssueURLRe.FindStringSubmatch(issueURL); m != nil {
-		return "ksquad.github.issue=" + m[1] + "#" + m[2]
-	}
-	if number <= 0 {
-		return ""
+		return githubIssueLabelPrefix + m[1] + "#" + m[2]
 	}
 	return ""
 }
@@ -533,7 +526,7 @@ func issueRunState(state string) string {
 // §D4). At most one indexed coord read per issue.
 func (s *GithubStatusService) attachIssueLocals(ctx context.Context, out *GithubStatus, teamID, projectUID string) {
 	for i := range out.Issues {
-		label := issueAnchorLabel(out.Issues[i].URL, out.Issues[i].Number)
+		label := issueAnchorLabel(out.Issues[i].URL)
 		if label == "" {
 			continue
 		}

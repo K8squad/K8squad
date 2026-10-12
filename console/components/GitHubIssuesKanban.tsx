@@ -273,19 +273,48 @@ export function GitHubIssuesKanban({
         <div className="gh-priority-queue" data-testid="gh-priority-queue">
           <h3 className="gh-priority-queue__title">Priority Queue</h3>
           <ul>
-            {prioritized.slice(0, 5).map(({ issue, priority }) => (
-              <li key={`pq-${issue.number}`} className={`gh-priority-item gh-priority-item--${priority.tone}`}>
-                <IssueLink issue={issue} />
-                <span className={`gh-priority-badge gh-priority-badge--${priority.tone}`}>
-                  {priority.label}
-                </span>
-                <span className="muted">
-                  {issue.assignees && issue.assignees.length > 0
-                    ? `Assigned to ${issue.assignees.join(", ")}`
-                    : "Unassigned"}
-                </span>
-              </li>
-            ))}
+            {prioritized.slice(0, 5).map(({ issue, priority }) => {
+              // ISI-5678: the Priority Queue carries the SAME treated system as the
+              // Kanban cards, compactly (DESIGN-SPEC §03). Gated on the honest
+              // localBadge — an untreated/unclaimed row keeps the muted assignee line.
+              const pqBadge = localRunBadge(issue);
+              const pqRun = issue.local?.runState;
+              return (
+                <li
+                  key={`pq-${issue.number}`}
+                  className={[
+                    `gh-priority-item gh-priority-item--${priority.tone}`,
+                    pqBadge && pqRun ? `gh-priority-item--treated gh-priority-item--treated-${pqRun}` : "",
+                  ].filter(Boolean).join(" ")}
+                >
+                  <IssueLink issue={issue} />
+                  <span className={`gh-priority-badge gh-priority-badge--${priority.tone}`}>
+                    {priority.label}
+                  </span>
+                  {pqBadge && pqRun ? (
+                    // ② status pill (shape + label + hue) — identity carried by the
+                    // agent name inside localBadge.label. Reuses the card pill styles.
+                    <span
+                      className={`gh-local-badge gh-local-badge--pill gh-local-badge--${pqBadge.tone}`}
+                      data-testid="gh-pq-local-run"
+                      aria-label={`Local Paperclip status: ${pqBadge.label}`}
+                    >
+                      <span className="gh-local-badge__icon" aria-hidden="true">{runStateIcon(pqRun)}</span>
+                      {pqRun === "running" && (
+                        <span className="gh-local-badge__pulse" aria-hidden="true" />
+                      )}
+                      {pqBadge.label}
+                    </span>
+                  ) : (
+                    <span className="muted">
+                      {issue.assignees && issue.assignees.length > 0
+                        ? `Assigned to ${issue.assignees.join(", ")}`
+                        : "Unassigned"}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -372,15 +401,6 @@ function runStateIcon(runState: NonNullable<GithubIssue["local"]>["runState"]): 
   }
 }
 
-/** runStateLabel returns the human-readable status label for the pill. */
-function runStateLabel(runState: NonNullable<GithubIssue["local"]>["runState"]): string {
-  switch (runState) {
-    case "running": return "Running";
-    case "todo":    return "Queued";
-    case "done":    return "Done";
-  }
-}
-
 function IssueCard({
   issue,
   now,
@@ -402,10 +422,14 @@ function IssueCard({
   // PURELY from `issue.local` and is NEVER merged into the mirrored `assignees`
   // line below. This render path issues no GitHub write of any kind.
   const localBadge = localRunBadge(issue);
-  // ISI-5678: treated-card detection. A card is "treated" when issue.local is
-  // present (the backend attached a local work-item block). Untreated cards
-  // receive zero visual treatment — no rail, no pill, no avatar, no marker.
-  const treated = !!issue.local;
+  // ISI-5678: treated-card detection. A card is "treated" only when the honest
+  // localRunBadge projection yields a badge — i.e. issue.local is present AND
+  // names an agent AND carries a recognised runState. Gating on `localBadge`
+  // (NOT raw issue.local) keeps the ISI-4760 honesty guard authoritative: a
+  // bridged-but-unclaimed work-item (agent == "") stays UNtreated — no rail,
+  // pill, avatar, or marker — exactly as localRunBadge returns null for it.
+  // The card "simply reads localRunBadge's result in more places" (DESIGN-SPEC).
+  const treated = !!localBadge;
   const runState = issue.local?.runState;
   const agentName = issue.local?.agent?.trim() ?? "";
   const agentMonogram = agentName.charAt(0).toUpperCase() || "?";
@@ -445,28 +469,19 @@ function IssueCard({
         </span>
       </div>
       <div className="gh-kanban-card__tags">
-        {/* ② Status pill — shape + label + hue (ISI-5678 channel 2). Replaces the
-            existing flat chip with a richer pill on treated cards; untreated cards
-            still render the original flat chip below. */}
-        {treated && runState ? (
+        {/* ② Status pill — shape + label + hue (ISI-5678 channel 2). Rendered only
+            when localBadge is present (the honest treated state); its label/tone
+            come straight from localRunBadge — never a fabricated fallback. */}
+        {localBadge && runState ? (
           <span
-            className={`gh-local-badge gh-local-badge--pill gh-local-badge--${localBadge?.tone ?? runState}`}
+            className={`gh-local-badge gh-local-badge--pill gh-local-badge--${localBadge.tone}`}
             data-testid="gh-issue-local-run"
-            aria-label={`Local Paperclip status: ${localBadge?.label ?? runStateLabel(runState)}`}
+            aria-label={`Local Paperclip status: ${localBadge.label}`}
           >
             <span className="gh-local-badge__icon" aria-hidden="true">{runStateIcon(runState)}</span>
             {runState === "running" && (
               <span className="gh-local-badge__pulse" aria-hidden="true" />
             )}
-            {localBadge?.label ?? runStateLabel(runState)}
-          </span>
-        ) : localBadge ? (
-          <span
-            className={`gh-local-badge gh-local-badge--${localBadge.tone}`}
-            data-testid="gh-issue-local-run"
-            aria-label={`Local Paperclip status: ${localBadge.label}`}
-          >
-            <span className="gh-local-badge__dot" aria-hidden="true" />
             {localBadge.label}
           </span>
         ) : null}
@@ -492,11 +507,18 @@ function IssueCard({
       </div>
       <div className="gh-kanban-card__meta">
         {/* ③ Agent avatar monogram (ISI-5678 channel 3). Shown on treated cards;
-            untreated cards render the provider assignees line unchanged. */}
+            untreated cards render the provider assignees line unchanged. The
+            "our team" qualifier (ADR-0013 honesty) keeps this visually distinct
+            from a GitHub assignee — the avatar is OUR agent, not the provider's. */}
         {treated && agentName ? (
-          <span className="gh-issue-avatar" data-testid="gh-issue-avatar" title={agentName}>
+          <span
+            className="gh-issue-avatar"
+            data-testid="gh-issue-avatar"
+            title={`${agentName} — our team`}
+          >
             <span className="gh-issue-avatar__mono" aria-hidden="true">{agentMonogram}</span>
             <span className="gh-issue-avatar__name">{agentName}</span>
+            <span className="gh-issue-avatar__team muted">our team</span>
           </span>
         ) : (
           <span

@@ -4599,6 +4599,31 @@ a:hover {
   }
 }
 
+/* Priority Queue treated row — same rail hue as the card, drawn as a left bar
+ * via ::before so the compact one-line row stays flex-aligned (ISI-5678 §03). */
+.gh-priority-item--treated {
+  position: relative;
+  padding-left: 9px;
+}
+.gh-priority-item--treated::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 1px;
+  bottom: 1px;
+  width: 3px;
+  border-radius: 3px;
+}
+.gh-priority-item--treated-running::before {
+  background: #16a34a;
+}
+.gh-priority-item--treated-todo::before {
+  background: #d97706;
+}
+.gh-priority-item--treated-done::before {
+  background: var(--text-2, #64748b);
+}
+
 /* ③ Agent avatar — monogram + name on the meta line. */
 .gh-issue-avatar {
   display: inline-flex;
@@ -4627,6 +4652,14 @@ a:hover {
   color: var(--text-1);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "our team" honesty qualifier — keeps the local agent visually distinct from a
+ * GitHub assignee (ADR-0013). Deliberately muted + small so it reads as a hint. */
+.gh-issue-avatar__team {
+  font-size: 0.65rem;
+  font-weight: 500;
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 
