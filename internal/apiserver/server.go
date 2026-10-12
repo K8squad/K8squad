@@ -63,6 +63,13 @@ type Options struct {
 	Discussion    *discussion.Handler
 	Ready         ReadinessChecker
 	Overview      SquadOverviewReader // 8.1 squad-overview read model; nil ⇒ documented 501
+	// SquadSeries is the ISI-5706 WS-1c fleet overview time-series read model
+	// (GET /api/squad/overview/series): the fleet-wide generalization of the
+	// per-project overview series (runs-by-status + token-sum from the informer
+	// cache, tickets-by-status-over-time from the coord status-history seam). Nil
+	// ⇒ the route keeps its documented 501 (a cluster-less dev run), exactly like
+	// Overview and ProjectOverview.
+	SquadSeries *SquadSeriesService
 	// Teams is the Teams LIST read model (ISI-3953, gap G4): GET /api/teams
 	// enumerates the Teams the caller may see (admin ⇒ fleet-wide, tenant ⇒ own
 	// Team). nil ⇒ documented 501, exactly like Overview.
@@ -542,6 +549,22 @@ func (s *Server) routes(opts Options) {
 			squad.HandleFunc("", s.squadOverview(opts.Overview)).Methods(http.MethodGet)
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
+				Methods(http.MethodGet)
+		}
+
+		// ISI-5706 WS-1c fleet overview time-series: GET /api/squad/overview/series
+		// is the fleet-wide generalization of GET /api/projects/{id}/overview — the
+		// Plan tab's global charts (runs-by-status + token-sum from the informer
+		// cache, tickets-by-status-over-time from the coord status-history seam). A
+		// distinct exact-path subrouter from /api/squad/overview above (mux matches
+		// by path, not prefix). Nil service ⇒ the documented 501 (cluster-less dev
+		// run) so the contract stays honest.
+		squadSeries := s.router.Path("/api/squad/overview/series").Subrouter()
+		squadSeries.Use(authz)
+		if opts.SquadSeries != nil {
+			squadSeries.HandleFunc("", s.squadOverviewSeries(opts.SquadSeries)).Methods(http.MethodGet)
+		} else {
+			squadSeries.HandleFunc("", notImplemented("fleet overview series read model", "ISI-5706: wire the informer cache + coord status-history seam to enable")).
 				Methods(http.MethodGet)
 		}
 
