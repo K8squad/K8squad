@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -285,6 +286,76 @@ func TestOSRunnerFirstOutputWatchdogStandsDownOnOutput(t *testing.T) {
 	}
 	if outcome.State != a2a.TaskCompleted || outcome.Reason != "" {
 		t.Fatalf("outcome = %+v, want completed with no reason", outcome)
+	}
+}
+
+// TestStderrTapPassThroughAndTail is the ISI-5679 unit guard: the tap mirrors
+// every byte to its pass-through sink (the pod log stays whole) and tail()
+// returns the last few non-empty lines — the provider-side evidence the
+// first-output watchdog co-locates with its kill.
+func TestStderrTapPassThroughAndTail(t *testing.T) {
+	var sink strings.Builder
+	tap := &stderrTap{w: &sink}
+	for _, line := range []string{
+		"opencode: connecting to provider\n",
+		"\n", // blank lines are dropped from the tail
+		"opencode: request sent, awaiting first token\n",
+		"opencode: still streaming (reasoning)\n",
+	} {
+		if _, err := tap.Write([]byte(line)); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	if got, want := sink.String(), "opencode: connecting to provider\n\nopencode: request sent, awaiting first token\nopencode: still streaming (reasoning)\n"; got != want {
+		t.Fatalf("pass-through = %q, want the full stream %q", got, want)
+	}
+	tail := tap.tail()
+	if !strings.Contains(tail, "still streaming (reasoning)") ||
+		!strings.Contains(tail, "awaiting first token") {
+		t.Fatalf("tail = %q, want the last non-empty lines", tail)
+	}
+	if strings.Contains(tail, "\n") {
+		t.Fatalf("tail must collapse to one line; got %q", tail)
+	}
+}
+
+// TestStderrTapBounded guards the ring: a chatty runtime can write far more
+// than stderrTapMax, but the retained tail never grows past the cap.
+func TestStderrTapBounded(t *testing.T) {
+	tap := &stderrTap{w: io.Discard}
+	for i := 0; i < 1000; i++ {
+		if _, err := tap.Write([]byte(strings.Repeat("x", 128) + "\n")); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+	tap.mu.Lock()
+	n := len(tap.buf)
+	tap.mu.Unlock()
+	if n > stderrTapMax {
+		t.Fatalf("retained %d bytes, want <= %d", n, stderrTapMax)
+	}
+}
+
+// TestOSRunnerStderrStallStillTripsWatchdog is the ISI-5679 integration guard:
+// a runtime that chatters on stderr (opencode --print-logs) but never emits
+// stdout — the reasoning-model stall — must still die on the first-output
+// watchdog, and the stderr pass-through must stay whole (the pod log keeps the
+// provider-side evidence the watchdog diagnostic points at).
+func TestOSRunnerStderrStallStillTripsWatchdog(t *testing.T) {
+	script := writeScript(t, "echo 'opencode: awaiting first token' 1>&2\nsleep 300\n")
+	runner := osRunner{firstOutput: 400 * time.Millisecond, killGrace: 2 * time.Second}
+	outcome, err := runner.Run(context.Background(), runtimes.ExecSpec{
+		Path:       script,
+		SettleLine: jsonSettleDetector("step_finish"),
+	}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskFailed {
+		t.Fatalf("state = %s, want TaskFailed", outcome.State)
+	}
+	if !strings.Contains(outcome.Reason, "produced no output") {
+		t.Fatalf("reason = %q, want a no-output/stall reason", outcome.Reason)
 	}
 }
 
