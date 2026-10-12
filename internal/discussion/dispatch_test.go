@@ -194,21 +194,25 @@ func TestResolveBroadcastExcludesPausedAgents(t *testing.T) {
 	}
 }
 
-// --- ISI-5265: broadcast fan-out cap enforced with a non-silent drop --------
+// --- ISI-5265 + ISI-5670: broadcast fan-out capped at the per-discussion ceiling, non-silent drop ----
 
 func TestResolveBroadcastRateCap(t *testing.T) {
-	roster := make([]TeamAgent, 0, maxBroadcastDispatchPerMessage+4)
-	for i := 0; i < maxBroadcastDispatchPerMessage+4; i++ {
+	// ISI-5670: a bare-party broadcast selects at most the HARD per-discussion concurrent-run limit, so a
+	// legacy/degraded fan-out never even picks more targets than the discussion is allowed to run.
+	limit := MaxConcurrentRunsPerDiscussion()
+	const over = 4
+	roster := make([]TeamAgent, 0, limit+over)
+	for i := 0; i < limit+over; i++ {
 		// Distinct multi-rune names so a full squad exceeds the broadcast cap.
 		roster = append(roster, TeamAgent{Name: "agent-" + string(rune('a'+i)), Status: "working"})
 	}
 	msg := agentMsg("all hands", "party", "", nil)
 	targets, dropped, _ := resolveMentionTargets(msg, roster)
-	if len(targets) != maxBroadcastDispatchPerMessage {
-		t.Fatalf("broadcast dispatched %d, want cap of %d", len(targets), maxBroadcastDispatchPerMessage)
+	if len(targets) != limit {
+		t.Fatalf("broadcast dispatched %d, want cap of %d", len(targets), limit)
 	}
-	if dropped != 4 {
-		t.Fatalf("broadcast dropped = %d, want 4 (non-silent truncation)", dropped)
+	if dropped != over {
+		t.Fatalf("broadcast dropped = %d, want %d (non-silent truncation)", dropped, over)
 	}
 }
 

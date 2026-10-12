@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -57,6 +58,17 @@ type fakeLedger struct {
 	bound    map[string]string
 	released map[string]bool
 	claimErr error
+
+	// ISI-5670: the in-flight count the per-discussion backstop gates on. countErr forces the fail-closed
+	// path; countCalls records how CountInFlight was invoked so a test can assert the staleness window.
+	inFlight   int
+	countErr   error
+	countCalls []countCall
+}
+
+type countCall struct {
+	thread    uuid.UUID
+	staleness time.Duration
 }
 
 func newFakeLedger() *fakeLedger {
@@ -91,6 +103,14 @@ func (l *fakeLedger) Release(_ context.Context, msg uuid.UUID, agent string) err
 
 func (l *fakeLedger) HopForDispatchedRun(_ context.Context, _ string) (int, bool, error) {
 	return 0, false, nil
+}
+
+func (l *fakeLedger) CountInFlight(_ context.Context, thread uuid.UUID, staleness time.Duration) (int, error) {
+	l.countCalls = append(l.countCalls, countCall{thread: thread, staleness: staleness})
+	if l.countErr != nil {
+		return 0, l.countErr
+	}
+	return l.inFlight, nil
 }
 
 func newTestDispatcher(fc *fakeCreate, fd *fakeDispatch, fl *fakeLedger, marks *[]string) *dispatcher {
@@ -324,5 +344,120 @@ func TestMentionDispatchPartyVoiceBody(t *testing.T) {
 	// a party voice must NOT fall through to the generic single-agent instruction.
 	if strings.Contains(body, "You were @-mentioned in the discussion room") {
 		t.Fatal("party voice body should not use the generic single-agent instruction")
+	}
+}
+
+// --- ISI-5670: the HARD per-discussion concurrent-run backstop --------------
+
+// capDispatcher builds a dispatcher with the per-discussion concurrent-run cap armed (the field New sets
+// from discussion.MaxConcurrentRunsPerDiscussion()); newTestDispatcher leaves it zero = disabled.
+func capDispatcher(fc *fakeCreate, fd *fakeDispatch, fl *fakeLedger, marks *[]string, cap int) *dispatcher {
+	d := newTestDispatcher(fc, fd, fl, marks)
+	d.maxInFlight = cap
+	d.inFlightStaleness = discussion.DefaultPartyVoiceSettleTimeout
+	return d
+}
+
+// Under the ceiling, a dispatch mints exactly as before and consults the in-flight count first.
+func TestDispatchUnderConcurrencyCapMints(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "33333333-3333-3333-3333-333333333333", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	fl.inFlight = 3 // below the cap of 4
+	var marks []string
+	md := capDispatcher(fc, fd, fl, &marks, 4)
+
+	d := sampleDispatch()
+	if err := md.DispatchMention(context.Background(), d); err != nil {
+		t.Fatalf("DispatchMention: %v", err)
+	}
+	if len(fc.calls) != 1 || len(fd.calls) != 1 {
+		t.Fatalf("under-cap dispatch must mint one Run: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+	if len(fl.countCalls) != 1 {
+		t.Fatalf("CountInFlight called %d times, want 1 (the backstop gate)", len(fl.countCalls))
+	}
+	if fl.countCalls[0].thread != d.ThreadID {
+		t.Fatalf("CountInFlight thread = %s, want the dispatch thread %s", fl.countCalls[0].thread, d.ThreadID)
+	}
+	if fl.countCalls[0].staleness != discussion.DefaultPartyVoiceSettleTimeout {
+		t.Fatalf("CountInFlight staleness = %s, want the settle-timeout window %s",
+			fl.countCalls[0].staleness, discussion.DefaultPartyVoiceSettleTimeout)
+	}
+}
+
+// AT the ceiling, the dispatch is SHED: no claim, no work item, no RequestDispatch — the hard backstop.
+func TestDispatchAtConcurrencyCapSheds(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "44444444-4444-4444-4444-444444444444", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	fl.inFlight = 4 // exactly at the cap of 4
+	var marks []string
+	md := capDispatcher(fc, fd, fl, &marks, 4)
+
+	d := sampleDispatch()
+	if err := md.DispatchMention(context.Background(), d); err != nil {
+		t.Fatalf("a shed dispatch is a no-op, not an error: %v", err)
+	}
+	if len(fc.calls) != 0 || len(fd.calls) != 0 {
+		t.Fatalf("at-cap dispatch must mint NOTHING: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+	if len(fl.seen) != 0 {
+		t.Fatalf("at-cap dispatch must not claim a ledger row (checked before Claim): seen=%v", fl.seen)
+	}
+}
+
+// Over the ceiling (a count racing above the cap) sheds the same way — the comparison is >=.
+func TestDispatchOverConcurrencyCapSheds(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "55555555-5555-5555-5555-555555555555", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	fl.inFlight = 9
+	var marks []string
+	md := capDispatcher(fc, fd, fl, &marks, 4)
+
+	if err := md.DispatchMention(context.Background(), sampleDispatch()); err != nil {
+		t.Fatalf("shed dispatch: %v", err)
+	}
+	if len(fc.calls) != 0 || len(fd.calls) != 0 {
+		t.Fatalf("over-cap dispatch must mint nothing: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+}
+
+// A count error fails CLOSED: the backstop refuses to mint when it cannot prove headroom.
+func TestDispatchConcurrencyCapFailsClosedOnCountError(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "66666666-6666-6666-6666-666666666666", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	fl.countErr = errors.New("boom")
+	var marks []string
+	md := capDispatcher(fc, fd, fl, &marks, 4)
+
+	if err := md.DispatchMention(context.Background(), sampleDispatch()); err == nil {
+		t.Fatal("a count error must fail closed (return an error), not mint")
+	}
+	if len(fc.calls) != 0 || len(fd.calls) != 0 {
+		t.Fatalf("fail-closed must mint nothing: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+}
+
+// With the cap disabled (zero value, as in the pre-ISI-5670 constructor path), the count is never even
+// consulted and dispatch is unbounded — the cap is strictly additive behaviour.
+func TestDispatchConcurrencyCapDisabledNeverCounts(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "77777777-7777-7777-7777-777777777777", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	fl.inFlight = 100
+	var marks []string
+	md := newTestDispatcher(fc, fd, fl, &marks) // maxInFlight == 0
+
+	if err := md.DispatchMention(context.Background(), sampleDispatch()); err != nil {
+		t.Fatalf("DispatchMention: %v", err)
+	}
+	if len(fc.calls) != 1 || len(fd.calls) != 1 {
+		t.Fatalf("cap-disabled dispatch must mint: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+	if len(fl.countCalls) != 0 {
+		t.Fatalf("cap-disabled dispatch must never call CountInFlight, got %d calls", len(fl.countCalls))
 	}
 }
