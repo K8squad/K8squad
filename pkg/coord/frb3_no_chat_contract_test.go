@@ -348,6 +348,7 @@ var allowedSurface = map[string]string{
 	// Both are custody ops (§6.5 audit, no-fence ADR-037, Team-scoped), NOT an
 	// agent-to-agent channel — a card's fields carry no worker-authored handoff.
 	"WorkItemRecord":                        "§6.1 persisted work-item a create/edit returns (board projection columns, read-only)",
+	"IssueLocalRecord":                      "§13 enriched read model for the GitHub-issue treated-card join (ISI-5678): work-item id + state + assignee_agent, read-only, no handoff channel",
 	"CreateWorkItemInput":                   "§6.1 human create input (project/team/parent/title/body/priority/workMode/labels + provenance)",
 	"UpdateWorkItemInput":                   "§6.1 human field-edit input (title/body/parent pointers + optimistic guard)",
 	"ErrInvalidWorkItem":                    "§6.1 guard: malformed create/edit (empty title, self/cyclic parent) (→400)",
@@ -463,6 +464,7 @@ var allowedSurface = map[string]string{
 	"WorkItemReadStore.ReadWorkItemThread":     "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
 	"WorkItemReadStore.ProjectStatusSnapshots": "§6.5 project status-history rollup: daily per-status snapshots reconstructed from state_transition audit rows, Team-scoped (ISI-4509 read-only)",
 	"WorkItemReadStore.FindWorkItemByLabel":    "§13 label-keyed existence read for create-if-absent idempotency (ISI-4757/ISI-4766), Team-scoped (404 existence-hiding), read-only",
+	"WorkItemReadStore.FindIssueLocalByLabel":  "§13 label-keyed enriched read for the GitHub-issue treated-card join (ISI-5678): LEFT JOINs coord.claim for assignee_agent, Team-scoped (404 existence-hiding), read-only",
 	"WorkItemReadStore.WorkItemProject":        "§12.1 one work item's owning-project UID + title, Team-scoped (404 existence-hiding), read-only — DB-backed half of the discussion ticket-reference resolver (ISI-5165 seam / ISI-5170)",
 	"WorkItemProjectRef":                       "§12.1 owning-project UID + authoritative title returned by WorkItemProject; lets the discussion ticket-ref resolver drop out-of-project links and canonicalize chip labels (ISI-5170)",
 	"StatusSnapshot":                           "§6.5 one day's point-in-time per-status count for the overview stacked-area chart (read-only, ISI-4509)",

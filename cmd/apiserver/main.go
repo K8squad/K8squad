@@ -466,7 +466,8 @@ func main() {
 		// The SQLMirrorStore doubles as the RepoHealthReader (ISI-5483): it reads
 		// the durable scm.repo anchor so the tab renders cache age/health from the
 		// mirror even when the live CR status is unavailable.
-		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db), workItemReads, scm.NewSQLSyncHistoryStore(db), scm.NewSQLMirrorStore(db))
+		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db), workItemReads, scm.NewSQLSyncHistoryStore(db), scm.NewSQLMirrorStore(db)).
+			WithIssueLocals(workItemReads) // ISI-5678: attach local block to issue cards
 		log.Printf("ksquad-apiserver: github-status read model ready (S5b scm mirror projection)")
 	}
 

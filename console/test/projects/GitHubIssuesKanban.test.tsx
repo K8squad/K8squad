@@ -435,12 +435,18 @@ describe("GitHubIssuesKanban local overlay (ISI-4760)", () => {
     expect(badge.getAttribute("aria-label")).toBe("Local Paperclip status: sam working…");
   });
 
-  it("AC2: the badge never merges into or alters the mirrored GitHub assignee line", () => {
+  it("AC2 (ISI-5678): the local agent is shown as OUR agent, never as the GitHub assignee", () => {
     render(<GitHubIssuesKanban issues={[bridged]} />);
     const card = screen.getByTestId("gh-issue-card");
-    // Assignee line still reflects ONLY GitHub's assignees, not the local agent.
-    expect(card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).toBe("gh-human");
-    expect(card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).not.toContain("sam");
+    // On a treated card the meta line is OUR agent avatar (ISI-5678 channel ③),
+    // carrying the "our team" honesty qualifier — NOT a GitHub-assignee line.
+    const avatar = card.querySelector('[data-testid="gh-issue-avatar"]');
+    expect(avatar).not.toBeNull();
+    expect(avatar?.textContent).toContain("sam");
+    expect(avatar?.textContent).toContain("our team");
+    // The local agent must NOT be rendered through the mirrored GitHub-assignee
+    // slot (ADR-0013: a local status is not a GitHub assignee).
+    expect(card.querySelector('[data-testid="gh-issue-assignee"]')).toBeNull();
   });
 
   it("AC4: a non-bridged card renders no local badge", () => {
@@ -457,5 +463,87 @@ describe("GitHubIssuesKanban local overlay (ISI-4760)", () => {
     const badge = screen.getByTestId("gh-issue-local-run");
     expect(badge.textContent).toContain("sam finished");
     expect(badge.textContent).not.toContain("working…");
+  });
+});
+
+describe("GitHubIssuesKanban treated-card treatment (ISI-5678)", () => {
+  const running: GithubIssue = {
+    number: 300,
+    title: "Disk pressure on sandbox pods",
+    state: "open",
+    url: "https://gh/issues/300",
+    labels: ["priority: critical"],
+    assignees: ["gh-human"],
+    local: { workItemId: "wi-300", agent: "Alfred", runState: "running" },
+  };
+
+  it("renders all four redundant channels on a treated (claimed) card", () => {
+    render(<GitHubIssuesKanban issues={[running]} />);
+    const card = screen.getByTestId("gh-issue-card");
+    // ① rail, ④ ksq marker, ② status pill, ③ agent avatar — all present.
+    expect(card.className).toContain("gh-kanban-card--treated");
+    expect(card.querySelector(".gh-kanban-card__rail--running")).not.toBeNull();
+    expect(card.querySelector('[data-testid="gh-issue-ksq-marker"]')).not.toBeNull();
+    const pill = card.querySelector('[data-testid="gh-issue-local-run"]');
+    expect(pill?.className).toContain("gh-local-badge--pill");
+    expect(pill?.textContent).toContain("▶"); // shape icon — colourblind-safe redundancy
+    expect(pill?.querySelector(".gh-local-badge__pulse")).not.toBeNull(); // running pulse
+    expect(card.querySelector('[data-testid="gh-issue-avatar"]')).not.toBeNull();
+  });
+
+  it("HONESTY GUARD: a bridged-but-unclaimed card (agent=\"\") gets ZERO treatment", () => {
+    // The backend attaches `local` for a work-item with no claim (agent == "").
+    // localRunBadge returns null for it, so the card must render fully untreated —
+    // no rail, no ksq marker, no pill, no avatar. (The regression this fix closes.)
+    render(
+      <GitHubIssuesKanban
+        issues={[{ ...running, local: { workItemId: "wi-300", agent: "", runState: "running" } }]}
+      />,
+    );
+    const card = screen.getByTestId("gh-issue-card");
+    expect(card.className).not.toContain("gh-kanban-card--treated");
+    expect(card.querySelector(".gh-kanban-card__rail")).toBeNull();
+    expect(card.querySelector('[data-testid="gh-issue-ksq-marker"]')).toBeNull();
+    expect(card.querySelector('[data-testid="gh-issue-local-run"]')).toBeNull();
+    expect(card.querySelector('[data-testid="gh-issue-avatar"]')).toBeNull();
+    // Falls back to the honest provider assignee line.
+    expect(card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).toBe("gh-human");
+  });
+
+  it("a non-bridged card gets ZERO treatment", () => {
+    render(<GitHubIssuesKanban issues={[{ ...running, local: undefined }]} />);
+    const card = screen.getByTestId("gh-issue-card");
+    expect(card.className).not.toContain("gh-kanban-card--treated");
+    expect(card.querySelector('[data-testid="gh-issue-ksq-marker"]')).toBeNull();
+    expect(card.querySelector('[data-testid="gh-issue-avatar"]')).toBeNull();
+  });
+
+  it("done pill drops the running pulse and uses the ✓ shape", () => {
+    render(
+      <GitHubIssuesKanban
+        issues={[{ ...running, local: { workItemId: "wi-300", agent: "Alfred", runState: "done" } }]}
+      />,
+    );
+    const pill = screen.getByTestId("gh-issue-local-run");
+    expect(pill.textContent).toContain("✓");
+    expect(pill.querySelector(".gh-local-badge__pulse")).toBeNull();
+  });
+
+  it("the Priority Queue carries the treated pill, and an untreated row stays 'Unassigned'", () => {
+    const untreated: GithubIssue = {
+      number: 301,
+      title: "FileExplorer 504 on cold reader",
+      state: "open",
+      url: "https://gh/issues/301",
+      labels: ["priority: high"],
+    };
+    render(<GitHubIssuesKanban issues={[running, untreated]} />);
+    const pq = screen.getByTestId("gh-priority-queue");
+    const treatedPill = within(pq).getByTestId("gh-pq-local-run");
+    expect(treatedPill.textContent).toContain("Alfred working…");
+    expect(treatedPill.textContent).toContain("▶");
+    // The untreated row keeps the honest muted assignee text, no pill.
+    expect(within(pq).getAllByTestId("gh-pq-local-run")).toHaveLength(1);
+    expect(pq.textContent).toContain("Unassigned");
   });
 });
