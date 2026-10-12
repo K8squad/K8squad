@@ -16,7 +16,7 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import { DEFAULT_THEME } from "@/lib/theme";
+import { DEFAULT_THEME, THEME_INIT_SCRIPT } from "@/lib/theme";
 
 export const metadata: Metadata = {
   title: "K8squad Console",
@@ -35,6 +35,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       className={`${GeistSans.variable} ${GeistMono.variable}`}
       suppressHydrationWarning
     >
+      <head>
+        {/* ISI-5701: stamp the persisted theme onto <html> BEFORE first paint, overriding the
+            server's DEFAULT_THEME. Runs ahead of hydration so a hard reload or a run-page mount
+            restores the saved light/dark choice with no flash. suppressHydrationWarning above
+            keeps the attribute mutation from tripping a hydration mismatch. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
       <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
