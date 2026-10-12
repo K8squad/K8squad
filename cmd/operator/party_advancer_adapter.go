@@ -16,18 +16,42 @@ import (
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/internal/mentiondispatch"
 	"github.com/K8squad/K8squad/pkg/coord"
 )
 
 // coordAdvancerWriter adapts *coord.WorkItemWriteStore to discussion.AdvancerWorkItemWriter.
+//
+// ISI-5680 (ISI-5662 WS3): the advancer hands CreateWorkItem the party session's ProjectID, which is the
+// room's "namespace/name" slug (discussion.party_session.project_id is TEXT — migration 0026). But
+// coord.CreateWorkItem inserts project_id via $1::uuid, so a slug casts to uuid and ERRORS ("invalid input
+// syntax for type uuid") — the facilitator/takeaways mint silently fails and nothing is dispatched. We
+// therefore resolve the slug to the coord Project UID (+ owning Team UID) here, exactly as the apiserver
+// (internal/apiserver/mentiondispatch.go) and the sequential VoiceDispatcher (internal/mentiondispatch)
+// do before they call the same coord store. A UID-bearing ProjectID passes through unchanged.
 type coordAdvancerWriter struct {
-	store *coord.WorkItemWriteStore
+	store    *coord.WorkItemWriteStore
+	resolver mentiondispatch.ProjectResolver
 }
 
 func (w coordAdvancerWriter) CreateWorkItem(ctx context.Context, in discussion.AdvancerCreateInput) (discussion.AdvancerWorkItemResult, error) {
+	projectID := in.ProjectID
+	teamID := in.TeamID
+	if w.resolver != nil {
+		resolved, rerr := w.resolver.ResolveProject(ctx, in.ProjectID)
+		if rerr != nil {
+			return discussion.AdvancerWorkItemResult{}, fmt.Errorf("party advancer: resolve project %q: %w", in.ProjectID, rerr)
+		}
+		projectID = resolved.UID
+		// Prefer the resolved owning-Team UID when present; the session's TeamID is already a UID, so a
+		// resolver that can't name the team (TeamUID == "") leaves the caller's value intact.
+		if resolved.TeamUID != "" {
+			teamID = resolved.TeamUID
+		}
+	}
 	rec, err := w.store.CreateWorkItem(ctx, coord.CreateWorkItemInput{
-		ProjectID: in.ProjectID,
-		TeamID:    in.TeamID,
+		ProjectID: projectID,
+		TeamID:    teamID,
 		Title:     in.Title,
 		Body:      in.Body,
 		Principal: in.Principal,

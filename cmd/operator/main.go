@@ -1458,6 +1458,13 @@ func main() {
 		partyWriteStore, pwErr := coord.NewWorkItemWriteStore(db)
 		partyTeamResolver := memory.NewClientTeamAgentResolver(mgr.GetClient())
 		partyDispatchStore, pdErr := coord.NewWorkItemDispatchStore(db, partyTeamResolver)
+		// ISI-5680 (ISI-5662 WS3) — the room's project_id is a "namespace/name" slug (discussion schema is
+		// TEXT, migration 0026) but coord keys work_item.project_id on a uuid. Resolve slug→Project UID (+
+		// owning Team UID) off the same Project/Team CR informer cache the apiserver and cmd/memory use, and
+		// hand it to BOTH mint paths: the facilitator/takeaways Writer and the sequential VoiceDispatcher.
+		// A nil resolver (the prior wiring) let the slug reach coord's $1::uuid cast, which errored and
+		// aborted the mint — so no facilitator was ever dispatched.
+		partyProjectResolver := mentiondispatch.NewClientProjectResolver(mgr.GetClient())
 		switch {
 		case pwErr != nil:
 			ctrl.Log.Error(pwErr, "party advancer disabled (work-item write store)")
@@ -1466,7 +1473,7 @@ func main() {
 		default:
 			partyAdvancer := &discussion.PartyAdvancer{
 				Store:      discussion.NewStore(db),
-				Writer:     coordAdvancerWriter{store: partyWriteStore},
+				Writer:     coordAdvancerWriter{store: partyWriteStore, resolver: partyProjectResolver},
 				Dispatcher: coordAdvancerDispatcher{store: partyDispatchStore},
 				// ISI-5669 WS1 (root-cause B) — resolve the REAL Coordinator-role agent from the CRs
 				// (Agent→Role→Coordinator flag), not the first team agent. The advancer dispatches the
@@ -1476,10 +1483,11 @@ func main() {
 				// ISI-5638 (ADR-0031 Ruling A §3.1) — sequential voice dispatch. The advancer walks the
 				// round's roster one turn at a time through the SAME @-mention run-minting path the apiserver
 				// wires (internal/mentiondispatch), over the coord create/dispatch stores the facilitator mint
-				// already rides. A nil project resolver means the room's "namespace/name" slug passes through
-				// verbatim — identical to how the facilitator mint (coordAdvancerWriter) hands coord the slug,
-				// so a voice run is created in the same project the same way, just board-hidden + ledger-bound.
-				VoiceDispatcher: mentiondispatch.New(partyWriteStore, partyDispatchStore, nil, db),
+				// already rides. ISI-5680: the resolver is REQUIRED (not nil) — the room's "namespace/name"
+				// slug must be resolved to the Project UID before coord's $1::uuid cast, exactly as the
+				// facilitator mint (coordAdvancerWriter) now does, so a voice run lands in the same project
+				// keyed the same way, just board-hidden + ledger-bound.
+				VoiceDispatcher: mentiondispatch.New(partyWriteStore, partyDispatchStore, partyProjectResolver, db),
 				Principal:       rundrive.OperatorPrincipal,
 			}
 			if err := mgr.Add(partyAdvancer); err != nil {
