@@ -1187,3 +1187,204 @@ a.ksq-ticket-chip:hover {
     animation: none;
   }
 }
+
+/* ===========================================================================
+ * ISI-5674 WS-D — `/reset` composer command (slash menu · confirm dialog ·
+ * post-reset empty state). Mocks ISI-5605 §3. APPEND-ONLY (shared file with
+ * ISI-5597; dedicated worktree per plan §WS-C/§WS-D).
+ * ========================================================================= */
+
+/* The `/` command menu — mirrors the mention popover's chrome. */
+.ksq-slash-popover {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 20%);
+  max-width: 360px;
+}
+.ksq-slash-popover__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+.ksq-slash-popover__close {
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.ksq-slash-popover__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.ksq-slash-popover__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text-1);
+  text-align: left;
+  padding: 8px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.ksq-slash-popover__option[data-active="true"] {
+  background: var(--accent);
+  color: #ffffff;
+}
+.ksq-slash-popover__glyph {
+  font-family: var(--font-mono);
+  opacity: 0.75;
+  line-height: 1.3;
+}
+.ksq-slash-popover__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ksq-slash-popover__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.ksq-slash-popover__subtitle {
+  font-size: 11px;
+  opacity: 0.75;
+}
+.ksq-slash-popover__empty {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+  opacity: 0.75;
+}
+
+/* The command menu opens UPWARD out of the docked composer — same treatment as
+   the @-mention popover (would otherwise drop below the fold / behind the nav). */
+.ksq-room__dock .ksq-slash-popover {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+}
+
+/* `/reset` confirm dialog — focus-trapped modal (a11y: Cancel default focus). */
+.ksq-reset-dialog__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 50%);
+}
+.ksq-reset-dialog {
+  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+}
+.ksq-reset-dialog__title {
+  margin: 0;
+  font-size: 18px;
+}
+.ksq-reset-dialog__body {
+  margin: 0;
+  color: var(--text-2);
+}
+.ksq-reset-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.ksq-reset-dialog__cancel {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-1);
+  cursor: pointer;
+}
+/* Destructive-but-reversible (reset marker, not hard delete) → AMBER, not red.
+   Dark text on the amber fill for AA contrast (spec §Accessibility). */
+.ksq-reset-dialog__confirm {
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--status-warn, #f59e0b);
+  color: #1b1403;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ksq-reset-dialog__confirm:disabled,
+.ksq-reset-dialog__cancel:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.ksq-reset-dialog__cancel:focus-visible,
+.ksq-reset-dialog__confirm:focus-visible {
+  outline: 2px solid var(--accent, #4f8cff);
+  outline-offset: 2px;
+}
+
+/* Post-reset empty state (mocks §3 panel ⑤). */
+.ksq-room__reset-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--text-2);
+}
+.ksq-room__reset-meta {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  opacity: 0.8;
+}
+.ksq-room__reset-illus {
+  color: var(--text-2);
+  opacity: 0.5;
+}
+.ksq-room__reset-title {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-1);
+}
+.ksq-room__reset-sub {
+  margin: 0;
+  max-width: 320px;
+  font-size: 13px;
+}
+
+/* Reduced motion (spec §Reduced motion): the command menu fades with no
+   transform; the dialog appears instantly. No transforms are declared above, so
+   there is nothing to strip — this block documents the intent and overrides any
+   inherited transition should one be added. */
+@media (prefers-reduced-motion: reduce) {
+  .ksq-slash-popover,
+  .ksq-reset-dialog,
+  .ksq-reset-dialog__backdrop {
+    transition: none;
+    animation: none;
+  }
+}

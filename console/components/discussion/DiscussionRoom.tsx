@@ -23,6 +23,7 @@ import { nestMessages } from "@/lib/discussion/thread";
 import { isPartyStart, newestTerminalSession } from "@/lib/discussion/party";
 import {
   applyRoomEvent,
+  isResetMarker,
   type RoomStreamEvent,
   type ThinkingRow,
 } from "@/lib/discussion/liveFeed";
@@ -42,6 +43,7 @@ import { DiscussionApiError } from "@/lib/discussion/api";
 import { MessageItem } from "./MessageItem";
 import { PartySessionCard } from "./PartySessionCard";
 import { Composer } from "./Composer";
+import { ResetConfirmDialog } from "./ResetConfirmDialog";
 import { Roster, type RosterAgent } from "./Roster";
 import type { AgentRunPresence } from "@/lib/overview/liveRuns";
 import "./discussion.css";
@@ -59,6 +61,14 @@ const WORKING_SWEEP_MS = 15_000;
 // round + budget meter is refreshed by re-GETting `/party-sessions/active` while
 // a party_start opener is in the thread. Only runs when a debate is present.
 const PARTY_POLL_MS = 20_000;
+
+// Human-readable timestamp for the post-reset "reset by <who> · <time>" header
+// (ISI-5674 WS-D). Degrades to the raw ISO on an unparseable value so the header
+// never renders "Invalid Date".
+function formatResetTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
 
 export interface DiscussionRoomProps {
   projectId: string;
@@ -130,6 +140,15 @@ export function DiscussionRoom({
   // pre-ISI-5617 apiserver, where the card falls back to the transcript).
   const [terminalSession, setTerminalSession] =
     useState<PartySession | null>(null);
+  // Reset state (ISI-5674 WS-D, ADR-0030). `resetInfo` is the latest live reset
+  // marker's metadata (who/when) — set from the thread read on load and from the
+  // marker when a reset lands (POST response or SSE). It drives the post-reset
+  // empty state. `resetOpen` toggles the confirm dialog; `resetBusy` guards the
+  // in-flight reset round-trip against a double-run.
+  const [resetInfo, setResetInfo] =
+    useState<{ at: string; by: string } | null>(null);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   // The roster the post callback reads to resolve dispatch targets, held in a
   // ref so `post` is not re-created on every roster refresh (and never dispatches
   // against a stale closure).
@@ -146,6 +165,24 @@ export function DiscussionRoom({
       const flat = await client.getThread(projectId, threadId);
       setMessages(flat);
       setState("ready");
+      // Reset metadata (ISI-5674 WS-D, ADR-0030 §(c)): read the thread record so a
+      // thread that was reset shows its post-reset empty state after a reload —
+      // the floored get-thread returns no bubbles, and `resetAt`/`resetBy` carry
+      // the "reset by <who> · <time>" header. Best-effort: on any failure (or a
+      // pre-ISI-5672 apiserver that omits the fields) the room just renders the
+      // plain empty transcript.
+      try {
+        if (typeof client.getThreadInfo === "function") {
+          const info = await client.getThreadInfo(projectId, threadId);
+          setResetInfo(
+            info.resetAt && info.resetBy
+              ? { at: info.resetAt, by: info.resetBy }
+              : null,
+          );
+        }
+      } catch {
+        setResetInfo(null);
+      }
       // Proposal cards + lifecycle phase (story 6 read side). A failure here
       // degrades silently to plain transcript rendering — the room already
       // rendered, and the cards rejoin on the next load.
@@ -230,6 +267,19 @@ export function DiscussionRoom({
         return;
       }
       const evt = se.event;
+      // ADR-0030 clear-signal (ISI-5674 WS-D): a reset marker over the bus clears
+      // the local transcript (applyRoomEvent drops the floor, never a bubble) and
+      // flips the room into its post-reset empty state. Record who/when for the
+      // "reset by <who> · <time>" header.
+      if (
+        (evt.type === "message.created" || evt.type === "message.updated") &&
+        isResetMarker(evt.message)
+      ) {
+        setResetInfo({
+          at: evt.message.createdAt,
+          by: evt.message.authorPrincipal,
+        });
+      }
       setMessages((cur) => applyRoomEvent(cur, evt));
       if (evt.type === "message.created" || evt.type === "message.updated") {
         // An agent reply landing over the SAME bus resolves its working watch to
@@ -331,6 +381,32 @@ export function DiscussionRoom({
     },
     [client, projectId, threadId],
   );
+
+  // Human reset (ISI-5674 WS-D, ADR-0030): run the WS-B endpoint, then apply the
+  // returned marker locally as the clear-signal — drop the transcript (never a
+  // bubble) and flip into the post-reset empty state. The SSE echo of the same
+  // marker is idempotent by id, so a double-apply is a no-op. The thread id is
+  // unchanged (`?thread` stays stable). A failure leaves the dialog open with the
+  // transcript intact; the busy guard prevents a double-run.
+  const doReset = useCallback(async () => {
+    setResetBusy(true);
+    try {
+      const res = await client.resetThread(projectId, threadId);
+      setMessages((cur) =>
+        applyRoomEvent(cur, { type: "message.created", message: res.marker }),
+      );
+      setResetInfo({ at: res.marker.createdAt, by: res.marker.authorPrincipal });
+      setResetOpen(false);
+    } finally {
+      setResetBusy(false);
+    }
+  }, [client, projectId, threadId]);
+
+  // Composer slash command (ISI-5674 WS-D): `/reset` opens the confirm dialog.
+  // `/reset` is the only command this phase, so an unknown name is ignored.
+  const onCommand = useCallback((name: string) => {
+    if (name === "reset") setResetOpen(true);
+  }, []);
 
   // Human confirm (plan §4.4): fan into the authoring seams, then advance the
   // card to executed and append the result post-back message under it.
@@ -455,6 +531,13 @@ export function DiscussionRoom({
     );
   }
 
+  // Post-reset empty state (ISI-5674 WS-D, mocks §3 panel ⑤): a reset thread
+  // reads with no bubbles (the floor) but keeps its reset metadata, so the room
+  // shows the "This discussion was reset" empty state + "reset by <who> · <time>"
+  // header instead of a blank transcript. It persists across a reload (resetInfo
+  // is read off the thread) and until the human posts the first fresh message.
+  const showResetEmptyState = messages.length === 0 && resetInfo !== null;
+
   return (
     <section className="ksq-room" data-testid="discussion-room">
       <div className="ksq-room__main">
@@ -464,6 +547,31 @@ export function DiscussionRoom({
             opener={partyOpener}
             messages={messages}
           />
+        ) : null}
+        {showResetEmptyState ? (
+          <div className="ksq-room__reset-empty" data-testid="room-reset-empty">
+            <p
+              className="ksq-room__reset-meta"
+              data-testid="room-reset-meta"
+            >
+              reset by {resetInfo.by} · {formatResetTime(resetInfo.at)}
+            </p>
+            <div className="ksq-room__reset-illus" aria-hidden="true">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M4 12a8 8 0 1 1 2.3 5.6M4 12V7m0 5h5"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </div>
+            <h2 className="ksq-room__reset-title">This discussion was reset</h2>
+            <p className="ksq-room__reset-sub">
+              Earlier messages are archived for audit and no longer shown here.
+            </p>
+          </div>
         ) : null}
         <ul className="ksq-thread ksq-thread--roots" data-testid="threads">
           {threads.map((t) => (
@@ -494,6 +602,8 @@ export function DiscussionRoom({
         >
           <Composer
             onPost={post}
+            onCommand={onCommand}
+            placeholder={showResetEmptyState ? "Start the discussion…" : undefined}
             directTargets={rosterAgents.map((a) => ({
               id: a.id,
               name: a.name,
@@ -503,6 +613,18 @@ export function DiscussionRoom({
         </footer>
       </div>
       <Roster agents={rosterAgents} liveRuns={liveRuns} />
+
+      {/* ISI-5674 WS-D — `/reset` confirm dialog (ADR-0030, mocks §3 ④). Focus-
+          trapped, Cancel-default; on confirm it runs the WS-B endpoint and clears
+          the transcript via the returned marker. Rendered at the room root so it
+          overlays the whole surface. */}
+      {resetOpen ? (
+        <ResetConfirmDialog
+          busy={resetBusy}
+          onCancel={() => setResetOpen(false)}
+          onConfirm={() => void doReset()}
+        />
+      ) : null}
 
       {/* ISI-5623 (ISI-5597 P1) — jump-to-bottom FAB, fixed bottom-right, riding
           just above the docked composer (`--ksq-dock-h`). Shown only while

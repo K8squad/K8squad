@@ -21,6 +21,18 @@ export interface Thread {
   createdAt: string;
   /** Populated by the get-thread read — the thread's threaded live messages. */
   messages?: Message[];
+  /**
+   * Reset metadata (ISI-5672 WS-B, ADR-0030 Option 2 "reset-marker"). Present on
+   * the get-thread read ONLY while the thread carries a live `kind='reset'` marker
+   * (the reset floor): `resetAt` is that marker's `created_at`, `resetBy` the
+   * principal who reset, `resetReason` the optional human-supplied note. All absent
+   * on a thread that was never reset (or whose marker was retracted = un-reset) —
+   * which reads as the full transcript. The console surfaces them in the post-reset
+   * empty state (WS-D) so a reset survives a reload without a marker bubble.
+   */
+  resetAt?: string | null;
+  resetBy?: string | null;
+  resetReason?: string | null;
 }
 
 /**
@@ -296,6 +308,28 @@ export interface DecisionAnswerResponse {
  * There is no new *audience* — party sessions still ride `audience: "party"`.
  */
 export const KIND_PARTY_START = "party_start";
+
+/**
+ * The server-stamped marker kind that clears a thread's visible transcript
+ * (ISI-5672 WS-B, ADR-0030 Option 2). A `kind='reset'` message is NEVER rendered
+ * as a chat bubble: it is the reset floor, and the reader (and the live client,
+ * WS-D) shows only the messages created strictly after it. The console treats its
+ * arrival over SSE — or in the POST /reset response — as the clear-signal.
+ */
+export const KIND_RESET = "reset";
+
+/**
+ * The POST `/threads/{id}/reset` response (ISI-5672 WS-B): the committed
+ * `kind='reset'` marker, its `created_at` (the new reset floor), and how many
+ * messages this reset hid. The console uses the marker as the local clear-signal
+ * and reads `authorPrincipal`/`createdAt` off it for the post-reset empty state.
+ */
+export interface ResetResponse {
+  status: "reset";
+  marker: Message;
+  resetAt: string;
+  hiddenCount: number;
+}
 
 /** Hard cost budgets for a party session (`PartyBudget`); nested under `budget`. */
 export interface PartyBudget {
