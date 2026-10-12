@@ -463,6 +463,7 @@ var allowedSurface = map[string]string{
 	"ReviewItem":                               "§13 one in_review card projected cross-Project (id/projectUID/title/updatedAt/assignee) for the ADR-0026 §3.3 run-join; read-only",
 	"WorkItemReadStore.ReadWorkItemThread":     "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
 	"WorkItemReadStore.ProjectStatusSnapshots": "§6.5 project status-history rollup: daily per-status snapshots reconstructed from state_transition audit rows, Team-scoped (ISI-4509 read-only)",
+	"WorkItemReadStore.FleetStatusSnapshots":   "§6.5 fleet/Team-wide status-history rollup: daily per-status snapshots across every board Project in scope, Team-scoped (admin→fleet), read-only — the ISI-5706 WS-1c generalization of ProjectStatusSnapshots (project_id filter dropped)",
 	"WorkItemReadStore.FindWorkItemByLabel":    "§13 label-keyed existence read for create-if-absent idempotency (ISI-4757/ISI-4766), Team-scoped (404 existence-hiding), read-only",
 	"WorkItemReadStore.FindIssueLocalByLabel":  "§13 label-keyed enriched read for the GitHub-issue treated-card join (ISI-5678): LEFT JOINs coord.claim for assignee_agent, Team-scoped (404 existence-hiding), read-only",
 	"WorkItemReadStore.WorkItemProject":        "§12.1 one work item's owning-project UID + title, Team-scoped (404 existence-hiding), read-only — DB-backed half of the discussion ticket-reference resolver (ISI-5165 seam / ISI-5170)",

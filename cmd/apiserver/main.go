@@ -480,6 +480,16 @@ func main() {
 		projectOverview = apiserver.NewOverviewService(dashboardReader, workItemReads)
 	}
 
+	// Fleet overview time-series read model (ISI-5706 WS-1c): the fleet-wide
+	// generalization of the per-project overview — runs-by-status + token-sum from
+	// the SAME informer cache, tickets-by-status-over-time from the coord
+	// status-history seam (workItemReads.FleetStatusSnapshots, project_id filter
+	// dropped — no new store). Nil informer cache ⇒ nil service ⇒ documented 501.
+	var squadSeries *apiserver.SquadSeriesService
+	if dashboardReader != nil {
+		squadSeries = apiserver.NewSquadSeriesService(dashboardReader, workItemReads)
+	}
+
 	// ISI-4571 run listing/detail read model: listing from the same informer cache the
 	// dashboard uses, steps/thinking enrichment from coord.audit_log + coord.comment over
 	// the run's work item. Nil informer cache ⇒ nil service ⇒ documented 501.
@@ -753,6 +763,7 @@ func main() {
 		Ready:               dbReady{db},
 		Overview:            overview,
 		ProjectOverview:     projectOverview,
+		SquadSeries:         squadSeries,
 		Runs:                runsService,
 		Teams:               teams,
 		FleetList:           fleetList,

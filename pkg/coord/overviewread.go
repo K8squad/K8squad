@@ -132,22 +132,45 @@ func (s *WorkItemReadStore) ProjectStatusSnapshots(ctx context.Context, teamID, 
 	if projectID == "" {
 		return nil, fmt.Errorf("coord.ProjectStatusSnapshots: projectID required")
 	}
+	return s.statusSnapshots(ctx, teamID, projectID, from, to)
+}
+
+// FleetStatusSnapshots is the fleet/Team-wide generalization of
+// ProjectStatusSnapshots (ISI-5706 WS-1c): the daily per-status snapshot series
+// across EVERY board Project in scope over [from, to] (inclusive days), backing
+// the global overview stacked-area chart. The ONLY difference from the
+// per-project rollup is the absence of a project_id filter — every board work
+// item the teamID scope can see contributes, so the series is the whole fleet's
+// (empty teamID ⇒ trusted fleet-admin) or one Team's (non-empty teamID) board
+// over time. Same read-model discipline (no new store), same board-hide filter
+// (source='board'), same created_at <= to bound.
+func (s *WorkItemReadStore) FleetStatusSnapshots(ctx context.Context, teamID string, from, to time.Time) ([]StatusSnapshot, error) {
+	return s.statusSnapshots(ctx, teamID, "", from, to)
+}
+
+// statusSnapshots is the shared reconstruction behind both ProjectStatusSnapshots
+// (per-Project) and FleetStatusSnapshots (fleet/Team-wide). projectID scopes to
+// one Project (coord.work_item.project_id) when non-empty; empty ⇒ no project
+// filter, i.e. every Project in the teamID scope. teamID scopes tenancy exactly
+// like ListWorkItems (empty ⇒ fleet-admin). Both reads are bounded by
+// created_at <= to.
+func (s *WorkItemReadStore) statusSnapshots(ctx context.Context, teamID, projectID string, from, to time.Time) ([]StatusSnapshot, error) {
 	if to.Before(from) {
-		return nil, fmt.Errorf("coord.ProjectStatusSnapshots: window end %s precedes start %s", to, from)
+		return nil, fmt.Errorf("coord.statusSnapshots: window end %s precedes start %s", to, from)
 	}
 
 	// ── item set: existence anchor (created_at) + fallback current state ──────
 	itemRows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, created_at, state
 		  FROM coord.work_item
-		 WHERE project_id = $1::uuid
+		 WHERE ($1::uuid IS NULL OR project_id = $1::uuid)
 		   AND ($2::uuid IS NULL OR team_id = $2::uuid)
 		   -- ADR-0024b §4.2 board-hide: discussion thread-runs are not board items, so they must not
 		   -- inflate the board's status chart. Allowlist filter (source='board').
 		   AND source = 'board'
-		   AND created_at <= $3`, projectID, nullUUID(teamID), to)
+		   AND created_at <= $3`, nullUUID(projectID), nullUUID(teamID), to)
 	if err != nil {
-		return nil, fmt.Errorf("coord.ProjectStatusSnapshots: items %s: %w", projectID, err)
+		return nil, fmt.Errorf("coord.statusSnapshots: items %s: %w", projectID, err)
 	}
 	histories := map[string]*itemHistory{}
 	order := []string{}
@@ -165,7 +188,7 @@ func (s *WorkItemReadStore) ProjectStatusSnapshots(ctx context.Context, teamID, 
 		err = itemRows.Err()
 	}()
 	if err != nil {
-		return nil, fmt.Errorf("coord.ProjectStatusSnapshots: scan items: %w", err)
+		return nil, fmt.Errorf("coord.statusSnapshots: scan items: %w", err)
 	}
 	if len(histories) == 0 {
 		return reconstructStatusSnapshots(nil, dailyInstants(from, to)), nil
@@ -176,15 +199,15 @@ func (s *WorkItemReadStore) ProjectStatusSnapshots(ctx context.Context, teamID, 
 		SELECT a.work_item_id::text, a.from_state, a.to_state, a.created_at
 		  FROM coord.audit_log a
 		  JOIN coord.work_item w ON w.id = a.work_item_id
-		 WHERE w.project_id = $1::uuid
+		 WHERE ($1::uuid IS NULL OR w.project_id = $1::uuid)
 		   AND ($2::uuid IS NULL OR w.team_id = $2::uuid)
 		   -- ADR-0024b §4.2 board-hide: exclude discussion thread-run transitions from board metrics.
 		   AND w.source = 'board'
 		   AND a.event_type = 'state_transition'
 		   AND a.created_at <= $3
-		 ORDER BY a.work_item_id, a.id`, projectID, nullUUID(teamID), to)
+		 ORDER BY a.work_item_id, a.id`, nullUUID(projectID), nullUUID(teamID), to)
 	if err != nil {
-		return nil, fmt.Errorf("coord.ProjectStatusSnapshots: transitions %s: %w", projectID, err)
+		return nil, fmt.Errorf("coord.statusSnapshots: transitions %s: %w", projectID, err)
 	}
 	firstFromSet := map[string]bool{}
 	func() {
@@ -214,7 +237,7 @@ func (s *WorkItemReadStore) ProjectStatusSnapshots(ctx context.Context, teamID, 
 		err = trRows.Err()
 	}()
 	if err != nil {
-		return nil, fmt.Errorf("coord.ProjectStatusSnapshots: scan transitions: %w", err)
+		return nil, fmt.Errorf("coord.statusSnapshots: scan transitions: %w", err)
 	}
 
 	items := make([]itemHistory, 0, len(order))
