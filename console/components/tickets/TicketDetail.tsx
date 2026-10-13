@@ -75,6 +75,7 @@ import {
   type ProgressSegment,
 } from "@/lib/tickets/progressEnvelope";
 import { MentionPopover } from "@/components/discussion/MentionPopover";
+import { Markdown } from "@/components/markdown/Markdown";
 import {
   agentMentionSuggestions,
   resolveBodyMentions,
@@ -663,10 +664,13 @@ function ProgressSegmentView({ seg }: { seg: ProgressSegment }) {
     );
   }
   // narration + raw both render as a clean text bubble (no wire prefixes).
+  // Agent narration is Markdown; render it richly (safe-by-default, no raw
+  // HTML). Oversize/parse-degenerate input falls back to pre-wrap inside
+  // <Markdown>, preserving the prior verbatim behaviour.
   return (
-    <p className="ksq-activity__body" data-testid="progress-narration">
+    <Markdown className="ksq-activity__body" testId="progress-narration">
       {seg.text}
-    </p>
+    </Markdown>
   );
 }
 
@@ -1836,7 +1840,7 @@ function TicketBody({
           <hr className="ksq-hairline" />
           <div data-testid="detail-description">
             {thread.description ? (
-              <p className="ksq-prose">{thread.description}</p>
+              <Markdown className="ksq-prose">{thread.description}</Markdown>
             ) : (
               <p className="muted">No description.</p>
             )}
