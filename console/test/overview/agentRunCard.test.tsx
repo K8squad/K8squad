@@ -99,7 +99,11 @@ describe("<AgentRunCard>", () => {
     const card = screen.getByTestId("agent-run-card");
     expect(card).toHaveAttribute("data-state", "running");
     expect(within(card).getByText("Winston")).toBeInTheDocument();
-    expect(within(card).getByText("DevOps")).toBeInTheDocument();
+    // Role renders as a scannable tag (ISI-5753), not a bare sub-label.
+    const roleTag = within(card).getByTestId("agent-role");
+    expect(roleTag).toHaveTextContent("DevOps");
+    expect(roleTag).toHaveClass("ov-agentcard__role");
+    expect(roleTag.querySelector("svg")).toBeInTheDocument();
     const chip = screen.getByTestId("agent-phase-chip");
     expect(chip).toHaveClass("ov-tone--running");
     expect(chip).toHaveTextContent("running");
@@ -110,6 +114,11 @@ describe("<AgentRunCard>", () => {
     expect(chipLink).toHaveAttribute("href", "/projects/k8squad/issues/isi-5687");
     expect(chipLink).toHaveTextContent("ISI-5687");
     expect(screen.getByTestId("agent-time")).toHaveTextContent("now");
+  });
+
+  it("omits the role tag entirely when the agent has no role (no empty pill)", () => {
+    render(<AgentRunCard agent={agent({ role: null })} now={NOW} />);
+    expect(screen.queryByTestId("agent-role")).not.toBeInTheDocument();
   });
 
   it("idle: shows the last run with the idle tone", () => {

@@ -100,7 +100,22 @@ export function AgentRunCard({
         </span>
         <div className="ov-agentcard__id">
           <span className="ov-agentcard__name">{a.name}</span>
-          {a.role ? <span className="ov-agentcard__role">{a.role}</span> : null}
+          {a.role ? (
+            <span className="ov-agentcard__role" data-testid="agent-role" title={a.role}>
+              <svg
+                className="ov-agentcard__role-glyph"
+                viewBox="0 0 16 16"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path
+                  fill="currentColor"
+                  d="M8 8a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Zm0 1.2c-2.3 0-4.3 1.2-4.3 2.9v.7a.5.5 0 0 0 .5.5h7.6a.5.5 0 0 0 .5-.5v-.7c0-1.7-2-2.9-4.3-2.9Z"
+                />
+              </svg>
+              <span className="ov-agentcard__role-text">{a.role}</span>
+            </span>
+          ) : null}
         </div>
         {!isEmpty && (
           <span className={`ov-agentcard__chip ${toneClass(tone)}`} data-testid="agent-phase-chip">
