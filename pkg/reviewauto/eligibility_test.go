@@ -219,43 +219,59 @@ func TestEligibleReviewers_NoTeamIsEmptyNotError(t *testing.T) {
 // and every other role stays non-capable (guarding the TRAP: naively phase-
 // binding a non-reviewer role here would narrow its E4 dispatch).
 func TestShippedBmadRolesMatchD5Capability(t *testing.T) {
-	// Repo-root-relative: pkg/reviewauto -> ../.. -> examples/bmad-team.
-	raw, err := os.ReadFile(filepath.Join("..", "..", "examples", "bmad-team", "05-roles.yaml"))
-	if err != nil {
-		t.Fatalf("read bmad-team roles manifest: %v", err)
-	}
-
 	// The role that MUST be code_review-capable so its agent (amelia, the
 	// dedicated Code Reviewer) is surfaced by EligibleReviewers.
 	const reviewerRole = "code-reviewer"
 
-	capable := map[string]bool{}
-	for _, doc := range strings.Split(string(raw), "\n---") {
-		if strings.TrimSpace(doc) == "" {
-			continue
-		}
-		var role ksquadv1.Role
-		if err := yaml.Unmarshal([]byte(doc), &role); err != nil {
-			t.Fatalf("decode Role doc: %v\n---\n%s", err, doc)
-		}
-		if role.Kind != "" && role.Kind != "Role" {
-			continue // skip any non-Role document defensively
-		}
-		if role.Name == "" {
-			continue
-		}
-		capable[role.Name] = RoleCodeReviewCapable(&role)
+	// Both the split (05-roles.yaml) AND the monolithic all-in-one (squad.yaml)
+	// bmad-team manifests ship a code-reviewer Role. A squad can be seeded from
+	// EITHER, so they must stay in lockstep: ISI-5736 was an empty dropdown caused
+	// by squad.yaml drifting (it lacked activePhases:[code_review] while
+	// 05-roles.yaml had it after ISI-5666). Validate every shipped manifest so the
+	// two can never diverge again. Repo-root-relative: pkg/reviewauto -> ../.. .
+	manifests := []string{
+		filepath.Join("..", "..", "examples", "bmad-team", "05-roles.yaml"),
+		filepath.Join("..", "..", "examples", "bmad-team", "squad.yaml"),
 	}
 
-	if len(capable) == 0 {
-		t.Fatal("decoded no Role documents from the manifest")
-	}
-	if !capable[reviewerRole] {
-		t.Fatalf("role %q must declare activePhases:[code_review] so the reviewer dropdown is non-empty (D5)", reviewerRole)
-	}
-	for name, isCapable := range capable {
-		if name != reviewerRole && isCapable {
-			t.Fatalf("only %q should be code_review-capable, but %q also is — phase-binding a non-reviewer role narrows its E4 dispatch (ISI-5666 TRAP)", reviewerRole, name)
-		}
+	for _, manifest := range manifests {
+		t.Run(filepath.Base(manifest), func(t *testing.T) {
+			raw, err := os.ReadFile(manifest)
+			if err != nil {
+				t.Fatalf("read bmad-team manifest %s: %v", manifest, err)
+			}
+
+			capable := map[string]bool{}
+			for _, doc := range strings.Split(string(raw), "\n---") {
+				if strings.TrimSpace(doc) == "" {
+					continue
+				}
+				var role ksquadv1.Role
+				if err := yaml.Unmarshal([]byte(doc), &role); err != nil {
+					t.Fatalf("decode Role doc: %v\n---\n%s", err, doc)
+				}
+				// squad.yaml interleaves Prompts/Skills/Agents/Teams with Roles;
+				// only validate documents that are actually Roles.
+				if role.Kind != "Role" {
+					continue
+				}
+				if role.Name == "" {
+					continue
+				}
+				capable[role.Name] = RoleCodeReviewCapable(&role)
+			}
+
+			if len(capable) == 0 {
+				t.Fatal("decoded no Role documents from the manifest")
+			}
+			if !capable[reviewerRole] {
+				t.Fatalf("role %q must declare activePhases:[code_review] so the reviewer dropdown is non-empty (D5)", reviewerRole)
+			}
+			for name, isCapable := range capable {
+				if name != reviewerRole && isCapable {
+					t.Fatalf("only %q should be code_review-capable, but %q also is — phase-binding a non-reviewer role narrows its E4 dispatch (ISI-5666 TRAP)", reviewerRole, name)
+				}
+			}
+		})
 	}
 }

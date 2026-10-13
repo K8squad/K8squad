@@ -192,6 +192,30 @@ describe("ReviewAutomationDialog", () => {
     expect(screen.queryByTestId("gh-ra-form")).toBeNull();
   });
 
+  it("explains an honestly-empty roster so a blank dropdown is not read as broken (ISI-5736)", async () => {
+    route({ agents: jsonResponse({ agents: [] }, 200) });
+    render(<ReviewAutomationDialog projectId={PROJECT} onClose={vi.fn()} />);
+    await screen.findByTestId("gh-ra-form");
+
+    // The roster loaded and is genuinely empty → the "no capable agent" hint,
+    // NOT the fetch-error hint.
+    const empty = await screen.findByTestId("ra-reviewer-empty");
+    expect(empty.textContent).toMatch(/code_review/);
+    expect(screen.queryByTestId("ra-reviewer-error")).toBeNull();
+  });
+
+  it("distinguishes a failed roster read from an empty team (ISI-5736)", async () => {
+    route({ agents: jsonResponse({}, 502) });
+    render(<ReviewAutomationDialog projectId={PROJECT} onClose={vi.fn()} />);
+    await screen.findByTestId("gh-ra-form");
+
+    // The read failed → the fetch-error hint, and we must NOT claim the team has
+    // no reviewers (that would be the empty hint).
+    const err = await screen.findByTestId("ra-reviewer-error");
+    expect(err.textContent).toMatch(/could|Could/);
+    expect(screen.queryByTestId("ra-reviewer-empty")).toBeNull();
+  });
+
   it("closes on Cancel without writing (AC7)", async () => {
     const onClose = vi.fn();
     route();
