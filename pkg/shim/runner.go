@@ -145,11 +145,24 @@ const stderrTapLines = 4
 // The tap carries only what the runtime already prints to the pod log, so it
 // adds no new exposure (NFR-SEC3); it is written to the operator pod log, never
 // onto the user-facing A2A wire.
+//
+// ISI-5763: the tap also pings `activity` on every write so the silence
+// watchdog can treat stderr progress as "the model is producing". A reasoning
+// model (GLM-5.x, deepseek-r1-class) streams only `delta.reasoning_content`
+// during its thinking phase — no assistant `content`, hence no stdout line —
+// but opencode's `--print-logs` mirrors that reasoning stream to stderr. Those
+// writes are the proof the provider stream HAS started; counting them keeps a
+// long reasoning phase from being false-killed as "stream never started"
+// (ISI-5761, recurrence of ISI-5310).
 type stderrTap struct {
 	w  io.Writer // pass-through sink (the shim's os.Stderr → pod log)
 	mu sync.Mutex
 	// buf holds at most the last stderrTapMax bytes written.
 	buf []byte
+	// activity is pinged (coalesced, non-blocking) on every stderr write so the
+	// Run loop can re-arm the silence watchdog; nil disables the ping (the unit
+	// tests that exercise the tap in isolation leave it unset).
+	activity chan<- struct{}
 }
 
 func (t *stderrTap) Write(p []byte) (int, error) {
@@ -162,6 +175,12 @@ func (t *stderrTap) Write(p []byte) (int, error) {
 		t.buf = append(t.buf[:0], t.buf[len(t.buf)-stderrTapMax:]...)
 	}
 	t.mu.Unlock()
+	if t.activity != nil {
+		select {
+		case t.activity <- struct{}{}:
+		default: // coalesce: one pending ping is enough to re-arm the window
+		}
+	}
 	return n, err
 }
 
@@ -198,19 +217,23 @@ const (
 	// force-settling: a moment for the runtime to flush buffers, then the
 	// hard cut — the work already completed, the process is only lingering.
 	osSettleKillGraceDefault = 10 * time.Second
-	// osFirstOutputTimeoutDefault bounds how long the runner waits for the
-	// runtime's FIRST stdout line before concluding the runtime never reached
-	// its model call (ISI-5036). A coding-agent CLI emits no stdout until the
-	// provider responds — verified live: opencode v1.18.27's first mirrored
-	// event arrives ~40s after launch on a healthy run (pod log line 1 at
-	// T+0, first `tool_use` at T+40). When the model endpoint accepts the
-	// connection but never streams (a saturated/over-subscribed provider —
-	// reproduced on the LAN ollama, which serves only one long stream at a
-	// time), stdout stays empty forever and the run used to die on an opaque
-	// external teardown. The watchdog converts that silent stall into a loud,
-	// bounded TaskFailed carrying the reason. 90s is >2x the healthy ~40s
-	// first-output latency, so a merely slow model is never misclassified;
-	// override with KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT.
+	// osFirstOutputTimeoutDefault bounds how long the runner tolerates TOTAL
+	// silence — no stdout AND no stderr — before concluding the runtime never
+	// reached a working model stream (ISI-5036; reasoning-aware ISI-5763). A
+	// coding-agent CLI emits no stdout until the provider responds — verified
+	// live: opencode v1.18.27's first mirrored event arrives ~40s after launch
+	// on a healthy run (pod log line 1 at T+0, first `tool_use` at T+40). When
+	// the model endpoint accepts the connection but never streams (a saturated/
+	// over-subscribed provider — reproduced on the LAN ollama, which serves only
+	// one long stream at a time), both channels stay empty forever and the run
+	// used to die on an opaque external teardown. The watchdog converts that
+	// silent stall into a loud, bounded TaskFailed carrying the reason. It is a
+	// ROLLING window: the first stdout line stands it down permanently, and each
+	// stderr write re-arms it, so a reasoning model that streams only
+	// `reasoning_content` to stderr for minutes stays alive (ISI-5761) while a
+	// stream that truly stalls still trips a full window of two-channel silence.
+	// 90s is >2x the healthy ~40s first-output latency, so a merely slow model
+	// is never misclassified; override with KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT.
 	osFirstOutputTimeoutDefault = 90 * time.Second
 	// osWarmTimeoutDefault bounds the pre-launch model-endpoint warm-up
 	// (ISI-5085). A cold/reloading BYO endpoint (the shared LAN Ollama
@@ -390,7 +413,13 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	// its last lines when it fires. Pass-through to the shim's own stderr is
 	// unchanged (the pod log still carries the full stream); the tap only
 	// retains a bounded tail.
-	stderrTail := &stderrTap{w: os.Stderr}
+	// ISI-5763: the tap also pings stderrActivity on every write so the silence
+	// watchdog re-arms on reasoning-stream progress (reasoning-model deltas land
+	// here, never on stdout). Buffered + coalesced: a chatty --print-logs stream
+	// never blocks the stderr copy goroutine, and one pending ping re-arms the
+	// window just as well as many.
+	stderrActivity := make(chan struct{}, 16)
+	stderrTail := &stderrTap{w: os.Stderr, activity: stderrActivity}
 	cmd.Stderr = stderrTail
 
 	if err := cmd.Start(); err != nil {
@@ -452,17 +481,27 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 		}
 	}()
 
-	// Startup watchdog (ISI-5036): if the runtime emits NO stdout within the
-	// window it never reached its model call — the provider accepted the
-	// connection but never streamed (a saturated/over-subscribed endpoint).
-	// Distinguish that from the settle path (which needs a terminal event and
-	// therefore stdout traffic) and from a clean exit: kill the group and fail
-	// LOUDLY with the reason, instead of leaving the run to die on an opaque
+	// Startup watchdog (ISI-5036, reasoning-aware ISI-5763): if the runtime
+	// produces NO output on EITHER channel for a whole window it never reached a
+	// working model stream — the provider accepted the connection but never
+	// streamed (a saturated/over-subscribed endpoint, an unreachable/black-holed
+	// FQDN). The timer is a ROLLING silence window, not a one-shot startup gate:
+	// the first stdout line stands it down permanently (real assistant output —
+	// the normal settle/EOF path governs from there), and EACH stderr write
+	// re-arms it. A reasoning model (GLM-5.x, deepseek-r1-class) streams only
+	// `delta.reasoning_content` during its thinking phase — no stdout line, but
+	// opencode's `--print-logs` mirrors that reasoning to stderr — so counting
+	// stderr activity keeps a long reasoning phase alive (ISI-5761), while a
+	// stream that genuinely stalls still trips the window once BOTH channels fall
+	// silent. Distinguish that from the settle path (which needs a terminal event
+	// and therefore stdout traffic) and from a clean exit: kill the group and
+	// fail LOUDLY with the reason, instead of leaving the run to die on an opaque
 	// external teardown ("engine settle").
+	window := r.firstOutputWindow()
 	var firstOutputTimer *time.Timer
 	var firstOutputCh <-chan time.Time
-	if w := r.firstOutputWindow(); w > 0 {
-		firstOutputTimer = time.NewTimer(w)
+	if window > 0 {
+		firstOutputTimer = time.NewTimer(window)
 		firstOutputCh = firstOutputTimer.C
 		defer firstOutputTimer.Stop()
 	}
@@ -491,8 +530,10 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 			}
 			return Outcome{State: a2a.TaskCompleted}, nil
 		case <-firstOutput:
-			// The runtime produced its first line: the startup watchdog has
-			// done its job and stands down for the rest of the run.
+			// The runtime produced its first stdout line: real assistant output
+			// is flowing, so the silence watchdog has done its job and stands
+			// down permanently for the rest of the run (the settle/EOF path
+			// governs from here).
 			if firstOutputTimer != nil {
 				firstOutputTimer.Stop()
 			}
@@ -500,9 +541,26 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 			// A closed channel is permanently select-ready; nil it too or the
 			// loop hot-spins for the rest of the run (ISI-5038 review).
 			firstOutput = nil
+		case <-stderrActivity:
+			// ISI-5763: the runtime wrote to stderr — for a reasoning model that
+			// is the reasoning stream itself (opencode mirrors `reasoning_content`
+			// deltas to stderr under `--print-logs`), i.e. the provider stream HAS
+			// started and the model is producing. Re-arm the silence window so a
+			// long thinking phase is not false-killed as "stream never started".
+			// Only while the watchdog is still armed (firstOutputCh != nil): once
+			// the first stdout line stood it down we leave it down — late stderr
+			// noise must not resurrect a disarmed watchdog. This does NOT stand the
+			// watchdog down the way first stdout does: a stream that starts then
+			// stalls must still be caught, so the window keeps running and only
+			// a full window of silence on BOTH channels trips it.
+			if firstOutputCh != nil && firstOutputTimer != nil {
+				firstOutputTimer.Reset(window)
+			}
 		case <-firstOutputCh:
-			// Race guard: the first line may have landed in the same
-			// scheduling window as the timer. Re-check before condemning.
+			// Race guard: the first stdout line — or a stderr re-arm — may have
+			// landed in the same scheduling window as the timer. Re-check both
+			// before condemning: a pending stderr ping means the stream is still
+			// producing, so re-arm instead of killing.
 			select {
 			case <-firstOutput:
 				firstOutputCh = nil
@@ -510,10 +568,17 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 				continue
 			default:
 			}
+			select {
+			case <-stderrActivity:
+				if firstOutputTimer != nil {
+					firstOutputTimer.Reset(window)
+				}
+				continue
+			default:
+			}
 			if ctx.Err() != nil {
 				return Outcome{}, ctx.Err()
 			}
-			window := r.firstOutputWindow()
 			r.killProcessGroup(cmd, scanned)
 			// ISI-5679: the runtime emitted no stdout, but opencode (--print-logs)
 			// streams the provider-side cause to stderr. Co-locate its tail with
@@ -523,14 +588,14 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 			// user-facing Reason (NFR-SEC3): raw runtime stderr stays in the
 			// operator pod log, where it already is.
 			if tail := stderrTail.tail(); tail != "" {
-				fmt.Fprintf(os.Stderr, "shim: first-output watchdog fired after %s; last runtime stderr: %s\n", window, tail)
+				fmt.Fprintf(os.Stderr, "shim: silence watchdog fired after %s of no stdout AND no stderr; last runtime stderr: %s\n", window, tail)
 			} else {
-				fmt.Fprintf(os.Stderr, "shim: first-output watchdog fired after %s; runtime wrote nothing to stderr either (never reached its provider call)\n", window)
+				fmt.Fprintf(os.Stderr, "shim: silence watchdog fired after %s; runtime wrote nothing to stderr either (never reached its provider call)\n", window)
 			}
 			return Outcome{
 				State: a2a.TaskFailed,
 				Reason: fmt.Sprintf("runtime produced no output within %s; model provider stream never started "+
-					"(endpoint unreachable, saturated, or not serving concurrent requests; see runtime stderr in the pod log for the provider-side cause)", window),
+					"(no assistant content on stdout and no provider-stream progress on stderr — a reasoning model streams its thinking to stderr, so this is a genuine stall: endpoint unreachable, saturated, or not serving concurrent requests; see runtime stderr in the pod log)", window),
 			}, nil
 		case <-activity:
 			quiet := r.quietWindow()
