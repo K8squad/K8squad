@@ -59,7 +59,30 @@ type SquadOverviewSeries struct {
 	Fleet           bool              `json:"fleet,omitempty"`
 	TicketsByStatus TicketsSeriesTile `json:"ticketsByStatus"`
 	RunsByStatus    RunsByStatusTile  `json:"runsByStatus"`
-	Tokens          TokensTile        `json:"tokens"`
+	// RunsByStatusOverTime is the daily-bucketed run-phase stacked-area series
+	// (ISI-5744, backing the ISI-5738 §3 "Runs by status over time · 30d" graph).
+	// Unlike RunsByStatus (a WINDOW AGGREGATE off live Run CRs), this is a true
+	// time series and therefore needs a PERSISTENT run-phase transition history —
+	// etcd keeps only the live phase, so there is no in-cluster source to
+	// reconstruct it from (the exact reason RunsByStatus was built as an aggregate,
+	// see the comment on runsByStatus in squadseries.go). It is served by the
+	// optional runStatus seam (FleetRunPhaseHistorySource); until a store is wired
+	// it degrades to available:false with a reason — NEVER a fabricated band
+	// (FR-I3), mirroring TicketsByStatus's nil-seam degrade.
+	RunsByStatusOverTime RunsSeriesTile `json:"runsByStatusOverTime"`
+	Tokens               TokensTile     `json:"tokens"`
+}
+
+// RunsSeriesTile is the stacked-area backing for runs-by-status-over-time: one
+// snapshot per day, each a per-run-phase count map keyed by the run status enum
+// (claiming | running | complete | failed, lowercased — the same display
+// bucketing RunsByStatusTile documents). It reuses coord.StatusSnapshot verbatim
+// (a {date, counts} pair is phase-agnostic). Degradable — the run-phase history
+// seam is optional, so an unwired/erroring source renders available:false,
+// never a fabricated series (FR-I3).
+type RunsSeriesTile struct {
+	TileStatus
+	Snapshots []coord.StatusSnapshot `json:"snapshots,omitempty"`
 }
 
 // FleetStatusHistorySource is the coord seam for the fleet/Team-wide
@@ -69,11 +92,25 @@ type FleetStatusHistorySource interface {
 	FleetStatusSnapshots(ctx context.Context, teamID string, from, to time.Time) ([]coord.StatusSnapshot, error)
 }
 
+// FleetRunPhaseHistorySource is the seam for the fleet/Team-wide
+// runs-by-status-over-time rollup (ISI-5744). It mirrors FleetStatusHistorySource
+// but reconstructs daily per-run-phase buckets from a PERSISTENT run-phase
+// transition history (which etcd does not keep — see the RunsByStatusOverTime
+// doc). teamID scopes tenancy ("" ⇒ trusted fleet-admin); the returned snapshots
+// are keyed by the lowercased run status enum. No in-tree implementation yet —
+// the backing store/emission is the remaining ISI-5744 work; until then the seam
+// stays nil and the tile degrades honestly.
+type FleetRunPhaseHistorySource interface {
+	FleetRunPhaseSnapshots(ctx context.Context, teamID string, from, to time.Time) ([]coord.StatusSnapshot, error)
+}
+
 // SquadSeriesService composes the fleet overview series. reader is the informer
-// cache (Runs + Team resolution); status is the optional coord seam.
+// cache (Runs + Team resolution); status is the optional coord tickets seam;
+// runStatus is the optional run-phase-history seam (ISI-5744, nil until wired).
 type SquadSeriesService struct {
-	reader client.Reader
-	status FleetStatusHistorySource
+	reader    client.Reader
+	status    FleetStatusHistorySource
+	runStatus FleetRunPhaseHistorySource
 }
 
 // NewSquadSeriesService builds the read model. reader MUST have api/v1alpha1
@@ -81,6 +118,14 @@ type SquadSeriesService struct {
 // documented "not configured" state; runs/tokens still serve).
 func NewSquadSeriesService(reader client.Reader, status FleetStatusHistorySource) *SquadSeriesService {
 	return &SquadSeriesService{reader: reader, status: status}
+}
+
+// WithRunPhaseHistory wires the optional run-phase-history seam (ISI-5744). Left
+// unset, RunsByStatusOverTime degrades to available:false with a reason — never
+// a fabricated series (FR-I3). Returns the receiver for call-site chaining.
+func (s *SquadSeriesService) WithRunPhaseHistory(runStatus FleetRunPhaseHistorySource) *SquadSeriesService {
+	s.runStatus = runStatus
+	return s
 }
 
 // Series composes the payload over [from, to]. Scope resolves like the squad
@@ -124,6 +169,27 @@ func (s *SquadSeriesService) Series(ctx context.Context, auth discussion.AuthorC
 			out.TicketsByStatus = TicketsSeriesTile{TileStatus: degradedTile(serr.Error())}
 		} else {
 			out.TicketsByStatus = TicketsSeriesTile{TileStatus: TileStatus{Available: true}, Snapshots: snaps}
+		}
+	}
+
+	// ── runsByStatusOverTime: run-phase history seam (ISI-5744). ─────────────
+	// A true daily time series — needs persistent run-phase transitions (etcd
+	// has none). Until the store/emission lands the seam is nil and the tile
+	// degrades honestly; it NEVER fabricates a band from the live-only CRs the
+	// window-aggregate RunsByStatus already serves (FR-I3).
+	switch s.runStatus {
+	case nil:
+		out.RunsByStatusOverTime = RunsSeriesTile{TileStatus: degradedTile("source not wired: run-phase transition history (ISI-5744 — etcd keeps no run-phase history; RunsByStatus is the in-window aggregate)")}
+	default:
+		teamID := ""
+		if !auth.IsAdmin {
+			teamID = auth.TeamID.String()
+		}
+		snaps, serr := s.runStatus.FleetRunPhaseSnapshots(ctx, teamID, from, to)
+		if serr != nil {
+			out.RunsByStatusOverTime = RunsSeriesTile{TileStatus: degradedTile(serr.Error())}
+		} else {
+			out.RunsByStatusOverTime = RunsSeriesTile{TileStatus: TileStatus{Available: true}, Snapshots: snaps}
 		}
 	}
 

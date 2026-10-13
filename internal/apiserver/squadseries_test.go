@@ -137,6 +137,61 @@ func TestSquadSeriesNilStatusDegrades(t *testing.T) {
 	if !got.RunsByStatus.Available || got.RunsByStatus.Total != 1 {
 		t.Errorf("runs tile should still serve: %+v", got.RunsByStatus)
 	}
+	// runsByStatusOverTime has no seam wired here (ISI-5744): it must degrade
+	// honestly with a reason, NEVER fabricate a band off the live-only CRs.
+	if got.RunsByStatusOverTime.Available {
+		t.Errorf("runsByStatusOverTime should be degraded with no run-phase seam")
+	}
+	if got.RunsByStatusOverTime.Reason == "" {
+		t.Errorf("degraded runsByStatusOverTime must carry a reason")
+	}
+	if got.RunsByStatusOverTime.Snapshots != nil {
+		t.Errorf("degraded runsByStatusOverTime must not fabricate a series: %+v", got.RunsByStatusOverTime.Snapshots)
+	}
+}
+
+// fakeFleetRunPhaseSource is a canned run-phase-history seam (ISI-5744) — like
+// fakeFleetStatusSource, it only proves the seam wires through, is team-scoped,
+// and degrades on error. The daily reconstruction itself belongs to the backing
+// store (the remaining ISI-5744 work) and is tested there, not here.
+type fakeFleetRunPhaseSource struct {
+	snaps   []coord.StatusSnapshot
+	err     error
+	gotTeam string
+	called  bool
+}
+
+func (f *fakeFleetRunPhaseSource) FleetRunPhaseSnapshots(_ context.Context, teamID string, _, _ time.Time) ([]coord.StatusSnapshot, error) {
+	f.called = true
+	f.gotTeam = teamID
+	return f.snaps, f.err
+}
+
+// TestSquadSeriesRunPhaseSeamWiresAndScopes — once a run-phase history source is
+// wired, runsByStatusOverTime serves its snapshots and the seam is scoped by the
+// caller's team UID (tenancy mirrors ticketsByStatus).
+func TestSquadSeriesRunPhaseSeamWiresAndScopes(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	runSrc := &fakeFleetRunPhaseSource{snaps: []coord.StatusSnapshot{
+		{Date: "2026-09-30", Counts: map[string]int{"running": 2, "complete": 5, "failed": 1}},
+	}}
+	svc := newSquadSeriesSvc(t, &fakeFleetStatusSource{},
+		teamWithExecNS("squad-a", "alpha", ovwTeamUID, "squad-a-exec"),
+	).WithRunPhaseHistory(runSrc)
+
+	got, err := svc.Series(context.Background(), ovwTeamAuth(), now.Add(-30*24*time.Hour), now)
+	if err != nil {
+		t.Fatalf("Series: %v", err)
+	}
+	if !got.RunsByStatusOverTime.Available {
+		t.Fatalf("runsByStatusOverTime should serve once the seam is wired: %+v", got.RunsByStatusOverTime)
+	}
+	if len(got.RunsByStatusOverTime.Snapshots) != 1 || got.RunsByStatusOverTime.Snapshots[0].Counts["complete"] != 5 {
+		t.Errorf("snapshots not passed through: %+v", got.RunsByStatusOverTime.Snapshots)
+	}
+	if !runSrc.called || runSrc.gotTeam != ovwTeamUID {
+		t.Errorf("run-phase seam not scoped by caller team UID: called=%v team=%q", runSrc.called, runSrc.gotTeam)
+	}
 }
 
 // TestSquadSeriesTenantNoTeam404 — a tenant whose Team scope resolves to no Team
