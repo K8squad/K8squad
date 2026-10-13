@@ -151,6 +151,14 @@ type Reconciler struct {
 	// (ISI-4381 polish). Nil disables event emission (unit tests, or when no
 	// recorder is wired); SetupWithManager defaults it to the manager's recorder.
 	Recorder record.EventRecorder
+	// PhaseJournal appends one row to the durable append-only run phase-transition
+	// journal on each committed phase change (WS-2 of ISI-5744 / ISI-5749), so the
+	// fleet "runs by status over time" series has an in-cluster history to
+	// reconstruct from (ADR-0032 — etcd keeps only the live phase). Optional, like
+	// Settlement: nil disables emission and the controller is strictly
+	// non-regressing. A journal error is logged, never returned (observability
+	// history must not fail the status reconcile).
+	PhaseJournal PhaseJournal
 }
 
 // isFinalizableStep reports whether a durable step has an a2a follow finalize
@@ -336,7 +344,98 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		r.Recorder.Eventf(patched, corev1.EventTypeNormal, "Phase"+string(desired.Phase),
 			"Run phase %s", desired.Phase)
 	}
+	// Run phase-transition journal (WS-2 of ISI-5744 / ISI-5749): append one
+	// immutable row on each committed phase change so the fleet "runs by status
+	// over time" series has an in-cluster history to reconstruct from (ADR-0032).
+	// Gated on the SAME committed phase change as the Event — a condition-only
+	// patch emits nothing. Emission runs AFTER the status patch and its errors are
+	// swallowed (logged): the journal is observability history and must never fail
+	// or requeue the status reconcile that owns the live phase.
+	if r.PhaseJournal != nil && desired.Phase != prevPhase {
+		r.recordPhaseTransition(ctx, &runObj, prevPhase, desired.Phase, now)
+	}
 	return result, nil
+}
+
+// recordPhaseTransition folds the committed CR phase edge onto the journal's chip
+// tokens and appends it through the PhaseJournal seam. It is idempotent at CHART
+// granularity: it emits only when the TOKEN actually changes (two distinct CR
+// phases can map to the same token — e.g. Running⇄Paused both fold to "running" —
+// and a same-token edge is a no-op band that would double-count in WS-3
+// reconstruction). It derives tenancy from the Run CR (NOT any work_item — not
+// every Run has one, ADR-0032); a Run whose Project UID cannot be resolved is
+// skipped (project_id is the journal's required tenancy predicate), and an
+// unresolved Team records a NULL team_id (fleet-admin still sees it). Every exit
+// is best-effort: a resolution or write failure is logged, never propagated.
+func (r *Reconciler) recordPhaseTransition(ctx context.Context, run *api.Run, from, to api.RunPhase, now metav1.Time) {
+	log := ctrl.LoggerFrom(ctx)
+
+	toTok, ok := phaseToken(to)
+	if !ok {
+		// The empty/unrecognised phase (PhaseOf's fail-closed default) has no chart
+		// band; nothing honest to record.
+		return
+	}
+	// fromTok is "" on the Run's first observed transition (from == "" ⇒ !ok),
+	// stored NULL like audit_log.from_state. When the previous phase folds to the
+	// SAME token, the chart band did not change: skip (CR-phase idempotency alone
+	// is not enough — the fold is coarser than the state machine).
+	fromTok, _ := phaseToken(from)
+	if fromTok == toTok {
+		return
+	}
+
+	projectUID, teamUID, err := r.resolveRunTenancy(ctx, run)
+	if err != nil || projectUID == "" {
+		log.Error(err, "run phase-transition not journaled: unresolved Project tenancy",
+			"run", run.Namespace+"/"+run.Name, "toPhase", to)
+		return
+	}
+
+	if err := r.PhaseJournal.RecordRunPhaseTransition(ctx, PhaseEdge{
+		RunUID:    string(run.UID),
+		TeamID:    teamUID,
+		ProjectID: projectUID,
+		FromPhase: fromTok,
+		ToPhase:   toTok,
+		TS:        now.Time,
+	}); err != nil {
+		log.Error(err, "run phase-transition journal append failed",
+			"run", run.Namespace+"/"+run.Name, "fromToken", fromTok, "toToken", toTok)
+	}
+}
+
+// resolveRunTenancy derives the Run's owning Project UID (required) and Team UID
+// (optional) from the Run CR's ProjectRef/TeamRef — NOT from any linked work_item
+// (not every Run has one, ADR-0032). Each ref carries only a name (api.ObjectRef
+// has no UID field), so the owning CR is read to recover its object UID. The ref
+// namespace falls back to the Run's own namespace, mirroring the cross-namespace
+// convention rundrive intake stamps. A Team that is absent or UID-less yields an
+// empty teamUID (stored NULL — a scoped read won't match it, fleet-admin still
+// sees it) and is not an error; only a Project resolution failure is returned.
+func (r *Reconciler) resolveRunTenancy(ctx context.Context, run *api.Run) (projectUID, teamUID string, err error) {
+	projNS := run.Spec.ProjectRef.Namespace
+	if projNS == "" {
+		projNS = run.Namespace
+	}
+	var proj api.Project
+	if gerr := r.Get(ctx, client.ObjectKey{Namespace: projNS, Name: run.Spec.ProjectRef.Name}, &proj); gerr != nil {
+		return "", "", fmt.Errorf("resolve project %s/%s for run phase journal: %w", projNS, run.Spec.ProjectRef.Name, gerr)
+	}
+	projectUID = string(proj.UID)
+
+	teamNS := run.Spec.TeamRef.Namespace
+	if teamNS == "" {
+		teamNS = run.Namespace
+	}
+	var teamObj api.Team
+	if gerr := r.Get(ctx, client.ObjectKey{Namespace: teamNS, Name: run.Spec.TeamRef.Name}, &teamObj); gerr == nil {
+		teamUID = string(teamObj.UID)
+	} else {
+		ctrl.LoggerFrom(ctx).V(1).Info("run phase-transition: team unresolved, recording NULL team_id",
+			"run", run.Namespace+"/"+run.Name, "teamRef", teamNS+"/"+run.Spec.TeamRef.Name, "err", gerr.Error())
+	}
+	return projectUID, teamUID, nil
 }
 
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch

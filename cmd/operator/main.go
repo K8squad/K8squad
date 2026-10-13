@@ -555,6 +555,11 @@ func main() {
 			ContextAssemblers: ctxDeps,
 			Health:            health,
 			PhaseKicks:        phaseKicks,
+			// WS-2 of ISI-5744 (ISI-5749): append a durable row on each committed
+			// Run phase change so the fleet "runs by status over time" series has an
+			// in-cluster history to reconstruct from (ADR-0032). Over the same coord
+			// pool as the step/settlement readers.
+			PhaseJournal: runPhaseJournalAdapter{db: db},
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
