@@ -1418,3 +1418,140 @@ a.ksq-ticket-chip:hover {
     animation: none;
   }
 }
+
+/* ===========================================================================
+ * ISI-5741 (parent ISI-5737) — sticky 3-panel Discussion Room.
+ *
+ * The room becomes a FIXED-HEIGHT viewport instead of a page that scrolls: the
+ * three regions — the left Discussions rail, the right agent roster, and the
+ * bottom composer dock — are frames that stay in place, and ONLY the history
+ * column scrolls internally. This supersedes the ISI-5597/5623 "the page is the
+ * scroll owner" model for the discussion room (the rules below override the
+ * sticky rail / sticky dock / fixed FAB from that era). Ticket-detail is NOT
+ * touched — this scopes to `.ksq-roomlayout` only.
+ *
+ * Height: `--ksq-room-h` is published by RoomClient (viewport height − the room's
+ * own top offset − the shell's bottom padding) so the room fits exactly under
+ * the variable app chrome at every breakpoint and shrinks with the mobile
+ * keyboard (visualViewport). The `100dvh` calc is only the pre-JS / SSR fallback.
+ * Tokens only; no new hues.
+ * ========================================================================= */
+
+.ksq-roomlayout {
+  height: var(--ksq-room-h, calc(100dvh - 210px));
+  min-height: 320px;
+  /* The room owns its height; its children scroll internally, never the page. */
+  overflow: hidden;
+}
+
+/* Center column is a flex COLUMN: history fills + scrolls, dock pins to bottom. */
+.ksq-roomlayout__main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ksq-room {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ksq-room__main {
+  position: relative; /* positioning context for the jump FAB */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The ONE internally-scrolling region (AC2/AC4). A thin gutter keeps the
+   transcript off the scrollbar; the party card / reset state / threads live
+   inside it and scroll together. */
+.ksq-room__history {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* Composer dock (supersedes ISI-5623 P2 `position: sticky`): a flex-none sibling
+   below the history, so it is always the bottom of the room and never scrolled
+   off-screen (AC3). Keeps its surface + top border + upward lift. */
+.ksq-room__dock {
+  position: static;
+  flex: 0 0 auto;
+  margin-top: 0;
+  z-index: 1;
+}
+
+/* Jump-to-bottom FAB (ISI-5597 P1, retargeted): pinned INSIDE the center column
+   above the dock, since the history column — not the viewport — is the scroll
+   owner now. */
+.ksq-jump-fab {
+  position: absolute;
+  right: 16px;
+  bottom: calc(var(--ksq-dock-h, 96px) + 16px);
+}
+
+/* Roster rail (right) — a full-height frame with its own internal scroll; drop
+   the ISI-5623 sticky/`100vh` cap, the bounded room supplies the height. */
+.ksq-roster {
+  align-self: stretch;
+  max-height: none;
+  overflow-y: auto;
+}
+
+/* Desktop ≥900: three columns side by side, each the full room height. */
+@media (min-width: 900px) {
+  .ksq-roomlayout {
+    align-items: stretch;
+  }
+  .ksq-roomlayout__main {
+    height: 100%;
+  }
+  .ksq-room {
+    height: 100%;
+    align-items: stretch;
+  }
+  .ksq-dpanel {
+    position: static;
+    top: auto;
+    height: 100%;
+    max-height: none;
+    align-self: stretch;
+    overflow-y: auto;
+  }
+  .ksq-roster {
+    position: static;
+    top: auto;
+    height: 100%;
+    max-height: none;
+  }
+}
+
+/* Below 900 the layout stacks: the Discussions rail is a capped, scrollable nav
+   strip at the top; the room fills the rest. The roster mini-bar + history +
+   composer are the always-visible trio. */
+@media (max-width: 899px) {
+  .ksq-dpanel {
+    position: static;
+    top: auto;
+    z-index: auto;
+    flex: 0 0 auto;
+    max-height: 30vh;
+    overflow-y: auto;
+  }
+  /* Roster mini-bar: keep it ordered to the TOP of the stacked room, but it is a
+     plain flex child now (the bounded room, not the page, keeps it in view). */
+  .ksq-roster {
+    order: -1;
+    position: static;
+    top: auto;
+    flex: 0 0 auto;
+    max-height: 40vh;
+  }
+}
+
+/* The FAB is scoped to the center column now (absolute), so it no longer needs
+   to clear the fixed mobile bottom nav — the column already sits above it. */
+@media (max-width: 767px) {
+  .ksq-jump-fab {
+    bottom: calc(var(--ksq-dock-h, 96px) + 16px);
+  }
+}
