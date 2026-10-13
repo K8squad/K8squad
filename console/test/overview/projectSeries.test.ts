@@ -3,7 +3,9 @@ import {
   areaXLabels,
   classifySeriesStatus,
   formatTokens,
+  latestTicketSnapshot,
   toAreaSeries,
+  toIssueStatusBars,
   toRunBars,
   type TicketsSnapshot,
 } from "@/lib/overview/projectSeries";
@@ -59,6 +61,70 @@ describe("toRunBars", () => {
 
   it("renders every bar (zeroed) even when a phase is absent", () => {
     expect(toRunBars({}).map((b) => b.value)).toEqual([0, 0, 0, 0, 0]);
+  });
+});
+
+describe("latestTicketSnapshot", () => {
+  it("returns the last (most recent) snapshot, or null when there is none", () => {
+    const snaps: TicketsSnapshot[] = [
+      { date: "2026-09-14", counts: { backlog: 3 } },
+      { date: "2026-09-15", counts: { backlog: 2 } },
+    ];
+    expect(latestTicketSnapshot(snaps)?.date).toBe("2026-09-15");
+    expect(latestTicketSnapshot([])).toBeNull();
+    expect(latestTicketSnapshot(null)).toBeNull();
+    expect(latestTicketSnapshot(undefined)).toBeNull();
+  });
+});
+
+describe("toIssueStatusBars (ISI-5738 §2 issues-by-status snapshot)", () => {
+  it("projects the five mock rows, folding backlog+todo into Todo", () => {
+    const snap: TicketsSnapshot = {
+      date: "2026-10-12",
+      counts: { backlog: 1, todo: 2, in_progress: 5, in_review: 3, done: 64 },
+    };
+    const bars = toIssueStatusBars(snap);
+    expect(bars.map((b) => b.label)).toEqual([
+      "Todo",
+      "In progress",
+      "In review",
+      "Blocked",
+      "Done",
+    ]);
+    expect(bars.find((b) => b.label === "Todo")?.value).toBe(3); // backlog + todo
+    expect(bars.find((b) => b.label === "In progress")?.value).toBe(5);
+    expect(bars.find((b) => b.label === "In review")?.value).toBe(3);
+    expect(bars.find((b) => b.label === "Done")?.value).toBe(64);
+  });
+
+  it("renders Blocked as an unavailable bucket (null) — not a fabricated 0 (FR-I3)", () => {
+    const snap: TicketsSnapshot = { date: "2026-10-12", counts: { done: 4 } };
+    const blocked = toIssueStatusBars(snap).find((b) => b.label === "Blocked");
+    expect(blocked?.value).toBeNull();
+  });
+
+  it("uses only existing status/brand tokens for the row colors (no new palette)", () => {
+    const colors = toIssueStatusBars({ date: "d", counts: {} }).map((b) => b.color);
+    expect(colors).toEqual([
+      "var(--status-idle)",
+      "var(--status-running)",
+      "var(--accent)",
+      "var(--status-blocked)",
+      "var(--ksq-run)",
+    ]);
+  });
+
+  it("yields all-null (honest em-dashes) when no snapshot is available", () => {
+    const bars = toIssueStatusBars(null);
+    expect(bars.every((b) => b.value === null)).toBe(true);
+  });
+
+  it("clamps negative counts to zero before summing", () => {
+    const snap: TicketsSnapshot = {
+      date: "d",
+      counts: { backlog: -5, todo: 2 } as TicketsSnapshot["counts"],
+    };
+    expect(toIssueStatusBars(snap).find((b) => b.label === "Todo")?.value).toBe(2);
   });
 });
 

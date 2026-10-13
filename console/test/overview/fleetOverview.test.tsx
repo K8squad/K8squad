@@ -224,8 +224,26 @@ describe("FleetOverview render (Mock A)", () => {
       expect(screen.getByRole("group", { name: "Tokens · 30d" }).textContent).toContain("1.2k"),
     );
 
-    // ② time-series row present.
+    // ② status-breakdown row: issues-by-status snapshot distribution from the latest snapshot
+    //    ({backlog:1, in_progress:2, in_review:1, done:4}). Todo folds backlog+todo.
+    const issues = await screen.findByTestId("fleet-issues-by-status");
+    const issueRows = issues.querySelectorAll(".ov-hbar__row");
+    const byLabel = (label: string) =>
+      Array.from(issueRows).find((r) => r.querySelector(".ov-hbar__label")?.textContent === label);
+    expect(byLabel("Todo")?.querySelector(".ov-hbar__value")?.textContent).toBe("1");
+    expect(byLabel("In progress")?.querySelector(".ov-hbar__value")?.textContent).toBe("2");
+    expect(byLabel("In review")?.querySelector(".ov-hbar__value")?.textContent).toBe("1");
+    expect(byLabel("Done")?.querySelector(".ov-hbar__value")?.textContent).toBe("4");
+    // Blocked is a work-item condition, not a §13 board state → unavailable bucket renders an
+    // em-dash with NO bar, never a fabricated 0 (FR-I3).
+    const blocked = byLabel("Blocked");
+    expect(blocked?.getAttribute("data-unavailable")).toBe("true");
+    expect(blocked?.querySelector(".ov-hbar__value")?.textContent).toBe("—");
+    expect(blocked?.querySelector(".ov-hbar__fill")).toBeNull();
+
+    // ③ over-time row present; runs-over-time degrades honestly (read model pending backend).
     expect(screen.getByTestId("fleet-series")).toBeTruthy();
+    expect(screen.getByText(/run-phase history read model/i)).toBeTruthy();
 
     // ③ GitHub strip: authoritative counts + merge sparkline.
     const gh = await screen.findByTestId("fleet-github");

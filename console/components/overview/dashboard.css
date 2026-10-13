@@ -17,6 +17,12 @@
   gap: 16px;
 }
 
+/* Even two-up variant — the rev2 status-breakdown + over-time rows (ISI-5738 §2/§3), where
+ * both panels carry equal weight (issues-by-status | runs-by-status, runs-over-time | tickets). */
+.ov-charts-row--even {
+  grid-template-columns: 1fr 1fr;
+}
+
 /* Bottom row — latest tickets (55%) + latest runs (45%). */
 .ov-bottom-row {
   display: grid;

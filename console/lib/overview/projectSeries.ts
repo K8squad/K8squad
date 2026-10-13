@@ -100,6 +100,48 @@ export function toRunBars(byPhase: Record<string, number>): HBarItem[] {
   }));
 }
 
+// The issues-by-status snapshot distribution (ISI-5738 §9; approved mock E). One row per board
+// status with its semantic chip colour (no new tokens). The board exposes FIVE canonical states
+// (coord overviewread.go canonicalStates: backlog, todo, in_progress, in_review, done); `backlog`
+// folds into Todo so the row set matches the mock's Todo / In progress / In review / Blocked / Done.
+// `blocked` is a work-item CONDITION, not a §13 state, so it has NO authoritative snapshot count —
+// its `from` list is empty and the bar renders as an unavailable bucket (em-dash), never a
+// fabricated value (FR-I3). It becomes a real bar only once a blocked-condition aggregate ships.
+export const ISSUE_STATUS_BARS = [
+  { label: "Todo", color: "var(--status-idle)", from: ["backlog", "todo"] },
+  { label: "In progress", color: "var(--status-running)", from: ["in_progress"] },
+  { label: "In review", color: "var(--accent)", from: ["in_review"] },
+  { label: "Blocked", color: "var(--status-blocked)", from: [] as string[] },
+  { label: "Done", color: "var(--ksq-run)", from: ["done"] },
+] as const;
+
+/** The most recent daily snapshot (the series is chronological), or null when there is none. */
+export function latestTicketSnapshot(
+  snapshots: TicketsSnapshot[] | null | undefined,
+): TicketsSnapshot | null {
+  if (!snapshots || snapshots.length === 0) return null;
+  return snapshots[snapshots.length - 1];
+}
+
+/**
+ * Project the latest tickets snapshot into the issues-by-status h-bars. A bucket with no backing
+ * canonical state (Blocked), or when no snapshot is available at all, is `value: null` so the
+ * chart renders "—" rather than a fake 0-bar (FR-I3 fabrication discipline).
+ */
+export function toIssueStatusBars(snapshot: TicketsSnapshot | null): HBarItem[] {
+  return ISSUE_STATUS_BARS.map((bar) => ({
+    label: bar.label,
+    color: bar.color,
+    value:
+      bar.from.length === 0 || !snapshot
+        ? null
+        : bar.from.reduce(
+            (sum, s) => sum + Math.max(0, snapshot.counts[s as keyof TicketsSnapshot["counts"]] ?? 0),
+            0,
+          ),
+  }));
+}
+
 /** Compact token count for the stat tile ("1.2M", "812.3k", "947"). */
 export function formatTokens(total: number | undefined): string {
   if (total == null || !Number.isFinite(total)) return "—";
