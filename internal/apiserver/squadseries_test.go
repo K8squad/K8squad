@@ -219,5 +219,8 @@ func TestSquadSeriesTenantEmptyScope404(t *testing.T) {
 	}
 }
 
-// compile-time: *coord.WorkItemReadStore satisfies the seam (production wiring).
+// compile-time: *coord.WorkItemReadStore satisfies both seams (production wiring).
+// The run-phase seam (ISI-5750 WS-3) is now wired alongside the status seam in
+// cmd/apiserver/main.go — this pins the method set so a drift breaks the build.
 var _ FleetStatusHistorySource = (*coord.WorkItemReadStore)(nil)
+var _ FleetRunPhaseHistorySource = (*coord.WorkItemReadStore)(nil)

@@ -84,11 +84,17 @@ func (h itemHistory) stateAsOf(t time.Time) string {
 // is unit-tested directly. instants are the per-day end-of-day boundaries; the
 // Date label is the instant's UTC calendar day. An item counts under whatever
 // state it holds at the instant; an item that does not yet exist is skipped.
-func reconstructStatusSnapshots(items []itemHistory, instants []time.Time) []StatusSnapshot {
+//
+// states is the closed set the counts map zero-fills, so every snapshot carries
+// a continuous band per state (a zero is an honest empty lane, never an absent
+// key). The tickets path passes canonicalStates (§13 board enum); the run-phase
+// path (FleetRunPhaseSnapshots, runphaseread.go) passes canonicalRunPhases — the
+// SAME replay over a different, equally closed, token set.
+func reconstructStatusSnapshots(items []itemHistory, instants []time.Time, states []string) []StatusSnapshot {
 	out := make([]StatusSnapshot, 0, len(instants))
 	for _, inst := range instants {
-		counts := make(map[string]int, len(canonicalStates))
-		for _, s := range canonicalStates {
+		counts := make(map[string]int, len(states))
+		for _, s := range states {
 			counts[s] = 0
 		}
 		for _, it := range items {
@@ -191,7 +197,7 @@ func (s *WorkItemReadStore) statusSnapshots(ctx context.Context, teamID, project
 		return nil, fmt.Errorf("coord.statusSnapshots: scan items: %w", err)
 	}
 	if len(histories) == 0 {
-		return reconstructStatusSnapshots(nil, dailyInstants(from, to)), nil
+		return reconstructStatusSnapshots(nil, dailyInstants(from, to), canonicalStates), nil
 	}
 
 	// ── transition log: every state_transition up to `to`, item-then-sequence ─
@@ -252,5 +258,5 @@ func (s *WorkItemReadStore) statusSnapshots(ctx context.Context, teamID, project
 			return items[i].transitions[a].at.Before(items[i].transitions[b].at)
 		})
 	}
-	return reconstructStatusSnapshots(items, dailyInstants(from, to)), nil
+	return reconstructStatusSnapshots(items, dailyInstants(from, to), canonicalStates), nil
 }

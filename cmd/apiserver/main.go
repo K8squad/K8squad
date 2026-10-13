@@ -502,9 +502,16 @@ func main() {
 	// the SAME informer cache, tickets-by-status-over-time from the coord
 	// status-history seam (workItemReads.FleetStatusSnapshots, project_id filter
 	// dropped — no new store). Nil informer cache ⇒ nil service ⇒ documented 501.
+	//
+	// ISI-5750 (WS-3 of ISI-5744): wire the previously-nil run-phase-history seam
+	// so runsByStatusOverTime serves a real daily time series reconstructed from
+	// the coord.run_phase_transition journal (WS-1 store, migration 0037) instead
+	// of degrading. workItemReads.FleetRunPhaseSnapshots satisfies the seam over
+	// the SAME DB; left unwired it would honestly degrade (FR-I3), never fabricate.
 	var squadSeries *apiserver.SquadSeriesService
 	if dashboardReader != nil {
-		squadSeries = apiserver.NewSquadSeriesService(dashboardReader, workItemReads)
+		squadSeries = apiserver.NewSquadSeriesService(dashboardReader, workItemReads).
+			WithRunPhaseHistory(workItemReads)
 	}
 
 	// ISI-4571 run listing/detail read model: listing from the same informer cache the
