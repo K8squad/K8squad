@@ -12,10 +12,15 @@ LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.title="k8squad toolchain: ansible-core"
 # CVE hygiene, mirrored from Dockerfile.toolchain-python: pull the current alpine
 # openssl + util-linux fixes at build time rather than waiting on the rolling base.
-# openssh-client/sshpass are ansible's transport; upgrade pip/setuptools off any
-# CVE-flagged versions the base bundles (setuptools CVE-2025-47273 fixed 78.1.1).
+# openssh-client/sshpass are ansible's transport.
+# Post-install pin: ansible-core's dep resolver may pull in older setuptools/urllib3/msgpack;
+# a second upgrade pass forces the known-good floors after the full dep tree is resolved.
 RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux \
  && apk add --no-cache openssh-client sshpass \
- && pip install --no-cache-dir --upgrade "pip" "setuptools>=78.1.1" \
- && pip install --no-cache-dir "ansible-core==${ANSIBLE_CORE_VERSION}"
+ && pip install --no-cache-dir --upgrade "pip" \
+ && pip install --no-cache-dir "ansible-core==${ANSIBLE_CORE_VERSION}" \
+ && pip install --no-cache-dir --upgrade \
+      "setuptools>=78.1.1" \
+      "urllib3>=2.8.0" \
+      "msgpack>=1.2.1"
 ENTRYPOINT ["/usr/local/bin/ansible"]
