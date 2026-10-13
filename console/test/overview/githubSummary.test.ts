@@ -6,6 +6,7 @@ import {
   repoSlug,
   selectRepoStat,
   repoCount,
+  classifyGithubStatus,
   UNAVAILABLE,
   type GithubSummary,
   type GithubRepoStat,
@@ -69,5 +70,14 @@ describe("repoCount (FR-I3)", () => {
   });
   it("renders '—' when the repo row is absent (unavailable, not fabricated 0)", () => {
     expect(repoCount(null, "prs")).toBe(UNAVAILABLE);
+  });
+});
+
+// ISI-5708 WS-3: the reusable fetch client's degrade classification.
+describe("classifyGithubStatus (WS-3)", () => {
+  it("treats 404/501 as degrade and everything else as a retryable error", () => {
+    expect(classifyGithubStatus(404)).toEqual({ kind: "not-available", status: 404 });
+    expect(classifyGithubStatus(501)).toEqual({ kind: "not-available", status: 501 });
+    expect(classifyGithubStatus(500)).toEqual({ kind: "error", status: 500 });
   });
 });

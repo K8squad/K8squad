@@ -94,3 +94,55 @@ export function repoCount(stat: GithubRepoStat | null, field: keyof GithubRepoSt
   const v = stat[field];
   return typeof v === "number" ? v : UNAVAILABLE;
 }
+
+// ---------------------------------------------------------------------------
+// Fetch client (thin — the BFF proxies the §13 choke point). Added by the WS-3
+// fleet recompose (ISI-5708): the fleet overview fetches the summary ONCE and
+// then folds each project's row with selectRepoStat/repoCount above. WS-4's
+// project overview inlines its own fetch; this reusable client is the canonical
+// seam for callers that want honest degrade-state handling.
+// ---------------------------------------------------------------------------
+
+export type GithubSummaryState =
+  | { kind: "loading" }
+  | { kind: "not-available"; status: number }
+  | { kind: "error"; status: number }
+  | { kind: "ready"; data: GithubSummary };
+
+const ZERO_TOTALS: GithubTotals = {
+  issuesAssigned: 0,
+  issuesOpen: 0,
+  prsOpened: 0,
+  prsReviewed: 0,
+  prsMerged: 0,
+  checksRed: 0,
+};
+
+/** 404/501 degrade (mirror read model unwired on this deployment); else retryable error. */
+export function classifyGithubStatus(
+  status: number,
+): Extract<GithubSummaryState, { kind: "not-available" | "error" }> {
+  return status === 404 || status === 501
+    ? { kind: "not-available", status }
+    : { kind: "error", status };
+}
+
+/** Fetch the fleet GitHub summary from the BFF. Degrades honestly — never throws the
+ * page down (degrade-don't-blank, ISI-4229). */
+export async function fetchGithubSummary(signal?: AbortSignal): Promise<GithubSummaryState> {
+  try {
+    const res = await fetch("/api/squad/github", { headers: { accept: "application/json" }, signal });
+    if (!res.ok) return classifyGithubStatus(res.status);
+    const body = (await res.json()) as Partial<GithubSummary>;
+    return {
+      kind: "ready",
+      data: {
+        totals: body.totals ?? ZERO_TOTALS,
+        mergeSparkline7d: body.mergeSparkline7d ?? [],
+        byRepo: body.byRepo ?? [],
+      },
+    };
+  } catch {
+    return { kind: "error", status: 0 };
+  }
+}

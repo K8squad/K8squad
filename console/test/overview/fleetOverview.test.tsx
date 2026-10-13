@@ -1,18 +1,21 @@
-// test/overview/fleetOverview.test.tsx — Frame 01, the fleet control-room global overview
-// (ISI-4507 S2). Covers the pure projections (mix fold, active-run count, fleet runs, time
-// formatting), the ready render (stat band, project cards as whole-card links, mix-bar
-// distribution, recent-ticket deep links, live-runs feed), and the honest degrade paths
-// (501 not-wired overview, tokens "—"). Route-aware fetch stub, same discipline as
-// ProjectLanding.test.tsx.
+// test/overview/fleetOverview.test.tsx — the global/fleet overview recomposed per
+// Mock A (ISI-5708 WS-3). Covers the surviving pure projections (mix fold, active-run
+// count, fleet runs, time formatting, project partition, total runs) and the five-row
+// Mock-A assembly: ① agent-state stat band (running/idle/blocked), ② time-series row,
+// ③ GitHub summary strip, ④ current-runs agent-card grid (WS-2 AgentRunCard), ⑤ the
+// per-project jump row with authoritative open-PR counts + issue deep links. Also the
+// honest per-panel degrade paths (overview 501, activity/github/series unavailable).
+// Route-aware fetch stub, same discipline as the S2/S3 suites.
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import {
   FleetOverview,
   mixFromPhaseCounts,
   activeRunCount,
   fleetRuns,
   formatWhen,
+  totalRuns,
   partitionProjects,
 } from "@/components/overview/FleetOverview";
 import type { SquadOverviewData } from "@/components/SquadOverview";
@@ -29,7 +32,7 @@ const overview: SquadOverviewData = {
     {
       name: "webapp",
       namespace: "squad-alpha",
-      repoUrl: "https://git.example/webapp",
+      repoUrl: "https://github.com/acme/webapp.git",
       runs: [
         { name: "run-fix", workItem: "wi-1", phase: "Running", claimedAt: "2026-09-16T10:00:00Z" },
         { name: "run-old", workItem: "wi-2", phase: "Succeeded", claimedAt: "2026-09-15T10:00:00Z" },
@@ -45,26 +48,66 @@ const overview: SquadOverviewData = {
   ],
 };
 
-const webappItems = [
-  {
-    id: "t1",
-    projectId: "webapp",
-    parentId: null,
-    title: "Fix login",
-    state: "in_progress" as const,
-    blockedReason: null,
-    updatedAt: "2026-09-16T09:00:00Z",
+const activity = {
+  agents: [
+    {
+      agentId: "a1",
+      name: "Winston",
+      role: "Backend Engineer",
+      state: "running",
+      currentOrLastRun: {
+        runId: "r1",
+        phase: "Running",
+        workItemRef: "ISI-1",
+        workItemUrl: "/projects/webapp/issues/ISI-1",
+        lastThinkingSnippet: "wiring the apiserver handler",
+        lastActivityAt: "2026-10-12T15:00:00Z",
+      },
+    },
+    {
+      agentId: "a2",
+      name: "Alfred",
+      state: "idle",
+      currentOrLastRun: {
+        runId: "r0",
+        phase: "Succeeded",
+        workItemRef: "ISI-0",
+        workItemUrl: "/projects/webapp/issues/ISI-0",
+        lastThinkingSnippet: "merged the PR",
+        lastActivityAt: "2026-10-12T12:00:00Z",
+      },
+    },
+  ],
+  counts: { running: 1, idle: 1, blocked: 0 },
+  fleet: false,
+};
+
+const series = {
+  window: { from: "2026-09-12", to: "2026-10-12", bucket: "day" },
+  ticketsByStatus: {
+    available: true,
+    snapshots: [
+      { date: "2026-10-10", counts: { backlog: 3, in_progress: 2, done: 1 } },
+      { date: "2026-10-11", counts: { backlog: 2, in_progress: 3, done: 2 } },
+      { date: "2026-10-12", counts: { backlog: 1, in_progress: 2, in_review: 1, done: 4 } },
+    ],
   },
-  {
-    id: "t2",
-    projectId: "webapp",
-    parentId: null,
-    title: "Ship docs",
-    state: "done" as const,
-    blockedReason: null,
-    updatedAt: "2026-09-14T09:00:00Z",
+  runsByStatus: { available: true, byPhase: { succeeded: 5, running: 2 }, total: 7 },
+  tokens: { available: true, total: 1234 },
+};
+
+const github = {
+  totals: {
+    issuesOpen: 10,
+    issuesAssigned: 4,
+    prsOpened: 3,
+    prsReviewed: 5,
+    prsMerged: 7,
+    checksRed: 1,
   },
-];
+  mergeSparkline7d: [0, 1, 2, 0, 3, 1, 0],
+  byRepo: [{ repo: "acme/webapp", assigned: 1, open: 2, prs: 3, reviewed: 2, checksRed: 0 }],
+};
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -73,14 +116,14 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-/** Route-aware fetch stub: overview + agents + per-project work-items + per-project series. */
 type StubResponse = { status: number; body?: unknown };
 
+/** Route-aware fetch stub for the four fleet reads. */
 function stubRoutes(cfg: {
   overview: StubResponse;
-  agents?: StubResponse;
-  workItems?: (project: string) => StubResponse;
-  series?: (project: string) => StubResponse;
+  activity?: StubResponse;
+  series?: StubResponse;
+  github?: StubResponse;
 }) {
   vi.stubGlobal(
     "fetch",
@@ -89,23 +132,17 @@ function stubRoutes(cfg: {
       if (url === "/api/squad/overview") {
         return Promise.resolve(jsonResponse(cfg.overview.status, cfg.overview.body));
       }
-      if (url === "/api/squad/agents") {
-        const a: StubResponse = cfg.agents ?? { status: 501 };
+      if (url === "/api/squad/agents/activity") {
+        const a = cfg.activity ?? { status: 501 };
         return Promise.resolve(jsonResponse(a.status, a.body));
       }
-      const wi = url.match(/^\/api\/projects\/([^/?]+)\/work-items/);
-      if (wi) {
-        const r: StubResponse = (cfg.workItems ?? (() => ({ status: 501 })))(
-          decodeURIComponent(wi[1]),
-        );
-        return Promise.resolve(jsonResponse(r.status, r.body));
+      if (url.startsWith("/api/squad/overview/series")) {
+        const s = cfg.series ?? { status: 501 };
+        return Promise.resolve(jsonResponse(s.status, s.body));
       }
-      const se = url.match(/^\/api\/projects\/([^/?]+)\/overview\?window=30d/);
-      if (se) {
-        const r: StubResponse = (cfg.series ?? (() => ({ status: 501 })))(
-          decodeURIComponent(se[1]),
-        );
-        return Promise.resolve(jsonResponse(r.status, r.body));
+      if (url === "/api/squad/github") {
+        const g = cfg.github ?? { status: 501 };
+        return Promise.resolve(jsonResponse(g.status, g.body));
       }
       return Promise.resolve(jsonResponse(501, { error: "not wired" }));
     }),
@@ -140,6 +177,12 @@ describe("pure projections", () => {
     expect(formatWhen("not-a-date")).toBe("—");
   });
 
+  it("totalRuns sums every phase bucket", () => {
+    expect(totalRuns(overview.projects![0])).toBe(2);
+    expect(totalRuns(overview.projects![1])).toBe(1);
+    expect(totalRuns({ name: "x", namespace: "n", runs: [], phaseCounts: {} })).toBe(0);
+  });
+
   it("partitionProjects splits the synthetic Unassigned/other bucket out (ISI-4570)", () => {
     const withBucket = [
       ...overview.projects!,
@@ -158,122 +201,101 @@ describe("pure projections", () => {
   });
 });
 
-describe("FleetOverview render", () => {
-  it("renders the stat band, whole-card project links, mix bars, ticket deep links, and live runs", async () => {
+describe("FleetOverview render (Mock A)", () => {
+  it("renders the agent-state stat band, time-series, GitHub strip, agent grid, and project jump row", async () => {
     stubRoutes({
       overview: { status: 200, body: overview },
-      agents: { status: 200, body: { agents: [{ id: "a1", name: "cade", namespace: "squad-alpha", role: "developer", skillCount: 3 }] } },
-      workItems: (p) =>
-        p === "webapp" ? { status: 200, body: webappItems } : { status: 200, body: [] },
-      series: (p) =>
-        p === "webapp"
-          ? { status: 200, body: { tokens: { available: true, total: 1234 } } }
-          : { status: 200, body: { tokens: { available: false } } },
-    });
-    render(<FleetOverview />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("fleet-overview")).toBeTruthy(),
-    );
-
-    // Stat band: 1 active run (webapp's Running), 2 projects, 1 open ticket (t1; t2 is done).
-    expect(screen.getByRole("group", { name: "Active Runs" }).textContent).toContain("1");
-    expect(screen.getByRole("group", { name: "Projects" }).textContent).toContain("2");
-    await waitFor(() =>
-      expect(screen.getByRole("group", { name: "Open Tickets" }).textContent).toContain("1"),
-    );
-    expect(screen.getByRole("group", { name: "Agents" }).textContent).toContain("1");
-    await waitFor(() =>
-      expect(screen.getByRole("group", { name: "Tokens · 30d" }).textContent).toContain("1.2k"),
-    );
-
-    // Project cards: whole-card links into the project overview route, namespace shown.
-    const cards = screen.getAllByTestId("fleet-project-card");
-    expect(cards).toHaveLength(2);
-    expect(cards[0].getAttribute("href")).toBe("/projects/webapp");
-
-    // Mix bar: webapp = 1 running + 1 idle (Succeeded), infra = 1 paused.
-    expect(screen.getByLabelText("1 running, 0 paused, 0 blocked, 1 idle")).toBeTruthy();
-    expect(screen.getByLabelText("0 running, 1 paused, 0 blocked, 0 idle")).toBeTruthy();
-
-    // Recent ticket work: newest first, deep link into the issue route with the item id.
-    const links = screen.getAllByTestId("fleet-recent-ticket-link");
-    expect(links[0].textContent).toBe("Fix login"); // t1 updated 09-16 > t2's 09-14
-    expect(links[0].getAttribute("href")).toBe("/projects/webapp/issues/t1");
-    expect(links).toHaveLength(2);
-
-    // Live runs: newest claim first (run-infra), phase chip present.
-    const live = screen.getByTestId("fleet-live-runs");
-    expect(live.textContent).toContain("run-infra");
-    expect(live.textContent).toContain("infra");
-    // ISI-4565: each run deep-links straight to its detail page.
-    const runLink = live.querySelector('[data-testid="fleet-run-link"]');
-    expect(runLink?.getAttribute("href")).toBe("/runs/run-infra");
-  });
-
-  it("degrades honestly when the overview read model is not wired (501)", async () => {
-    stubRoutes({ overview: { status: 501 } });
-    render(<FleetOverview />);
-    await waitFor(() =>
-      expect(screen.getByTestId("fleet-not-wired")).toBeTruthy(),
-    );
-  });
-
-  it("shows the unassigned bucket as a count, never as a project card (ISI-4570/ISI-4577)", async () => {
-    const withBucket: SquadOverviewData = {
-      ...overview,
-      projects: [
-        ...overview.projects!,
-        {
-          name: "Unassigned/other",
-          namespace: "squad-alpha",
-          runs: [
-            { name: "run-orphan-1", workItem: "wi-9", phase: "Running", claimedAt: "2026-09-16T13:00:00Z" },
-            { name: "run-orphan-2", workItem: "wi-10", phase: "Failed", claimedAt: "2026-09-16T12:30:00Z" },
-          ],
-          phaseCounts: { Running: 1, Failed: 1 },
-        },
-      ],
-    };
-    stubRoutes({
-      overview: { status: 200, body: withBucket },
-      agents: { status: 200, body: { agents: [] } },
-      workItems: () => ({ status: 200, body: [] }),
-      series: () => ({ status: 200, body: { tokens: { available: false } } }),
+      activity: { status: 200, body: activity },
+      series: { status: 200, body: series },
+      github: { status: 200, body: github },
     });
     render(<FleetOverview />);
 
     await waitFor(() => expect(screen.getByTestId("fleet-overview")).toBeTruthy());
 
-    // The bucket is not a project: still exactly 2 cards, Projects tile still 2.
-    expect(screen.getAllByTestId("fleet-project-card")).toHaveLength(2);
-    expect(screen.getByRole("group", { name: "Projects" }).textContent).toContain("2");
-    expect(screen.queryByText("Unassigned/other")).toBeNull();
-
-    // No work-items/series fan-out for the synthetic bucket.
-    const calls = (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
-    expect(calls.some((u) => u.includes("Unassigned"))).toBe(false);
-
-    // Its runs surface as a count bucket on the Live Agent Runs panel, not as rows.
+    // ① stat band: agent states first (running/idle/blocked), then projects + tokens.
     await waitFor(() =>
-      expect(screen.getByTestId("fleet-unassigned-runs").textContent).toContain("2 unassigned runs"),
+      expect(screen.getByRole("group", { name: "Running" }).textContent).toContain("1"),
     );
-    const live = screen.getByTestId("fleet-live-runs");
-    expect(live.textContent).not.toContain("run-orphan-1");
+    expect(screen.getByRole("group", { name: "Idle" }).textContent).toContain("1");
+    expect(screen.getByRole("group", { name: "Blocked" }).textContent).toContain("0");
+    expect(screen.getByRole("group", { name: "Projects" }).textContent).toContain("2");
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: "Tokens · 30d" }).textContent).toContain("1.2k"),
+    );
+
+    // ② time-series row present.
+    expect(screen.getByTestId("fleet-series")).toBeTruthy();
+
+    // ③ GitHub strip: authoritative counts + merge sparkline.
+    const gh = await screen.findByTestId("fleet-github");
+    expect(gh.textContent).toContain("10"); // issues open
+    expect(gh.textContent).toContain("7"); // merged
+    expect(gh.querySelector(".ov-sparkline")).toBeTruthy();
+
+    // ④ agent grid: one card per agent, named (never intake-<uuid>).
+    const grid = await screen.findByTestId("fleet-agent-grid");
+    const cards = within(grid).getAllByTestId("agent-run-card");
+    expect(cards).toHaveLength(2);
+    expect(grid.textContent).toContain("Winston");
+    expect(grid.textContent).toContain("wiring the apiserver handler");
+
+    // ⑤ project jump row: webapp gets its authoritative open-PR count, infra has no repo.
+    const rows = screen.getAllByTestId("fleet-project-jump");
+    expect(rows).toHaveLength(2);
+    const webapp = rows[0];
+    expect(within(webapp).getByText("webapp").getAttribute("href")).toBe("/projects/webapp");
+    expect(within(webapp).getByTestId("fleet-project-prs").textContent).toBe("3 open PRs");
+    expect(within(webapp).getByTestId("fleet-project-issues-link").getAttribute("href")).toBe(
+      "/projects/webapp/issues",
+    );
+    // infra reports no repo → honest "— PRs", never an invented 0 (FR-I3).
+    expect(within(rows[1]).getByTestId("fleet-project-prs").textContent).toBe("— PRs");
   });
 
-  it("renders tokens as an honest dash when no project reports them", async () => {
+  it("degrades honestly when the overview read model is not wired (501)", async () => {
+    stubRoutes({ overview: { status: 501 } });
+    render(<FleetOverview />);
+    await waitFor(() => expect(screen.getByTestId("fleet-not-wired")).toBeTruthy());
+  });
+
+  it("renders agent-state tiles as honest dashes when the activity read is unavailable", async () => {
     stubRoutes({
       overview: { status: 200, body: overview },
-      workItems: () => ({ status: 200, body: [] }),
-      series: () => ({ status: 200, body: { tokens: { available: false } } }),
+      activity: { status: 501 },
+      series: { status: 200, body: series },
+      github: { status: 200, body: github },
     });
     render(<FleetOverview />);
+    await waitFor(() => expect(screen.getByTestId("fleet-overview")).toBeTruthy());
     await waitFor(() =>
-      expect(screen.getByTestId("fleet-overview")).toBeTruthy(),
+      expect(screen.getByRole("group", { name: "Running" }).textContent).toContain("—"),
     );
+    expect(screen.getByRole("group", { name: "Idle" }).textContent).toContain("—");
+    // Grid shows the honest empty state, never a blank or fabricated card.
+    expect(screen.queryByTestId("fleet-agent-grid")).toBeNull();
+    expect(screen.getByText(/Agent activity read model not available/i)).toBeTruthy();
+  });
+
+  it("degrades the GitHub strip and tokens without sinking the page", async () => {
+    stubRoutes({
+      overview: { status: 200, body: overview },
+      activity: { status: 200, body: activity },
+      series: { status: 501 },
+      github: { status: 501 },
+    });
+    render(<FleetOverview />);
+    await waitFor(() => expect(screen.getByTestId("fleet-overview")).toBeTruthy());
+    // Tokens tile is an honest dash when the series read is unavailable.
     await waitFor(() =>
       expect(screen.getByRole("group", { name: "Tokens · 30d" }).textContent).toContain("—"),
     );
+    // GitHub strip degrades to its empty state; the agent grid still renders.
+    expect(screen.getByText(/GitHub summary not available/i)).toBeTruthy();
+    expect(screen.queryByTestId("fleet-github")).toBeNull();
+    expect(await screen.findByTestId("fleet-agent-grid")).toBeTruthy();
+    // Project jump row still lists projects (open-PR counts fall back to "—").
+    expect(screen.getAllByTestId("fleet-project-jump")).toHaveLength(2);
+    expect(screen.getAllByTestId("fleet-project-prs")[0].textContent).toBe("— PRs");
   });
 });
