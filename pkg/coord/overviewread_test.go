@@ -81,7 +81,7 @@ func TestReconstructStatusSnapshots(t *testing.T) {
 			transitions:  []stateAt{{at: day(2026, 9, 13), state: "done"}},
 		},
 	}
-	snaps := reconstructStatusSnapshots(items, dailyInstants(day(2026, 9, 10), day(2026, 9, 13)))
+	snaps := reconstructStatusSnapshots(items, dailyInstants(day(2026, 9, 10), day(2026, 9, 13)), canonicalStates)
 	if len(snaps) != 4 {
 		t.Fatalf("snaps: got %d, want 4", len(snaps))
 	}
@@ -111,7 +111,7 @@ func TestReconstructStatusSnapshots(t *testing.T) {
 // TestReconstructEmpty — no items still yields one zero-filled snapshot per day
 // (the honest empty series, not a nil).
 func TestReconstructEmpty(t *testing.T) {
-	snaps := reconstructStatusSnapshots(nil, dailyInstants(day(2026, 9, 10), day(2026, 9, 11)))
+	snaps := reconstructStatusSnapshots(nil, dailyInstants(day(2026, 9, 10), day(2026, 9, 11)), canonicalStates)
 	if len(snaps) != 2 {
 		t.Fatalf("empty snaps: got %d, want 2", len(snaps))
 	}
