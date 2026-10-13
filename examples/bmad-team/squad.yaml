@@ -1017,6 +1017,17 @@ spec:
     - name: bmad
     - name: task-io
     - name: github
+  # code_review is the affirmative capability grant the PR-review-automation
+  # eligibility gate (D5, pkg/reviewauto) requires: a reviewer agent is surfaced
+  # by EligibleReviewers — and accepted by the write-time 422 backstop — only if
+  # its Role.spec.activePhases explicitly lists "code_review". Empty activePhases
+  # is phase-agnostic, which D5 deliberately does NOT treat as capable, so the
+  # dedicated Code Reviewer (amelia) was invisible in the reviewer dropdown until
+  # this was declared (ISI-5666). This monolithic squad.yaml must stay in lockstep
+  # with 05-roles.yaml — a squad seeded from this all-in-one manifest otherwise
+  # ships a code-reviewer role with no capability and an empty dropdown (ISI-5736).
+  activePhases:
+    - code_review
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role

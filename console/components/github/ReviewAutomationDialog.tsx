@@ -55,6 +55,11 @@ export function ReviewAutomationDialog({
   const [state, setState] = useState<ReviewAutomationState>({ kind: "loading" });
   const [form, setForm] = useState<Form | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
+  // Whether the eligible-agents read itself succeeded. An empty dropdown then
+  // means one of two very different things, and the field says which (ISI-5736):
+  // null = still loading, "ok" = roster loaded (empty ⇒ no capable agent on the
+  // team), "error" = the read failed (empty ⇒ unknown, not "no reviewers").
+  const [rosterStatus, setRosterStatus] = useState<"ok" | "error" | null>(null);
   const [saving, setSaving] = useState(false);
   // A field-level rejection surfaced from the write 422 (invalid enum or an
   // ineligible reviewer), or a deploy/authZ-level message.
@@ -90,8 +95,10 @@ export function ReviewAutomationDialog({
   // alone, and the write-time 422 stays the authoritative eligibility backstop.
   useEffect(() => {
     let alive = true;
-    void listEligibleReviewers(projectId).then((list) => {
-      if (alive) setAgents(list);
+    void listEligibleReviewers(projectId).then((res) => {
+      if (!alive) return;
+      setRosterStatus(res.status);
+      setAgents(res.status === "ok" ? res.agents : []);
     });
     return () => {
       alive = false;
@@ -281,6 +288,24 @@ export function ReviewAutomationDialog({
                   The agent must have the <code>code_review</code> capability; the
                   server rejects an ineligible choice when you save.
                 </span>
+                {/* An empty roster is ambiguous on its own — say which case it is
+                    so a blank dropdown never reads as a broken screen (ISI-5736). */}
+                {rosterStatus === "ok" && agents.length === 0 && (
+                  <span className="gh-ra-hint muted" data-testid="ra-reviewer-empty" role="status">
+                    No agent on this project&rsquo;s team has the{" "}
+                    <code>code_review</code> capability yet. Give an agent the
+                    code-reviewer role — its role must list <code>code_review</code>{" "}
+                    in <code>activePhases</code> — to populate this list.
+                  </span>
+                )}
+                {rosterStatus === "error" && (
+                  <span className="gh-ra-hint muted" data-testid="ra-reviewer-error" role="status">
+                    Couldn&rsquo;t load the eligible reviewers — the roster service
+                    didn&rsquo;t respond. This is not a statement that your team has
+                    none; reopen to retry. You can still save, and the server
+                    validates the reviewer then.
+                  </span>
+                )}
               </label>
 
               {/* (c) Scope. */}

@@ -199,21 +199,36 @@ export async function listSquadAgents(): Promise<AgentOption[]> {
  * roster so the dropdown still renders "Select an agent" alone — the write-time
  * 422 remains the authoritative eligibility backstop.
  */
-export async function listEligibleReviewers(projectId: string): Promise<AgentOption[]> {
+/**
+ * Outcome of the D5 eligible-agents read (ISI-4779). It is deliberately
+ * three-valued so the dialog never conflates an honestly-empty roster with a
+ * failed fetch (ISI-5736): a blank dropdown with no explanation is the exact
+ * symptom users reported as "empty even though my team has a code-reviewer".
+ *   - "ok"    → the roster loaded; `agents` is the (possibly empty) capable set.
+ *   - "error" → the read failed/was unavailable (HTTP error, not-wired, network,
+ *               malformed). `agents` is [] but that is NOT a statement about the
+ *               team — the write-time 422 remains the authoritative backstop.
+ */
+export type EligibleReviewers =
+  | { status: "ok"; agents: AgentOption[] }
+  | { status: "error" };
+
+export async function listEligibleReviewers(projectId: string): Promise<EligibleReviewers> {
   try {
     const res = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/repo/review-automation/eligible-agents`,
       { headers: { accept: "application/json" }, cache: "no-store" },
     );
-    if (!res.ok) return [];
+    if (!res.ok) return { status: "error" };
     const payload = (await res.json()) as { agents?: unknown };
     const rows = Array.isArray(payload.agents) ? payload.agents : [];
-    return rows
+    const agents = rows
       .map((r) => r as { id?: unknown; name?: unknown })
       .filter((r) => typeof r.id === "string" && typeof r.name === "string")
       .map((r) => ({ id: r.id as string, name: r.name as string }));
+    return { status: "ok", agents };
   } catch {
-    return [];
+    return { status: "error" };
   }
 }
 
