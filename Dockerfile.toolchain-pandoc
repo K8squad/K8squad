@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+# pandoc toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.3 Content).
+# Provides pandoc (document conversion), weasyprint (HTML→PDF via CSS), and typst
+# (typesetting / PDF generation) on a single image for the `doc-convert` skill.
+# Multi-stage: pandoc binary staged from the official release image; weasyprint and
+# typst added on top of python:3.12-alpine. Multi-arch (linux/amd64 + linux/arm64).
+FROM pandoc/core:3.6.3 AS pandoc-src
+
+ARG PYTHON_IMAGE=python:3.12-alpine
+ARG TYPST_VERSION=0.13.1
+FROM alpine:3.21 AS typst-fetch
+ARG TYPST_VERSION
+ARG TARGETARCH
+RUN apk add --no-cache curl \
+ && curl -fsSL "https://github.com/typst/typst/releases/download/v${TYPST_VERSION}/typst-${TARGETARCH}-unknown-linux-musl.tar.xz" \
+      -o /tmp/typst.tar.xz \
+ && tar -xJf /tmp/typst.tar.xz --strip-components=1 -C /usr/local/bin \
+ && chmod 0755 /usr/local/bin/typst \
+ && rm /tmp/typst.tar.xz
+
+FROM ${PYTHON_IMAGE}
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: pandoc"
+ARG WEASYPRINT_VERSION=62.3
+# CVE hygiene: pull current openssl + util-linux fixes (mirrors Dockerfile.toolchain-python).
+# weasyprint needs fontconfig + pango for CSS rendering; cairo is the rendering backend.
+RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux \
+ && apk add --no-cache fontconfig pango cairo libffi \
+ && pip install --no-cache-dir --upgrade "pip" "setuptools>=78.1.1" \
+ && pip install --no-cache-dir "weasyprint==${WEASYPRINT_VERSION}"
+COPY --from=pandoc-src /usr/bin/pandoc /usr/local/bin/pandoc
+COPY --from=typst-fetch /usr/local/bin/typst /usr/local/bin/typst
+ENTRYPOINT ["/usr/local/bin/pandoc"]

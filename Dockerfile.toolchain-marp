@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+# marp toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.2 Design).
+# Marp CLI (marp-team/marp-cli) converts Markdown presentations to HTML/PDF/PPTX.
+# Installed via npm on node:22-alpine (same base/discipline as Dockerfile.toolchain-node).
+# Multi-arch (linux/amd64 + linux/arm64) rides node:22-alpine's multi-arch manifest.
+ARG NODE_IMAGE=node:22-alpine
+FROM ${NODE_IMAGE}
+ARG MARP_VERSION=4.1.1
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: marp"
+# Chromium headless is required for PDF/PPTX export (marp --pdf / --pptx).
+# puppeteer env vars tell marp-cli to use the system-installed chromium rather than
+# downloading its own bundle — avoids the puppeteer 100MB+ download in the image.
+RUN apk add --no-cache chromium \
+ && npm install -g --no-fund --no-audit "@marp-team/marp-cli@${MARP_VERSION}" \
+ && npm cache clean --force
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+ENTRYPOINT ["/usr/local/bin/marp"]

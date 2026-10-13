@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+# semgrep toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.6).
+# Rebases the official semgrep/semgrep image (already minimal/multi-arch) so the
+# catalog reference is K8squad-owned, signed, and rebuilt weekly for CVEs. The
+# operator copies the `semgrep` binary onto the skill sandbox PATH; standalone
+# ENTRYPOINT = semgrep. Multi-arch (linux/amd64 + linux/arm64) rides the official
+# image's multi-arch manifest.
+ARG SEMGREP_IMAGE=semgrep/semgrep:1.95.0
+FROM ${SEMGREP_IMAGE}
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: semgrep"
+ENTRYPOINT ["/usr/local/bin/semgrep"]

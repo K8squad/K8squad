@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# grype toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.6).
+# Minimal binary-staging image. grype (Anchore) ships as a static Go binary; staged
+# from the GitHub release. Complements trivy as a cross-check scanner (the toolchain
+# lane itself runs a grype cross-check on every publish). Multi-arch: linux/amd64 +
+# linux/arm64 via TARGETARCH (buildx).
+FROM alpine:3.21 AS fetch
+ARG GRYPE_VERSION=0.87.0
+ARG TARGETARCH
+RUN apk add --no-cache curl \
+ && curl -fsSL "https://raw.githubusercontent.com/anchore/grype/main/install.sh" \
+      -o /tmp/install.sh \
+ && sh /tmp/install.sh -b /usr/local/bin "v${GRYPE_VERSION}" \
+ && rm /tmp/install.sh
+
+FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: grype"
+COPY --from=fetch /usr/local/bin/grype /usr/local/bin/grype
+ENTRYPOINT ["/usr/local/bin/grype"]
