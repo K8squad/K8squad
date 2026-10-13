@@ -17,6 +17,8 @@ import React, { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import "./markdown.css";
+
 hljs.registerLanguage("bash", hlBash);
 hljs.registerLanguage("css", hlCss);
 hljs.registerLanguage("dockerfile", hlDockerfile);
