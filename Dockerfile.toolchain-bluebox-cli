@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# bluebox-cli toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.5).
+# Minimal binary-staging image: the K8squad operator copies the binary onto the
+# skill sandbox PATH; the image is also usable standalone (ENTRYPOINT = bluebox).
+# bluebox is the Dynatrace AI reliability CLI — it ships as a single static binary
+# for each arch. Multi-arch: linux/amd64 + linux/arm64 via TARGETARCH (buildx).
+FROM alpine:3.21 AS fetch
+ARG BLUEBOX_VERSION=v1.0.0
+ARG TARGETARCH
+RUN apk add --no-cache curl \
+ && curl -fsSL "https://github.com/dynatrace-oss/bluebox/releases/download/${BLUEBOX_VERSION}/bluebox_Linux_${TARGETARCH}.tar.gz" \
+      -o /tmp/bluebox.tar.gz \
+ && tar -xzf /tmp/bluebox.tar.gz -C /usr/local/bin bluebox \
+ && chmod 0755 /usr/local/bin/bluebox \
+ && rm /tmp/bluebox.tar.gz
+
+FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: bluebox-cli"
+COPY --from=fetch /usr/local/bin/bluebox /usr/local/bin/bluebox
+ENTRYPOINT ["/usr/local/bin/bluebox"]

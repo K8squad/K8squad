@@ -162,6 +162,101 @@
         "ANSIBLE_CORE_VERSION": "2.17.6"
       },
       "note": "ISI-5768 skill-catalog expansion (§3.1 Ops/IaC, ansible skill). pip-installed on python:3.12-alpine (same base as the python toolchain) via musllinux wheels. Catalog tag 2.17 tracks the ansible-core 2.17 line (2.17.6 at authoring). Long-tail image — NOT in the default catalog."
+    },
+    {      "tool": "bluebox-cli",
+      "version": "1",
+      "dockerfile": "Dockerfile.toolchain-bluebox-cli",
+      "context": ".",
+      "buildArgs": {
+        "BLUEBOX_VERSION": "v1.0.0"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.5 Bluebox skill). Dynatrace AI reliability CLI (dynatrace-oss/bluebox); static Go binary staged from the GitHub release. Catalog tag 1 tracks the 1.x line (v1.0.0 at authoring). Long-tail image — NOT in the default catalog."
+    },
+    {
+      "tool": "semgrep",
+      "version": "1",
+      "dockerfile": "Dockerfile.toolchain-semgrep",
+      "context": ".",
+      "buildArgs": {
+        "SEMGREP_IMAGE": "semgrep/semgrep:1.95.0"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, sast-scan skill). Rebases the official semgrep/semgrep image for K8squad-owned SBOM+sign. Catalog tag 1 tracks the semgrep 1.x line (1.95.0 at authoring). Long-tail image — NOT in the default catalog."
+    },
+    {
+      "tool": "gitleaks",
+      "version": "8",
+      "dockerfile": "Dockerfile.toolchain-gitleaks",
+      "context": ".",
+      "buildArgs": {
+        "GITLEAKS_VERSION": "8.24.0"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, secret-scan skill). gitleaks already runs in the main-repo CI L4 gate. Catalog tag 8 tracks the gitleaks 8.x line (8.24.0 at authoring). Long-tail image — NOT in the default catalog."
+    },
+    {
+      "tool": "trivy",
+      "version": "0.58",
+      "dockerfile": "Dockerfile.toolchain-trivy",
+      "context": ".",
+      "buildArgs": {
+        "TRIVY_IMAGE": "aquasec/trivy:0.58.2"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill). Rebases the official aquasec/trivy image for K8squad-owned SBOM+sign. Catalog tag 0.58 tracks the trivy 0.58.x patch line (0.58.2 at authoring). Long-tail image — NOT in the default catalog."
+    },
+    {
+      "tool": "grype",
+      "version": "0.87",
+      "dockerfile": "Dockerfile.toolchain-grype",
+      "context": ".",
+      "buildArgs": {
+        "GRYPE_VERSION": "0.87.0"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill, trivy cross-check). grype (Anchore); static Go binary installed via official install.sh. Catalog tag 0.87 tracks the grype 0.87.x line (0.87.0 at authoring). Long-tail image — NOT in the default catalog."
+    },
+    {
+      "tool": "checkov",
+      "version": "3",
+      "dockerfile": "Dockerfile.toolchain-checkov",
+      "context": ".",
+      "buildArgs": {
+        "PYTHON_IMAGE": "python:3.12-alpine",
+        "CHECKOV_VERSION": "3.2.319",
+        "KUBE_BENCH_VERSION": "0.9.4"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, iac-scan skill). Provides checkov (pip on python:3.12-alpine) + kube-bench (static binary from aquasecurity/kube-bench) on one image — they pair for terraform/k8s misconfig scanning. Catalog tag 3 tracks the checkov 3.x line (3.2.319 at authoring). Long-tail — NOT in the default catalog."
+    },
+    {
+      "tool": "ffmpeg",
+      "version": "7",
+      "dockerfile": "Dockerfile.toolchain-ffmpeg",
+      "context": ".",
+      "buildArgs": {
+        "FFMPEG_IMAGE": "linuxserver/ffmpeg:7.1.1"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.2 Design, video-gen skill). Rebases linuxserver/ffmpeg:7.1.1 (multi-arch, actively maintained, includes ffprobe + x264/x265/aac) for K8squad-owned SBOM+sign. Catalog tag 7 tracks the ffmpeg 7.x line. Long-tail — NOT in the default catalog."
+    },
+    {
+      "tool": "marp",
+      "version": "4",
+      "dockerfile": "Dockerfile.toolchain-marp",
+      "context": ".",
+      "buildArgs": {
+        "NODE_IMAGE": "node:22-alpine",
+        "MARP_VERSION": "4.1.1"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.2 Design, slides-deck skill). marp-cli (@marp-team/marp-cli) on node:22-alpine; uses system chromium (apk) for PDF/PPTX export — skips puppeteer's own 100MB+ chromium download. Catalog tag 4 tracks the marp-cli 4.x line. Long-tail — NOT in the default catalog."
+    },
+    {
+      "tool": "pandoc",
+      "version": "3",
+      "dockerfile": "Dockerfile.toolchain-pandoc",
+      "context": ".",
+      "buildArgs": {
+        "PYTHON_IMAGE": "python:3.12-alpine",
+        "TYPST_VERSION": "0.13.1",
+        "WEASYPRINT_VERSION": "62.3"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.3 Content, doc-convert skill). Multi-tool image: pandoc binary from pandoc/core:3.6.3, weasyprint (pip for HTML→PDF) and typst (static musl binary for typesetting PDF) layered on python:3.12-alpine. Catalog tag 3 tracks the pandoc 3.x line. Long-tail — NOT in the default catalog."
+
     }
   ]
 }
