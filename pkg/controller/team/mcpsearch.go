@@ -65,7 +65,7 @@ func searchMCPServer(ns string, teamObj *api.Team, controlPlaneNS string) *api.M
 		},
 		Spec: api.MCPServerSpec{
 			Transport: api.MCPTransportStreamableHTTP,
-			Endpoint:  authoringEndpoint(controlPlaneNS), // same in-cluster memory FQDN
+			Endpoint:  memoryEndpoint(controlPlaneNS, memory.MCPEndpointSearch), // distinct path (ISI-5694): keep opencode from collapsing same-URL memory servers
 			ToolFilter: &api.MCPToolFilter{
 				Allow: append([]string(nil), memory.SearchToolNames...),
 			},
