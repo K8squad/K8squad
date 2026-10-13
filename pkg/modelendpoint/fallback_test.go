@@ -168,3 +168,43 @@ func TestCloseSegmentOnlyClosesMatchingOpenSegment(t *testing.T) {
 	require.Len(t, segs, 1)
 	assert.Equal(t, t0, *segs[0].EndedAt, "already-closed segment stays as-is")
 }
+
+// fakeMetrics captures IncFallbackActivation calls for assertion.
+type fakeMetrics struct {
+	activations []ActivationDims
+}
+
+func (f *fakeMetrics) IncFallbackActivation(d ActivationDims) { f.activations = append(f.activations, d) }
+func (f *fakeMetrics) ObserveFallbackDuration(_ DurationDims, _ float64)  {}
+func (f *fakeMetrics) Signals() []string                                   { return nil }
+
+// TestOnRateLimitedMeteredOnSwitch (13.9 wiring AC): a switch verdict
+// increments the activations counter exactly once with the correct dims.
+func TestOnRateLimitedMeteredOnSwitch(t *testing.T) {
+	r := newResolver(t, endpointSecret("amelia-ollama", map[string][]byte{
+		"endpointURL": []byte("http://ollama.svc:11434"),
+	}))
+	m := &fakeMetrics{}
+	s := &Switcher{Resolver: r, Metrics: m}
+	a := byoAgent(func(spec *api.AgentSpec) {
+		spec.FallbackModel = &api.FallbackModel{Model: "llama3:8b"}
+	})
+
+	_, err := s.OnRateLimited(context.Background(), a, rateLimitedSignal("deepseek-chat", time.Now()))
+	require.NoError(t, err)
+	require.Len(t, m.activations, 1, "exactly one activation counter increment on switch")
+	assert.Equal(t, "deepseek-chat", m.activations[0].PrimaryModel)
+	assert.Equal(t, "llama3:8b", m.activations[0].FallbackModel)
+}
+
+// TestOnRateLimitedNoMetricOnPause: the pause path must NOT increment the
+// switch counter (it is an activations counter, not a rate-limited counter).
+func TestOnRateLimitedNoMetricOnPause(t *testing.T) {
+	m := &fakeMetrics{}
+	s := &Switcher{Resolver: newResolver(t), Metrics: m}
+	a := byoAgent(nil)
+
+	_, err := s.OnRateLimited(context.Background(), a, rateLimitedSignal("deepseek-chat", time.Now()))
+	require.NoError(t, err)
+	assert.Empty(t, m.activations, "pause path must not increment the fallback activations counter")
+}

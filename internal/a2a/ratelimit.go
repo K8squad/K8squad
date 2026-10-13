@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
@@ -139,6 +140,20 @@ func (b *RateLimitBridge) Handle(ctx context.Context, ev wire.Event) error {
 	}
 
 	switch plan.Action {
+	case modelendpoint.ActionSwitchModel:
+		slog.InfoContext(ctx, "a2a: model fallback switch",
+			"run_id", rc.RunID,
+			"primary_model", plan.From,
+			"fallback_model", plan.To.Model,
+			"reason", modelendpoint.ReasonRateLimited,
+		)
+		if b.OnSwitch == nil {
+			return nil
+		}
+		if err := b.OnSwitch(ctx, rc.RunID, plan); err != nil {
+			return fmt.Errorf("a2a: switch model for run %s: %w", rc.RunID, err)
+		}
+		return nil
 	case modelendpoint.ActionPauseRun:
 		// 2.11 honours the provider window when present; a zero window means
 		// "no Retry-After" and hands coord.Pause its exponential backoff.
@@ -149,14 +164,6 @@ func (b *RateLimitBridge) Handle(ctx context.Context, ev wire.Event) error {
 		}
 		if err := b.Pause(ctx, rc.WorkItem, retryAfter); err != nil {
 			return fmt.Errorf("a2a: pause run %s (work item %d): %w", rc.RunID, rc.WorkItem, err)
-		}
-		return nil
-	case modelendpoint.ActionSwitchModel:
-		if b.OnSwitch == nil {
-			return nil
-		}
-		if err := b.OnSwitch(ctx, rc.RunID, plan); err != nil {
-			return fmt.Errorf("a2a: switch model for run %s: %w", rc.RunID, err)
 		}
 		return nil
 	default:

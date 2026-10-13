@@ -23,6 +23,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // SwitchAction is the 5.11 verdict for a rate_limited Run.
@@ -71,6 +74,9 @@ type SwitchPlan struct {
 // (5.8/5.10) job, driven by this plan.
 type Switcher struct {
 	Resolver *Resolver
+	// Metrics is optional; when non-nil IncFallbackActivation is called on
+	// every ActionSwitchModel verdict (13.9 counter wiring).
+	Metrics Metrics
 }
 
 // RateLimitedSignal is one 5.10 shim signal: the Run's provider 429'd.
@@ -123,12 +129,38 @@ func (s *Switcher) OnRateLimited(ctx context.Context, agent *api.Agent, sig Rate
 		}, nil
 	}
 
-	return SwitchPlan{
+	plan := SwitchPlan{
 		Action:    ActionSwitchModel,
 		From:      from,
 		To:        fallback,
 		KeepClaim: true,
-	}, nil
+	}
+
+	// 13.9 counter: meter every switch at the decision point (nil-safe).
+	if s.Metrics != nil {
+		s.Metrics.IncFallbackActivation(ActivationDims{
+			Project:       agent.Namespace,
+			Agent:         agent.Name,
+			Role:          agent.Spec.RoleRef.Name,
+			PrimaryModel:  from,
+			FallbackModel: fallback.Model,
+		})
+	}
+
+	// OTel span: record the switch in the run trace with gen_ai.* attributes
+	// so the fallback is visible in Dynatrace without relying on tail sampling.
+	_, span := telemetry.Tracer().Start(ctx, "ksquad.fallback.switch",
+		trace.WithAttributes(
+			attribute.String("gen_ai.request.model", from),
+			attribute.String("gen_ai.response.model", fallback.Model),
+			attribute.String("ksquad.fallback.reason", ReasonRateLimited),
+			attribute.String("ksquad.agent.name", agent.Name),
+			attribute.String("ksquad.agent.namespace", agent.Namespace),
+		),
+	)
+	span.End()
+
+	return plan, nil
 }
 
 // ShouldSkipSwitch reports whether a switch plan is a no-op: the Run is
