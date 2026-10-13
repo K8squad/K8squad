@@ -1,0 +1,166 @@
+/*
+ * ksq-markdown — token-driven styles for the shared <Markdown> component.
+ *
+ * Design intent: subtle, readable, honoring the deliberate "no rich-text black
+ * box" baseline (tickets.css .ksq-prose). All values defer to CSS custom
+ * properties so light/dark themes are handled by the host shell.
+ */
+
+/* ── Root ─────────────────────────────────────────────────────────────────── */
+
+.ksq-markdown {
+  color: var(--text-1);
+  font-size: var(--font-size-1, 0.9rem);
+  line-height: 1.6;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.ksq-markdown--plain {
+  white-space: pre-wrap;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-0, 0.8rem);
+  color: var(--text-1);
+}
+
+/* ── Headings ─────────────────────────────────────────────────────────────── */
+
+.ksq-markdown h1,
+.ksq-markdown h2,
+.ksq-markdown h3,
+.ksq-markdown h4,
+.ksq-markdown h5,
+.ksq-markdown h6 {
+  margin: 1em 0 0.35em;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-1);
+}
+
+.ksq-markdown h1 { font-size: 1.4em; }
+.ksq-markdown h2 { font-size: 1.2em; }
+.ksq-markdown h3 { font-size: 1.05em; }
+.ksq-markdown h4,
+.ksq-markdown h5,
+.ksq-markdown h6 { font-size: 1em; }
+
+/* ── Paragraphs & block spacing ──────────────────────────────────────────── */
+
+.ksq-markdown p {
+  margin: 0 0 0.75em;
+}
+
+.ksq-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Lists ───────────────────────────────────────────────────────────────── */
+
+.ksq-markdown ul,
+.ksq-markdown ol {
+  margin: 0 0 0.75em 1.4em;
+  padding: 0;
+}
+
+.ksq-markdown li {
+  margin-bottom: 0.2em;
+}
+
+/* GFM task lists */
+.ksq-markdown li input[type="checkbox"] {
+  margin-right: 0.4em;
+  vertical-align: middle;
+}
+
+/* ── Inline code ─────────────────────────────────────────────────────────── */
+
+.ksq-markdown :not(pre) > code {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.875em;
+  background: var(--surface-2, rgba(0 0 0 / 0.06));
+  color: var(--text-1);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+}
+
+/* ── Code blocks ─────────────────────────────────────────────────────────── */
+
+.ksq-markdown__pre,
+.ksq-markdown pre {
+  background: var(--surface-2, rgba(0 0 0 / 0.06));
+  border-radius: 4px;
+  padding: 0.75em 1em;
+  margin: 0 0 0.75em;
+  overflow-x: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.ksq-markdown__pre code,
+.ksq-markdown pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+
+.ksq-markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 0.75em;
+  font-size: 0.9em;
+}
+
+.ksq-markdown th,
+.ksq-markdown td {
+  border: 1px solid var(--border-1, rgba(0 0 0 / 0.15));
+  padding: 0.35em 0.65em;
+  text-align: left;
+}
+
+.ksq-markdown th {
+  background: var(--surface-2, rgba(0 0 0 / 0.04));
+  font-weight: 600;
+}
+
+/* ── Blockquotes ─────────────────────────────────────────────────────────── */
+
+.ksq-markdown blockquote {
+  border-left: 3px solid var(--border-2, rgba(0 0 0 / 0.25));
+  margin: 0 0 0.75em;
+  padding: 0.25em 0.75em;
+  color: var(--text-2, inherit);
+}
+
+.ksq-markdown blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Links ───────────────────────────────────────────────────────────────── */
+
+.ksq-markdown a {
+  color: var(--accent-1, #3b82f6);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ksq-markdown a:hover {
+  opacity: 0.8;
+}
+
+/* ── Horizontal rule ─────────────────────────────────────────────────────── */
+
+.ksq-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-1, rgba(0 0 0 / 0.15));
+  margin: 1em 0;
+}
+
+/* ── Strikethrough ───────────────────────────────────────────────────────── */
+
+.ksq-markdown del {
+  opacity: 0.6;
+}
