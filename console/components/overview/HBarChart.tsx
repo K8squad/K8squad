@@ -11,7 +11,9 @@ import "./overview.css";
 
 export interface HBarItem {
   label: string;
-  value: number;
+  /** An authoritative count, or `null` for an UNAVAILABLE bucket (no backing data) — the row
+   * then renders an em-dash with no bar rather than a fabricated 0 (FR-I3, ISI-5738). */
+  value: number | null;
   /** A CSS color for the fill — pass an existing token, e.g. "var(--status-blocked)". */
   color?: string;
 }
@@ -41,7 +43,8 @@ export function HBarChart({
     );
   }
 
-  const max = Math.max(0, ...items.map((it) => Math.max(0, it.value)));
+  // The scale ignores unavailable (null) buckets — they contribute no bar, only an em-dash.
+  const max = Math.max(0, ...items.map((it) => (it.value == null ? 0 : Math.max(0, it.value))));
 
   if (items.length === 0 || max === 0) {
     return (
@@ -53,27 +56,42 @@ export function HBarChart({
 
   const desc =
     ariaLabel ??
-    `Horizontal bar chart: ${items.map((it) => `${it.label} ${formatValue(it.value)}`).join(", ")}`;
+    `Horizontal bar chart: ${items
+      .map((it) => `${it.label} ${it.value == null ? "unavailable" : formatValue(it.value)}`)
+      .join(", ")}`;
 
   return (
     <div className="ov-hbar" role="img" aria-label={desc}>
-      {items.map((it) => (
-        <div key={it.label} className="ov-hbar__row" aria-hidden="true">
-          <span className="ov-hbar__label" title={it.label}>
-            {it.label}
-          </span>
-          <span className="ov-hbar__track">
-            <span
-              className="ov-hbar__fill"
-              style={{
-                width: `${(Math.max(0, it.value) / max) * 100}%`,
-                background: it.color,
-              }}
-            />
-          </span>
-          <span className="ov-hbar__value">{formatValue(it.value)}</span>
-        </div>
-      ))}
+      {items.map((it) => {
+        const unavailable = it.value == null;
+        return (
+          <div
+            key={it.label}
+            className="ov-hbar__row"
+            data-unavailable={unavailable || undefined}
+            aria-hidden="true"
+          >
+            <span className="ov-hbar__label" title={it.label}>
+              {it.label}
+            </span>
+            <span className="ov-hbar__track">
+              {/* Unavailable bucket: no fill at all (not even the 2px min-width sliver) — FR-I3. */}
+              {!unavailable && (
+                <span
+                  className="ov-hbar__fill"
+                  style={{
+                    width: `${(Math.max(0, it.value as number) / max) * 100}%`,
+                    background: it.color,
+                  }}
+                />
+              )}
+            </span>
+            <span className="ov-hbar__value" title={unavailable ? "Not available on this deployment" : undefined}>
+              {unavailable ? "—" : formatValue(it.value as number)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

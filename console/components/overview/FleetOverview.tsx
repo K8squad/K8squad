@@ -4,18 +4,24 @@
 // Mock A (ISI-5708 WS-3; parent plan ISI-5697 rev2, approved design ISI-5699). The
 // Paperclip-style control room, top to bottom:
 //
-//   ① stat band        — agent states first (running / idle / blocked), then projects
-//                         and 30-day tokens — Henrik's "global stats first" ask.
-//   ② time-series row  — fleet tickets-by-status (stacked area) + in-window runs-by-
-//                         status (h-bars), from GET /api/squad/overview/series (WS-1c).
-//   ③ GitHub strip     — fleet issue/PR/check roll-up + 7-day merge sparkline, from
-//                         GET /api/squad/github (WS-1b).
-//   ④ agent-card grid  — the CURRENT-runs surface: one AgentRunCard per agent from
-//                         GET /api/squad/agents/activity (WS-1a + WS-2), replacing the
-//                         opaque intake-<uuid> run list with named agents + CLASSIFIED
-//                         thinking (never the raw [run]/[tool] stream — ISI-5695/5696).
-//   ⑤ project jump row — compact per-project rows: high-level details (runs mix, open
-//                         PRs) + deep links into each project overview and its issues.
+//   ① stat band          — agent states first (running / idle / blocked), then projects
+//                           and 30-day tokens — Henrik's "global stats first" ask.
+//   ② status-breakdown   — issues-by-status snapshot distribution + in-window runs-by-status,
+//                           both Paperclip-style h-bars from GET /api/squad/overview/series
+//                           (rev2 §2, ISI-5738). `blocked` isn't a §13 board state → that
+//                           bucket renders "—" (FR-I3), never a fabricated bar.
+//   ③ over-time row      — fleet tickets-by-status (stacked area), WS-1c. The sibling
+//                           runs-by-status-over-time stack (rev2 §3) needs a NET-NEW run-phase
+//                           history read model (etcd keeps no phase history — see squadseries.go);
+//                           until the backend child ships it the panel degrades honestly.
+//   ④ GitHub strip       — fleet issue/PR/check roll-up + 7-day merge sparkline, from
+//                           GET /api/squad/github (WS-1b).
+//   ⑤ agent-card grid    — the CURRENT-runs surface: one AgentRunCard per agent from
+//                           GET /api/squad/agents/activity (WS-1a + WS-2), replacing the
+//                           opaque intake-<uuid> run list with named agents + CLASSIFIED
+//                           thinking (never the raw [run]/[tool] stream — ISI-5695/5696).
+//   ⑥ project jump row   — compact per-project rows: high-level details (runs mix, open
+//                           PRs) + deep links into each project overview and its issues.
 //
 // Every panel owns its own async boundary and loading/empty/error state, so a slow or
 // unrolled read degrades ONLY its own panel — never the page (degrade-don't-blank,
@@ -53,7 +59,9 @@ import {
 import {
   areaXLabels,
   formatTokens,
+  latestTicketSnapshot,
   toAreaSeries,
+  toIssueStatusBars,
   toRunBars,
   type SeriesState,
 } from "@/lib/overview/projectSeries";
@@ -212,33 +220,74 @@ function useGithubSummary(): GithubSummaryState {
 // Panels
 // ---------------------------------------------------------------------------
 
-/** ② Time-series row: fleet tickets-by-status stacked area + in-window runs-by-status h-bars. */
-function TimeSeriesRow({ state }: { state: SeriesState }) {
+/** Fold a series read into the four PanelCard states, so every chart degrades honestly. */
+function seriesPanelState(state: SeriesState, available: boolean | undefined): "ready" | "loading" | "empty" | "error" {
+  if (state.kind === "loading") return "loading";
+  if (state.kind === "error") return "error";
+  return available ? "ready" : "empty";
+}
+
+/** ② Status-breakdown row (rev2 §2): issues-by-status snapshot distribution + in-window
+ *  runs-by-status — both Paperclip-style h-bars, both from GET /api/squad/overview/series. */
+function StatusBreakdownRow({ state }: { state: SeriesState }) {
   const series: FleetOverviewSeries | null = state.kind === "ready" ? state.series : null;
   const tickets = series?.ticketsByStatus;
   const runs = series?.runsByStatus;
+  const snapshot = latestTicketSnapshot(tickets?.snapshots);
 
-  const ticketsPanelState =
-    state.kind === "loading"
-      ? "loading"
-      : state.kind === "error"
-        ? "error"
-        : tickets?.available
-          ? "ready"
-          : "empty";
-  const runsPanelState =
-    state.kind === "loading"
-      ? "loading"
-      : state.kind === "error"
-        ? "error"
-        : runs?.available
-          ? "ready"
-          : "empty";
+  // Issues panel is ready only when the snapshot read is both available AND has a datapoint.
+  const issuesPanelState = seriesPanelState(state, Boolean(tickets?.available && snapshot));
+  const runsPanelState = seriesPanelState(state, runs?.available);
 
+  return (
+    <div className="ov-charts-row ov-charts-row--even" data-testid="fleet-status-breakdown">
+      <PanelCard
+        title="Issues by status"
+        state={issuesPanelState}
+        emptyLabel="Issue status breakdown not available yet on this deployment."
+        errorLabel="Couldn't load the issues breakdown."
+      >
+        <div data-testid="fleet-issues-by-status">
+          <HBarChart
+            items={toIssueStatusBars(snapshot)}
+            ariaLabel="Fleet issues by status (current snapshot)"
+          />
+        </div>
+      </PanelCard>
+      <PanelCard
+        title="Runs by status · 30d"
+        action={{ label: "View all runs →", href: "/runs" }}
+        state={runsPanelState}
+        emptyLabel="No runs in this window."
+        errorLabel="Couldn't load the runs breakdown."
+      >
+        <HBarChart
+          items={toRunBars(runs?.byPhase ?? {})}
+          ariaLabel="Fleet runs by status in the last 30 days"
+        />
+      </PanelCard>
+    </div>
+  );
+}
+
+/** ③ Over-time row (rev2 §3): fleet runs-by-status-over-time stacked area beside the
+ *  tickets-by-status stack. The runs-over-time series is a NET-NEW backend read model (a
+ *  daily-bucketed run-phase history store, which etcd does not keep today — see squadseries.go;
+ *  tracked on the backend child). Until it ships, that panel renders the honest "not available"
+ *  degrade state rather than a fabricated band (FR-I3), keeping the approved two-up layout. */
+function OverTimeRow({ state }: { state: SeriesState }) {
+  const series: FleetOverviewSeries | null = state.kind === "ready" ? state.series : null;
+  const tickets = series?.ticketsByStatus;
+  const ticketsPanelState = seriesPanelState(state, tickets?.available);
   const snapshots = tickets?.snapshots ?? [];
 
   return (
-    <div className="ov-charts-row" data-testid="fleet-series">
+    <div className="ov-charts-row ov-charts-row--even" data-testid="fleet-series">
+      <PanelCard
+        title="Runs by status over time · 30d"
+        state="empty"
+        emptyLabel="Runs-by-status time series isn't available yet — it needs a run-phase history read model (backend, in progress)."
+      />
       <PanelCard
         title="Tickets by status · 30d"
         state={ticketsPanelState}
@@ -249,17 +298,6 @@ function TimeSeriesRow({ state }: { state: SeriesState }) {
           series={toAreaSeries(snapshots)}
           xLabels={areaXLabels(snapshots)}
           ariaLabel="Fleet tickets by status over the last 30 days"
-        />
-      </PanelCard>
-      <PanelCard
-        title="Runs by status · 30d"
-        state={runsPanelState}
-        emptyLabel="No runs in this window."
-        errorLabel="Couldn't load the runs breakdown."
-      >
-        <HBarChart
-          items={toRunBars(runs?.byPhase ?? {})}
-          ariaLabel="Fleet runs by status in the last 30 days"
         />
       </PanelCard>
     </div>
@@ -515,16 +553,19 @@ export function FleetOverview() {
         />
       </StatBand>
 
-      {/* ② time-series row */}
-      <TimeSeriesRow state={series} />
+      {/* ② status-breakdown row: issues-by-status snapshot + runs-by-status · 30d */}
+      <StatusBreakdownRow state={series} />
 
-      {/* ③ GitHub summary strip */}
+      {/* ③ over-time row: runs-by-status-over-time (pending backend) + tickets-by-status */}
+      <OverTimeRow state={series} />
+
+      {/* ④ GitHub summary strip */}
       <GithubStrip state={github} />
 
-      {/* ④ current-runs agent-card grid */}
+      {/* ⑤ current-runs agent-card grid */}
       <AgentGrid state={activity} />
 
-      {/* ⑤ per-project jump row */}
+      {/* ⑥ per-project jump row */}
       <ProjectJumpRow projects={projects} github={github} />
     </div>
   );
