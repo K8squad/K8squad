@@ -156,6 +156,25 @@ describe("<AgentRunCard>", () => {
     expect(screen.getByTestId("agent-empty")).toHaveTextContent("No run yet — idle since onboarding");
   });
 
+  it("role: renders a scannable tag (class + glyph + text), with a truncation title", () => {
+    render(<AgentRunCard agent={agent({ name: "Alfred", role: "CTO" })} now={NOW} />);
+    const tag = screen.getByTestId("agent-role");
+    expect(tag).toHaveClass("ov-agentcard__role");
+    expect(tag).toHaveTextContent("CTO");
+    expect(tag).toHaveAttribute("title", "CTO");
+    // a decorative, non-announced person glyph rides alongside the text
+    expect(tag.querySelector(".ov-agentcard__role-glyph")).toBeInTheDocument();
+    expect(tag.querySelector(".ov-agentcard__role-glyph")).toHaveAttribute("aria-hidden", "true");
+    expect(tag.querySelector(".ov-agentcard__role-text")).toHaveTextContent("CTO");
+  });
+
+  it("role: degrade-don't-blank — no role renders no tag element at all (ISI-4229)", () => {
+    render(<AgentRunCard agent={agent({ name: "Nameless", role: undefined })} now={NOW} />);
+    expect(screen.queryByTestId("agent-role")).not.toBeInTheDocument();
+    render(<AgentRunCard agent={agent({ name: "Empty", role: "" })} now={NOW} />);
+    expect(screen.queryByTestId("agent-role")).not.toBeInTheDocument();
+  });
+
   it("running with no snippet yet renders the waiting line, never a blank (FR-I3)", () => {
     render(
       <AgentRunCard
