@@ -77,6 +77,10 @@ import {
 import { MentionPopover } from "@/components/discussion/MentionPopover";
 import { Markdown } from "@/components/markdown/Markdown";
 import {
+  MarkdownEditor,
+  type MarkdownEditorMode,
+} from "@/components/markdown/MarkdownEditor";
+import {
   agentMentionSuggestions,
   resolveBodyMentions,
   triggerFragmentBefore,
@@ -988,6 +992,9 @@ function Composer({
 }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState<ComposerStatus>({ kind: "idle" });
+  // Write/Preview authoring mode (ISI-5784 WS-4). Lifted so the @-mention popover
+  // renders only in Write mode (Preview swaps the textarea for the renderer).
+  const [composeMode, setComposeMode] = useState<MarkdownEditorMode>("write");
   // Comment-&-assign state: the roster pick, the assign-half inline error, and
   // the 501 latch (assignment not hosted — the assign button alone goes away).
   const [agents, setAgents] = useState<AgentOption[]>([]);
@@ -1335,28 +1342,40 @@ function Composer({
         void submit();
       }}
     >
-      <textarea
-        ref={textareaRef}
-        aria-label="Write a message to the agents"
-        placeholder="Write a message to the agents… (type @ to mention an agent, # to link a ticket)"
+      <MarkdownEditor
+        className="ksq-composer__editor"
         value={text}
+        onChange={setText}
+        textareaRef={textareaRef}
+        mode={composeMode}
+        onModeChange={setComposeMode}
         disabled={posting}
-        data-testid="detail-composer-input"
-        onChange={(e) => {
-          setText(e.target.value);
-          syncMention(e.target.value, e.target.selectionStart ?? 0);
-        }}
-        onKeyDown={(e) => {
-          // The mention popover claims arrow/enter/tab/escape while open.
-          if (onMentionKeyDown(e)) return;
-          // ⌘/Ctrl+Enter posts, matching the board's other composers.
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            void submit();
-          }
-        }}
-      />
-      {mentionOpen ? (
+        testId="detail-composer-editor"
+      >
+        <textarea
+          ref={textareaRef}
+          className="md-editor__textarea"
+          aria-label="Write a message to the agents"
+          placeholder="Write a message to the agents… (type @ to mention an agent, # to link a ticket)"
+          value={text}
+          disabled={posting}
+          data-testid="detail-composer-input"
+          onChange={(e) => {
+            setText(e.target.value);
+            syncMention(e.target.value, e.target.selectionStart ?? 0);
+          }}
+          onKeyDown={(e) => {
+            // The mention popover claims arrow/enter/tab/escape while open.
+            if (onMentionKeyDown(e)) return;
+            // ⌘/Ctrl+Enter posts, matching the board's other composers.
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              void submit();
+            }
+          }}
+        />
+      </MarkdownEditor>
+      {composeMode === "write" && mentionOpen ? (
         <MentionPopover
           suggestions={suggestions}
           activeIndex={activeIndex}
