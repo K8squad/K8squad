@@ -336,14 +336,17 @@ func TestStderrTapBounded(t *testing.T) {
 	}
 }
 
-// TestOSRunnerStderrStallStillTripsWatchdog is the ISI-5679 integration guard:
-// a runtime that chatters on stderr (opencode --print-logs) but never emits
-// stdout — the reasoning-model stall — must still die on the first-output
-// watchdog, and the stderr pass-through must stay whole (the pod log keeps the
+// TestOSRunnerStderrStallStillTripsWatchdog is the ISI-5679/ISI-5763 integration
+// guard: a runtime that writes a ONE-SHOT stderr line (opencode's "awaiting
+// first token") then goes silent on BOTH channels is a genuine connect/auth
+// stall — the single stderr write re-arms the rolling silence window once, but
+// the subsequent full window of two-channel silence must still trip the
+// watchdog. The stderr pass-through must stay whole (the pod log keeps the
 // provider-side evidence the watchdog diagnostic points at).
 func TestOSRunnerStderrStallStillTripsWatchdog(t *testing.T) {
 	script := writeScript(t, "echo 'opencode: awaiting first token' 1>&2\nsleep 300\n")
 	runner := osRunner{firstOutput: 400 * time.Millisecond, killGrace: 2 * time.Second}
+	start := time.Now()
 	outcome, err := runner.Run(context.Background(), runtimes.ExecSpec{
 		Path:       script,
 		SettleLine: jsonSettleDetector("step_finish"),
@@ -356,6 +359,72 @@ func TestOSRunnerStderrStallStillTripsWatchdog(t *testing.T) {
 	}
 	if !strings.Contains(outcome.Reason, "produced no output") {
 		t.Fatalf("reason = %q, want a no-output/stall reason", outcome.Reason)
+	}
+	// The one re-arm buys at most one extra window; the stall is still bounded.
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("watchdog took %s; the stall was not bounded", elapsed)
+	}
+}
+
+// TestOSRunnerReasoningStreamKeepsWatchdogAlive is the ISI-5763 regression: a
+// reasoning model (GLM-5.x, deepseek-r1-class) streams only
+// `delta.reasoning_content` during its thinking phase — no assistant content,
+// hence no stdout line — but opencode mirrors that reasoning stream to stderr
+// under `--print-logs`. A run that writes reasoning to stderr CONTINUOUSLY for
+// LONGER than the silence window, then finally emits a stdout line and exits,
+// must COMPLETE: each stderr write re-arms the rolling window, so the stream is
+// recognized as "the model is producing" and never false-killed as "stream
+// never started" (ISI-5761, recurrence of ISI-5310).
+func TestOSRunnerReasoningStreamKeepsWatchdogAlive(t *testing.T) {
+	// Stream a reasoning line to stderr every 150ms for ~1.2s (well past the
+	// 400ms window), then emit one stdout event and exit cleanly.
+	script := writeScript(t, "i=0\n"+
+		"while [ $i -lt 8 ]; do echo \"opencode: streaming reasoning delta $i\" 1>&2; sleep 0.15; i=$((i+1)); done\n"+
+		"echo '{\"type\":\"text\",\"part\":{\"text\":\"done\"}}'\n")
+	runner := osRunner{firstOutput: 400 * time.Millisecond, killGrace: 2 * time.Second}
+	outcome, err := runner.Run(context.Background(), runtimes.ExecSpec{
+		Path:       script,
+		SettleLine: jsonSettleDetector("step_finish"),
+	}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskCompleted {
+		t.Fatalf("state = %s, want TaskCompleted (reasoning stderr must re-arm the watchdog); reason=%q", outcome.State, outcome.Reason)
+	}
+	if strings.Contains(outcome.Reason, "produced no output") {
+		t.Fatalf("reasoning run was false-killed as a stall: %q", outcome.Reason)
+	}
+}
+
+// TestOSRunnerReasoningStreamThatNeverEmitsStdoutStillBounded guards the other
+// edge of ISI-5763: a reasoning stream that flows on stderr but then STOPS
+// (the model wedged mid-think) must still be caught — once stderr falls silent
+// for a full window with no stdout ever produced, the watchdog trips. The fix
+// must keep a genuinely stalled stream bounded, not make the watchdog
+// un-trippable for stderr-chatty runtimes.
+func TestOSRunnerReasoningStreamThatNeverEmitsStdoutStillBounded(t *testing.T) {
+	// A few reasoning writes (re-arming the window), then total silence.
+	script := writeScript(t, "i=0\n"+
+		"while [ $i -lt 3 ]; do echo \"opencode: reasoning delta $i\" 1>&2; sleep 0.15; i=$((i+1)); done\n"+
+		"sleep 300\n")
+	runner := osRunner{firstOutput: 400 * time.Millisecond, killGrace: 2 * time.Second}
+	start := time.Now()
+	outcome, err := runner.Run(context.Background(), runtimes.ExecSpec{
+		Path:       script,
+		SettleLine: jsonSettleDetector("step_finish"),
+	}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskFailed {
+		t.Fatalf("state = %s, want TaskFailed (a stalled reasoning stream must still trip)", outcome.State)
+	}
+	if !strings.Contains(outcome.Reason, "produced no output") {
+		t.Fatalf("reason = %q, want a no-output/stall reason", outcome.Reason)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("watchdog took %s; the stalled reasoning stream was not bounded", elapsed)
 	}
 }
 
