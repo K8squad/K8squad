@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+# clusterctl toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.1).
+# Minimal binary-staging image: the K8squad operator copies the binary onto the
+# skill sandbox PATH; the image is also usable standalone (ENTRYPOINT = clusterctl).
+# clusterctl is the Cluster API lifecycle CLI (kubernetes-sigs/cluster-api) — a
+# single static Go binary. Multi-arch: linux/amd64 + linux/arm64 via TARGETARCH (buildx).
+FROM alpine:3.21 AS fetch
+ARG CLUSTERCTL_VERSION=v1.9.5
+ARG TARGETARCH
+RUN apk add --no-cache curl \
+ && curl -fsSL "https://github.com/kubernetes-sigs/cluster-api/releases/download/${CLUSTERCTL_VERSION}/clusterctl-linux-${TARGETARCH}" \
+      -o /usr/local/bin/clusterctl \
+ && chmod 0755 /usr/local/bin/clusterctl
+
+FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: clusterctl"
+COPY --from=fetch /usr/local/bin/clusterctl /usr/local/bin/clusterctl
+ENTRYPOINT ["/usr/local/bin/clusterctl"]

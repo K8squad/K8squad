@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# ansible-core toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.1).
+# Rebases python:3.12-alpine (same base/discipline as Dockerfile.toolchain-python)
+# and pip-installs a pinned ansible-core. The operator copies the ansible* binaries
+# onto the skill sandbox PATH; standalone ENTRYPOINT = ansible. Multi-arch
+# (linux/amd64 + linux/arm64) rides the musllinux wheels cryptography/PyYAML publish,
+# so no compiler toolchain is baked in.
+ARG PYTHON_IMAGE=python:3.12-alpine
+FROM ${PYTHON_IMAGE}
+ARG ANSIBLE_CORE_VERSION=2.17.6
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: ansible-core"
+# CVE hygiene, mirrored from Dockerfile.toolchain-python: pull the current alpine
+# openssl + util-linux fixes at build time rather than waiting on the rolling base.
+# openssh-client/sshpass are ansible's transport; upgrade pip/setuptools off any
+# CVE-flagged versions the base bundles (setuptools CVE-2025-47273 fixed 78.1.1).
+RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux \
+ && apk add --no-cache openssh-client sshpass \
+ && pip install --no-cache-dir --upgrade "pip" "setuptools>=78.1.1" \
+ && pip install --no-cache-dir "ansible-core==${ANSIBLE_CORE_VERSION}"
+ENTRYPOINT ["/usr/local/bin/ansible"]
