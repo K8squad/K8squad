@@ -131,6 +131,37 @@
       "context": ".",
       "buildArgs": {},
       "note": "apk make on alpine 3.21 (4.4.x at authoring)."
+    },
+    {
+      "tool": "clusterctl",
+      "version": "1.9",
+      "dockerfile": "Dockerfile.toolchain-clusterctl",
+      "context": ".",
+      "buildArgs": {
+        "CLUSTERCTL_VERSION": "v1.9.5"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.1 Ops/IaC, clusterapi skill). Cluster API lifecycle CLI (kubernetes-sigs/cluster-api); static Go binary staged from the GitHub release. Catalog tag 1.9 tracks the CAPI 1.9 line (v1.9.5 at authoring). Long-tail image consumed by the k8squad-skills BYO clusterctl Toolchain CR — NOT added to tools.defaultCatalog.entries."
+    },
+    {
+      "tool": "terraform",
+      "version": "1.9",
+      "dockerfile": "Dockerfile.toolchain-terraform",
+      "context": ".",
+      "buildArgs": {
+        "TERRAFORM_VERSION": "1.9.8"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.1 Ops/IaC, terraform skill). Static Go binary unzipped from the HashiCorp release. Catalog tag 1.9 tracks the terraform 1.9 line (1.9.8 at authoring, last 1.9 patch); BSL-1.1 licensed. Long-tail image — NOT in the default catalog."
+    },
+    {
+      "tool": "ansible-core",
+      "version": "2.17",
+      "dockerfile": "Dockerfile.toolchain-ansible-core",
+      "context": ".",
+      "buildArgs": {
+        "PYTHON_IMAGE": "python:3.12-alpine",
+        "ANSIBLE_CORE_VERSION": "2.17.6"
+      },
+      "note": "ISI-5768 skill-catalog expansion (§3.1 Ops/IaC, ansible skill). pip-installed on python:3.12-alpine (same base as the python toolchain) via musllinux wheels. Catalog tag 2.17 tracks the ansible-core 2.17 line (2.17.6 at authoring). Long-tail image — NOT in the default catalog."
     }
   ]
 }

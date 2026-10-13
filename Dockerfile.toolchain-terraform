@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+# terraform toolchain image (ISI-5768, skill-catalog expansion ISI-5754 §3.1).
+# Minimal binary-staging image: the K8squad operator copies the binary onto the
+# skill sandbox PATH; the image is also usable standalone (ENTRYPOINT = terraform).
+# terraform ships as a per-arch zip of a single static Go binary. Multi-arch:
+# linux/amd64 + linux/arm64 via TARGETARCH (buildx).
+FROM alpine:3.21 AS fetch
+ARG TERRAFORM_VERSION=1.9.8
+ARG TARGETARCH
+RUN apk add --no-cache curl unzip \
+ && curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip" \
+      -o /tmp/terraform.zip \
+ && unzip -q /tmp/terraform.zip -d /usr/local/bin \
+ && chmod 0755 /usr/local/bin/terraform \
+ && rm /tmp/terraform.zip
+
+FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: terraform"
+COPY --from=fetch /usr/local/bin/terraform /usr/local/bin/terraform
+ENTRYPOINT ["/usr/local/bin/terraform"]
