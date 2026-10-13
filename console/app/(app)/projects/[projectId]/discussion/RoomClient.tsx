@@ -19,7 +19,7 @@
 // mention search (ISI-4926 endpoint) into the room. Both are optional props on
 // <DiscussionRoom>; failures degrade to a roster-less, popover-less composer.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { createDiscussionClient, type DiscussionClient } from "@/lib/discussion/api";
 import { subscribeRoom, type EventSourceFactory } from "@/lib/discussion/sse";
@@ -241,8 +241,52 @@ export function DiscussionRoomClient({
     [client, projectId],
   );
 
+  // ISI-5741 (parent ISI-5737) — bound the room to a fixed viewport height so the
+  // PAGE never scrolls and the three regions (roster rail, history column,
+  // composer dock) stay put; only the history column scrolls internally. CSS
+  // carries a `100dvh`-based fallback, but the exact available height depends on
+  // the variable app chrome above the room (appbar + contentbar + the page
+  // header) and the shell's own bottom padding (88px on a phone to clear the
+  // fixed bottom nav, 24px on desktop). Rather than hard-code those magic
+  // numbers, measure the room's own distance from the top of the visible viewport
+  // and subtract the shell's bottom padding, then publish it as `--ksq-room-h`.
+  // Using `visualViewport.height` keeps the composer above the on-screen keyboard
+  // on mobile (AC5): the visible viewport shrinks when the keyboard opens, so the
+  // room shrinks with it instead of pushing the dock under the keyboard.
+  const layoutRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = layoutRef.current;
+    if (!el) return;
+    const measure = () => {
+      const shellMain = el.closest(".shell__main") as HTMLElement | null;
+      const padBottom = shellMain
+        ? parseFloat(getComputedStyle(shellMain).paddingBottom) || 0
+        : 0;
+      const vh = window.visualViewport?.height ?? window.innerHeight;
+      const top = el.getBoundingClientRect().top;
+      const h = Math.max(vh - top - padBottom, 320);
+      el.style.setProperty("--ksq-room-h", `${Math.round(h)}px`);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const vv = window.visualViewport;
+    vv?.addEventListener("resize", measure);
+    vv?.addEventListener("scroll", measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      vv?.removeEventListener("resize", measure);
+      vv?.removeEventListener("scroll", measure);
+    };
+    // listState gates the first measure until the panel/room have laid out, so
+    // the room's top offset is read against the real header, not a 0-height stub.
+  }, [listState]);
+
   return (
-    <div className="ksq-roomlayout" data-testid="discussion-room-layout">
+    <div
+      ref={layoutRef}
+      className="ksq-roomlayout"
+      data-testid="discussion-room-layout"
+    >
       <DiscussionsPanel
         threads={threads}
         activeThreadId={activeThreadId}

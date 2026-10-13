@@ -454,16 +454,21 @@ export function DiscussionRoom({
     [client, projectId],
   );
 
-  // ISI-5623 (impl of ISI-5597) — scroll ergonomics for a long transcript,
-  // ported verbatim from ticket-detail (ISI-5157). The PAGE (document) is the
-  // scroll owner on this route (design LOCKED, mirror of ticket-detail — avoids
-  // the inner-transcript-scroll retarget caveat), so the docked composer and the
-  // jump-to-bottom FAB are pinned relative to the viewport (discussion.css). Two
-  // small effects: (1) keep the dock's live height in `--ksq-dock-h` so the FAB
-  // rides just above it (the composer grows on error / when the @-mention popover
-  // opens), and (2) drive the FAB's visibility from how much content is still
-  // below the fold.
+  // ISI-5741 (parent ISI-5737) — sticky 3-panel room. The ROOM VIEWPORT, not the
+  // page, is now the bounded surface: the roster rail, the history column, and
+  // the composer dock are the three regions that stay visible at any scroll
+  // position. Only the history column scrolls internally (`.ksq-room__history`,
+  // discussion.css), so the scroll owner moved OFF the document and onto that
+  // container — the inner-transcript-scroll retarget the ISI-5597/5623 note had
+  // deferred. This supersedes the earlier "page is the scroll owner" decision for
+  // the discussion room only (ticket-detail is untouched).
+  //
+  // Two small effects track the internal scroll container: (1) keep the dock's
+  // live height in `--ksq-dock-h` so the FAB rides just above it (the composer
+  // grows on error / when the @-mention popover opens), and (2) drive the FAB's
+  // visibility from how much transcript is still below the history fold.
   const dockRef = useRef<HTMLElement | null>(null);
+  const historyRef = useRef<HTMLDivElement | null>(null);
   const [showJump, setShowJump] = useState(false);
 
   useEffect(() => {
@@ -483,33 +488,44 @@ export function DiscussionRoom({
     };
   }, [state]);
 
-  // Show the FAB only while there is meaningful content below the fold; it fades
-  // out within ~48px of the end, so it is never a dead control at the bottom. New
-  // messages arriving (SSE) retrigger the recompute via the messages.length dep.
+  // Show the FAB only while there is meaningful content below the fold of the
+  // internal history scroll; it fades out within ~48px of the end, so it is never
+  // a dead control at the bottom. New messages arriving (SSE) retrigger the
+  // recompute via the messages.length dep, and a history resize (a growing bubble,
+  // the dock reflowing) retriggers it via the ResizeObserver.
   useEffect(() => {
     if (state !== "ready") return;
+    const el = historyRef.current;
+    if (!el) return;
     const THRESHOLD = 48;
     const update = () => {
-      const doc = document.documentElement;
-      const distance = doc.scrollHeight - window.scrollY - window.innerHeight;
+      const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
       setShowJump(distance > THRESHOLD);
     };
     update();
-    window.addEventListener("scroll", update, { passive: true });
+    el.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update);
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(update);
+      ro.observe(el);
+    }
     return () => {
-      window.removeEventListener("scroll", update);
+      el.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
+      ro?.disconnect();
     };
   }, [state, messages.length]);
 
-  // Smooth-scroll the page to the newest message (instant under reduced-motion).
+  // Scroll the history column to the newest message (instant under reduced-motion).
   function jumpToBottom() {
+    const el = historyRef.current;
+    if (!el) return;
     const reduce =
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    window.scrollTo({
-      top: document.documentElement.scrollHeight,
+    el.scrollTo({
+      top: el.scrollHeight,
       behavior: reduce ? "auto" : "smooth",
     });
   }
@@ -541,60 +557,67 @@ export function DiscussionRoom({
   return (
     <section className="ksq-room" data-testid="discussion-room">
       <div className="ksq-room__main">
-        {partySession || terminalSession || partyOpener ? (
-          <PartySessionCard
-            session={partySession ?? terminalSession}
-            opener={partyOpener}
-            messages={messages}
-          />
-        ) : null}
-        {showResetEmptyState ? (
-          <div className="ksq-room__reset-empty" data-testid="room-reset-empty">
-            <p
-              className="ksq-room__reset-meta"
-              data-testid="room-reset-meta"
-            >
-              reset by {resetInfo.by} · {formatResetTime(resetInfo.at)}
-            </p>
-            <div className="ksq-room__reset-illus" aria-hidden="true">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M4 12a8 8 0 1 1 2.3 5.6M4 12V7m0 5h5"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-            <h2 className="ksq-room__reset-title">This discussion was reset</h2>
-            <p className="ksq-room__reset-sub">
-              Earlier messages are archived for audit and no longer shown here.
-            </p>
-          </div>
-        ) : null}
-        <ul className="ksq-thread ksq-thread--roots" data-testid="threads">
-          {threads.map((t) => (
-            <MessageItem
-              key={t.id}
-              message={t}
-              projectId={projectId}
-              proposalByMessageId={proposals}
-              onConfirmProposal={confirmProposal}
-              onDismissProposal={dismissProposal}
-              busyMessageId={busyMessageId}
-              workingByMessageId={workingByMessageId}
-              thinkingByMessageId={liveThinking}
+        {/* ISI-5741 — the history column: the ONLY internally-scrolling region.
+            The party card, reset empty state, and the transcript scroll within
+            this bounded box; the dock + roster frames stay put (AC2/AC4). */}
+        <div
+          ref={historyRef}
+          className="ksq-room__history"
+          data-testid="room-history"
+        >
+          {partySession || terminalSession || partyOpener ? (
+            <PartySessionCard
+              session={partySession ?? terminalSession}
+              opener={partyOpener}
+              messages={messages}
             />
-          ))}
-        </ul>
-        {/* ISI-5623 (ISI-5597 P2) — the composer docked to the bottom of the
-            room, always visible on a long transcript. `position: sticky;
-            bottom: 0` (discussion.css) keeps it pinned to the viewport bottom
-            while the thread scrolls beneath, and it settles below the newest
-            message at the end. Same <Composer> — its @-mention + audience
-            contract is untouched; only its position (and the UPWARD popover)
-            changed. */}
+          ) : null}
+          {showResetEmptyState ? (
+            <div className="ksq-room__reset-empty" data-testid="room-reset-empty">
+              <p
+                className="ksq-room__reset-meta"
+                data-testid="room-reset-meta"
+              >
+                reset by {resetInfo.by} · {formatResetTime(resetInfo.at)}
+              </p>
+              <div className="ksq-room__reset-illus" aria-hidden="true">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M4 12a8 8 0 1 1 2.3 5.6M4 12V7m0 5h5"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </div>
+              <h2 className="ksq-room__reset-title">This discussion was reset</h2>
+              <p className="ksq-room__reset-sub">
+                Earlier messages are archived for audit and no longer shown here.
+              </p>
+            </div>
+          ) : null}
+          <ul className="ksq-thread ksq-thread--roots" data-testid="threads">
+            {threads.map((t) => (
+              <MessageItem
+                key={t.id}
+                message={t}
+                projectId={projectId}
+                proposalByMessageId={proposals}
+                onConfirmProposal={confirmProposal}
+                onDismissProposal={dismissProposal}
+                busyMessageId={busyMessageId}
+                workingByMessageId={workingByMessageId}
+                thinkingByMessageId={liveThinking}
+              />
+            ))}
+          </ul>
+        </div>
+        {/* ISI-5741 (supersedes ISI-5623 P2) — the composer pinned to the bottom
+            of the room as a flex sibling BELOW the scrolling history (no longer
+            `position: sticky` inside the scroll area), so it is never scrolled
+            off-screen (AC3). Same <Composer> — its @-mention + audience contract
+            is untouched; only its placement (and the UPWARD popover) changed. */}
         <footer
           ref={dockRef}
           className="ksq-room__dock"
@@ -611,6 +634,41 @@ export function DiscussionRoom({
             searchMentions={searchMentions}
           />
         </footer>
+
+        {/* ISI-5741 (ISI-5597 P1, retargeted) — jump-to-bottom FAB, now pinned
+            inside the center column (absolute, above the dock) rather than fixed
+            to the viewport, since the history column — not the page — is the
+            scroll owner. Shown only while transcript sits below the history fold;
+            scrolls the history column to the newest message (instant under
+            prefers-reduced-motion). A real focusable button, pulled from the tab
+            order and hidden from AT while off-screen. */}
+        <button
+          type="button"
+          className="ksq-jump-fab"
+          data-testid="room-jump-bottom"
+          data-visible={showJump}
+          aria-label="Scroll to latest"
+          aria-hidden={!showJump}
+          tabIndex={showJump ? 0 : -1}
+          onClick={jumpToBottom}
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 20 20"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path
+              d="M10 3.5v11m0 0l4.5-4.5M10 14.5L5.5 10"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
       </div>
       <Roster agents={rosterAgents} liveRuns={liveRuns} />
 
@@ -625,39 +683,6 @@ export function DiscussionRoom({
           onConfirm={() => void doReset()}
         />
       ) : null}
-
-      {/* ISI-5623 (ISI-5597 P1) — jump-to-bottom FAB, fixed bottom-right, riding
-          just above the docked composer (`--ksq-dock-h`). Shown only while
-          content sits below the fold; smooth-scrolls the page to the newest
-          message (instant under prefers-reduced-motion). A real focusable
-          button, pulled from the tab order and hidden from AT while off-screen. */}
-      <button
-        type="button"
-        className="ksq-jump-fab"
-        data-testid="room-jump-bottom"
-        data-visible={showJump}
-        aria-label="Scroll to latest"
-        aria-hidden={!showJump}
-        tabIndex={showJump ? 0 : -1}
-        onClick={jumpToBottom}
-      >
-        <svg
-          width="20"
-          height="20"
-          viewBox="0 0 20 20"
-          aria-hidden="true"
-          focusable="false"
-        >
-          <path
-            d="M10 3.5v11m0 0l4.5-4.5M10 14.5L5.5 10"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
     </section>
   );
 }
