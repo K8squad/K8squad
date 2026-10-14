@@ -640,12 +640,17 @@ func main() {
 	// direct client — the CRD-apply client's scheme has no corev1, and the
 	// create-only SA grant (ISI-3671) is scoped to exactly this job. A
 	// cluster-less dev run leaves it nil → the route keeps the documented 501.
+	// The WS-9 S2 tool-credential {type} axis (ISI-5815) additionally resolves
+	// the target Project through the shared informer cache (dashboardReader) — the
+	// SAME cache S1's credential-types endpoint uses — so a vault write lands in
+	// the project the dropdown resolved; a nil cache leaves only the {type} axis
+	// at 501 while the paste-key axis still works.
 	var secretWriter *apiserver.SecretWriteService
 	if sw, swerr := apiserver.NewSecretWriter(); swerr != nil {
 		log.Printf("ksquad-apiserver: managed-credential write disabled (POST /api/credentials → 501): %v", swerr)
 	} else {
-		secretWriter = apiserver.NewSecretWriteService(sw)
-		log.Printf("ksquad-apiserver: managed-credential write ready (E3-S1, label-scoped Secret create)")
+		secretWriter = apiserver.NewSecretWriteService(sw, dashboardReader)
+		log.Printf("ksquad-apiserver: managed-credential write ready (E3-S1 paste-key + WS-9 S2 tool-credential axis)")
 	}
 
 	// ISI-5005 model-endpoint surface (child of ISI-4989, the deferred ISI-4890
