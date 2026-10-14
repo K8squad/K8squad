@@ -174,6 +174,41 @@ func TestModelTierOnRunStartOnly(t *testing.T) {
 	}
 }
 
+// TestRunPathOnRunStartOnly covers AgentMesh S0 (ISI-5833 I6): ksquad.run.path
+// is stamped on the run.start root ONLY (a run-level dispatch fact, like
+// model.tier), defaults to "claim" when Labels leaves it empty so EVERY run is
+// attributed and the mesh canary is never blind, and carries "mesh" when the
+// (future) mesh dispatch leg sets it.
+func TestRunPathOnRunStartOnly(t *testing.T) {
+	// Default: empty Labels.RunPath ⇒ "claim" on the run.start root, and nowhere else.
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	labels := Labels{RunID: "run-path", Agent: "coder"}
+
+	runCtx, _ := m.RunStart(ctx, labels, "task-1")
+	m.UsageEvent(runCtx, labels, "task-1", a2a.UsagePayload{Model: "sonnet", Input: 3, Output: 5})
+	m.ToolEvent(runCtx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+	m.RunEnd(runCtx, "task-1", "completed", "")
+
+	if got := attrMap(findSpan(t, sr, SpanRunStart).Attributes())["ksquad.run.path"]; got != "claim" {
+		t.Errorf("run.start ksquad.run.path = %q, want %q (empty Labels.RunPath defaults to claim)", got, "claim")
+	}
+	for _, name := range []string{SpanLLMCall, SpanToolCall} {
+		if _, ok := attrMap(findSpan(t, sr, name).Attributes())["ksquad.run.path"]; ok {
+			t.Errorf("span %s carries ksquad.run.path; it must ride run.start only", name)
+		}
+	}
+
+	// Explicit mesh path: Labels.RunPath="mesh" is carried verbatim (the S3 canary slice).
+	m2, sr2, _ := newTestMapper(t)
+	meshLabels := Labels{RunID: "run-mesh", Agent: "coder", RunPath: "mesh"}
+	runCtx2, _ := m2.RunStart(context.Background(), meshLabels, "task-2")
+	m2.RunEnd(runCtx2, "task-2", "completed", "")
+	if got := attrMap(findSpan(t, sr2, SpanRunStart).Attributes())["ksquad.run.path"]; got != "mesh" {
+		t.Errorf("run.start ksquad.run.path = %q, want %q", got, "mesh")
+	}
+}
+
 // TestModelTierEmptyOmitted covers the runtime-default path: an unresolved
 // tier (empty ModelTier) must omit the attribute rather than emit "" (matching
 // the Recommended semconv posture — never fabricate an origin).

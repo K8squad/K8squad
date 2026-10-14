@@ -37,6 +37,7 @@ Root span of a run's trace: opens at dispatch, stays open for the run's lifetime
 | `ksquad.run.state` | string | recommended | stable |  | Terminal state stamped onto the root at RunEnd (completed|failed|canceled|unknown). |
 | `ksquad.outcome` | string | recommended | stable |  | Mapped outcome stamped at RunEnd (success|error|unknown). |
 | `ksquad.model.tier` | string | recommended | stable |  | Which Model-Per-Role tier supplied the run's effective model at dispatch (agent|role|default) — the resolved origin so an operator sees WHY the run used its model, without re-deriving the tier walk (ISI-4430 S5). Empty on runtime-default runs. Run root only; the per-step serving model of a fallback rides gen_ai.response.model + ksquad.llm.fallback on llm.call. |
+| `ksquad.run.path` | string | required | stable |  | Which dispatch path executed the run: "claim" (legacy sandbox-spawn) | "mesh" (AgentMesh route-to-standing-agent). AgentMesh strangler S0 (ISI-5833, chapter §13.4 I6). Run root only, like model.tier. Emitted on EVERY run today with value "claim" (the legacy default) so the per-team mesh canary is never blind — a mesh regression must not dilute into the global ISI-5443 failure rate (Obs-O3 / Brainstormer-F1). Bounded two-value set ⇒ safe as a metric label; the kill-criteria SLIs (§13.5) slice run success by it. The mesh dispatch leg stamps "mesh" at S3. NOTE: canary success/failure is read from authoritative run-state, NOT span presence — tail-sampling drops spans (k8squad-dt-verify-tailsampling-confound). |
 
 ### `run.end`
 
@@ -149,6 +150,11 @@ context and the event spine joins the trace spine.
 | `run.sandbox_bound` | `run` | WS-D | The run has been bound to a sandbox pod. |
 | `run.started` | `run` | WS-D | The agent run has started executing in the sandbox. |
 | `run.ended` | `run` | WS-D | The agent run has reached a terminal state. |
+| `mesh.register` | `mesh` | S0 | A role-provisioned agent process registered with its team Gateway and is ready to receive routed runs. |
+| `mesh.deregister` | `mesh` | S0 | A role-provisioned agent process left the Gateway (drain / pod recreate) and no longer receives routed runs. |
+| `mesh.hibernate` | `mesh` | S0 | A conversational agent process was hibernated (S4; coord.claim released→parked at this edge, never held frozen — D9.1). Batch runs never hibernate. |
+| `mesh.wake` | `mesh` | S0 | A hibernated process was woken (S4; claim re-acquired, model rebound at wake = respawn-next-model for batch, SIGCONT for conversational). |
+| `mesh.stop` | `mesh` | S0 | A role-provisioned agent process stopped (terminal). Backs the process_stopped self-telemetry signal (I9). |
 
 ### `work_item.assigned` payload
 
@@ -207,6 +213,64 @@ context and the event spine joins the trace spine.
 | `project` | string | required | planned | WS-D | The project id. |
 | `work_item_ref` | string | required | planned | WS-D | The work item / ticket ref. |
 | `state` | string | required | planned | WS-D | Terminal state (completed|failed|canceled). |
+
+### `mesh.register` payload
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `trace_id` | string | required | planned | S0 | The W3C trace id of the mesh operation — joins this event to the trace spine (D4). |
+| `team` | string | required | planned | S0 | The team the standing process serves (routing identity; bounded metric label). |
+| `role` | string | required | planned | S0 | The role the process is provisioned for (e.g. coder; bounded metric label). |
+| `pool` | string | recommended | planned | S0 | The RolePool that provisioned the process (I1). |
+| `pod` | string | required | planned | S0 | The pod hosting the standing process (data-plane locality). |
+| `process_id` | string | recommended | planned | S0 | Stable id of the role-provisioned process instance at the Gateway. |
+
+### `mesh.deregister` payload
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `trace_id` | string | required | planned | S0 | The W3C trace id of the mesh operation — joins this event to the trace spine (D4). |
+| `team` | string | required | planned | S0 | The team the standing process serves (routing identity; bounded metric label). |
+| `role` | string | required | planned | S0 | The role the process is provisioned for (e.g. coder; bounded metric label). |
+| `pool` | string | recommended | planned | S0 | The RolePool that provisioned the process (I1). |
+| `pod` | string | required | planned | S0 | The pod hosting the standing process (data-plane locality). |
+| `process_id` | string | recommended | planned | S0 | Stable id of the role-provisioned process instance at the Gateway. |
+
+### `mesh.hibernate` payload
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `trace_id` | string | required | planned | S0 | The W3C trace id of the mesh operation — joins this event to the trace spine (D4). |
+| `team` | string | required | planned | S0 | The team the standing process serves (routing identity; bounded metric label). |
+| `role` | string | required | planned | S0 | The role the process is provisioned for (e.g. coder; bounded metric label). |
+| `pool` | string | recommended | planned | S0 | The RolePool that provisioned the process (I1). |
+| `pod` | string | required | planned | S0 | The pod hosting the standing process (data-plane locality). |
+| `process_id` | string | recommended | planned | S0 | Stable id of the role-provisioned process instance at the Gateway. |
+| `claim_released` | boolean | required | planned | S0 | True — the at-most-once claim was released to `parked` at hibernate, NOT held across the frozen process (D9.1 claim-never-frozen). |
+
+### `mesh.wake` payload
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `trace_id` | string | required | planned | S0 | The W3C trace id of the mesh operation — joins this event to the trace spine (D4). |
+| `team` | string | required | planned | S0 | The team the standing process serves (routing identity; bounded metric label). |
+| `role` | string | required | planned | S0 | The role the process is provisioned for (e.g. coder; bounded metric label). |
+| `pool` | string | recommended | planned | S0 | The RolePool that provisioned the process (I1). |
+| `pod` | string | required | planned | S0 | The pod hosting the standing process (data-plane locality). |
+| `process_id` | string | recommended | planned | S0 | Stable id of the role-provisioned process instance at the Gateway. |
+| `model` | string | recommended | planned | S0 | The model bound at wake (rebind == respawn for P1). |
+
+### `mesh.stop` payload
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `trace_id` | string | required | planned | S0 | The W3C trace id of the mesh operation — joins this event to the trace spine (D4). |
+| `team` | string | required | planned | S0 | The team the standing process serves (routing identity; bounded metric label). |
+| `role` | string | required | planned | S0 | The role the process is provisioned for (e.g. coder; bounded metric label). |
+| `pool` | string | recommended | planned | S0 | The RolePool that provisioned the process (I1). |
+| `pod` | string | required | planned | S0 | The pod hosting the standing process (data-plane locality). |
+| `process_id` | string | recommended | planned | S0 | Stable id of the role-provisioned process instance at the Gateway. |
+| `reason` | string | required | planned | S0 | Why the process stopped (terminated|oom|error|drain) — must stay within the pre-rollout ISI-5443 failure taxonomy (kill-criteria #5). |
 
 ## GitHub-sync (SCM) telemetry
 

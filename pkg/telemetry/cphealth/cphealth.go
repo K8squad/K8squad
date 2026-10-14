@@ -45,6 +45,21 @@ const (
 	// a prior generation's Run CR still existed — the ISI-5541 zombie class. Steady
 	// state is zero; sustained increments are the alertable signal.
 	runsResurrectionName = "ksquad.runs.phase_resurrection_suppressed"
+	// runsEndName counts authoritative Run terminal transitions by outcome, the
+	// dispatch path that executed the run, and owning team (AgentMesh S0 kill-
+	// criteria SLI, ISI-5833 I10 / chapter §13.5 #1 & #3). It is driven by the
+	// COMMITTED Run CR phase edge (the same observed transition that feeds the
+	// WS-2 phase-transition journal), so the success rate derived from it is
+	// AUTHORITATIVE run-state — NOT span presence. This is the signal the kill-
+	// criteria baseline must read: run.end SPANS are tail-sampled (keep-failed-
+	// runs keeps every failure while successes ride the 10% base-rate), so a
+	// span-count success rate is biased low and unusable as the canary bar
+	// (k8squad-dt-verify-tailsampling-confound). This counter rides the operator
+	// OTLP metrics pipeline, which is NOT tail-sampled. The run.path dimension is
+	// "claim" for every run today; the mesh dispatch leg sets "mesh" at S3, so
+	// failure_rate{run.path=mesh} vs {run.path=claim} is directly queryable and a
+	// mesh regression cannot dilute into the global rate (Obs-O3 / Brainstormer-F1).
+	runsEndName = "ksquad.runs.end_total"
 )
 
 // Bounded attribute keys.
@@ -53,6 +68,11 @@ const (
 	attrTeam       = "team"
 	attrDep        = "dep"
 	attrController = "controller"
+	// attrOutcome is the mapped run outcome (success|error) on runsEndName; a
+	// bounded two-value set. attrRunPath is the dispatch path (claim|mesh), also
+	// bounded — the AgentMesh canary slice (ISI-5833 I6/I10).
+	attrOutcome = "outcome"
+	attrRunPath = "run.path"
 )
 
 const (
@@ -105,6 +125,7 @@ type Metrics struct {
 	reconcileDuration metric.Float64Histogram
 	reconcileErrors   metric.Int64Counter
 	runsResurrection  metric.Int64Counter
+	runsEnd           metric.Int64Counter
 
 	deps          []Dependency
 	probeInterval time.Duration
@@ -152,6 +173,12 @@ func Register(meter metric.Meter, opts Options) (*Metrics, error) {
 	if m.runsResurrection, err = meter.Int64Counter(
 		runsResurrectionName,
 		metric.WithDescription("Settled Run CRs the status projector refused to move off a terminal phase (ISI-5542 zombie prevention)."),
+	); err != nil {
+		return nil, err
+	}
+	if m.runsEnd, err = meter.Int64Counter(
+		runsEndName,
+		metric.WithDescription("Authoritative Run terminal transitions by outcome, dispatch path (claim|mesh) and team — the non-sampled run-outcome SLI the AgentMesh kill-criteria baseline reads (ISI-5833 I10)."),
 	); err != nil {
 		return nil, err
 	}
@@ -221,6 +248,31 @@ func (m *Metrics) ObserveRunPhaseResurrectionSuppressed(ctx context.Context, tea
 		return
 	}
 	m.runsResurrection.Add(ctx, 1, metric.WithAttributes(attribute.String(attrTeam, team)))
+}
+
+// ObserveRunEnd records one AUTHORITATIVE Run terminal transition (the committed
+// Run CR phase edge that lands on complete/failed), keyed by outcome
+// (success|error), the dispatch path that executed the run (claim|mesh), and the
+// owning Team name. This is the non-sampled run-outcome signal the AgentMesh
+// kill-criteria baseline reads (ISI-5833 I10 / chapter §13.5 #1 & #3): run.end
+// SPANS are tail-sampled and biased toward failures, so success rate MUST be
+// derived from this counter, not from span counts
+// (k8squad-dt-verify-tailsampling-confound). outcome/runPath are bounded
+// two-value sets and team is the owning Team name — all within the NFR-OBS3
+// cardinality firewall (never a run id / work-item / ticket). Nil-safe so the
+// reconciler calls it unconditionally.
+func (m *Metrics) ObserveRunEnd(ctx context.Context, outcome, runPath, team string) {
+	if m == nil {
+		return
+	}
+	if runPath == "" {
+		runPath = "claim" // legacy sandbox-spawn path is the default (ISI-5833 I6).
+	}
+	m.runsEnd.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(attrOutcome, outcome),
+		attribute.String(attrRunPath, runPath),
+		attribute.String(attrTeam, team),
+	))
 }
 
 // Start runs the dependency probe loop until ctx is cancelled: it probes once

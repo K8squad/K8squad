@@ -403,6 +403,23 @@ func (r *Reconciler) recordPhaseTransition(ctx context.Context, run *api.Run, fr
 		log.Error(err, "run phase-transition journal append failed",
 			"run", run.Namespace+"/"+run.Name, "fromToken", fromTok, "toToken", toTok)
 	}
+
+	// AgentMesh S0 kill-criteria SLI (ISI-5833 I10 / §13.5 #1 & #3): on a TERMINAL
+	// edge, increment the authoritative, non-sampled run-outcome counter keyed by
+	// outcome + dispatch path (claim today; mesh at S3) + owning Team. Driven by
+	// the SAME committed CR phase edge as the journal above, so the success rate
+	// it yields is authoritative run-state — the span-count rate is unusable
+	// (run.end spans are tail-sampled, biased toward failures). run.path defaults
+	// to "claim" today (empty arg); the mesh dispatch leg sets "mesh" at S3. The
+	// owning Team NAME is the bounded tenant label (NFR-OBS3, same as the
+	// resurrection/active counters), empty when unresolved.
+	// Nil-safe (r.Health may be nil in unit tests / un-wired deployments).
+	switch toTok {
+	case phaseTokenComplete:
+		r.Health.ObserveRunEnd(ctx, "success", "", run.Spec.TeamRef.Name)
+	case phaseTokenFailed:
+		r.Health.ObserveRunEnd(ctx, "error", "", run.Spec.TeamRef.Name)
+	}
 }
 
 // resolveRunTenancy derives the Run's owning Project UID (required) and Team UID
