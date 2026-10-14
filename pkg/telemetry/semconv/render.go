@@ -107,6 +107,39 @@ func Render() string {
 	}
 	b.WriteString("\n")
 
+	b.WriteString("## Credential go-live gate telemetry\n\n")
+	b.WriteString("The WS-9 S5 go-live gate (ISI-5818 oracle `toolcred.EvaluateRunGate`) withholds\n")
+	b.WriteString("a `[sec]`-gated skill from a Run until its declared credential type(s) resolve\n")
+	b.WriteString("to a materialized Secret. Design §6 threat model **T7 (audit trail)** requires a\n")
+	b.WriteString("legible, operator-facing record of every admission decision. This span family\n")
+	b.WriteString("(ISI-5850) is emitted by the driver pre-dispatch gate (ISI-5849), sibling to the\n")
+	b.WriteString("apiserver credential funnel (`ksquad.credential.create`), and is guarded by\n")
+	b.WriteString("`pkg/telemetry/semconv/credential_conformance_test.go`. A credential **value**\n")
+	b.WriteString("never travels on any attribute, label or log field — the audit key is\n")
+	b.WriteString("principal + credential type + namespace (NFR-2). The operational seam, the\n")
+	b.WriteString("drop-in emitter helper and the companion structured audit log are specified in\n")
+	b.WriteString("`docs/observability/credential-gate-check-span-spec.md`.\n\n")
+
+	b.WriteString("### Credential-gate spans\n\n")
+	for _, sc := range CredentialSpanConventions {
+		fmt.Fprintf(&b, "#### `%s`\n\n", sc.Name)
+		b.WriteString(sc.Brief + "\n\n")
+		writeAttrTable(&b, sc.Attributes)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("### Credential-gate metrics\n\n")
+	b.WriteString("Driver metrics on `telemetry.Meter()`. Labels are strictly bounded — `outcome`\n")
+	b.WriteString("is a two-value enum and `credential_type` is the closed S1 binding vocabulary\n")
+	b.WriteString("(`pkg/toolcred`); run/project/work-item ids are NEVER labels (cardinality).\n\n")
+	b.WriteString("| Metric | Instrument | Unit | Labels | Stability | WS | Description |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
+	for _, m := range CredentialMetricConventions {
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s |\n",
+			m.Name, m.Instrument, unitOrDash(m.Unit), joinLabels(m.Labels), m.Stability, m.Workstream, m.Brief)
+	}
+	b.WriteString("\n")
+
 	return b.String()
 }
 
