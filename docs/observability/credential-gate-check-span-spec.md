@@ -1,160 +1,242 @@
-# `credential.gate_check` audit span — instrumentation spec (ISI-5850 / WS-9 S5 T7)
+# Credential go-live gate audit span — operational spec (ISI-5850, WS-9 S5, T7)
 
-**Parent:** ISI-5818 (WS-9 S5 go-live gate). **Threat model:** Design §6 **T7 (audit trail)**.
-**Blocks on:** ISI-5849 (driver pre-dispatch gate wiring — the admission point this span instruments).
-**Decision shape:** `toolcred.RunGateDecision{Admitted, WithheldSkills, MissingTypes}` (ISI-5818, PR #902).
+> **Status:** contract landed, emitter **Planned** (lands in ISI-5849).
+> **Source of truth for the shape:** `pkg/telemetry/semconv/credential.go`
+> (`CredentialSpanConventions` / `CredentialMetricConventions`), rendered into
+> `docs/observability/semantic-conventions.md` and regression-guarded by
+> `pkg/telemetry/semconv/credential_conformance_test.go`. This doc is the
+> **operational seam**: where the span is emitted, the drop-in emitter helper,
+> the companion structured audit log, and the ISI-5849 integration checklist.
 
-The canonical attribute/metric contract is registered in
-`pkg/telemetry/semconv/credential.go` (rendered into
-`docs/observability/semantic-conventions.md` → *Credential go-live gate telemetry*)
-and regression-guarded by `pkg/telemetry/semconv/credential_conformance_test.go`.
-This file specifies the **operational seam**: where the span is emitted, the
-drop-in emitter helper, and the companion structured audit log — so the ISI-5849
-wiring (or the ISI-5850 follow-up once ISI-5849 lands) is a copy-paste.
+## 1. Why — Design §6 threat model T7 (audit trail)
 
-## 1. Where it is emitted
+The WS-9 S5 go-live gate (ISI-5818 oracle `toolcred.EvaluateRunGate`, PR #902)
+withholds a `[sec]`-gated Skill/MCPServer from a Run until at least one of its
+declared credential type(s) resolves to a materialized Secret in the project
+(any-of + fail-closed — see `pkg/toolcred/gate.go`). T7 requires that **every
+admission decision is legible**: an operator must be able to answer, after the
+fact and in real time,
 
-The go-live gate admission decision is computed in the **driver pre-dispatch**
-path (`pkg/controller/rundrive`, ISI-5849), NOT the read-only run controller and
-NOT the apiserver. The driver, right before it would dispatch a Run:
+- *why* a Run was withheld — which gated skills, which declared types,
+- *which* credential type(s) the Run is paused for (so they know what to add),
+- *when* a withheld Run cleared (the admitted decision that followed),
 
-1. builds the Run's `[]toolcred.GatedSkill` from its skill annotations (S1 vocab);
-2. computes the `satisfied map[string]bool` by resolving materialized Secrets
-   **scoped by the project-encoded name** `proj-<project>-cred-<type>`
-   (`toolcred.MaterializedSecretName`) — never a bare namespace label-list, or
-   sibling projects sharing the team namespace over-admit;
-3. calls `decision := toolcred.EvaluateRunGate(skills, satisfied)`.
+**without a credential value ever appearing in telemetry.** The gate decision
+is computed over credential **type names** and a `satisfied map[string]bool` —
+no secret material is in scope at the decision point — so the audit is
+value-free *by construction*, not merely by redaction.
 
-The `credential.gate_check` span wraps step 3 as a **child of `run.reconcile`**
-(same `telemetry.Tracer()` the driver already uses at
-`pkg/controller/rundrive/driver.go:360`). Emit it on **every** admission
-evaluation — admitted and withheld alike — so the audit trail shows both the
-withhold and the later clear.
+This span is the sibling of the apiserver credential funnel
+(`ksquad.credential.create` / `.rotate` / `.delete`,
+`internal/apiserver/obsfunnel.go`): same `ksquad.credential.*` family, same
+NFR-2 secret posture, same "bounded enum is the only metric label" cardinality
+firewall. It differs in **where** it fires: the funnel instruments HTTP write
+choke points in the apiserver; the gate check fires at the **driver
+pre-dispatch admission point** in the run controller.
 
-## 2. Drop-in emitter helper
+## 2. Span contract (summary — registry is authoritative)
 
-Lands in `pkg/controller/rundrive` alongside the gate wiring once PR #902
-(`toolcred.RunGateDecision`) is on `main`. It owns all three T7 signals — span,
-metrics, structured audit log — so no admission path can emit one and forget
-another.
+Span name: **`ksquad.credential.gate_check`**, one per Run admission,
+child of `run.reconcile` (reuse the reconcile `ctx`, `pkg/controller/rundrive/driver.go`).
+
+| Attribute | Type | Req | Notes |
+|---|---|---|---|
+| `ksquad.run.id` | string | Required | Run CR UID. High-cardinality → span only. |
+| `ksquad.agent.name` | string | Recommended | Principal (seat identity), never a secret. |
+| `ksquad.project.name` | string | Required | The credential **scope** (`proj-<project>-cred-<type>`). |
+| `ksquad.work_item.ref` | string | Recommended | Ticket→run audit drill-down. |
+| `k8s.namespace.name` | string | Required | Team namespace. |
+| `ksquad.credential.gated_skills` | string[] | Recommended | Evaluated skills, each `namespace/name`. |
+| `ksquad.credential.declared_types` | string[] | Recommended | Deduped union of declared **type names**. |
+| `ksquad.credential.admitted` | bool | Required | `RunGateDecision.Admitted`. |
+| `ksquad.credential.outcome` | string | Required | `admitted` \| `withheld` (the metric label). |
+| `ksquad.credential.withheld_skills` | string[] | Conditional | `RunGateDecision.WithheldSkills` — withheld only. |
+| `ksquad.credential.missing_types` | string[] | Conditional | `RunGateDecision.MissingTypes` — withheld only. |
+
+Metrics (on `telemetry.Meter()`, bounded labels only):
+
+| Metric | Instrument | Label(s) |
+|---|---|---|
+| `ksquad.credential.gate_check.decisions` | counter | `outcome` ∈ {admitted, withheld} |
+| `ksquad.credential.gate_check.withheld_by_type` | counter | `credential_type` (closed S1 vocab) |
+
+## 3. Structured audit log (same keyset, log-based audit)
+
+Emitted on the same decision, best-effort, after the gate verdict is computed
+and before the admit/pause side-effect — so a telemetry failure never changes
+the admission outcome. One `slog.InfoContext` record, keys mirroring the span:
 
 ```go
-// GateCheckAudit is the T7 audit identity for one Run admission decision
-// (ISI-5850). It is all identity, never credential material (NFR-2).
-type GateCheckAudit struct {
-	RunID        string // Run CR UID            → ksquad.run.id
-	Principal    string // agent/seat identity   → ksquad.agent.name
-	Project      string // run.Spec.ProjectRef   → ksquad.project.name
-	WorkItemRef  string // ticket                → ksquad.work_item.ref
-	Namespace    string // team namespace        → k8s.namespace.name
-	GatedSkills  []string // SourceName per skill
-	DeclaredType []string // deduped declared types across gated skills
+slog.InfoContext(ctx, "rundrive: credential go-live gate check",
+    "run.id", rec.RunID,
+    "agent.name", rec.AgentName,
+    "project", rec.Project,
+    "work_item.ref", rec.WorkItemRef,
+    "namespace", rec.Namespace,
+    "gated_skills", rec.GatedSkills,       // []string, names only
+    "declared_types", rec.DeclaredTypes,   // []string, type names only
+    "admitted", rec.Admitted,
+    "outcome", rec.outcome(),              // "admitted" | "withheld"
+    "withheld_skills", rec.WithheldSkills, // nil when admitted
+    "missing_types", rec.MissingTypes,     // nil when admitted
+)
+```
+
+No field carries a credential value; every field is an identity or a type name.
+
+## 4. Drop-in emitter helper (ISI-5849 pastes this + one call)
+
+The helper is a **pure value-in / telemetry-out** function so it can be unit
+tested against an in-memory exporter without the controller-runtime driver, and
+so it carries no dependency on the oracle package (the caller maps
+`toolcred.RunGateDecision` → the primitive record). Suggested home:
+`pkg/coord/gatecheck_obs.go` (coord is imported by `rundrive`, so the helper is
+callable from either the driver pre-dispatch point **or** `coord.ApplyGateHold`
+with no import cycle).
+
+```go
+package coord
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+
+	"github.com/K8squad/K8squad/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+)
+
+// GateCheckRecord is the value-free audit input for one Run's go-live
+// credential-gate admission decision (ISI-5850 / T7). Every field is an
+// identity or a credential TYPE name — a credential value never appears.
+type GateCheckRecord struct {
+	RunID         string
+	AgentName     string
+	Project       string
+	WorkItemRef   string
+	Namespace     string
+	GatedSkills   []string // SourceNames ("namespace/name") evaluated by the gate
+	DeclaredTypes []string // deduped union of declared credential TYPE names
+	Admitted      bool     // toolcred.RunGateDecision.Admitted
+	WithheldSkills []string // toolcred.RunGateDecision.WithheldSkills (nil when admitted)
+	MissingTypes  []string  // toolcred.RunGateDecision.MissingTypes (nil when admitted)
 }
 
-// recordGateCheck emits the ksquad.credential.gate_check span, the
-// gate_check.decisions{outcome} + withheld_by_type{credential_type} counters,
-// and a structured audit log line — the full T7 trail for one admission.
-// A credential VALUE never enters any of them.
-func recordGateCheck(ctx context.Context, a GateCheckAudit, d toolcred.RunGateDecision) {
-	outcome := "admitted"
-	if !d.Admitted {
-		outcome = "withheld"
+func (r GateCheckRecord) outcome() string {
+	if r.Admitted {
+		return "admitted"
 	}
+	return "withheld"
+}
+
+var (
+	gateCheckOnce      sync.Once
+	gateCheckDecisions metric.Int64Counter
+	gateCheckWithheld  metric.Int64Counter
+)
+
+func gateCheckInst() (metric.Int64Counter, metric.Int64Counter) {
+	gateCheckOnce.Do(func() {
+		m := telemetry.Meter()
+		gateCheckDecisions, _ = m.Int64Counter("ksquad.credential.gate_check.decisions",
+			metric.WithUnit("1"),
+			metric.WithDescription("Go-live gate admission decisions by bounded outcome (ISI-5850, T7)."))
+		gateCheckWithheld, _ = m.Int64Counter("ksquad.credential.gate_check.withheld_by_type",
+			metric.WithUnit("1"),
+			metric.WithDescription("Per-credential-type withhold count (ISI-5850, T7)."))
+	})
+	return gateCheckDecisions, gateCheckWithheld
+}
+
+// EmitCredentialGateCheck records the T7 audit span, bounded metrics and
+// structured log for one admission decision. Best-effort and side-effect-free
+// on the admission outcome: call it once, after the verdict is computed.
+func EmitCredentialGateCheck(ctx context.Context, rec GateCheckRecord) {
+	outcome := rec.outcome()
 
 	_, span := telemetry.Tracer().Start(ctx, "ksquad.credential.gate_check")
 	defer span.End()
 	span.SetAttributes(
-		attribute.String("ksquad.run.id", a.RunID),
-		attribute.String("ksquad.agent.name", a.Principal),
-		attribute.String("ksquad.project.name", a.Project),
-		attribute.String("ksquad.work_item.ref", a.WorkItemRef),
-		attribute.String("k8s.namespace.name", a.Namespace),
-		attribute.StringSlice("ksquad.credential.gated_skills", a.GatedSkills),
-		attribute.StringSlice("ksquad.credential.declared_types", a.DeclaredType),
-		attribute.Bool("ksquad.credential.admitted", d.Admitted),
+		attribute.String("ksquad.run.id", rec.RunID),
+		attribute.String("ksquad.agent.name", rec.AgentName),
+		attribute.String("ksquad.project.name", rec.Project),
+		attribute.String("ksquad.work_item.ref", rec.WorkItemRef),
+		attribute.String("k8s.namespace.name", rec.Namespace),
+		attribute.StringSlice("ksquad.credential.gated_skills", rec.GatedSkills),
+		attribute.StringSlice("ksquad.credential.declared_types", rec.DeclaredTypes),
+		attribute.Bool("ksquad.credential.admitted", rec.Admitted),
 		attribute.String("ksquad.credential.outcome", outcome),
 	)
-	if !d.Admitted {
+	if !rec.Admitted {
 		span.SetAttributes(
-			attribute.StringSlice("ksquad.credential.withheld_skills", d.WithheldSkills),
-			attribute.StringSlice("ksquad.credential.missing_types", d.MissingTypes),
+			attribute.StringSlice("ksquad.credential.withheld_skills", rec.WithheldSkills),
+			attribute.StringSlice("ksquad.credential.missing_types", rec.MissingTypes),
 		)
 	}
 
-	gateInst().decisions.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
-	for _, ct := range d.MissingTypes { // bounded S1 vocab → safe label
-		gateInst().withheldByType.Add(ctx, 1, metric.WithAttributes(attribute.String("credential_type", ct)))
+	decisions, withheld := gateCheckInst()
+	decisions.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
+	if !rec.Admitted {
+		for _, t := range rec.MissingTypes { // bounded: S1 binding vocabulary
+			withheld.Add(ctx, 1, metric.WithAttributes(attribute.String("credential_type", t)))
+		}
 	}
 
-	// Structured audit log (T7). Same keyset; value never logged.
-	logr.FromContextOrDiscard(ctx).Info("credential gate check",
-		"outcome", outcome,
-		"run", a.RunID, "principal", a.Principal,
-		"project", a.Project, "namespace", a.Namespace, "workItem", a.WorkItemRef,
-		"gatedSkills", a.GatedSkills, "declaredTypes", a.DeclaredType,
-		"missingTypes", d.MissingTypes, "withheldSkills", d.WithheldSkills)
+	slog.InfoContext(ctx, "rundrive: credential go-live gate check",
+		"run.id", rec.RunID, "agent.name", rec.AgentName, "project", rec.Project,
+		"work_item.ref", rec.WorkItemRef, "namespace", rec.Namespace,
+		"gated_skills", rec.GatedSkills, "declared_types", rec.DeclaredTypes,
+		"admitted", rec.Admitted, "outcome", outcome,
+		"withheld_skills", rec.WithheldSkills, "missing_types", rec.MissingTypes)
 }
 ```
 
-`gateInst()` is the lazy instrument holder (mirroring `funnelInst()` in
-`internal/apiserver/obsfunnel.go`) created after `telemetry.Setup`:
+### The one call site (ISI-5849, driver pre-dispatch)
+
+At the admission point where the driver folds the gate over the Run's gated
+skills and turns `RunGateDecision` into either an advance or
+`Paused(credential_required)`:
 
 ```go
-func gateInst() *gateMetrics {
-	gateOnce.Do(func() {
-		m := telemetry.Meter()
-		g := &gateMetrics{}
-		g.decisions, _ = m.Int64Counter("ksquad.credential.gate_check.decisions",
-			metric.WithUnit("1"),
-			metric.WithDescription("Go-live gate admission decisions by bounded outcome (ISI-5850, T7)."))
-		g.withheldByType, _ = m.Int64Counter("ksquad.credential.gate_check.withheld_by_type",
-			metric.WithUnit("1"),
-			metric.WithDescription("Per-credential-type withhold count over the bounded S1 vocab (ISI-5850, T7)."))
-		gateOnceVal = g
-	})
-	return gateOnceVal
-}
+dec := toolcred.EvaluateRunGate(gatedSkills, satisfied)
+coord.EmitCredentialGateCheck(ctx, coord.GateCheckRecord{
+    RunID:          runID,
+    AgentName:      agentName,
+    Project:        run.Spec.ProjectRef.Name,
+    WorkItemRef:    run.Spec.WorkItemRef,
+    Namespace:      run.Namespace,
+    GatedSkills:    sourceNames(gatedSkills),
+    DeclaredTypes:  dedupeDeclaredTypes(gatedSkills),
+    Admitted:       dec.Admitted,
+    WithheldSkills: dec.WithheldSkills,
+    MissingTypes:   dec.MissingTypes,
+})
+// ... then: if !dec.Admitted { ApplyGateHold(...) } else { advance }
 ```
 
-Call site in the driver, immediately after the oracle:
+## 5. PII / cardinality posture (enforced)
 
-```go
-decision := toolcred.EvaluateRunGate(skills, satisfied)
-recordGateCheck(ctx, GateCheckAudit{
-	RunID: string(run.UID), Principal: run.Spec.Agent, Project: run.Spec.ProjectRef,
-	WorkItemRef: run.Spec.WorkItemRef, Namespace: run.Namespace,
-	GatedSkills: sourceNames(skills), DeclaredType: declaredTypes(skills),
-}, decision)
-if !decision.Admitted {
-	// → coord.ApplyCredentialSignal(credential_required) / StepPausedCredentialRequired (ISI-5849)
-}
-```
+- **NFR-2 (no secret):** the gate decision never contains credential material;
+  the emitter only forwards identities and type names.
+  `credential_conformance_test.go` statically forbids any value-bearing
+  attribute/label key (`value`/`secret`/`token`/`password`/`material`/`payload`).
+- **Cardinality firewall:** the only metric labels are `outcome` (2 values) and
+  `credential_type` (closed S1 binding vocabulary). Run / project / work-item /
+  skill ids are **span attributes only**, never metric labels — guarded by
+  `TestCredentialConformance_MetricLabelsBounded`.
 
-## 3. PII / secret posture (NFR-2, mirrored from `obsfunnel.go`)
+## 6. Flip-to-Stable checklist (do this in / after ISI-5849)
 
-- A credential **value** never enters a span attribute, a metric label, or a log
-  field. The audit key is **principal + credential type + namespace** — all
-  identities.
-- High-cardinality ids (`run.id`, `project`, `work_item.ref`) ride the **span
-  only**, never a metric label. The only labels are `outcome` (2-value) and
-  `credential_type` (closed S1 vocab).
-- Add `TestNFR2GateCheckSecretNeverInTelemetry` next to the helper (same shape as
-  `internal/apiserver/obsfunnel_test.go`): drive `recordGateCheck` with a
-  populated decision through a span recorder + a captured logger, assert no
-  attribute/log field value matches a planted secret sentinel, and assert the
-  emitted metric labels ⊆ {`outcome`, `credential_type`}.
-
-## 4. Flip-to-Stable checklist (ISI-5850 follow-up, auto-wakes when ISI-5849 lands)
-
-1. Land the helper + call site in `pkg/controller/rundrive` (needs PR #902's
-   `toolcred.RunGateDecision` on `main`).
-2. Flip `CredentialSpanConventions` + `CredentialMetricConventions` entries from
-   `Planned`/`WS-9` to `Stable` in `pkg/telemetry/semconv/credential.go`.
-3. Regenerate the doc: `go test ./pkg/telemetry/semconv/ -run TestDocInSync -update-semconv-docs`.
-4. Add the real driver-emitter fixture to
-   `credential_conformance_test.go::TestCredentialConformance_StableMetricsEmitted`
-   (mirror `TestSCMConformance_StableMetricsEmitted`); it now enforces
-   registry ⊆ emitter.
-5. Validate live against Dynatrace (O11y `validate-traces`): a withheld Run shows
-   `outcome=withheld` + non-empty `missing_types`, and the later clear shows
-   `outcome=admitted` on the same run id.
+1. Paste the helper into `pkg/coord/gatecheck_obs.go`; add the one call at the
+   driver pre-dispatch admission point.
+2. Add a unit test for the helper against an in-memory exporter + manual metric
+   reader: assert span name/attrs, `outcome`, `missing_types` on withhold, and
+   NFR-2 (no value-bearing key present on the captured span).
+3. In `pkg/telemetry/semconv/credential.go`, flip the family's `Stability`
+   entries from `Planned` → `Stable`. `StableCredentialMetricNames()` goes
+   non-empty; `TestCredentialConformance_StableMetricsEmitted` then demands a
+   real registry⊆emitter fixture — add it mirroring
+   `TestSCMConformance_StableMetricsEmitted`.
+4. Regenerate the rendered doc:
+   `go test ./pkg/telemetry/semconv/ -run TestDocInSync -update-semconv-docs`.
