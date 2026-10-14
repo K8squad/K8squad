@@ -44,6 +44,10 @@ import {
   slashFragment,
   type SlashCommand,
 } from "@/lib/discussion/slash";
+import {
+  MarkdownEditor,
+  type MarkdownEditorMode,
+} from "@/components/markdown/MarkdownEditor";
 import { MentionPopover } from "./MentionPopover";
 import { SlashCommandMenu } from "./SlashCommandMenu";
 
@@ -108,6 +112,9 @@ export function Composer({
   // `onCommand` is wired — otherwise `/` text is ordinary and posts verbatim.
   const [commandOpen, setCommandOpen] = useState(false);
   const [commandIndex, setCommandIndex] = useState(0);
+  // Write/Preview authoring mode (ISI-5784 WS-4). Lifted here so the slash and
+  // mention popovers render only in Write mode (Preview hides the textarea).
+  const [composeMode, setComposeMode] = useState<MarkdownEditorMode>("write");
   const commands: SlashCommand[] = commandOpen
     ? matchSlashCommands(slashFragment(body) ?? "")
     : [];
@@ -323,20 +330,30 @@ export function Composer({
             ))}
           </select>
         ) : null}
-        <textarea
-          ref={textareaRef}
-          className="ksq-composer__body"
-          data-testid="composer-body"
-          aria-label={parentId ? "Reply in thread" : "Post a message"}
-          placeholder={
-            placeholder ?? (parentId ? "Reply…" : "Post to the room…")
-          }
+        <MarkdownEditor
+          className="ksq-composer__editor"
           value={body}
-          onChange={(e) =>
-            onBodyChange(e.target.value, e.target.selectionStart ?? 0)
-          }
-          onKeyDown={onBodyKeyDown}
-        />
+          onChange={setBody}
+          textareaRef={textareaRef}
+          mode={composeMode}
+          onModeChange={setComposeMode}
+          testId="composer-editor"
+        >
+          <textarea
+            ref={textareaRef}
+            className="ksq-composer__body md-editor__textarea"
+            data-testid="composer-body"
+            aria-label={parentId ? "Reply in thread" : "Post a message"}
+            placeholder={
+              placeholder ?? (parentId ? "Reply…" : "Post to the room…")
+            }
+            value={body}
+            onChange={(e) =>
+              onBodyChange(e.target.value, e.target.selectionStart ?? 0)
+            }
+            onKeyDown={onBodyKeyDown}
+          />
+        </MarkdownEditor>
         <button
           type="submit"
           className="ksq-composer__submit"
@@ -346,7 +363,7 @@ export function Composer({
           {parentId ? "Reply" : "Post"}
         </button>
       </div>
-      {commandOpen ? (
+      {composeMode === "write" && commandOpen ? (
         <SlashCommandMenu
           commands={commands}
           activeIndex={commandIndex}
@@ -354,7 +371,7 @@ export function Composer({
           onDismiss={() => setCommandOpen(false)}
         />
       ) : null}
-      {mentionOpen ? (
+      {composeMode === "write" && mentionOpen ? (
         <MentionPopover
           suggestions={suggestions}
           activeIndex={activeIndex}

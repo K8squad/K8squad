@@ -39,10 +39,18 @@ describe("<Composer> — AC3 server-stamp boundary", () => {
   });
 
   it("renders no coordination control (only a post/reply affordance)", () => {
+    // ISI-5784 WS-4 added the Write/Preview tabs + formatting toolbar, so there
+    // are now several buttons. The invariant that still matters: exactly one
+    // SUBMIT button (Post/Reply) and no custody/coordination verb (assign,
+    // dispatch, delegate) rides this collaboration-only surface.
     const { container } = render(<Composer onPost={vi.fn()} />);
     const buttons = Array.from(container.querySelectorAll("button"));
-    expect(buttons).toHaveLength(1);
-    expect(buttons[0].textContent).toMatch(/^(Post|Reply)$/);
+    const submits = buttons.filter((b) => b.getAttribute("type") === "submit");
+    expect(submits).toHaveLength(1);
+    expect(submits[0].textContent).toMatch(/^(Post|Reply)$/);
+    for (const b of buttons) {
+      expect(b.textContent ?? "").not.toMatch(/assign|dispatch|delegate/i);
+    }
   });
 });
 

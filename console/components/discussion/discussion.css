@@ -292,6 +292,12 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+/* ISI-5784 WS-4: the Write/Preview editor now wraps the textarea; it grows to
+ * fill the row while the audience selector and submit button stay their size. */
+.ksq-composer__row .ksq-composer__editor {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .ksq-composer__body {
   background: var(--canvas);
   color: var(--text-1);
