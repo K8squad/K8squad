@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,6 +84,15 @@ type GatewayConfig struct {
 	// Empty disables registration entirely (local/dev lanes) — the gateway
 	// still spawns and routes, it just never becomes discoverable.
 	RegisterURL string
+	// AdvertiseURL is the gateway's own routable base URL
+	// ("http://<podIP>:8080" in-cluster). When set, every registered
+	// process advertises THIS URL as its endpoint — the Supervisor-side
+	// route leg can only reach the gateway (children bind 127.0.0.1 inside
+	// the pod); the ?target=<endpoint_id> query on POST /task selects the
+	// process through it (chapter §5.2: gateway(target.pod).POST /task).
+	// Empty keeps each handle's own endpoint (dev/local lanes where the
+	// caller shares the host's network namespace).
+	AdvertiseURL string
 	// RegisterInterval is the registration ticker — each tick re-POSTs the
 	// full endpoint set, which the Supervisor upserts and refreshes, so the
 	// SAME loop is the heartbeat (§5.1 last_seen_at). Defaults to 30s,
@@ -228,10 +238,19 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	reg := Registration{Pod: g.cfg.Pod, Team: g.cfg.Team, Role: g.cfg.Role}
+	// The advertised endpoint is the gateway's own URL when configured: the
+	// operator-side route leg reaches the POD, and ?target=<endpoint_id>
+	// picks the process — a child's 127.0.0.1:<port> is routable only
+	// inside the pod (§5.2).
+	advertise := strings.TrimRight(g.cfg.AdvertiseURL, "/")
 	for _, p := range g.Processes() {
+		ep := p.Endpoint
+		if advertise != "" {
+			ep = advertise
+		}
 		reg.Processes = append(reg.Processes, RegisteredProcess{
 			EndpointID: p.EndpointID,
-			Endpoint:   p.Endpoint,
+			Endpoint:   ep,
 			Card:       p.Card,
 		})
 	}

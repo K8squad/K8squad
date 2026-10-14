@@ -371,3 +371,65 @@ func TestGateway_RegistrationRequiresIdentity(t *testing.T) {
 		t.Fatal("expected identity validation error")
 	}
 }
+
+// AdvertiseURL rewrites every registered process's endpoint to the gateway's
+// own routable URL (§5.2): children bind 127.0.0.1 inside the pod, so the
+// loopback address the handle reports would be unroutable from the
+// operator-side route leg. Unset keeps the handle's endpoint verbatim
+// (local/dev lanes sharing the host network).
+func TestGateway_RegistrationAdvertisesGatewayURL(t *testing.T) {
+	var mu sync.Mutex
+	var got []mesh.Registration
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reg mesh.Registration
+		_ = json.NewDecoder(r.Body).Decode(&reg)
+		mu.Lock()
+		got = append(got, reg)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		name      string
+		advertise string
+		want      string
+	}{
+		{name: "advertised", advertise: "http://10.1.2.3:8080/", want: "http://10.1.2.3:8080"},
+		{name: "unset keeps handle endpoint", advertise: "", want: "http://127.0.0.1:9000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fa := newFakeAdapter()
+			gw, err := mesh.NewGateway(mesh.GatewayConfig{
+				Adapter:          fa,
+				Envelope:         gatewayEnv(),
+				Min:              1,
+				Pod:              "pool-aaa",
+				Team:             "team-acme",
+				Role:             "coder",
+				RegisterURL:      srv.URL,
+				RegisterInterval: time.Hour, // the immediate Start beat is enough
+				AdvertiseURL:     tc.advertise,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := gw.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			_ = gw.Stop(context.Background())
+			mu.Lock()
+			defer mu.Unlock()
+			if len(got) == 0 {
+				t.Fatal("no registration arrived")
+			}
+			last := got[len(got)-1]
+			if len(last.Processes) != 1 {
+				t.Fatalf("processes = %d, want 1", len(last.Processes))
+			}
+			if ep := last.Processes[0].Endpoint; ep != tc.want {
+				t.Fatalf("advertised endpoint = %q, want %q", ep, tc.want)
+			}
+		})
+	}
+}

@@ -180,17 +180,19 @@ func TestMeshThinThreadE2E(t *testing.T) {
 	defer func() { _ = gw.Stop(ctx) }()
 
 	// Wait for the child supervisor to actually serve (spawn race).
+	up := false
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(childEP + "/health")
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
+			up = true
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if _, err := http.Get(childEP + "/health"); err != nil {
-		t.Fatalf("child supervisor never came up: %v", err)
+	if !up {
+		t.Fatal("child supervisor never came up")
 	}
 	if n := registrations.Load(); n < 1 {
 		t.Fatalf("ingress registrations = %d, want >= 1", n)

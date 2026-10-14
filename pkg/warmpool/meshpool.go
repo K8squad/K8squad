@@ -143,6 +143,13 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 		{Name: "KSQUAD_MESH_POD", Value: name},
 		{Name: "KSQUAD_WORKDIR", Value: workDir},
 		{Name: "HOME", Value: workDir},
+		// The downward-API pod IP: the gateway derives its ADVERTISED url
+		// (http://<POD_IP>:8080) from it — the routable endpoint the
+		// registry serves the route leg (§5.2; children's 127.0.0.1 is
+		// in-pod only).
+		{Name: "POD_IP", ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
+		}},
 	}
 	if spec.Model != "" {
 		env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_MODEL", Value: spec.Model})

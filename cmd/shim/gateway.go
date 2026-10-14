@@ -50,6 +50,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -213,13 +214,32 @@ func buildGateway() (*mesh.Gateway, error) {
 			// mesh-routed runs, so its run.start roots carry run.path=mesh.
 			Env: map[string]string{"KSQUAD_RUN_PATH": "mesh"},
 		},
-		Min:             gatewayMin(),
-		Pod:             env("KSQUAD_MESH_POD", os.Getenv("HOSTNAME")),
-		Team:            team,
-		Role:            role,
-		RegisterURL:     strings.TrimRight(os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"), "/"),
+		Min:              gatewayMin(),
+		Pod:              env("KSQUAD_MESH_POD", os.Getenv("HOSTNAME")),
+		Team:             team,
+		Role:             role,
+		RegisterURL:      strings.TrimRight(os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"), "/"),
 		RegisterInterval: gatewayRegisterIntervalFromEnv(),
+		// The routable endpoint is the gateway's own :8080 (§5.2): children
+		// bind 127.0.0.1 inside the pod, unreachable from the operator.
+		// KSQUAD_MESH_ADVERTISE_URL overrides; the default derives from the
+		// downward-API POD_IP the mesh pool pod spec stamps.
+		AdvertiseURL: gatewayAdvertiseURL(),
 	})
+}
+
+// gatewayAdvertiseURL resolves the URL the registry advertises for this
+// gateway's processes: an explicit KSQUAD_MESH_ADVERTISE_URL override, else
+// the pod IP the kubelet injected via the status.podIP downward-API env,
+// else "" (unroutable — local/dev lanes keep the child endpoints).
+func gatewayAdvertiseURL() string {
+	if v := os.Getenv("KSQUAD_MESH_ADVERTISE_URL"); v != "" {
+		return strings.TrimRight(v, "/")
+	}
+	if ip := os.Getenv("POD_IP"); ip != "" {
+		return "http://" + net.JoinHostPort(ip, "8080")
+	}
+	return ""
 }
 
 // gatewayRegisterIntervalFromEnv reads the heartbeat cadence override.
