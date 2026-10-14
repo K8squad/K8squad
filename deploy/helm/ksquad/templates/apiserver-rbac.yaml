@@ -2,22 +2,35 @@
        the apiserver. POST /api/credentials (E3-S1, internal/apiserver/secretwrite.go)
        creates managed-credential Secrets in the caller's team namespace, so the
        apiserver runs under its own least-privilege ServiceAccount holding
-       `secrets:create` — CREATE ONLY. No get/list/watch/update/patch/delete: the
-       SA can never read or modify an existing Secret, and a create over an
-       existing name fails with AlreadyExists.
+       `secrets:create` + `secrets:delete` — and NOTHING else. No
+       get/list/watch/update/patch: the SA can never READ or MUTATE-IN-PLACE an
+       existing Secret, and a create over an existing name fails with
+       AlreadyExists.
+
+       The `delete` verb is the WS-9 S3 credential lifecycle (ISI-5816, design
+       O-2 option (a)): the SA cannot `update`, so rotation is modelled as
+       delete-then-recreate under the SAME deterministic name (no stale
+       plaintext), and the credential-vault delete verb removes a materialized
+       entry. Delete stays NARROW: RBAC alone cannot label-scope a verb, so the
+       ValidatingAdmissionPolicy below denies any delete by this SA of a Secret
+       that is not labelled ksquad.io/managed-credential=true in a squad
+       namespace. The handler itself only ever addresses the deterministic
+       managed-credential name, so the grant and the admission guard agree by
+       construction.
 
        Team namespaces are provisioned dynamically by the operator
        (ksquad-team-*, labelled ksquad.io/tenancy=squad), so Helm cannot bind
-       per-namespace Roles at install time; the grant is a create-only
-       ClusterRole. Team-namespace + label scoping is enforced server-side in
-       secretwrite.go (writes only Secrets labelled
+       per-namespace Roles at install time; the grant is a ClusterRole.
+       Team-namespace + label scoping is enforced server-side in secretwrite.go
+       (writes/deletes only the deterministic Secret labelled
        ksquad.io/managed-credential=true, cross-tenant 404). The optional
        ValidatingAdmissionPolicy (apiserver.rbac.secretWriteAdmissionPolicy,
-       k8s >= 1.30) re-enforces both invariants cluster-side.
+       k8s >= 1.30) re-enforces both invariants cluster-side for CREATE and
+       DELETE alike.
 
        The apiserver ServiceAccount itself is created in rbac.yaml (ISI-3546);
-       this template only adds the create-only credential-writer grant and the
-       optional VAP, both bound to that same SA (ksquad.apiserver.fullname). */ -}}
+       this template only adds the credential-writer grant and the optional VAP,
+       both bound to that same SA (ksquad.apiserver.fullname). */ -}}
 {{- if .Values.apiserver.enabled -}}
 {{- if .Values.apiserver.rbac.secretsCreate }}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -28,11 +41,15 @@ metadata:
     {{- include "ksquad.labels" . | nindent 4 }}
     app.kubernetes.io/component: apiserver
 rules:
-  # AD-6: label-scoped Secret CREATE only. Deliberately no read/update verbs —
-  # the credential handler needs exactly one verb to do its one job.
+  # AD-6 + WS-9 S3 (ISI-5816): label-scoped Secret CREATE + DELETE. Deliberately
+  # NO get/list/watch/update/patch — the credential handler needs exactly these
+  # two verbs: create materializes a vault entry; delete removes one and backs
+  # rotation (delete-then-recreate under the stable deterministic name, since the
+  # SA cannot update in place). The label scoping delete cannot express in RBAC
+  # is enforced by the ValidatingAdmissionPolicy below.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create"]
+    verbs: ["create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -53,10 +70,14 @@ subjects:
 {{- if .Values.apiserver.rbac.secretWriteAdmissionPolicy }}
 ---
 # Cluster-side defense-in-depth (k8s >= 1.30, VAP GA). Intercepts every Secret
-# CREATE; any author other than the apiserver SA passes untouched, while the
-# apiserver SA may only create Secrets that BOTH live in a squad team namespace
-# (ksquad.io/tenancy=squad) AND carry ksquad.io/managed-credential=true — the
-# AD-6 label-scoped write contract enforced even if the handler regresses.
+# CREATE and DELETE; any author other than the apiserver SA passes untouched,
+# while the apiserver SA may only create OR delete Secrets that BOTH live in a
+# squad team namespace (ksquad.io/tenancy=squad) AND carry
+# ksquad.io/managed-credential=true — the AD-6 / WS-9 S3 label-scoped lifecycle
+# contract enforced even if the handler regresses. On CREATE the incoming
+# `object` carries the labels; on DELETE the incoming object is null and the
+# EXISTING `oldObject` carries them, so each operation is guarded against its own
+# object. (No UPDATE verb is granted, so in-place mutation never reaches here.)
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -71,16 +92,31 @@ spec:
       - apiGroups: [""]
         apiVersions: ["v1"]
         resources: ["secrets"]
-        operations: ["CREATE"]
+        operations: ["CREATE", "DELETE"]
         scope: "Namespaced"
   validations:
+    # CREATE guard: the incoming object must be a labelled managed credential in
+    # a squad namespace. Passes trivially for a non-SA author or when object is
+    # null (a DELETE request, handled by the next validation).
     - expression: >-
         request.userInfo.username != "system:serviceaccount:{{ .Release.Namespace }}:{{ include "ksquad.apiserver.fullname" . }}"
+        || object == null
         || (namespaceObject.metadata.?labels["ksquad.io/tenancy"].orValue("") == "squad"
             && object.metadata.?labels["ksquad.io/managed-credential"].orValue("") == "true")
       message: >-
         the ksquad apiserver may only create Secrets labelled
         ksquad.io/managed-credential=true in squad team namespaces (AD-6)
+    # DELETE guard: the existing object (oldObject) must be a labelled managed
+    # credential in a squad namespace. Passes trivially for a non-SA author or
+    # when oldObject is null (a CREATE request, handled by the validation above).
+    - expression: >-
+        request.userInfo.username != "system:serviceaccount:{{ .Release.Namespace }}:{{ include "ksquad.apiserver.fullname" . }}"
+        || oldObject == null
+        || (namespaceObject.metadata.?labels["ksquad.io/tenancy"].orValue("") == "squad"
+            && oldObject.metadata.?labels["ksquad.io/managed-credential"].orValue("") == "true")
+      message: >-
+        the ksquad apiserver may only delete Secrets labelled
+        ksquad.io/managed-credential=true in squad team namespaces (WS-9 S3)
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

@@ -566,3 +566,264 @@ func TestToolCredentialNoReader501(t *testing.T) {
 		t.Fatalf("501 should carry the tracking pointer: %s", rec.Body.String())
 	}
 }
+
+// ============================================================================
+// WS-9 S3 — tool-credential rotation (PUT) + delete (DELETE) (ISI-5816).
+// O-2 option (a): the create-only+delete SA cannot update in place, so rotation
+// is delete-then-recreate under the STABLE deterministic name — fresh
+// materialization, no stale plaintext. Delete is label-scoped to the managed
+// Secret. Both verbs are no-echo and {type}-axis only.
+// ============================================================================
+
+// toolCredRotatedCanary is the FRESH value a rotation writes; it must fully
+// replace toolCredCanary (the old material) in the stored Secret.
+const toolCredRotatedCanary = "ghp-CANARY-ROTATED-tool-credential-must-never-leak"
+
+func putCredential(t *testing.T, h http.Handler, body string, withAuth bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPut, "/api/credentials", strings.NewReader(body))
+	if withAuth {
+		req = withSession(req, devToken)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func deleteCredential(t *testing.T, h http.Handler, body string, withAuth bool) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/api/credentials", strings.NewReader(body))
+	if withAuth {
+		req = withSession(req, devToken)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestToolCredentialRotateFreshNoStale — rotating an existing credential writes
+// the FRESH value under the SAME deterministic name and leaves NO trace of the
+// old material (delete-then-recreate, O-2 (a)). The response is a 200 reference
+// that never echoes either value.
+func TestToolCredentialRotateFreshNoStale(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555b0")
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+		// A pre-existing materialization carrying the OLD value + the managed label.
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github",
+				Labels: map[string]string{
+					credential.LabelManagedCredential: credential.LabelManagedCredentialValue,
+					toolcred.AnnotationCredentialType: "github",
+				},
+			},
+			Data: map[string][]byte{"token": []byte(toolCredCanary)},
+		},
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := putCredential(t, h, `{"type":"github","projectId":"widget","value":"`+toolCredRotatedCanary+`"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), toolCredCanary) || strings.Contains(rec.Body.String(), toolCredRotatedCanary) {
+		t.Fatalf("NFR-2 breach: rotate response echoes a credential value: %s", rec.Body.String())
+	}
+
+	var got corev1.Secret
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github"}, &got); err != nil {
+		t.Fatalf("rotated secret not stored: %v", err)
+	}
+	if string(got.Data["token"]) != toolCredRotatedCanary {
+		t.Fatalf("rotation did not write the fresh value under token; data keys: %v", keysOf(got.Data))
+	}
+	if string(got.Data["token"]) == toolCredCanary {
+		t.Fatalf("stale plaintext: the old value survived the rotation")
+	}
+	if got.Labels[credential.LabelManagedCredential] != credential.LabelManagedCredentialValue {
+		t.Fatalf("rotated secret lost the managed label: %v", got.Labels)
+	}
+	if got.Labels[toolcred.AnnotationCredentialType] != "github" {
+		t.Fatalf("rotated secret lost the type label: %v", got.Labels)
+	}
+}
+
+// TestToolCredentialRotateUnsetCreates — rotating a credential that was never
+// set degrades to a plain create (delete tolerates NotFound), so the verb is an
+// idempotent "set to this fresh value".
+func TestToolCredentialRotateUnsetCreates(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555b1")
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := putCredential(t, h, `{"type":"github","projectId":"widget","value":"`+toolCredRotatedCanary+`"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate-unset: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got corev1.Secret
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github"}, &got); err != nil {
+		t.Fatalf("rotate-unset did not materialize the secret: %v", err)
+	}
+	if string(got.Data["token"]) != toolCredRotatedCanary {
+		t.Fatalf("rotate-unset stored wrong material; keys: %v", keysOf(got.Data))
+	}
+}
+
+// TestToolCredentialRotateUnknownType — rotation is fail-closed on an unknown
+// type (422), exactly as create is; no Secret is touched.
+func TestToolCredentialRotateUnknownType(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555b2")
+	svc, _ := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := putCredential(t, h, `{"type":"not-a-real-type","projectId":"widget","value":"`+toolCredRotatedCanary+`"}`, true)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("rotate unknown type: got %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestToolCredentialRotateNoType — PUT without a type is a paste-key shape with
+// no rotation surface here; a 422 naming the type field, not a mis-scoped write.
+func TestToolCredentialRotateNoType(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555b3")
+	svc, _ := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := putCredential(t, h, `{"projectId":"widget","value":"`+toolCredRotatedCanary+`"}`, true)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("rotate no type: got %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "type") {
+		t.Fatalf("422 should name the type field: %s", rec.Body.String())
+	}
+}
+
+// TestToolCredentialDeleteHappyPath — deleting an existing credential removes the
+// deterministic Secret and answers 200 without echoing any value.
+func TestToolCredentialDeleteHappyPath(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555c0")
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github",
+				Labels: map[string]string{
+					credential.LabelManagedCredential: credential.LabelManagedCredentialValue,
+					toolcred.AnnotationCredentialType: "github",
+				},
+			},
+			Data: map[string][]byte{"token": []byte(toolCredCanary)},
+		},
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := deleteCredential(t, h, `{"type":"github","projectId":"widget"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), toolCredCanary) {
+		t.Fatalf("NFR-2 breach: delete response echoes the value: %s", rec.Body.String())
+	}
+	var got corev1.Secret
+	err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github"}, &got)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("secret should be gone after delete; get err = %v", err)
+	}
+}
+
+// TestToolCredentialDeleteNotFound — deleting a credential that was never set is
+// an existence-hiding 404, not a 500.
+func TestToolCredentialDeleteNotFound(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555c1")
+	svc, _ := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := deleteCredential(t, h, `{"type":"github","projectId":"widget"}`, true)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("delete missing: got %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestToolCredentialDeleteScopedToDeterministicName — the delete only ever
+// addresses the deterministic managed-credential name, so an unrelated
+// (non-managed) Secret in the SAME namespace is untouched even when it shares a
+// data key. The cluster-side VAP is the second line of defence, but the handler
+// alone must never widen beyond the derived name.
+func TestToolCredentialDeleteScopedToDeterministicName(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555c2")
+	bystander := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ksquad-team-beta", Name: "unrelated-app-secret"},
+		Data:       map[string][]byte{"token": []byte("not-a-managed-credential")},
+	}
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github",
+				Labels: map[string]string{credential.LabelManagedCredential: credential.LabelManagedCredentialValue},
+			},
+			Data: map[string][]byte{"token": []byte(toolCredCanary)},
+		},
+		bystander,
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := deleteCredential(t, h, `{"type":"github","projectId":"widget"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got corev1.Secret
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-beta", Name: "unrelated-app-secret"}, &got); err != nil {
+		t.Fatalf("delete must not touch an unrelated Secret: %v", err)
+	}
+}
+
+// TestToolCredentialDeleteNoType — DELETE without a type is a 422 (the delete
+// verb is {type}-axis only), never a broad or mis-scoped delete.
+func TestToolCredentialDeleteNoType(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555c3")
+	svc, _ := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := deleteCredential(t, h, `{"projectId":"widget"}`, true)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("delete no type: got %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestToolCredentialRotateDeleteUnauthenticated — both verbs 401 without a
+// session, before any resolution or store touch.
+func TestToolCredentialRotateDeleteUnauthenticated(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-5555555555c4")
+	svc, _ := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	if rec := putCredential(t, h, `{"type":"github","projectId":"widget","value":"x"}`, false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("rotate no auth: got %d, want 401", rec.Code)
+	}
+	if rec := deleteCredential(t, h, `{"type":"github","projectId":"widget"}`, false); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("delete no auth: got %d, want 401", rec.Code)
+	}
+}
