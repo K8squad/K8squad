@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/toolcred"
 )
 
 // Requirements is a Run's unioned capability demand (ADR-044 steps 1–2):
@@ -140,6 +141,11 @@ func Collect(ctx context.Context, reader client.Reader, run *api.Run) (*Requirem
 				SourceType:  skill.Spec.Source.Type,
 				Inline:      skill.Spec.Source.Inline,
 				Permissions: skill.Spec.Permissions,
+				// WS-9 S5 go-live gate (ISI-5849): capture the credential-type
+				// annotation verbatim so the driver's pre-dispatch gate reads it
+				// from the recorded manifest. Fail-closed by construction — an
+				// absent annotation is an ungated skill (empty string).
+				CredentialType: skill.Annotations[toolcred.AnnotationCredentialType],
 			}
 			if skill.Spec.Source.Git != nil {
 				grantedSkill.Git = skill.Spec.Source.Git
@@ -190,6 +196,14 @@ type GrantedSkill struct {
 	// from Skill.spec.permissions — trust boundary (D8): never widened by
 	// untrusted body content.
 	Permissions []string
+	// CredentialType is the raw ksquad.io/credential-type annotation value the
+	// Skill carries (toolcred.AnnotationCredentialType), captured verbatim at
+	// collect time for the WS-9 S5 go-live gate (ISI-5818/ISI-5849). Empty for
+	// an ungated skill. It is a comma-separated ANY-OF set for multi-provider
+	// skills (toolcred.SplitCredentialTypes parses it); recorded on the
+	// immutable CapabilityManifest so the driver's pre-dispatch gate reads it
+	// from status without re-listing Skills.
+	CredentialType string
 }
 
 func containsString(xs []string, want string) bool {

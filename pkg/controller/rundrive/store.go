@@ -24,6 +24,7 @@ package rundrive
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -489,6 +490,131 @@ func (c *ProdClaims) RequeuePaused(ctx context.Context, workItemID string) (bool
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("rundrive.ProdClaims.RequeuePaused: commit: %w", err)
+	}
+	return true, nil
+}
+
+// GateHold implements Claims.GateHold: the WS-9 S5 go-live gate's pre-dispatch
+// admission hold (ISI-5818/ISI-5849). The guarded move is claiming_sandbox →
+// paused(credential_required) ONLY — the pre-dispatch edge — so a Run already
+// dispatched/running/terminal is never pulled back, and a Run already parked on
+// this step is a no-op (n==0 ⇒ ok=false: the driver requeues quietly without
+// re-emitting an event every pass). Custody is RETAINED (the §8 short-pause
+// rule, same as RequeuePaused): only the step moves. missingTypes is the
+// deduped, sorted any-of set the operator must add ONE of; it rides the outbox
+// payload so the console names the credential(s) without a status join. NOT
+// per-credential-attributed (admission is about which TYPE is missing, not
+// which Secret failed), so unlike ApplyCredentialSignal there is no ledger
+// episode — this is the thinner sibling the design calls for.
+func (c *ProdClaims) GateHold(ctx context.Context, workItemID string, missingTypes []string) (bool, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateHold: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE coord.claim
+		   SET reconcile_step = 'paused(credential_required)'
+		 WHERE work_item_id = $1::uuid
+		   AND reconcile_step = 'claiming_sandbox'`, workItemID)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateHold: update: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateHold: rows: %w", err)
+	}
+	if n == 0 {
+		return false, nil // not at the pre-dispatch edge (already held, advanced, or terminal)
+	}
+
+	missing, err := json.Marshal(missingTypes)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateHold: marshal missing: %w", err)
+	}
+	runID := c.runIDFor(ctx, tx, workItemID)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, from_state, to_state)
+		VALUES ($1::uuid, NULLIF($2,'')::uuid, 'gate_held', $3,
+		        'claiming_sandbox', 'paused(credential_required)')`,
+		workItemID, runID, c.principal); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateHold: audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'paused',
+		       wi.id, NULLIF($2,'')::uuid,
+		       jsonb_build_object('reason', $3::text,
+		                          'missing_types', $4::jsonb,
+		                          'resume_mode', 'refresh',
+		                          'from_step', 'claiming_sandbox',
+		                          'to_step', 'paused(credential_required)')
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
+		workItemID, runID, string(coord.ReasonCredentialRequired), string(missing)); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateHold: outbox: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateHold: commit: %w", err)
+	}
+	return true, nil
+}
+
+// GateResume implements Claims.GateResume: the WS-9 S5 go-live gate's resume
+// re-entry (ISI-5849). Once a managed-credential Secret for a declared type
+// lands and the driver's pre-dispatch gate re-evaluates to admitted, the Run is
+// moved paused(credential_required) → claiming_sandbox (guarded) so the machine
+// re-drives the pre-dispatch edge and advances to dispatching this same pass.
+// Custody is retained (the pause kept the checkout). n==0 ⇒ ok=false: the Run
+// was not parked on this step (already resumed, or never gated) — a no-op, the
+// resume having raced or already happened.
+func (c *ProdClaims) GateResume(ctx context.Context, workItemID string) (bool, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResume: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE coord.claim
+		   SET reconcile_step = 'claiming_sandbox'
+		 WHERE work_item_id = $1::uuid
+		   AND reconcile_step = 'paused(credential_required)'`, workItemID)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResume: update: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResume: rows: %w", err)
+	}
+	if n == 0 {
+		return false, nil // not parked on the gate hold
+	}
+
+	runID := c.runIDFor(ctx, tx, workItemID)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, from_state, to_state)
+		VALUES ($1::uuid, NULLIF($2,'')::uuid, 'gate_resumed', $3,
+		        'paused(credential_required)', 'claiming_sandbox')`,
+		workItemID, runID, c.principal); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResume: audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'resume_requeued',
+		       wi.id, NULLIF($2,'')::uuid,
+		       jsonb_build_object('from_step', 'paused(credential_required)',
+		                          'to_step', 'claiming_sandbox')
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
+		workItemID, runID); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResume: outbox: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResume: commit: %w", err)
 	}
 	return true, nil
 }

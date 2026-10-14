@@ -29,6 +29,7 @@ limitations under the License.
 package run
 
 import (
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -60,6 +61,11 @@ const (
 	reasonCredentialExpired = "CredentialExpired"
 	reasonCredentialRotated = "CredentialRotated"
 	reasonEndpointUnreach   = "EndpointUnreachable"
+	// reasonCredentialRequired is the WS-9 S5 go-live gate hold (ISI-5849): the
+	// Run was withheld pre-dispatch because a [sec]-gated skill's declared
+	// credential type(s) are not materialized for the project. Normalizes to the
+	// apiserver credentialHoldReasons token "credentialrequired".
+	reasonCredentialRequired = "CredentialRequired"
 	reasonCancelling        = "Cancelling"
 	reasonSucceeded         = "Succeeded"
 	reasonFailed            = "Failed"
@@ -125,6 +131,12 @@ type PauseDetail struct {
 	Principal    string       // the human seat / service principal owning the credential
 	Reason       string       // legible pause reason (the same family as the step suffix)
 	ResumeAt     *metav1.Time // nil ⇒ clears on refresh (7.4), not on a timer (7.6)
+	// MissingTypes is the WS-9 S5 go-live gate's unsatisfied credential type(s)
+	// (toolcred.RunGateDecision.MissingTypes, ISI-5849) — the deduped, sorted
+	// any-of set the operator must add ONE of in project settings. Carried only
+	// for the StepPausedCredentialRequired hold (admission-time, not per-
+	// credential-attributed); ignored by the 7.4/7.6 attributed reasons.
+	MissingTypes []string
 }
 
 // OperatorMessage renders the 7.4/7.6 operator-facing pause string: a legible
@@ -143,6 +155,21 @@ func (d PauseDetail) OperatorMessage() string {
 		when = ", resumes on credential refresh"
 	}
 	return "paused: " + d.Reason + " (credential " + who + when + ")"
+}
+
+// GateMessage renders the WS-9 S5 go-live gate hold string (ISI-5849): the Run
+// was withheld pre-dispatch because a [sec]-gated skill's declared credential
+// type(s) are not materialized for the project. The message names the ANY-OF
+// missing set so the operator knows exactly which type(s) to add — adding ONE
+// satisfies the hold. Returns "" when no missing types were supplied so the
+// caller falls back to the generic step message rather than a half-formed
+// sentence.
+func (d PauseDetail) GateMessage() string {
+	if len(d.MissingTypes) == 0 {
+		return ""
+	}
+	return "Run paused: add any of credential type(s) " +
+		strings.Join(d.MissingTypes, ", ") + " in project settings"
 }
 
 // ProjectStatusWithPause is ProjectStatus with the per-credential pause
@@ -209,6 +236,10 @@ func readyCondition(step reconcile.Step, generation int64, now metav1.Time, deta
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonEndpointUnreach
 		c.Message = pauseMessage(detail, "Run is paused: credential endpoint unreachable")
+	case reconcile.StepPausedCredentialRequired:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonCredentialRequired
+		c.Message = gatePauseMessage(detail, "Run is paused: a required credential type is not configured for this project")
 	case reconcile.StepPending:
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonPending
@@ -245,6 +276,20 @@ func pauseMessage(detail *PauseDetail, fallback string) string {
 		return fallback
 	}
 	if msg := detail.OperatorMessage(); msg != "" {
+		return msg
+	}
+	return fallback
+}
+
+// gatePauseMessage prefers the S5 go-live gate's missing-types string (ISI-5849)
+// and falls back to the generic hold message when the driver supplied no missing
+// set — the condition is never empty and never invents a type list it was not
+// given (status stays downstream of the durable step, AC2).
+func gatePauseMessage(detail *PauseDetail, fallback string) string {
+	if detail == nil {
+		return fallback
+	}
+	if msg := detail.GateMessage(); msg != "" {
 		return msg
 	}
 	return fallback

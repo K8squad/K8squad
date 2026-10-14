@@ -60,6 +60,12 @@ var credentialHoldReasons = map[string]bool{
 	"credentialexpired":   true,
 	"credentialrotated":   true,
 	"endpointunreachable": true,
+	// WS-9 S5 go-live gate (ISI-5849): a Run withheld pre-dispatch because a
+	// [sec]-gated skill's declared credential type is not materialized projects
+	// as the same credential-hold family so the Credentials screen marks the
+	// Agent's row expired·paused and the banner names it. The reconciler's
+	// reason "CredentialRequired" normalizes to this token.
+	"credentialrequired": true,
 }
 
 // isCredentialHold matches the reason against the hold vocabulary on a normalization of it —
