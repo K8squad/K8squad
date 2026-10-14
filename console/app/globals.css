@@ -4931,6 +4931,67 @@ a:hover {
   margin-left: auto;
 }
 
+/* ── Credentials vault table (WS-9 S4, ISI-5847). Scoped under the settings
+   card so it never touches other table surfaces app-wide. ── */
+.settings__cred-table-wrap {
+  overflow-x: auto;
+}
+.settings__cred-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.settings__cred-table th,
+.settings__cred-table td {
+  text-align: left;
+  padding: 8px 10px;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+.settings__cred-table th {
+  font-weight: 600;
+  color: var(--muted, #9aa4b2);
+  white-space: nowrap;
+}
+.settings__cred-row--required {
+  background: color-mix(in srgb, var(--danger, #e5484d) 7%, transparent);
+}
+.settings__cred-name {
+  display: block;
+  font-weight: 600;
+}
+.settings__cred-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.8rem;
+}
+.settings__cred-type {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.82rem;
+}
+.settings__cred-masked {
+  letter-spacing: 0.15em;
+  color: var(--muted, #9aa4b2);
+}
+.settings__cred-input {
+  width: 100%;
+  min-width: 160px;
+}
+.settings__cred-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.settings__cred-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.settings__cred-save-form {
+  display: inline;
+}
+
 /* Facts (read-only viewer) + inline messages. */
 .settings__facts {
   display: grid;
