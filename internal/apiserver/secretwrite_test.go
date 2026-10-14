@@ -18,6 +18,7 @@ import (
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/controller/credential"
+	"github.com/K8squad/K8squad/pkg/toolcred"
 )
 
 // ============================================================================
@@ -62,7 +63,11 @@ func teamWithStatus(ns, name, uid, squadNS string) *ksquadv1.Team {
 func newSecretWriter(t *testing.T, objs ...client.Object) (*SecretWriteService, client.Client) {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(secretWriteScheme(t)).WithObjects(objs...).Build()
-	return NewSecretWriteService(c), c
+	// The fake client doubles as the project resolver (informer cache) — in
+	// production these are distinct (a create-only direct client + the shared
+	// cache), but a fake client.Client satisfies both seams, and the tool-credential
+	// tests seed Project CRs into it so resolveProjectInTeam finds them.
+	return NewSecretWriteService(c, c), c
 }
 
 func testSecretWriteServer(t *testing.T, teamID uuid.UUID, writer *SecretWriteService) http.Handler {
@@ -390,5 +395,174 @@ func TestSecretWriteFleetTargetsHomeNotExecNamespace(t *testing.T) {
 	}
 	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "exec-ksquad-team-alpha", Name: "root-key"}, &got); !apierrors.IsNotFound(err) {
 		t.Fatalf("secret must NOT be written to the exec ns %s (Status.Namespace): %v", "exec-ksquad-team-alpha", err)
+	}
+}
+
+// ============================================================================
+// WS-9 S2 tool-credential axis (ISI-5815) — the {type} discriminator
+// materializes a vault credential into the EXACT Secret + data key the gated
+// skill's empty credentialSecretRef resolves to. Merge-gate rubric:
+//   - a valid type writes to the deterministic bound Secret/key
+//     (proj-<project>-cred-<type> / binding.DataKey) in the project's team ns;
+//   - an unknown type is rejected fail-closed (422), no Secret written;
+//   - the value is NEVER echoed — not on create, not on any reject branch;
+//   - a second write of the same (project, type) is 409 (create-only, no
+//     overwrite — rotation is delete+recreate, design O-2 (a)).
+// ============================================================================
+
+const toolCredCanary = "ghp-CANARY-tool-credential-must-never-leak"
+
+// TestToolCredentialHappyPath — {type:"github"} materializes Secret
+// proj-<project>-cred-github in the project's team namespace, material under the
+// registry data key "token", stamped managed-credential + credential-type
+// labels, response a secret:// reference that does NOT contain the value.
+func TestToolCredentialHappyPath(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-555555555555")
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := postCredential(t, h, `{"type":"github","projectId":"widget","value":"`+toolCredCanary+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), toolCredCanary) {
+		t.Fatalf("NFR-2 breach: response echoes the credential value: %s", rec.Body.String())
+	}
+	var out credentialCreateResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.SecretRef != "secret://ksquad-team-beta/proj-widget-cred-github" {
+		t.Fatalf("secretRef: got %q", out.SecretRef)
+	}
+
+	var got corev1.Secret
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github"}, &got); err != nil {
+		t.Fatalf("materialized secret not stored: %v", err)
+	}
+	if got.Labels[credential.LabelManagedCredential] != credential.LabelManagedCredentialValue {
+		t.Fatalf("managed label missing/wrong: %v", got.Labels)
+	}
+	if got.Labels[toolcred.AnnotationCredentialType] != "github" {
+		t.Fatalf("credential-type label missing/wrong: %v", got.Labels)
+	}
+	if string(got.Data["token"]) != toolCredCanary {
+		t.Fatalf("material stored under wrong key; data keys: %v", keysOf(got.Data))
+	}
+}
+
+// TestToolCredentialUnknownTypeFailsClosed — a type the binding registry does
+// not map is a 422 whose body names the field, and NO Secret is written (the
+// write path never guesses a name/key for an unreviewed type).
+func TestToolCredentialUnknownTypeFailsClosed(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-555555555556")
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := postCredential(t, h, `{"type":"not-a-real-type","projectId":"widget","value":"`+toolCredCanary+`"}`, true)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown type: got %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), toolCredCanary) {
+		t.Fatalf("NFR-2 breach: 422 echoes the value: %s", rec.Body.String())
+	}
+	var secrets corev1.SecretList
+	if err := c.List(t.Context(), &secrets); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(secrets.Items) != 0 {
+		t.Fatalf("unknown type must not write a Secret; found %d", len(secrets.Items))
+	}
+}
+
+// TestToolCredentialUnknownProject — a projectId that resolves to no project in
+// the caller's team is an existence-hiding 404, no Secret written.
+func TestToolCredentialUnknownProject(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-555555555557")
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := postCredential(t, h, `{"type":"github","projectId":"no-such-project","value":"`+toolCredCanary+`"}`, true)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown project: got %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+	var secrets corev1.SecretList
+	if err := c.List(t.Context(), &secrets); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(secrets.Items) != 0 {
+		t.Fatalf("unknown project must not write a Secret; found %d", len(secrets.Items))
+	}
+}
+
+// TestToolCredentialMissingProjectId — projectId is required on the {type} axis;
+// its absence is a 422 field error, not a panic or a mis-scoped write.
+func TestToolCredentialMissingProjectId(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-555555555558")
+	svc, _ := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := postCredential(t, h, `{"type":"github","value":"`+toolCredCanary+`"}`, true)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("missing projectId: got %d, want 422 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "projectId") {
+		t.Fatalf("422 should name the projectId field: %s", rec.Body.String())
+	}
+}
+
+// TestToolCredentialConflict — a second write of the same (project, type) is a
+// 409: the create-only grant can never overwrite an existing vault entry
+// (rotation is delete+recreate, design O-2 (a)).
+func TestToolCredentialConflict(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-555555555559")
+	svc, c := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github"}},
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := postCredential(t, h, `{"type":"github","projectId":"widget","value":"`+toolCredCanary+`"}`, true)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("duplicate: got %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+	// The pre-existing (empty) secret must be untouched — create-only never overwrote it.
+	var got corev1.Secret
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-beta", Name: "proj-widget-cred-github"}, &got); err != nil {
+		t.Fatalf("pre-existing secret vanished: %v", err)
+	}
+	if _, ok := got.Data["token"]; ok {
+		t.Fatalf("409 must not overwrite: token key was written")
+	}
+}
+
+// TestToolCredentialNoReader501 — with no project reader (cluster-less host) the
+// {type} axis degrades to the documented 501, never a fabricated namespace.
+func TestToolCredentialNoReader501(t *testing.T) {
+	teamID := uuid.MustParse("22222222-2222-3333-4444-55555555555a")
+	c := fake.NewClientBuilder().WithScheme(secretWriteScheme(t)).
+		WithObjects(team("ksquad-team-beta", "beta", teamID.String())).Build()
+	svc := NewSecretWriteService(c, nil) // nil reader ⇒ {type} axis unavailable
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := postCredential(t, h, `{"type":"github","projectId":"widget","value":"`+toolCredCanary+`"}`, true)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("no reader: got %d, want 501 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ISI-5815") {
+		t.Fatalf("501 should carry the tracking pointer: %s", rec.Body.String())
 	}
 }
