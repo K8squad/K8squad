@@ -176,3 +176,148 @@ describe("<CredentialsVaultCard> — ISI-5847 Slice A acceptance", () => {
     await waitFor(() => screen.getByTestId("credentials-not-wired"));
   });
 });
+
+describe("<CredentialsVaultCard> — ISI-5860 Slice B: Rotate + Delete", () => {
+  it("a saved, editable row renders enabled Rotate + Delete; the unsatisfied row does not", async () => {
+    stubFetch(() =>
+      jsonResponse(
+        200,
+        typesPayload([
+          entry({ type: "github", gateState: "satisfied" }),
+          entry({ type: "ds", displayName: "DS", gateState: "unsatisfied", requiredByGate: false }),
+        ]),
+      ),
+    );
+    render(<CredentialsVaultCard projectId="proj-a" canEdit={true} />);
+    await waitFor(() => screen.getByTestId("credentials-vault-table"));
+    expect((screen.getByTestId("cred-rotate-github") as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByTestId("cred-delete-github") as HTMLButtonElement).disabled).toBe(false);
+    // The unsatisfied row has Create affordances, not Rotate/Delete.
+    expect(screen.queryByTestId("cred-rotate-ds")).toBeNull();
+    expect(screen.queryByTestId("cred-delete-ds")).toBeNull();
+  });
+
+  it("Rotate reveals a write-only input, PUTs {value,type,projectId}, and never echoes the new value", async () => {
+    let rotated = false;
+    const puts: Array<{ method: string; body: string }> = [];
+    stubFetch((url, init) => {
+      if (url.includes("/credential-types")) return jsonResponse(200, typesPayload([entry({ type: "github", gateState: "satisfied" })]));
+      if (url === "/api/credentials" && init?.method === "PUT") {
+        puts.push({ method: "PUT", body: String(init.body) });
+        rotated = true;
+        return jsonResponse(200, { secretRef: "secret://squad-a/proj-proj-a-cred-github" });
+      }
+      return jsonResponse(404, {});
+    });
+    render(<CredentialsVaultCard projectId="proj-a" canEdit={true} />);
+    // Rotate input is NOT in the DOM until Rotate is clicked.
+    await waitFor(() => screen.getByTestId("cred-rotate-github"));
+    expect(screen.queryByTestId("cred-rotate-value-github")).toBeNull();
+    fireEvent.click(screen.getByTestId("cred-rotate-github"));
+    const rinput = (await screen.findByTestId("cred-rotate-value-github")) as HTMLInputElement;
+    // write-only: password type, never pre-filled, NO reveal toggle anywhere.
+    expect(rinput.type).toBe("password");
+    expect(rinput.value).toBe("");
+    fireEvent.change(rinput, { target: { value: "ghp_rotated_secret" } });
+    fireEvent.click(screen.getByTestId("cred-rotate-confirm-github"));
+    await waitFor(() => screen.getByTestId("cred-masked-github"));
+    // The PUT carried the vault-axis rotate body (new value verbatim, write-only).
+    expect(JSON.parse(puts[0].body)).toEqual({ value: "ghp_rotated_secret", type: "github", projectId: "proj-a" });
+    // After the 200 the new value is gone from the DOM — masked, never echoed back.
+    void rotated;
+    expect(screen.queryByTestId("cred-rotate-value-github")).toBeNull();
+    expect(document.body.innerHTML).not.toContain("ghp_rotated_secret");
+  });
+
+  it("a rotate 409 surfaces the honest 'still being removed — retry' copy, not a create conflict", async () => {
+    stubFetch((url, init) => {
+      if (url.includes("/credential-types")) return jsonResponse(200, typesPayload([entry({ type: "github", gateState: "satisfied" })]));
+      if (url === "/api/credentials" && init?.method === "PUT")
+        return jsonResponse(409, { error: "the previous credential is still being removed; retry the rotation" });
+      return jsonResponse(404, {});
+    });
+    render(<CredentialsVaultCard projectId="proj-a" canEdit={true} />);
+    fireEvent.click(await screen.findByTestId("cred-rotate-github"));
+    const rinput = (await screen.findByTestId("cred-rotate-value-github")) as HTMLInputElement;
+    fireEvent.change(rinput, { target: { value: "x" } });
+    fireEvent.click(screen.getByTestId("cred-rotate-confirm-github"));
+    await waitFor(() => screen.getByTestId("cred-msg-github"));
+    expect(screen.getByTestId("cred-msg-github").textContent).toMatch(/still being removed/i);
+  });
+
+  it("Cancel on rotate drops the half-typed new value so it never lingers", async () => {
+    stubFetch(() => jsonResponse(200, typesPayload([entry({ type: "github", gateState: "satisfied" })])));
+    render(<CredentialsVaultCard projectId="proj-a" canEdit={true} />);
+    fireEvent.click(await screen.findByTestId("cred-rotate-github"));
+    const rinput = (await screen.findByTestId("cred-rotate-value-github")) as HTMLInputElement;
+    fireEvent.change(rinput, { target: { value: "ghp_halftyped" } });
+    fireEvent.click(screen.getByTestId("cred-rotate-cancel-github"));
+    await waitFor(() => screen.getByTestId("cred-masked-github"));
+    expect(screen.queryByTestId("cred-rotate-value-github")).toBeNull();
+    expect(document.body.innerHTML).not.toContain("ghp_halftyped");
+  });
+
+  it("Delete is a two-step inline confirm, DELETEs {type,projectId}, and refreshes the table", async () => {
+    let deleted = false;
+    const dels: string[] = [];
+    stubFetch((url, init) => {
+      if (url.includes("/credential-types"))
+        return jsonResponse(200, typesPayload([entry({ type: "github", gateState: deleted ? "unsatisfied" : "satisfied" })]));
+      if (url === "/api/credentials" && init?.method === "DELETE") {
+        dels.push(String(init.body));
+        deleted = true;
+        return jsonResponse(200, {});
+      }
+      return jsonResponse(404, {});
+    });
+    render(<CredentialsVaultCard projectId="proj-a" canEdit={true} />);
+    fireEvent.click(await screen.findByTestId("cred-delete-github"));
+    // Nothing destructive fires on the first click — the confirm step gates it.
+    const confirm = (await screen.findByTestId("cred-delete-confirm-github")) as HTMLButtonElement;
+    expect(dels.length).toBe(0);
+    fireEvent.click(confirm);
+    await waitFor(() => screen.getByTestId("cred-msg-github"));
+    expect(JSON.parse(dels[0])).toEqual({ type: "github", projectId: "proj-a" });
+    // Reload reflected the now-unsatisfied gate-state → the write-only create input returns.
+    expect(screen.getByTestId("cred-value-github")).toBeTruthy();
+    expect(screen.getByTestId("cred-msg-github").textContent).toMatch(/deleted/i);
+  });
+
+  it("a delete 404 is treated as 'already gone' — success, refresh, not an error", async () => {
+    let gone = false;
+    stubFetch((url, init) => {
+      if (url.includes("/credential-types"))
+        return jsonResponse(200, typesPayload([entry({ type: "github", gateState: gone ? "unsatisfied" : "satisfied" })]));
+      if (url === "/api/credentials" && init?.method === "DELETE") {
+        gone = true;
+        return jsonResponse(404, { error: "no credential of this type for this project" });
+      }
+      return jsonResponse(404, {});
+    });
+    render(<CredentialsVaultCard projectId="proj-a" canEdit={true} />);
+    fireEvent.click(await screen.findByTestId("cred-delete-github"));
+    fireEvent.click(await screen.findByTestId("cred-delete-confirm-github"));
+    await waitFor(() => screen.getByTestId("cred-msg-github"));
+    const msg = screen.getByTestId("cred-msg-github");
+    expect(msg.getAttribute("class")).toMatch(/--ok/);
+    expect(msg.textContent).toMatch(/already removed/i);
+  });
+
+  it("Cancel on the delete confirm aborts without a DELETE", async () => {
+    const dels: string[] = [];
+    stubFetch((url, init) => {
+      if (url.includes("/credential-types")) return jsonResponse(200, typesPayload([entry({ type: "github", gateState: "satisfied" })]));
+      if (url === "/api/credentials" && init?.method === "DELETE") {
+        dels.push(String(init.body));
+        return jsonResponse(200, {});
+      }
+      return jsonResponse(404, {});
+    });
+    render(<CredentialsVaultCard projectId="proj-a" canEdit={true} />);
+    fireEvent.click(await screen.findByTestId("cred-delete-github"));
+    fireEvent.click(await screen.findByTestId("cred-delete-cancel-github"));
+    await waitFor(() => screen.getByTestId("cred-delete-github"));
+    expect(dels.length).toBe(0);
+    expect(screen.queryByTestId("cred-delete-confirm-github")).toBeNull();
+  });
+});

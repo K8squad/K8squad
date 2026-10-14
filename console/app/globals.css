@@ -4989,7 +4989,17 @@ a:hover {
   align-items: center;
 }
 .settings__cred-save-form {
-  display: inline;
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+/* Inline delete confirmation (Slice B, ISI-5860) — a two-step guard, not a native
+   confirm() dialog. Reads as one cluster with the destructive action it gates. */
+.settings__cred-confirm {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
 }
 
 /* Facts (read-only viewer) + inline messages. */

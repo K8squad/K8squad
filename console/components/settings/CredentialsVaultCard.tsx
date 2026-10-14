@@ -8,17 +8,20 @@
 // reviewed binding registry and the project's [sec]-gated skills), and lets an
 // editor materialize a credential via POST /api/credentials {name,value,type,projectId}.
 //
-// SLICE A (this file): render + Create + status/empty/guided-setup states.
-// SLICE B (deferred, after design O-2 lands): Rotate (409-replace) + Delete need
-// backend replace semantics + a narrow RBAC grant — rendered here as disabled,
-// explained affordances so the roadmap is visible but nothing dead is wired.
+// SLICE A: render + Create + status/empty/guided-setup states.
+// SLICE B (this slice, ISI-5860 — design O-2 resolved, backed by ISI-5816):
+// Rotate (PUT /api/credentials — its OWN explicit verb, delete-then-recreate under
+// the stable name, NOT a 409-retry on create) and Delete (DELETE /api/credentials,
+// {type} discriminator; 404 = benign "already gone"). The create 409 stays a pure
+// guardrail ("use Rotate"), never an auto-overwrite.
 //
 // ACCEPTANCE-CRITICAL honesty (spec §5/§8), enforced BY CONSTRUCTION here:
 //   • the value field is WRITE-ONLY: rendered only for an unsatisfied, editable
-//     row, never pre-filled, and the typed value is dropped from state the moment
-//     a 201 lands (masked to •••••••• thereafter). There is NO reveal affordance
-//     anywhere in the DOM — not even a password show-toggle (threat T1). No secret
-//     value is ever returned to the client (there is no GET verb for one).
+//     row (create) OR the active rotate input, NEVER pre-filled, and the typed
+//     value is dropped from state the moment a 201/200 lands (masked to ••••••••
+//     thereafter). There is NO reveal affordance anywhere in the DOM — not even a
+//     password show-toggle (threat T1). No secret value is ever returned to the
+//     client on ANY verb (there is no GET for one; rotate never echoes old OR new).
 //   • "is it saved?" is read ONLY from gateState — never inferred from any field.
 //   • canEdit is the SAME boolean the settings projection exposes (reused from the
 //     parent, same ProjectRoleResolver write-tier as Repository): a row shown
@@ -29,13 +32,20 @@ import { EmptyState } from "@/components/forms/EmptyState";
 import {
   MASKED_VALUE,
   classifyVaultCreateStatus,
+  classifyVaultDeleteStatus,
+  classifyVaultRotateStatus,
   createToolCredential,
+  deleteToolCredential,
   fetchCredentialTypes,
   isRequiredMissing,
   isSatisfied,
+  rotateToolCredential,
   sortVaultTypes,
   vaultCreateMessage,
+  vaultDeleteMessage,
+  vaultDeleteSucceeded,
   vaultErrorText,
+  vaultRotateMessage,
   vaultStatusBadge,
   type CredentialTypeEntry,
   type CredentialTypesState,
@@ -166,8 +176,64 @@ function CredentialsTable({
   const [busyType, setBusyType] = useState<string | null>(null);
   const [rowMsg, setRowMsg] = useState<Record<string, RowMsg>>({});
 
+  // Slice B per-row UI state. `rotatingType` is the one row showing its write-only
+  // rotate input; `rotateValues` holds those NEW values (same write-only discipline
+  // as create — dropped the moment a 200 lands). `confirmingDeleteType` is the one
+  // row showing its inline "confirm delete?" affordance (no native confirm() dialog,
+  // which would block the event loop and is easy to mis-dismiss for a destructive op).
+  const [rotatingType, setRotatingType] = useState<string | null>(null);
+  const [rotateValues, setRotateValues] = useState<Record<string, string>>({});
+  const [confirmingDeleteType, setConfirmingDeleteType] = useState<string | null>(null);
+
   const setValue = useCallback((type: string, v: string) => {
     setValues((prev) => ({ ...prev, [type]: v }));
+  }, []);
+
+  const setRotateValue = useCallback((type: string, v: string) => {
+    setRotateValues((prev) => ({ ...prev, [type]: v }));
+  }, []);
+
+  const clearMsg = useCallback((type: string) => {
+    setRowMsg((prev) => {
+      if (!prev[type]) return prev;
+      const next = { ...prev };
+      delete next[type];
+      return next;
+    });
+  }, []);
+
+  // Open the rotate input for a row (closing any delete confirm + stale message).
+  const startRotate = useCallback(
+    (type: string) => {
+      setConfirmingDeleteType(null);
+      clearMsg(type);
+      setRotatingType(type);
+    },
+    [clearMsg],
+  );
+
+  // Cancel rotate — drop the half-typed NEW value so it never lingers (spec §5).
+  const cancelRotate = useCallback((type: string) => {
+    setRotatingType((cur) => (cur === type ? null : cur));
+    setRotateValues((prev) => {
+      if (!(type in prev)) return prev;
+      const next = { ...prev };
+      delete next[type];
+      return next;
+    });
+  }, []);
+
+  const startDelete = useCallback(
+    (type: string) => {
+      setRotatingType((cur) => (cur === type ? null : cur));
+      clearMsg(type);
+      setConfirmingDeleteType(type);
+    },
+    [clearMsg],
+  );
+
+  const cancelDelete = useCallback((type: string) => {
+    setConfirmingDeleteType((cur) => (cur === type ? null : cur));
   }, []);
 
   const onSave = useCallback(
@@ -212,6 +278,82 @@ function CredentialsTable({
     [values, projectId, onReload],
   );
 
+  // Rotate (PUT) — delete-then-recreate under the stable name (design O-2). The NEW
+  // value is write-only: dropped from state the instant the 200 lands, so it never
+  // lingers (spec §5). A 409 is the rare recreate-after-delete race → "retry", NOT
+  // a conflict with an existing value (that guardrail lives on create).
+  const onRotate = useCallback(
+    async (e: FormEvent, entry: CredentialTypeEntry) => {
+      e.preventDefault();
+      const type = entry.type;
+      const value = rotateValues[type] ?? "";
+      setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "" } }));
+      if (!value) {
+        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "Paste a new value to rotate this credential." } }));
+        return;
+      }
+      setBusyType(type);
+      try {
+        const res = await rotateToolCredential({ value, type, projectId });
+        if (res.ok) {
+          // Write-only: drop the NEW value on success; close the rotate input. The
+          // row re-renders masked off the reloaded gateState — the value never shows.
+          setRotateValues((prev) => {
+            const next = { ...prev };
+            delete next[type];
+            return next;
+          });
+          setRotatingType(null);
+          setRowMsg((prev) => ({ ...prev, [type]: { tone: "ok", text: "Rotated." } }));
+          await onReload();
+        } else {
+          const outcome = classifyVaultRotateStatus(res.status);
+          const verbatim = await vaultErrorText(res);
+          setRowMsg((prev) => ({
+            ...prev,
+            [type]: { tone: "bad", text: verbatim ?? vaultRotateMessage(outcome) },
+          }));
+        }
+      } catch {
+        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "The credential store is unreachable — try again." } }));
+      } finally {
+        setBusyType(null);
+      }
+    },
+    [rotateValues, projectId, onReload],
+  );
+
+  // Delete (DELETE) — blind delete-by-{type}. A 404 is existence-hiding: the honest
+  // end state ("no longer stored") is identical to a 200, so both refresh the table
+  // rather than surfacing an error (design O-2).
+  const onDelete = useCallback(
+    async (entry: CredentialTypeEntry) => {
+      const type = entry.type;
+      setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "" } }));
+      setBusyType(type);
+      try {
+        const res = await deleteToolCredential({ type, projectId });
+        const outcome = classifyVaultDeleteStatus(res.status);
+        if (vaultDeleteSucceeded(outcome)) {
+          setConfirmingDeleteType(null);
+          setRowMsg((prev) => ({ ...prev, [type]: { tone: "ok", text: vaultDeleteMessage(outcome) } }));
+          await onReload();
+        } else {
+          const verbatim = await vaultErrorText(res);
+          setRowMsg((prev) => ({
+            ...prev,
+            [type]: { tone: "bad", text: verbatim ?? vaultDeleteMessage(outcome) },
+          }));
+        }
+      } catch {
+        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "The credential store is unreachable — try again." } }));
+      } finally {
+        setBusyType(null);
+      }
+    },
+    [projectId, onReload],
+  );
+
   return (
     <div className="settings__cred-table-wrap">
       <table className="settings__cred-table" data-testid="credentials-vault-table">
@@ -234,8 +376,18 @@ function CredentialsTable({
               value={values[entry.type] ?? ""}
               busy={busyType === entry.type}
               msg={rowMsg[entry.type] ?? null}
+              rotating={rotatingType === entry.type}
+              rotateValue={rotateValues[entry.type] ?? ""}
+              confirmingDelete={confirmingDeleteType === entry.type}
               onChangeValue={(v) => setValue(entry.type, v)}
               onSave={(e) => onSave(e, entry)}
+              onChangeRotateValue={(v) => setRotateValue(entry.type, v)}
+              onStartRotate={() => startRotate(entry.type)}
+              onCancelRotate={() => cancelRotate(entry.type)}
+              onRotate={(e) => onRotate(e, entry)}
+              onStartDelete={() => startDelete(entry.type)}
+              onCancelDelete={() => cancelDelete(entry.type)}
+              onConfirmDelete={() => onDelete(entry)}
             />
           ))}
         </tbody>
@@ -250,16 +402,36 @@ function CredentialRow({
   value,
   busy,
   msg,
+  rotating,
+  rotateValue,
+  confirmingDelete,
   onChangeValue,
   onSave,
+  onChangeRotateValue,
+  onStartRotate,
+  onCancelRotate,
+  onRotate,
+  onStartDelete,
+  onCancelDelete,
+  onConfirmDelete,
 }: {
   entry: CredentialTypeEntry;
   canEdit: boolean;
   value: string;
   busy: boolean;
   msg: RowMsg | null;
+  rotating: boolean;
+  rotateValue: string;
+  confirmingDelete: boolean;
   onChangeValue: (v: string) => void;
   onSave: (e: FormEvent) => void;
+  onChangeRotateValue: (v: string) => void;
+  onStartRotate: () => void;
+  onCancelRotate: () => void;
+  onRotate: (e: FormEvent) => void;
+  onStartDelete: () => void;
+  onCancelDelete: () => void;
+  onConfirmDelete: () => void;
 }) {
   const badge = vaultStatusBadge(entry);
   const satisfied = isSatisfied(entry);
@@ -291,11 +463,25 @@ function CredentialRow({
         </code>
       </td>
 
-      {/* Value — write-only. Masked once satisfied; a write-only input for an
-          editable, unsatisfied row; an honest dash otherwise. NEVER pre-filled;
-          NO reveal affordance anywhere. */}
+      {/* Value — write-only. While ROTATING a satisfied row, a fresh write-only
+          input for the NEW value (same discipline: never pre-filled, NO reveal);
+          otherwise masked once satisfied, a write-only create input for an editable
+          unsatisfied row, or an honest dash. NEVER pre-filled; NO reveal anywhere. */}
       <td>
-        {satisfied ? (
+        {satisfied && rotating && canEdit ? (
+          <input
+            type="password"
+            className="settings__cred-input"
+            value={rotateValue}
+            onChange={(e) => onChangeRotateValue(e.target.value)}
+            placeholder="Paste the new token"
+            data-testid={`cred-rotate-value-${entry.type}`}
+            autoComplete="off"
+            form={`cred-rotate-form-${entry.type}`}
+            aria-label={`New value for ${entry.displayName}`}
+            autoFocus
+          />
+        ) : satisfied ? (
           <span className="settings__cred-masked" data-testid={`cred-masked-${entry.type}`} aria-label="value saved (hidden)">
             {MASKED_VALUE}
           </span>
@@ -372,26 +558,74 @@ function CredentialRow({
             Test
           </button>
 
-          {/* Rotate / Delete — Slice B (after design O-2 lands: backend replace
-              semantics + a narrow RBAC grant). Shown disabled for an editor on a
-              saved credential so the roadmap is visible; nothing dead is wired. */}
-          {canEdit && satisfied ? (
+          {/* Rotate / Delete — Slice B (design O-2, backed by ISI-5816). Only for an
+              editor on a SAVED credential. Three mutually-exclusive modes:
+                • idle           → Rotate + Delete buttons
+                • rotating       → Confirm rotate (submits the PUT form whose input
+                                   lives in the Value cell) + Cancel
+                • confirmingDelete → Confirm delete (danger) + Cancel — an inline
+                                   two-step guard, not a blocking native confirm(). */}
+          {canEdit && satisfied && rotating ? (
+            <form id={`cred-rotate-form-${entry.type}`} onSubmit={onRotate} className="settings__cred-save-form">
+              <button
+                className="btn btn--primary"
+                type="submit"
+                disabled={busy}
+                data-testid={`cred-rotate-confirm-${entry.type}`}
+              >
+                {busy ? "Rotating…" : "Confirm rotate"}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={onCancelRotate}
+                disabled={busy}
+                data-testid={`cred-rotate-cancel-${entry.type}`}
+              >
+                Cancel
+              </button>
+            </form>
+          ) : canEdit && satisfied && confirmingDelete ? (
+            <span className="settings__cred-confirm" data-testid={`cred-delete-confirm-wrap-${entry.type}`}>
+              <span className="muted settings__cred-hint">Delete this credential?</span>
+              <button
+                className="btn btn--danger"
+                type="button"
+                onClick={onConfirmDelete}
+                disabled={busy}
+                data-testid={`cred-delete-confirm-${entry.type}`}
+              >
+                {busy ? "Deleting…" : "Confirm delete"}
+              </button>
+              <button
+                className="btn"
+                type="button"
+                onClick={onCancelDelete}
+                disabled={busy}
+                data-testid={`cred-delete-cancel-${entry.type}`}
+              >
+                Cancel
+              </button>
+            </span>
+          ) : canEdit && satisfied ? (
             <>
               <button
                 className="btn"
                 type="button"
-                disabled
+                onClick={onStartRotate}
+                disabled={busy}
                 data-testid={`cred-rotate-${entry.type}`}
-                title="Rotate ships once backend replace semantics land (design O-2)."
+                title="Replace this credential with a new value."
               >
                 Rotate
               </button>
               <button
                 className="btn btn--danger"
                 type="button"
-                disabled
+                onClick={onStartDelete}
+                disabled={busy}
                 data-testid={`cred-delete-${entry.type}`}
-                title="Delete ships once the backend RBAC grant lands (design O-2)."
+                title="Remove this stored credential."
               >
                 Delete
               </button>

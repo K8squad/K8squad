@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { GET as credentialsGET, POST as credentialsPOST } from "@/app/api/credentials/route";
+import {
+  GET as credentialsGET,
+  POST as credentialsPOST,
+  PUT as credentialsPUT,
+  DELETE as credentialsDELETE,
+} from "@/app/api/credentials/route";
 import { POST as connectPOST } from "@/app/api/credentials/connect/route";
 import { POST as testPOST } from "@/app/api/credentials/[name]/test/route";
 
@@ -139,6 +144,106 @@ describe("POST /api/credentials — the BYO write proxy (ISI-3983)", () => {
         method: "POST",
         headers: { "content-type": "text/plain" },
         body: "name=k",
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("PUT /api/credentials — the vault rotate proxy (ISI-5860 / design O-2)", () => {
+  it("forwards the caller's cookie + body as a PUT and relays 200 secretRef verbatim (never the value)", async () => {
+    const fetchMock = stubFetch(200, { secretRef: "secret://squad-a/proj-proj-a-cred-github" });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await credentialsPUT(
+      makeReq("/api/credentials", {
+        method: "PUT",
+        headers: { cookie: "ksquad_session=dev-token-abc", "content-type": "application/json" },
+        body: JSON.stringify({ value: "ghp_rotated", type: "github", projectId: "proj-a" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const call = fetchMock.mock.calls[0] as unknown[];
+    const init = call[1] as { method: string; headers: Headers; body?: string };
+    expect(init.method).toBe("PUT");
+    expect(init.headers.get("cookie")).toBe("ksquad_session=dev-token-abc");
+    expect(init.body).toContain("github");
+    const out = await res.json();
+    expect(out.secretRef).toBe("secret://squad-a/proj-proj-a-cred-github");
+    expect(JSON.stringify(out)).not.toContain("ghp_rotated");
+  });
+
+  it("relays a 409 'still being removed' retry verbatim (the recreate-after-delete race)", async () => {
+    globalThis.fetch = stubFetch(409, { error: "the previous credential is still being removed; retry the rotation" }) as unknown as typeof fetch;
+    const res = await credentialsPUT(
+      makeReq("/api/credentials", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: "x", type: "github", projectId: "proj-a" }),
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toContain("still being removed");
+  });
+
+  it("fails closed on a cross-origin rotate BEFORE touching the apiserver (CSRF posture)", async () => {
+    const fetchMock = stubFetch(200, {});
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await credentialsPUT(
+      makeReq("/api/credentials", {
+        method: "PUT",
+        headers: { host: "console.local", origin: "https://evil.example", "content-type": "application/json" },
+        body: JSON.stringify({ value: "v", type: "github", projectId: "proj-a" }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /api/credentials — the vault delete proxy (ISI-5860 / design O-2)", () => {
+  it("forwards the caller's cookie + body as a DELETE and relays 200", async () => {
+    const fetchMock = stubFetch(200, {});
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await credentialsDELETE(
+      makeReq("/api/credentials", {
+        method: "DELETE",
+        headers: { cookie: "ksquad_session=dev-token-abc", "content-type": "application/json" },
+        body: JSON.stringify({ type: "github", projectId: "proj-a" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const call = fetchMock.mock.calls[0] as unknown[];
+    const init = call[1] as { method: string; headers: Headers; body?: string };
+    expect(init.method).toBe("DELETE");
+    expect(init.headers.get("cookie")).toBe("ksquad_session=dev-token-abc");
+    expect(init.body).toContain("github");
+  });
+
+  it("relays a 404 VERBATIM — existence-hiding, never re-mapped (the FE treats it as 'already gone')", async () => {
+    globalThis.fetch = stubFetch(404, { error: "no credential of this type for this project" }) as unknown as typeof fetch;
+    const res = await credentialsDELETE(
+      makeReq("/api/credentials", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ type: "github", projectId: "proj-a" }),
+      }),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("fails closed on a cross-origin delete BEFORE touching the apiserver (CSRF posture)", async () => {
+    const fetchMock = stubFetch(200, {});
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await credentialsDELETE(
+      makeReq("/api/credentials", {
+        method: "DELETE",
+        headers: { host: "console.local", origin: "https://evil.example", "content-type": "application/json" },
+        body: JSON.stringify({ type: "github", projectId: "proj-a" }),
       }),
     );
     expect(res.status).toBe(403);
