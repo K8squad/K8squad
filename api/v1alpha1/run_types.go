@@ -541,6 +541,15 @@ type GrantedSkill struct {
 	// +optional
 	// +listType=atomic
 	Permissions []string `json:"permissions,omitempty"`
+
+	// CredentialType is the raw ksquad.io/credential-type annotation value the
+	// Skill carries (WS-9 S5 go-live gate, ISI-5818/ISI-5849) — a comma-separated
+	// ANY-OF credential-type set for a [sec]-gated skill, empty for an ungated
+	// one. Recorded as provenance only (a TYPE token, never credential material —
+	// ADR-045) so the driver's pre-dispatch gate reads the gated set from the
+	// immutable manifest without re-listing Skills.
+	// +optional
+	CredentialType string `json:"credentialType,omitempty"`
 }
 
 // LLMInteraction is one per-run LLM call summary (ISI-4238): what was

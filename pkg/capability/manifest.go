@@ -63,11 +63,12 @@ func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint, skills [
 	for _, skill := range skills {
 		// Convert internal GrantedSkill to API type for serialization
 		apiSkill := api.GrantedSkill{
-			Namespace:   skill.Namespace,
-			Name:        skill.Name,
-			SourceType:  skill.SourceType,
-			Inline:      skill.Inline,
-			Permissions: skill.Permissions,
+			Namespace:      skill.Namespace,
+			Name:           skill.Name,
+			SourceType:     skill.SourceType,
+			Inline:         skill.Inline,
+			Permissions:    skill.Permissions,
+			CredentialType: skill.CredentialType,
 		}
 		if skill.Git != nil {
 			apiSkill.Git = skill.Git

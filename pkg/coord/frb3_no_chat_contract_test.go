@@ -514,6 +514,7 @@ var allowedSurface = map[string]string{
 	"ReasonCredentialExpired":              "§7.4 reason: credential expired (refresh resume)",
 	"ReasonCredentialRotated":              "§7.4 reason: credential rotated (refresh resume)",
 	"ReasonEndpointUnreachable":            "§7.4/7.5 reason: BYO endpoint unreachable (refresh resume)",
+	"ReasonCredentialRequired":             "§4/§5 (WS-9 S5 go-live gate, ISI-5849) reason: gated skill's credential type unmaterialized — pre-dispatch admission hold (refresh resume)",
 	"ClassClaudeOAuth":                     "§7.2 credential class: per-user Claude OAuth seat token",
 	"ClassAPIKey":                          "§7.3 credential class: long-lived provider API key",
 	"ClassBYOEndpoint":                     "§7.5 credential class: BYO/Ollama endpoint URL (+ optional token)",

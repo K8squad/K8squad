@@ -169,6 +169,39 @@ func EvaluateRunGate(skills []GatedSkill, satisfied map[string]bool) RunGateDeci
 	return d
 }
 
+// ProjectSatisfiedTypes builds the oracle's satisfied set for a Run's project
+// (the EvaluateRunGate input), fail-closed and PROJECT-SCOPED by the credential
+// Secret NAME — never a namespace label-list, which would over-admit across the
+// sibling projects that share a team namespace (ISI-5849). For each candidate
+// credential type it computes the project-encoded materialized Secret name
+// (MaterializedSecretName) and marks the type satisfied iff a Secret of EXACTLY
+// that name is present (present(name) == true). An unknown type can never be
+// satisfied (MaterializedSecretName returns ok=false, so it is skipped) — the
+// same fail-closed property the gate relies on, enforced at the input boundary
+// so a malformed caller cannot seed an unknown type into the satisfied set.
+//
+// candidateTypes is typically the deduped union of the Run's gated skills'
+// declared types (SplitCredentialTypes over each GatedSkill.Annotation);
+// present is the live membership probe the controller supplies (a Secret Get /
+// cache lookup scoped to the project namespace). Pure given present: the whole
+// project-scoping decision is unit-testable with a map-backed present.
+func ProjectSatisfiedTypes(project string, candidateTypes []string, present func(secretName string) bool) map[string]bool {
+	satisfied := map[string]bool{}
+	if present == nil {
+		return satisfied
+	}
+	for _, t := range candidateTypes {
+		name, ok := MaterializedSecretName(project, t)
+		if !ok {
+			continue // unknown type: never materializable, fail closed
+		}
+		if present(name) {
+			satisfied[t] = true
+		}
+	}
+	return satisfied
+}
+
 // dedupeSorted removes adjacent duplicates from an already-sorted slice,
 // returning nil for an empty input so an admitted decision carries no list.
 func dedupeSorted(sorted []string) []string {
