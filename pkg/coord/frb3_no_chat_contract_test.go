@@ -111,6 +111,7 @@ var allowedSurface = map[string]string{
 	"MeshRegistry":                "AgentMesh §5.1: the coord.mesh_endpoint store (gateway write side, Supervisor lookup side)",
 	"MeshRegistry.Register":       "AgentMesh §5.1: idempotent endpoint upsert by a gateway (no custody, no content)",
 	"MeshRegistry.HeartbeatPod":   "AgentMesh §5.1: pod-scoped last_seen_at refresh (same wire as register)",
+	"MeshRegistry.PrunePod":       "AgentMesh §5.1: per-heartbeat reconciliation delete of a pod's superseded endpoint ids (row hygiene, no custody, no content)",
 	"MeshRegistry.DeregisterPod":  "AgentMesh §2.4: clean-shutdown/drain delete by pod",
 	"MeshRegistry.LookupTeamRole": "AgentMesh §5.2 D3.2: live (team, role) endpoint lookup, LRU-ordered; the route leg's only read",
 	"MeshRegistry.Sweep":          "AgentMesh §2.4: TTL-expired row hygiene delete (correctness never depends on it)",

@@ -165,12 +165,12 @@ func TestGatewayHTTP_Ready(t *testing.T) {
 		Serving  bool `json:"serving"`
 		Ready    bool `json:"ready"`
 		Idle     int  `json:"idle"`
-		Processs int  `json:"processes"`
+		Processes int  `json:"processes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.Ready || body.Processs != 2 || body.Idle != 2 {
+	if !body.Ready || body.Processes != 2 || body.Idle != 2 {
 		t.Fatalf("ready body = %+v, want ready pool of 2 idle", body)
 	}
 }
