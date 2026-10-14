@@ -117,3 +117,73 @@ func TestNFR2SecretNeverInTelemetry(t *testing.T) {
 		t.Fatalf("NFR-2 breach: credential value leaked into LOG output: %s", logs)
 	}
 }
+
+// TestNFR2ToolCredentialAuditSpansNoLeak is the WS-9 S7 (ISI-5820, threat-model
+// T7) audit-and-hygiene contract for the three mutating vault verbs. It drives a
+// full lifecycle — POST (materialize) → PUT (rotate to a FRESH value) → DELETE —
+// through the span+log capture harness and asserts two things at once:
+//
+//	AUDIT COMPLETENESS: each verb emits its ksquad.credential.{create,rotate,delete}
+//	span carrying the audit tuple (actor principal, credential type, project,
+//	namespace, outcome) — the non-secret "who did what to which credential" record;
+//
+//	NO VALUE LEAKAGE: NEITHER the original nor the rotated credential value appears
+//	in ANY span or log record, on the success path or any branch (NFR-2).
+//
+// Positive controls (span names + attribute keys + non-secret values present)
+// guard against the sweep passing vacuously on an empty or mis-wired capture.
+func TestNFR2ToolCredentialAuditSpansNoLeak(t *testing.T) {
+	readSpans, readLogs := telemetryCapture(t)
+
+	teamID := uuid.MustParse("11111111-2222-3333-4444-5555555555cc")
+	svc, _ := newSecretWriter(t,
+		team("ksquad-team-beta", "beta", teamID.String()),
+		project("ksquad-team-beta", "widget", "https://github.com/acme/widget"),
+	)
+	h := testSecretWriteServer(t, teamID, svc)
+
+	// create → rotate(fresh value) → delete, the full mutating lifecycle.
+	if rec := postCredential(t, h, `{"type":"github","projectId":"widget","value":"`+toolCredCanary+`"}`, true); rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec := putCredential(t, h, `{"type":"github","projectId":"widget","value":"`+toolCredRotatedCanary+`"}`, true); rec.Code != http.StatusOK {
+		t.Fatalf("rotate: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec := deleteCredential(t, h, `{"type":"github","projectId":"widget"}`, true); rec.Code != http.StatusOK {
+		t.Fatalf("delete: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	spans := readSpans()
+	logs := readLogs()
+
+	// --- positive control: all three audit spans were captured --------------
+	for _, name := range []string{"ksquad.credential.create", "ksquad.credential.rotate", "ksquad.credential.delete"} {
+		if !strings.Contains(spans, name) {
+			t.Fatalf("positive control: %s span not captured — capture broken, the sweep below would pass vacuously (spans: %s)", name, spans)
+		}
+	}
+
+	// --- audit completeness: the masked payload tuple is on the spans -------
+	// Attribute KEYS (the contract) and their non-secret VALUES (actor, project,
+	// type) must all be present; the value envelope is NOT.
+	for _, key := range []string{"credential.principal", "credential.type", "credential.project", "k8s.namespace.name", "outcome"} {
+		if !strings.Contains(spans, key) {
+			t.Fatalf("audit span incomplete: attribute %q absent from the credential spans (spans: %s)", key, spans)
+		}
+	}
+	for _, val := range []string{"user:alice", "github", "widget", "ksquad-team-beta"} {
+		if !strings.Contains(spans, val) {
+			t.Fatalf("audit payload incomplete: expected non-secret audit value %q absent from spans (spans: %s)", val, spans)
+		}
+	}
+
+	// --- NFR-2: NEITHER credential value may appear in span OR log output ----
+	for _, canary := range []string{toolCredCanary, toolCredRotatedCanary} {
+		if strings.Contains(spans, canary) {
+			t.Fatalf("NFR-2 breach: credential value %q leaked into SPAN output: %s", canary, spans)
+		}
+		if strings.Contains(logs, canary) {
+			t.Fatalf("NFR-2 breach: credential value %q leaked into LOG output: %s", canary, logs)
+		}
+	}
+}

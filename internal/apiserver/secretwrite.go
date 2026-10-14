@@ -563,7 +563,17 @@ type toolCredTarget struct {
 // the body). This is the single resolution seam so the three verbs can never
 // drift on which Secret a given (project, type) maps to.
 func (s *SecretWriteService) resolveToolCredTarget(ctx context.Context, span trace.Span, w http.ResponseWriter, r *http.Request, author discussion.AuthorContext, req credentialCreateRequest, counter metric.Int64Counter, requireValue bool) (toolCredTarget, bool) {
-	funnelAttrs(span, attribute.String("credential.type", req.Type))
+	// Audit identity on the span (WS-9 S7 / ISI-5820, threat-model T7): the
+	// mutating op's actor and credential type. These are unbounded identifiers,
+	// so they ride as SPAN attributes ONLY — never metric labels — matching the
+	// team.id discipline in obsfunnel.go. The credential VALUE rides nowhere
+	// (NFR-2, enforced by TestNFR2SecretNeverInTelemetry). credential.project and
+	// k8s.namespace.name are stamped once the tenancy resolution succeeds below,
+	// completing the audit tuple (actor, type, project, namespace, + outcome).
+	funnelAttrs(span,
+		attribute.String("credential.type", req.Type),
+		attribute.String("credential.principal", author.Principal),
+	)
 
 	// Fail CLOSED on an unknown type BEFORE anything else: the registry is the
 	// authority for the Secret name + data key, so a type it does not map cannot
@@ -640,6 +650,14 @@ func (s *SecretWriteService) resolveToolCredTarget(ctx context.Context, span tra
 		writeJSONError(w, http.StatusBadGateway, "credential name derivation failed")
 		return toolCredTarget{}, false
 	}
+
+	// Complete the audit tuple on the span now that tenancy resolved: the
+	// canonical project name and the namespace the Secret lands in. Both are
+	// non-secret, high-cardinality identifiers → span-only (WS-9 S7 / ISI-5820).
+	funnelAttrs(span,
+		attribute.String("credential.project", projectName),
+		attribute.String("k8s.namespace.name", ns),
+	)
 
 	return toolCredTarget{binding: binding, ns: ns, projectName: projectName, secretName: secretName}, true
 }
