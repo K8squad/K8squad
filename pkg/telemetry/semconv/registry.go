@@ -154,6 +154,8 @@ var SpanConventions = []SpanConvention{
 				Brief: "Mapped outcome stamped at RunEnd (success|error|unknown)."},
 			Attribute{Key: "ksquad.model.tier", Type: TypeString, Requirement: Recommended, Stability: Stable,
 				Brief: "Which Model-Per-Role tier supplied the run's effective model at dispatch (agent|role|default) — the resolved origin so an operator sees WHY the run used its model, without re-deriving the tier walk (ISI-4430 S5). Empty on runtime-default runs. Run root only; the per-step serving model of a fallback rides gen_ai.response.model + ksquad.llm.fallback on llm.call."},
+			Attribute{Key: "ksquad.run.path", Type: TypeString, Requirement: Required, Stability: Stable,
+				Brief: "Which dispatch path executed the run: \"claim\" (legacy sandbox-spawn) | \"mesh\" (AgentMesh route-to-standing-agent). AgentMesh strangler S0 (ISI-5833, chapter §13.4 I6). Run root only, like model.tier. Emitted on EVERY run today with value \"claim\" (the legacy default) so the per-team mesh canary is never blind — a mesh regression must not dilute into the global ISI-5443 failure rate (Obs-O3 / Brainstormer-F1). Bounded two-value set ⇒ safe as a metric label; the kill-criteria SLIs (§13.5) slice run success by it. The mesh dispatch leg stamps \"mesh\" at S3. NOTE: canary success/failure is read from authoritative run-state, NOT span presence — tail-sampling drops spans (k8squad-dt-verify-tailsampling-confound)."},
 		),
 	},
 	{
@@ -297,6 +299,30 @@ func lifecyclePayload(extra ...Attribute) []Attribute {
 	return append(base, extra...)
 }
 
+// meshProcessPayload is the identity + correlation set every AgentMesh process
+// lifecycle event (ISI-5833 I9) carries. trace_id is REQUIRED on every event so
+// the mesh event spine joins the trace spine (D4, same rule as lifecyclePayload)
+// — the conformance test enforces it. team/role/pool are the bounded routing
+// identity of the standing process (also the shared metric-label set, ISI-5813
+// finding (b)); pod/process_id pin the concrete process instance.
+func meshProcessPayload(extra ...Attribute) []Attribute {
+	base := []Attribute{
+		{Key: "trace_id", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S0",
+			Brief: "The W3C trace id of the mesh operation — joins this event to the trace spine (D4)."},
+		{Key: "team", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S0",
+			Brief: "The team the standing process serves (routing identity; bounded metric label)."},
+		{Key: "role", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S0",
+			Brief: "The role the process is provisioned for (e.g. coder; bounded metric label)."},
+		{Key: "pool", Type: TypeString, Requirement: Recommended, Stability: Planned, Workstream: "S0",
+			Brief: "The RolePool that provisioned the process (I1)."},
+		{Key: "pod", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S0",
+			Brief: "The pod hosting the standing process (data-plane locality)."},
+		{Key: "process_id", Type: TypeString, Requirement: Recommended, Stability: Planned, Workstream: "S0",
+			Brief: "Stable id of the role-provisioned process instance at the Gateway."},
+	}
+	return append(base, extra...)
+}
+
 // EventConventions is the five ADR-0021 lifecycle events (WS-D). They do not
 // exist on the bus yet; this registry is the contract WS-D lands against, and
 // the events ride the existing run/work_item entities + subject taxonomy (no
@@ -329,6 +355,46 @@ var EventConventions = []EventConvention{
 		Brief: "The agent run has reached a terminal state.",
 		PayloadFields: lifecyclePayload(Attribute{Key: "state", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "WS-D",
 			Brief: "Terminal state (completed|failed|canceled)."}),
+	},
+	// --- AgentMesh self-telemetry events (ISI-5833 I9, chapter §13.4 S0) ------
+	// FIVE edge-triggered lifecycle events for a standing role-provisioned agent
+	// process, published on the `mesh` entity (admitted by migration 0038 + the
+	// pkg/events.Entities widen). They do not exist on the bus yet — the Gateway
+	// that emits them lands at S2/S3; this registry is the contract that step
+	// lands against (same discipline as the WS-D events above). Stability:Planned.
+	//
+	// pool_saturated is DELIBERATELY NOT here (ObsAgent schema-delta consult
+	// ISI-5813, finding (a)🔴): saturation is a sampled threshold with no
+	// transactional anchor that flaps under an at-least-once relay and is already
+	// derivable from the mesh.processes.active{state=busy}==max gauge — it is
+	// METRIC-ONLY. These five are genuinely edge-triggered and correct on NATS.
+	{
+		Entity: "mesh", EventType: "mesh.register", Stability: Planned, Workstream: "S0",
+		Brief:         "A role-provisioned agent process registered with its team Gateway and is ready to receive routed runs.",
+		PayloadFields: meshProcessPayload(),
+	},
+	{
+		Entity: "mesh", EventType: "mesh.deregister", Stability: Planned, Workstream: "S0",
+		Brief:         "A role-provisioned agent process left the Gateway (drain / pod recreate) and no longer receives routed runs.",
+		PayloadFields: meshProcessPayload(),
+	},
+	{
+		Entity: "mesh", EventType: "mesh.hibernate", Stability: Planned, Workstream: "S0",
+		Brief: "A conversational agent process was hibernated (S4; coord.claim released→parked at this edge, never held frozen — D9.1). Batch runs never hibernate.",
+		PayloadFields: meshProcessPayload(Attribute{Key: "claim_released", Type: TypeBool, Requirement: Required, Stability: Planned, Workstream: "S0",
+			Brief: "True — the at-most-once claim was released to `parked` at hibernate, NOT held across the frozen process (D9.1 claim-never-frozen)."}),
+	},
+	{
+		Entity: "mesh", EventType: "mesh.wake", Stability: Planned, Workstream: "S0",
+		Brief: "A hibernated process was woken (S4; claim re-acquired, model rebound at wake = respawn-next-model for batch, SIGCONT for conversational).",
+		PayloadFields: meshProcessPayload(Attribute{Key: "model", Type: TypeString, Requirement: Recommended, Stability: Planned, Workstream: "S0",
+			Brief: "The model bound at wake (rebind == respawn for P1)."}),
+	},
+	{
+		Entity: "mesh", EventType: "mesh.stop", Stability: Planned, Workstream: "S0",
+		Brief: "A role-provisioned agent process stopped (terminal). Backs the process_stopped self-telemetry signal (I9).",
+		PayloadFields: meshProcessPayload(Attribute{Key: "reason", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S0",
+			Brief: "Why the process stopped (terminated|oom|error|drain) — must stay within the pre-rollout ISI-5443 failure taxonomy (kill-criteria #5)."}),
 	},
 }
 

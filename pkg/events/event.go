@@ -47,6 +47,12 @@ var Entities = map[string]bool{
 	"artifact":  true,
 	"memory":    true,
 	"scm":       true,
+	// mesh: AgentMesh self-telemetry lifecycle events for a standing
+	// role-provisioned agent process (register|deregister|hibernate|wake|stop).
+	// Admitted ahead of any mesh behavior as strangler step S0 (ISI-5833,
+	// chapter §13.4 I6); mirrors the 0038 CHECK widen. The emitters land in
+	// S2/S3 — until then this family simply goes unused.
+	"mesh": true,
 }
 
 // Event is one domain event captured atomically with the state change that
@@ -66,7 +72,7 @@ type Event struct {
 // validate enforces the invariants Capture depends on before it touches the DB.
 func (e Event) validate() error {
 	if !Entities[e.Entity] {
-		return fmt.Errorf("events: invalid entity %q (allowed: run|work_item|artifact|memory|scm)", e.Entity)
+		return fmt.Errorf("events: invalid entity %q (allowed: run|work_item|artifact|memory|scm|mesh)", e.Entity)
 	}
 	if e.ProjectID == "" {
 		return fmt.Errorf("events: project_id is required (subject taxonomy + tenancy, §12.1)")

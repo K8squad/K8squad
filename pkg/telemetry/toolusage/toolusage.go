@@ -146,6 +146,15 @@ const (
 	// origin so an operator sees WHY the run used its model without re-deriving
 	// the tier walk (ISI-4430 S5). Stamped on the run.start root only.
 	attrModelTier = attribute.Key("ksquad.model.tier")
+	// attrRunPath records which dispatch path executed the run: "claim" (legacy
+	// sandbox-spawn) | "mesh" (AgentMesh route-to-standing-agent). AgentMesh
+	// strangler step S0 (ISI-5833, chapter §13.4 I6). Stamped on the run.start
+	// root ONLY, like ksquad.model.tier — a run-level dispatch fact, not a
+	// per-span one. Emitted on EVERY run, defaulting to "claim" when Labels
+	// leaves it empty, so the per-team mesh canary is never blind: a mesh
+	// regression must not dilute into the global failure rate (Obs-O3). The mesh
+	// dispatch leg sets Labels.RunPath="mesh" at S3; today every run is "claim".
+	attrRunPath = attribute.Key("ksquad.run.path")
 	// attrRunState carries the §3.1 terminal state on run.end
 	// (completed|failed|canceled) so the trace answers "how did it end"
 	// without joining back to the CR (ISI-4238).
@@ -274,6 +283,13 @@ type Labels struct {
 	// model of a fallback is already carried by gen_ai.response.model +
 	// ksquad.llm.fallback on the llm.call span. Empty when unresolved.
 	ModelTier string
+	// RunPath is the dispatch path that executed the run: "claim" (legacy
+	// sandbox-spawn) | "mesh" (AgentMesh route-to-standing-agent), stamped as
+	// ksquad.run.path on the run.start root ONLY (AgentMesh S0, ISI-5833 I6).
+	// Empty ⇒ "claim" (the legacy default): RunStart stamps run.path on EVERY
+	// run so the mesh canary is never blind. The mesh dispatch leg sets "mesh"
+	// at S3; until then no caller sets it and every run reads "claim".
+	RunPath string
 	// Endpoint is the resolved model-provider route endpoint (ModelRoute.Endpoint,
 	// e.g. http://ollama:11434/v1) for BYO/Ollama-routed runs (ISI-4973). Like
 	// ModelTier it is deliberately OFF spanAttrs(): it is read ONLY by
@@ -800,6 +816,15 @@ func (m *Mapper) RunStart(ctx context.Context, labels Labels, taskID string) (co
 	if labels.ModelTier != "" {
 		attrs = append(attrs, attrModelTier.String(labels.ModelTier))
 	}
+	// ksquad.run.path rides the run root ONLY (AgentMesh S0, ISI-5833 I6), like
+	// model.tier. Stamped UNCONDITIONALLY — empty Labels.RunPath defaults to
+	// "claim" (the legacy sandbox-spawn path) — so every run carries the label
+	// today and the per-team mesh canary is never blind when routing lands (S3).
+	runPath := labels.RunPath
+	if runPath == "" {
+		runPath = "claim"
+	}
+	attrs = append(attrs, attrRunPath.String(runPath))
 	// ISI-5012: run.start is the flow-first span of a run — mark it as the
 	// root so a backend anchors the run's trace on it instead of inferring a
 	// root from a missing parent (the "zero request.is_root_span" gap).

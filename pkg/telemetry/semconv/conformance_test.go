@@ -185,8 +185,9 @@ func TestConformance_SpanNamesAgree(t *testing.T) {
 // spec, not a live emission.)
 func TestConformance_LifecycleEventsWellFormed(t *testing.T) {
 	// Mirrors pkg/events.Entities (kept as a literal to avoid a heavy import
-	// into the semconv contract package).
-	validEntities := map[string]bool{"run": true, "work_item": true, "artifact": true, "memory": true, "scm": true}
+	// into the semconv contract package). mesh: AgentMesh self-telemetry entity
+	// (ISI-5833 S0; migration 0038 + pkg/events.Entities widen).
+	validEntities := map[string]bool{"run": true, "work_item": true, "artifact": true, "memory": true, "scm": true, "mesh": true}
 
 	seen := map[string]bool{}
 	for _, ec := range ksqsemconv.EventConventions {

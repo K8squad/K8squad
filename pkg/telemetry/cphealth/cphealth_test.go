@@ -101,6 +101,54 @@ func TestObserveRunPhaseResurrectionSuppressed(t *testing.T) {
 	}
 }
 
+// TestObserveRunEnd is the AgentMesh S0 kill-criteria SLI contract (ISI-5833
+// I10 / §13.5): each authoritative Run terminal transition increments the
+// non-sampled run-outcome counter under the bounded (outcome, run.path, team)
+// labels; an empty run.path defaults to "claim" (the legacy path) so every run
+// is attributed and the mesh canary is never blind; and the nil receiver is a
+// safe no-op so an unwired reconciler calls it unconditionally.
+func TestObserveRunEnd(t *testing.T) {
+	meter, reader := newTestMeter(t)
+	m, err := Register(meter, Options{})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var nilM *Metrics
+	nilM.ObserveRunEnd(context.Background(), "success", "claim", "alpha") // must not panic
+
+	m.ObserveRunEnd(context.Background(), "success", "claim", "alpha")
+	m.ObserveRunEnd(context.Background(), "success", "claim", "alpha")
+	m.ObserveRunEnd(context.Background(), "error", "claim", "alpha")
+	m.ObserveRunEnd(context.Background(), "success", "mesh", "alpha")
+	m.ObserveRunEnd(context.Background(), "success", "", "beta") // empty path ⇒ "claim"
+
+	sum, ok := collect(t, reader)[runsEndName].Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("run-end metric is not an int64 sum: %T", collect(t, reader)[runsEndName].Data)
+	}
+	type key struct{ outcome, path, team string }
+	got := map[key]int64{}
+	for _, dp := range sum.DataPoints {
+		got[key{
+			attrVal(dp.Attributes, attrOutcome),
+			attrVal(dp.Attributes, attrRunPath),
+			attrVal(dp.Attributes, attrTeam),
+		}] = dp.Value
+	}
+	if got[key{"success", "claim", "alpha"}] != 2 {
+		t.Errorf("success/claim/alpha = %d, want 2", got[key{"success", "claim", "alpha"}])
+	}
+	if got[key{"error", "claim", "alpha"}] != 1 {
+		t.Errorf("error/claim/alpha = %d, want 1", got[key{"error", "claim", "alpha"}])
+	}
+	if got[key{"success", "mesh", "alpha"}] != 1 {
+		t.Errorf("success/mesh/alpha = %d, want 1 (the canary path slice)", got[key{"success", "mesh", "alpha"}])
+	}
+	if got[key{"success", "claim", "beta"}] != 1 {
+		t.Errorf("empty run.path must default to \"claim\": success/claim/beta = %d, want 1", got[key{"success", "claim", "beta"}])
+	}
+}
+
 func TestRunsActiveGaugeLabels(t *testing.T) {
 	meter, reader := newTestMeter(t)
 	_, err := Register(meter, Options{
