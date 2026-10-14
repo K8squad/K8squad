@@ -84,6 +84,15 @@ type fakeClaims struct {
 	requeueOK   bool
 	requeueErr  error
 	requeueCall bool
+
+	gateHoldOK      bool
+	gateHoldErr     error
+	gateHoldMissing []string
+	gateHoldCall    bool
+
+	gateResumeOK   bool
+	gateResumeErr  error
+	gateResumeCall bool
 }
 
 func (f *fakeClaims) State(context.Context, string) (ClaimState, bool, error) {
@@ -122,6 +131,15 @@ func (f *fakeClaims) CancelDue(context.Context) ([]string, error) { return f.can
 func (f *fakeClaims) RequeuePaused(context.Context, string) (bool, error) {
 	f.requeueCall = true
 	return f.requeueOK, f.requeueErr
+}
+func (f *fakeClaims) GateHold(_ context.Context, workItemID string, missingTypes []string) (bool, error) {
+	f.gateHoldCall = true
+	f.gateHoldMissing = missingTypes
+	return f.gateHoldOK, f.gateHoldErr
+}
+func (f *fakeClaims) GateResume(context.Context, string) (bool, error) {
+	f.gateResumeCall = true
+	return f.gateResumeOK, f.gateResumeErr
 }
 
 type fakePauses struct {

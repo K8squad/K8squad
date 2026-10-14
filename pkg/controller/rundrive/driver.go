@@ -64,18 +64,23 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/contextasm"
+	"github.com/K8squad/K8squad/pkg/controller/credential"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
+	"github.com/K8squad/K8squad/pkg/toolcred"
 )
 
 // workItemField is the Run index key the resume kick lists Runs by (a work
@@ -180,6 +185,19 @@ type Claims interface {
 	// RequeuePaused is the 3.7 resume re-entry: guarded paused(rate_limited) →
 	// dispatching (custody retained — short pauses keep the checkout), audited.
 	RequeuePaused(ctx context.Context, workItemID string) (ok bool, err error)
+	// GateHold is the WS-9 S5 go-live gate's pre-dispatch admission hold
+	// (ISI-5818/ISI-5849): guarded claiming_sandbox → paused(credential_required)
+	// when a [sec]-gated skill's declared credential type(s) are unsatisfied for
+	// the project. missingTypes rides the outbox payload so the console names
+	// which type(s) to add. Custody retained. ok=false ⇒ not at the pre-dispatch
+	// edge (already held/advanced/terminal) — a no-op.
+	GateHold(ctx context.Context, workItemID string, missingTypes []string) (ok bool, err error)
+	// GateResume is the gate's resume re-entry (ISI-5849): guarded
+	// paused(credential_required) → claiming_sandbox once the pre-dispatch gate
+	// re-evaluates to admitted (a managed-credential Secret landed), so the
+	// machine re-drives the edge and dispatches. Custody retained. ok=false ⇒
+	// not parked on the gate hold.
+	GateResume(ctx context.Context, workItemID string) (ok bool, err error)
 }
 
 // Pauses is the 3.7 episode surface (bound to coord.ProdResumeStore).
@@ -494,6 +512,45 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			"work_item.state", cs.ItemState)
 		noopTick = true
 		return ctrl.Result{}, nil
+	}
+
+	// WS-9 S5 go-live gate (ISI-5818/ISI-5849): PRE-DISPATCH admission. At the
+	// claiming_sandbox edge — the step the machine would next advance to
+	// dispatching — and on a resume re-entry from a prior hold, evaluate the
+	// toolcred gate oracle over the Run's recorded CapabilityManifest against the
+	// project's materialized credential types. A Run granting a [sec]-gated skill
+	// whose declared type(s) are unsatisfied is withheld on
+	// paused(credential_required) (fail-closed, any-of) before the machine
+	// provisions the sandbox dispatch; a satisfied or ungated Run advances
+	// normally. This is the first production consumer of the credential-pause
+	// loop (7.4/7.6 machinery had no callers).
+	if cs.Step == reconcile.StepClaimingSandbox || cs.Step == reconcile.StepPausedCredentialRequired {
+		decision, gerr := r.evaluateGoLiveGate(ctx, &run)
+		if gerr != nil {
+			return ctrl.Result{}, fmt.Errorf("rundrive: go-live gate for %s: %w", req.NamespacedName, gerr)
+		}
+		if !decision.Admitted {
+			if _, herr := r.Claims.GateHold(ctx, run.Spec.WorkItemRef, decision.MissingTypes); herr != nil {
+				return ctrl.Result{}, fmt.Errorf("rundrive: gate hold for %s: %w", req.NamespacedName, herr)
+			}
+			// A fresh hold (claiming_sandbox → paused) moved the durable step;
+			// wake the projector so the credential-required Paused renders now.
+			if cs.Step == reconcile.StepClaimingSandbox && r.NotifyPhase != nil {
+				r.NotifyPhase(&run)
+			}
+			noopTick = true // withheld pre-dispatch; nothing dispatched this pass
+			return ctrl.Result{RequeueAfter: continueDelay}, nil
+		}
+		// Admitted. If we were parked on the hold, move back onto the happy path
+		// so the machine re-drives the edge and dispatches this same pass.
+		if cs.Step == reconcile.StepPausedCredentialRequired {
+			if _, rerr := r.Claims.GateResume(ctx, run.Spec.WorkItemRef); rerr != nil {
+				return ctrl.Result{}, fmt.Errorf("rundrive: gate resume for %s: %w", req.NamespacedName, rerr)
+			}
+			if r.NotifyPhase != nil {
+				r.NotifyPhase(&run)
+			}
+		}
 	}
 
 	// 3.1 drive: bind the per-Run machine and run it toward a terminal step.
@@ -1033,6 +1090,61 @@ func isPaused(s reconcile.Step) bool {
 // controller's channel source; tests observe the kicks).
 func (r *Driver) ResumeEvents() <-chan event.TypedGenericEvent[client.Object] { return r.resumeCh }
 
+// evaluateGoLiveGate runs the WS-9 S5 go-live gate oracle for a Run
+// (ISI-5818/ISI-5849): it reads the gated skills from the Run's recorded
+// CapabilityManifest and builds the project's satisfied credential-type set
+// fail-closed and PROJECT-SCOPED by the materialized Secret NAME — never a
+// namespace label-list, which over-admits across sibling projects that share a
+// team namespace. The project name is the Run's canonical ProjectRef.Name (the
+// same Project CR name S2 feeds toolcred.MaterializedSecretName), so the probed
+// Secret names reproduce exactly what the credential vault materialized. A Run
+// with no gated skills admits with no work (nothing to withhold).
+func (r *Driver) evaluateGoLiveGate(ctx context.Context, run *api.Run) (toolcred.RunGateDecision, error) {
+	gated := capability.GatedSkillsFromManifest(run.Status.CapabilityManifest)
+	if len(gated) == 0 {
+		return toolcred.RunGateDecision{Admitted: true}, nil
+	}
+	project := run.Spec.ProjectRef.Name
+	ns := run.Namespace
+	satisfied := toolcred.ProjectSatisfiedTypes(project, capability.CandidateCredentialTypes(gated),
+		func(secretName string) bool {
+			var sec corev1.Secret
+			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: secretName}, &sec); err != nil {
+				return false // NotFound (or any read error) ⇒ unsatisfied: fail closed
+			}
+			// Defence in depth: only a managed-credential Secret (the vault's S2
+			// write path stamps the label) satisfies the gate, never a hand-rolled
+			// Secret that happens to collide with the deterministic name.
+			return sec.Labels[credential.LabelManagedCredential] != ""
+		})
+	return toolcred.EvaluateRunGate(gated, satisfied), nil
+}
+
+// runsForManagedSecret maps a managed-credential Secret event to re-drive
+// requests for every Run in the Secret's namespace (ISI-5849 resume). A
+// managed-credential Secret landing (or rotating) in a team namespace means a
+// declared credential type for some project just became materialized; re-kicking
+// the namespace's Runs lets each one's pre-dispatch gate re-evaluate and, now
+// satisfied, advance out of paused(credential_required). The level-triggered
+// Reconcile is a no-op for Runs not parked on the hold (the gate short-circuits
+// ungated/admitted Runs), so enqueuing the whole namespace is correct and cheap.
+// Fail-open on a list error: the projector's periodic resync is the backstop.
+func (r *Driver) runsForManagedSecret(ctx context.Context, obj client.Object) []ctrl.Request {
+	var runs api.RunList
+	if err := r.List(ctx, &runs, client.InNamespace(obj.GetNamespace())); err != nil {
+		slog.WarnContext(ctx, "rundrive: list runs for managed-credential secret watch failed",
+			"secret", obj.GetNamespace()+"/"+obj.GetName(), "err", err)
+		return nil
+	}
+	reqs := make([]ctrl.Request, 0, len(runs.Items))
+	for i := range runs.Items {
+		reqs = append(reqs, ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: runs.Items[i].Namespace, Name: runs.Items[i].Name,
+		}})
+	}
+	return reqs
+}
+
 // SetupWithManager registers the Driver: Run watches, the resume channel
 // source, and the workItemRef field index the resume kick lists by.
 func (r *Driver) SetupWithManager(mgr ctrl.Manager) error {
@@ -1048,6 +1160,17 @@ func (r *Driver) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&api.Run{}).
 		WatchesRawSource(source.Channel(r.resumeCh, &handler.EnqueueRequestForObject{})).
+		// WS-9 S5 go-live gate resume (ISI-5849): watch managed-credential
+		// Secrets so a Run paused(credential_required) re-drives the moment the
+		// vault materializes a declared type for its project. Predicate-filtered
+		// to the vault's managed-credential label so unrelated Secret churn in
+		// the namespace never wakes the run-drive loop. Neither controller
+		// watched Secrets before this.
+		Watches(&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.runsForManagedSecret),
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+				return obj.GetLabels()[credential.LabelManagedCredential] != ""
+			}))).
 		Named("run-drive").
 		// ISI-5524: more than one worker so a Run whose dispatch blocks (a team
 		// with a slow/unreachable model endpoint) cannot monopolise the sole

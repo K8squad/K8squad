@@ -125,6 +125,15 @@ const (
 	// Ollama/endpoint-URL credential model's endpoint is unreachable — a
 	// legible Paused in the same family, never an opaque dial failure.
 	StepPausedEndpointUnreachable Step = "paused(endpoint_unreachable)"
+	// StepPausedCredentialRequired is the WS-9 S5 go-live gate hold (ISI-5818/
+	// ISI-5849, arch isi-5777 §4/§5): PRE-DISPATCH, a Run that grants a
+	// [sec]-gated Skill/MCPServer whose declared credential type(s) are NOT
+	// materialized in the project namespace is withheld here (toolcred gate
+	// oracle, fail-closed + any-of). Unlike the 7.4/7.6 holds it is admission-
+	// time, NOT per-credential-attributed: it clears when a managed-credential
+	// Secret for a declared type lands and the driver's pre-dispatch gate
+	// re-evaluates (coord.ApplyGateHold → ApplyGateResume), never on a timer.
+	StepPausedCredentialRequired Step = "paused(credential_required)"
 )
 
 // CredentialPauseSteps is the closed family of credential-driven pause steps
@@ -136,6 +145,7 @@ var CredentialPauseSteps = map[Step]bool{
 	StepPausedCredentialExpired:   true, // 7.4: OAuth/static-key expiry, refresh resume
 	StepPausedCredentialRotated:   true, // 7.4: rotation, propagation resume
 	StepPausedEndpointUnreachable: true, // 7.4/7.5: BYO endpoint, recovery resume
+	StepPausedCredentialRequired:  true, // S5 go-live gate: pre-dispatch admission hold, resumes on Secret create
 }
 
 // happyPath is the linear reconcile progression the machine advances through
@@ -174,6 +184,7 @@ var resumableSteps = map[Step]bool{
 	StepPausedCredentialExpired:   true,
 	StepPausedCredentialRotated:   true,
 	StepPausedEndpointUnreachable: true,
+	StepPausedCredentialRequired:  true,
 }
 
 // Classification is the AC5 terminal-vs-resumable verdict for a step.
@@ -269,7 +280,8 @@ func PhaseOf(s Step) Phase {
 	case StepRunning, StepCollecting:
 		return PhaseRunning
 	case StepPaused, StepPausedRateLimited, StepPausedCredentialExpired,
-		StepPausedCredentialRotated, StepPausedEndpointUnreachable:
+		StepPausedCredentialRotated, StepPausedEndpointUnreachable,
+		StepPausedCredentialRequired:
 		return PhasePaused
 	case StepCancelling:
 		return PhaseCanceling
