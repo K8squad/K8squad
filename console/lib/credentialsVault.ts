@@ -165,7 +165,7 @@ export function toolCredentialCreateBody(input: ToolCredentialCreateInput): Reco
  *  apiserver surfaces its detail verbatim (E5 discipline); the card renders it. */
 export type VaultCreateOutcome =
   | "created" // 201 — Secret written, secretRef returned (never the value) → mask
-  | "conflict" // 409 — a credential of this type already exists → the Rotate path (§4, Slice B)
+  | "conflict" // 409 — a credential of this type already exists → guardrail: "use Rotate" (never an auto-overwrite; rotation is its own PUT, design O-2)
   | "invalid" // 400/422 — empty value / unmapped type → inline field error
   | "denied" // 401/403 — unauthenticated / write-tier denied (row should not have been editable)
   | "unsupported" // 501 — human-seat (OAuth) type / axis unavailable on this host
@@ -252,6 +252,161 @@ export async function createToolCredential(input: ToolCredentialCreateInput): Pr
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(toolCredentialCreateBody(input)),
+    cache: "no-store",
+  });
+}
+
+// ── Rotate path (PUT /api/credentials vault axis — design O-2, ISI-5816) ──────
+//
+// Rotation is NOT a 409-retry on create (design O-2): it is its OWN explicit verb
+// so it emits a distinct `ksquad.credential.rotate` audit span. The backend does
+// delete-then-recreate under the SAME deterministic Secret name, so the new value
+// lands write-once and no stale plaintext survives the cutover. The new value is
+// WRITE-ONLY, exactly like create: it rides one PUT and is NEVER serialised back
+// (old OR new) — structurally, the SA has no `get`, so no code path can echo it.
+
+/** The write body for PUT /api/credentials (rotate). `value` is the NEW value,
+ *  write-only; `type` is the discriminator; `projectId` scopes the vault (same
+ *  shape as create, minus the derived `name` the backend ignores). */
+export interface ToolCredentialRotateInput {
+  value: string;
+  type: string;
+  projectId: string;
+}
+
+/** Build the PUT /api/credentials rotate body. Pure + unit-testable: forwards the
+ *  new value verbatim (write-only) and pins the {type} discriminator + projectId. */
+export function toolCredentialRotateBody(input: ToolCredentialRotateInput): Record<string, string> {
+  return {
+    value: input.value,
+    type: input.type,
+    projectId: input.projectId,
+  };
+}
+
+/** Outcome of a rotate PUT, mapped to honest card copy (design O-2 table). */
+export type VaultRotateOutcome =
+  | "rotated" // 200 — replaced under the stable name (new secretRef, never a value) → mask
+  | "retry" // 409 — the previous credential is still being removed (recreate-after-delete race)
+  | "invalid" // 400/422 — empty new value / missing type → inline field error
+  | "denied" // 401/403 — unauthenticated / write-tier denied
+  | "unsupported" // 501 — human-seat (OAuth) type / axis unavailable on this host
+  | "error"; // 502 / 5xx / network — the store itself is unhappy
+
+/** Classify the PUT status into the card's rotate vocabulary (design O-2). */
+export function classifyVaultRotateStatus(status: number): VaultRotateOutcome {
+  if (status >= 200 && status < 300) return "rotated";
+  if (status === 409) return "retry";
+  if (status === 400 || status === 422) return "invalid";
+  if (status === 401 || status === 403) return "denied";
+  if (status === 501) return "unsupported";
+  return "error";
+}
+
+/** Human copy for a rotate outcome (generic fallbacks; a verbatim apiserver
+ *  `detail`/`fields` message, when present, takes precedence at the call site).
+ *  "rotated" never reaches a message site (the 200 path masks instead) but is
+ *  handled so the switch is exhaustive. */
+export function vaultRotateMessage(outcome: VaultRotateOutcome): string {
+  switch (outcome) {
+    case "rotated":
+      return "Rotated.";
+    case "retry":
+      return "The previous credential is still being removed — retry the rotation in a moment.";
+    case "invalid":
+      return "Paste a new value to rotate this credential.";
+    case "denied":
+      return "You don't have permission to rotate this credential.";
+    case "unsupported":
+      return "This type is provisioned by Connect Claude, not a pasted key.";
+    case "error":
+      return "Couldn't rotate — try again.";
+  }
+}
+
+/** Rotate a vault credential (PUT /api/credentials vault axis). The NEW value is
+ *  write-only — it rides one request and is never serialised back. Returns the raw
+ *  Response so the caller classifies (rotated / retry / invalid / …) and surfaces
+ *  the apiserver's field message verbatim. */
+export async function rotateToolCredential(input: ToolCredentialRotateInput): Promise<Response> {
+  return fetch("/api/credentials", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(toolCredentialRotateBody(input)),
+    cache: "no-store",
+  });
+}
+
+// ── Delete path (DELETE /api/credentials vault axis — design O-2, ISI-5816) ───
+//
+// Delete carries the {type} discriminator (+ projectId scope) in the JSON body,
+// method-discriminated on the bare /api/credentials path. A 404 is existence-
+// hiding (NFR-SEC5): the credential is already gone, so the FE treats it as a
+// benign "already removed — refresh the table", NOT an error.
+
+/** The body for DELETE /api/credentials. No value — delete-by-(type) only. */
+export interface ToolCredentialDeleteInput {
+  type: string;
+  projectId: string;
+}
+
+/** Build the DELETE /api/credentials body (type discriminator + project scope). */
+export function toolCredentialDeleteBody(input: ToolCredentialDeleteInput): Record<string, string> {
+  return {
+    type: input.type,
+    projectId: input.projectId,
+  };
+}
+
+/** Outcome of a delete DELETE, mapped to honest card copy (design O-2 table). */
+export type VaultDeleteOutcome =
+  | "deleted" // 200 — the Secret was removed → refresh (row returns to unsatisfied)
+  | "absent" // 404 — no such credential (existence-hiding) → "already gone", also refresh
+  | "invalid" // 400/422 — missing type → inline error (should not happen from the UI)
+  | "denied" // 401/403 — unauthenticated / write-tier denied
+  | "error"; // 502 / 5xx / network — the store itself is unhappy
+
+/** Classify the DELETE status into the card's delete vocabulary (design O-2). */
+export function classifyVaultDeleteStatus(status: number): VaultDeleteOutcome {
+  if (status >= 200 && status < 300) return "deleted";
+  if (status === 404) return "absent";
+  if (status === 400 || status === 422) return "invalid";
+  if (status === 401 || status === 403) return "denied";
+  return "error";
+}
+
+/** True when a delete status means the credential is gone — the table should
+ *  reload. Both an explicit 200 (deleted) and a 404 (already absent, existence-
+ *  hiding) converge here: the honest end state is identical ("no longer stored"). */
+export function vaultDeleteSucceeded(outcome: VaultDeleteOutcome): boolean {
+  return outcome === "deleted" || outcome === "absent";
+}
+
+/** Human copy for a delete outcome (verbatim apiserver message wins at the call
+ *  site when present). */
+export function vaultDeleteMessage(outcome: VaultDeleteOutcome): string {
+  switch (outcome) {
+    case "deleted":
+      return "Deleted.";
+    case "absent":
+      return "Already removed — refreshed.";
+    case "invalid":
+      return "Couldn't delete — the request was rejected.";
+    case "denied":
+      return "You don't have permission to delete this credential.";
+    case "error":
+      return "Couldn't delete — try again.";
+  }
+}
+
+/** Delete a vault credential (DELETE /api/credentials vault axis). Returns the raw
+ *  Response so the caller classifies (deleted / absent / denied / …); a 404 is a
+ *  benign "already gone" (existence-hiding), not a failure. */
+export async function deleteToolCredential(input: ToolCredentialDeleteInput): Promise<Response> {
+  return fetch("/api/credentials", {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(toolCredentialDeleteBody(input)),
     cache: "no-store",
   });
 }

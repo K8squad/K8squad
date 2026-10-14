@@ -3,11 +3,18 @@ import {
   MASKED_VALUE,
   classifyCredentialTypes,
   classifyVaultCreateStatus,
+  classifyVaultDeleteStatus,
+  classifyVaultRotateStatus,
   isRequiredMissing,
   isSatisfied,
   sortVaultTypes,
   toolCredentialCreateBody,
+  toolCredentialDeleteBody,
+  toolCredentialRotateBody,
   vaultCreateMessage,
+  vaultDeleteMessage,
+  vaultDeleteSucceeded,
+  vaultRotateMessage,
   vaultStatusBadge,
   type CredentialTypeEntry,
 } from "@/lib/credentialsVault";
@@ -120,6 +127,86 @@ describe("vaultCreateMessage — honest fallback copy", () => {
   it("conflict points at Rotate; unsupported names Connect Claude", () => {
     expect(vaultCreateMessage("conflict")).toMatch(/Rotate/);
     expect(vaultCreateMessage("unsupported")).toMatch(/Connect Claude/);
+  });
+});
+
+// ── Slice B (ISI-5860): Rotate (PUT) + Delete (DELETE) — design O-2 contract ──
+
+describe("toolCredentialRotateBody — PUT vault axis (design O-2)", () => {
+  it("carries {value,type,projectId} with the NEW value verbatim (write-only), no name", () => {
+    expect(toolCredentialRotateBody({ value: "ghp_new", type: "github", projectId: "proj-a" })).toEqual({
+      value: "ghp_new",
+      type: "github",
+      projectId: "proj-a",
+    });
+  });
+});
+
+describe("classifyVaultRotateStatus — design O-2 rotate map", () => {
+  it("200 ⇒ rotated", () => expect(classifyVaultRotateStatus(200)).toBe("rotated"));
+  it("409 ⇒ retry (recreate-after-delete race, NOT a create conflict)", () =>
+    expect(classifyVaultRotateStatus(409)).toBe("retry"));
+  it("400 & 422 ⇒ invalid", () => {
+    expect(classifyVaultRotateStatus(400)).toBe("invalid");
+    expect(classifyVaultRotateStatus(422)).toBe("invalid");
+  });
+  it("401/403 ⇒ denied", () => {
+    expect(classifyVaultRotateStatus(401)).toBe("denied");
+    expect(classifyVaultRotateStatus(403)).toBe("denied");
+  });
+  it("501 ⇒ unsupported", () => expect(classifyVaultRotateStatus(501)).toBe("unsupported"));
+  it("502 / 5xx ⇒ error", () => {
+    expect(classifyVaultRotateStatus(502)).toBe("error");
+    expect(classifyVaultRotateStatus(500)).toBe("error");
+  });
+});
+
+describe("vaultRotateMessage — honest fallback copy", () => {
+  it("retry explains the removal race; invalid asks for a new value", () => {
+    expect(vaultRotateMessage("retry")).toMatch(/still being removed/i);
+    expect(vaultRotateMessage("invalid")).toMatch(/new value/i);
+  });
+});
+
+describe("toolCredentialDeleteBody — DELETE vault axis (design O-2)", () => {
+  it("carries only {type,projectId} — no value on a delete", () => {
+    expect(toolCredentialDeleteBody({ type: "github", projectId: "proj-a" })).toEqual({
+      type: "github",
+      projectId: "proj-a",
+    });
+  });
+});
+
+describe("classifyVaultDeleteStatus — design O-2 delete map", () => {
+  it("200 ⇒ deleted", () => expect(classifyVaultDeleteStatus(200)).toBe("deleted"));
+  it("404 ⇒ absent (existence-hiding, not an error)", () => expect(classifyVaultDeleteStatus(404)).toBe("absent"));
+  it("400 & 422 ⇒ invalid", () => {
+    expect(classifyVaultDeleteStatus(400)).toBe("invalid");
+    expect(classifyVaultDeleteStatus(422)).toBe("invalid");
+  });
+  it("401/403 ⇒ denied", () => {
+    expect(classifyVaultDeleteStatus(401)).toBe("denied");
+    expect(classifyVaultDeleteStatus(403)).toBe("denied");
+  });
+  it("502 / 5xx ⇒ error", () => expect(classifyVaultDeleteStatus(502)).toBe("error"));
+});
+
+describe("vaultDeleteSucceeded — 200 AND 404 both mean 'no longer stored'", () => {
+  it("deleted and absent converge on success (both refresh the table)", () => {
+    expect(vaultDeleteSucceeded("deleted")).toBe(true);
+    expect(vaultDeleteSucceeded("absent")).toBe(true);
+  });
+  it("denied / invalid / error are NOT success", () => {
+    expect(vaultDeleteSucceeded("denied")).toBe(false);
+    expect(vaultDeleteSucceeded("invalid")).toBe(false);
+    expect(vaultDeleteSucceeded("error")).toBe(false);
+  });
+});
+
+describe("vaultDeleteMessage — honest fallback copy", () => {
+  it("absent reads as already-removed, not a failure", () => {
+    expect(vaultDeleteMessage("absent")).toMatch(/already removed/i);
+    expect(vaultDeleteMessage("deleted")).toMatch(/deleted/i);
   });
 });
 
