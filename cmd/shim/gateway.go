@@ -1,0 +1,326 @@
+/*
+Copyright 2026 The K8squad Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// gateway.go — the AgentMesh pool-pod Gateway (chapter §2.3 D1.2, ISI-5822
+// P1.1): the evolved `shim supervisor`, standing beside it rather than
+// replacing it (additive-only, D9.3 — the legacy supervisor and its claim
+// path stay byte-identical). When the sandbox pod's entrypoint runs
+// `shim gateway`, this process is the pod's PID 1 and:
+//
+//	spawns Min standing role-processes (`shim supervisor` children, each
+//	           pre-loaded with the role envelope via the RuntimeAdapter —
+//	           opencode behind the seam, D8.1) on 127.0.0.1:<base>+i,
+//	registers their A2A endpoints with the Supervisor ingress
+//	           (KSQUAD_SUPERVISOR_INGRESS_URL) on a 30s heartbeat that
+//	           doubles as the coord.mesh_endpoint TTL refresh,
+//	serves the kube contract on :8080 — the SAME ports and probe shape the
+//	           warm-pool Boot spec already knows:
+//
+//	GET  /health      liveness — the gateway process is serving.
+//	GET  /ready       readiness — the pool holds >= 1 standing process.
+//	GET  /endpoints   the live endpoint set (id, endpoint, busy) — the
+//	                 operator-side debug/read surface.
+//	POST /task        route ONE A2A task to a standing process. The target
+//	                 process is the ?target=<endpoint_id> query parameter;
+//	                 an omitted target picks an idle process. 409 when the
+//	                 target is busy or the pool is saturated (D3.3 guard
+//	                 #3, the gateway-local one-process-one-active-task).
+//
+// The gateway routes; it never claims. Custody stays in coord.claim and
+// at-most-once stays in coord.a2a_dispatch on the operator side — a routed
+// task reaches the SAME /task contract the legacy supervisor serves, so
+// both paths terminate at the identical idempotency marker (§5.4).
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/mesh"
+	"github.com/K8squad/K8squad/pkg/telemetry"
+)
+
+// gatewayAddr is the gateway's own listen address — the :8080 kube contract
+// (the warm-pool Boot probe), overridable for tests and non-kube dev runs.
+const gatewayAddr = ":8080"
+
+// gatewayChildBasePort is the first port the pool's standing children bind
+// (LocalHost assigns base+i). The children sit ABOVE the gateway's own
+// :8080 so the pod's probe surface never collides with a role process.
+const gatewayChildBasePort = 8081
+
+// runGateway is the `shim gateway` entrypoint. Like runSupervisor it never
+// returns nil on server failure — a gateway that cannot serve is a dead
+// pool pod, and CrashLoopBackOff is honest degradation.
+func runGateway(args []string) error {
+	addr := gatewayAddr
+	if v := os.Getenv("KSQUAD_SUPERVISOR_ADDR"); v != "" {
+		addr = v
+	}
+	if len(args) > 0 && args[0] != "" && os.Getenv("KSQUAD_SUPERVISOR_ADDR") == "" {
+		addr = args[0]
+	}
+
+	// Same telemetry spine discipline as the supervisor (ISI-5142): the
+	// OTLP exporter comes up at process start, before any span, so the
+	// ksquad-gateway service entity registers even while the pool boots.
+	gwTelemetryOpts, filled := supervisorTelemetryOptions(os.Getenv)
+	gwTelemetryOpts.ServiceName = "ksquad-gateway"
+	if len(filled) > 0 {
+		fmt.Fprintf(os.Stderr, "shim gateway: OTLP export via OTEL_EXPORTER_OTLP_* env for %v (endpoint=%s)\n",
+			filled, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	} else {
+		fmt.Fprintln(os.Stderr, "shim gateway: OTEL_EXPORTER_OTLP_ENDPOINT unset — "+
+			"spans stay on stderr and will NOT reach the observability gateway (no ksquad-gateway service entity)")
+	}
+	if _, shutdown, terr := telemetry.Setup(context.Background(), gwTelemetryOpts); terr == nil {
+		defer func() { _ = shutdown(context.Background()) }()
+	} else {
+		fmt.Fprintf(os.Stderr, "shim gateway: telemetry.Setup failed, spans will not export: %v\n", terr)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	_, gwSpan := telemetry.Tracer().Start(ctx, "gateway.start",
+		trace.WithAttributes(
+			attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
+			attribute.String("code.function", "runGateway"),
+			attribute.String("ksquad.supervisor.addr", addr),
+			attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
+			attribute.String("ksquad.mesh.team", os.Getenv("KSQUAD_MESH_TEAM")),
+			attribute.String("ksquad.mesh.role", os.Getenv("KSQUAD_MESH_ROLE")),
+		))
+	defer gwSpan.End()
+
+	gw, err := buildGateway()
+	if err != nil {
+		gwSpan.SetStatus(1, err.Error())
+		return err
+	}
+	if err := gw.Start(ctx); err != nil {
+		gwSpan.SetStatus(1, err.Error())
+		return fmt.Errorf("shim gateway: start pool: %w", err)
+	}
+	defer func() { _ = gw.Stop(context.Background()) }()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	mux.HandleFunc("GET /ready", handleGatewayReady(gw))
+	mux.HandleFunc("GET /endpoints", handleGatewayEndpoints(gw))
+	mux.HandleFunc("POST /task", handleGatewayTask(gw))
+
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.ListenAndServe() }()
+	fmt.Fprintf(os.Stderr, "shim gateway: serving on %s (pool team=%s role=%s min=%d)\n",
+		addr, os.Getenv("KSQUAD_MESH_TEAM"), os.Getenv("KSQUAD_MESH_ROLE"), gatewayMin())
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return fmt.Errorf("gateway server: %w", err)
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	}
+}
+
+// gatewayMin reads the standing-process floor (KSQUAD_MESH_MIN; P1.1 default
+// 1 — one team, one coder pool, min:1 always-up).
+func gatewayMin() int {
+	if v := os.Getenv("KSQUAD_MESH_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1
+}
+
+// buildGateway assembles the mesh.Gateway from the pod-spec env the operator
+// stamped at Boot (D9.2 envelope pre-load): team/role/identity, model,
+// skills, pool floor, and the Supervisor registration ingress. The adapter
+// is opencode behind the RuntimeAdapter seam (adapter #1, D8.1) on the
+// LocalHost child-process substrate; a kube host replaces it without the
+// gateway changing (that substitution is the P2 seam proof).
+func buildGateway() (*mesh.Gateway, error) {
+	team := os.Getenv("KSQUAD_MESH_TEAM")
+	role := os.Getenv("KSQUAD_MESH_ROLE")
+	if team == "" || role == "" {
+		return nil, fmt.Errorf("shim gateway: KSQUAD_MESH_TEAM and KSQUAD_MESH_ROLE are required (the pool identity)")
+	}
+	base := gatewayChildBasePort
+	if v := os.Getenv("KSQUAD_MESH_BASE_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			base = n
+		}
+	}
+	host := &mesh.LocalHost{BasePort: base}
+	adapter, err := mesh.NewOpenCodeAdapter(host)
+	if err != nil {
+		return nil, fmt.Errorf("shim gateway: opencode adapter: %w", err)
+	}
+	identity := a2a.AgentIdentity{
+		Name:    env("KSQUAD_MESH_AGENT_NAME", role),
+		Squad:   team,
+		Project: os.Getenv("KSQUAD_MESH_PROJECT"),
+	}
+	return mesh.NewGateway(mesh.GatewayConfig{
+		Adapter: adapter,
+		Envelope: mesh.Envelope{
+			RuntimeType: "opencode",
+			Model:       os.Getenv("KSQUAD_MESH_MODEL"),
+			Skills:      splitList(os.Getenv("KSQUAD_MESH_SKILLS")),
+			Identity:    identity,
+		},
+		Min:              gatewayMin(),
+		Pod:              env("KSQUAD_MESH_POD", os.Getenv("HOSTNAME")),
+		Team:             team,
+		Role:             role,
+		RegisterURL:      strings.TrimRight(os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"), "/"),
+		RegisterInterval: gatewayRegisterIntervalFromEnv(),
+	})
+}
+
+// gatewayRegisterIntervalFromEnv reads the heartbeat cadence override.
+func gatewayRegisterIntervalFromEnv() time.Duration {
+	if v := os.Getenv("KSQUAD_SUPERVISOR_INGRESS_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 0 // mesh.Gateway default (30s)
+}
+
+// handleGatewayReady is the pool-pod readiness gate: Ready iff the pool
+// holds at least one standing process. The body surfaces the idle count so
+// an operator can see saturation at a glance.
+func handleGatewayReady(gw *mesh.Gateway) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		procs := gw.Processes()
+		idle := 0
+		for _, p := range procs {
+			if !p.Busy {
+				idle++
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if len(procs) == 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{"serving": true, "processes": 0, "ready": false})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"serving": true, "processes": len(procs), "idle": idle, "ready": true})
+	}
+}
+
+// handleGatewayEndpoints serves the live endpoint set — the operator-side
+// read surface for debugging routing decisions.
+func handleGatewayEndpoints(gw *mesh.Gateway) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"processes": gw.Processes()})
+	}
+}
+
+// handleGatewayTask routes ONE A2A task to a standing process: the
+// Supervisor-side dispatch POST (the same JSON-in / NDJSON-out wire the
+// legacy supervisor serves, so the operator's HTTP transport bridges to
+// either unchanged). ?target=<endpoint_id> names the process; omitted picks
+// an idle one. 409 on a busy target or a saturated pool — never interleaved
+// event streams (D3.3 guard #3).
+func handleGatewayTask(gw *mesh.Gateway) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := telemetry.Tracer().Start(r.Context(), "gateway.handle_task",
+			trace.WithAttributes(
+				attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
+				attribute.String("code.function", "handleGatewayTask"),
+				attribute.String("ksquad.task.target", r.URL.Query().Get("target")),
+				attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
+			),
+			trace.WithSpanKind(trace.SpanKindServer))
+		defer span.End()
+
+		var task a2a.Task
+		if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+			span.SetStatus(1, err.Error())
+			http.Error(w, fmt.Sprintf("decode task: %v", err), http.StatusBadRequest)
+			return
+		}
+		span.SetAttributes(attribute.String("ksquad.task.a2a_id", task.A2ATaskID))
+
+		stream, err := gw.Route(ctx, r.URL.Query().Get("target"), task)
+		if err != nil {
+			switch {
+			case errors.Is(err, mesh.ErrProcessBusy), errors.Is(err, mesh.ErrNoIdleProcess):
+				span.SetStatus(1, err.Error())
+				http.Error(w, err.Error(), http.StatusConflict)
+			default:
+				span.SetStatus(1, err.Error())
+				http.Error(w, err.Error(), http.StatusBadGateway)
+			}
+			return
+		}
+		defer stream.Close()
+		// A dropped follower must release the process: bind the routed
+		// stream's lifetime to the REQUEST context, so the client going
+		// away tears the stream (and its busy flag) down instead of
+		// leaking a busy process behind a dead connection. The deferred
+		// Close is idempotent with this one.
+		go func() {
+			<-ctx.Done()
+			_ = stream.Close()
+		}()
+
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		enc := json.NewEncoder(w)
+		span.SetStatus(0, "")
+		for ev := range stream.Events() {
+			if err := enc.Encode(ev); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}
+}
