@@ -158,13 +158,12 @@ func TestOpenCodeLaunchEnvDeterministic(t *testing.T) {
 
 // The opencode adapter must be usable purely through the RuntimeAdapter seam —
 // the gateway never sees a concrete type (the "zero control-plane change at P2"
-// test).
+// test). The package-level var in opencode.go is the compile-time assertion;
+// this test verifies the constructor succeeds.
 func TestOpenCodeIsRuntimeAdapter(t *testing.T) {
-	a, err := NewOpenCodeAdapter(&fakeHost{})
-	if err != nil {
+	if _, err := NewOpenCodeAdapter(&fakeHost{}); err != nil {
 		t.Fatalf("NewOpenCodeAdapter: %v", err)
 	}
-	var _ RuntimeAdapter = a
 }
 
 func hasEnv(env []string, kv string) bool {

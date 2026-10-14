@@ -26,6 +26,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 )
 
+
 // envRuntimeType is the env var the shim supervisor reads to pick its baked-in
 // runtime flavor (cmd/shim/supervisor.go runtime(): KSQUAD_RUNTIME_TYPE). Spawn
 // stamps it so the standing process serves opencode.
