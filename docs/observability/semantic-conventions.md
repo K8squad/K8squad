@@ -360,3 +360,48 @@ names; the Prometheus exporter renders them with underscores
 | `ksquad.scm.mirror.age` | observable_gauge | s | `project` | stable | WS-GH | Seconds since each Project's last successful mirror pass (GH-3). A stalled reconcile shows an ever-growing age rather than dropping off the series. |
 | `ksquad.scm.provider.rate_limit.remaining` | observable_gauge | 1 | `provider` | stable | WS-GH | Last-seen provider rate-limit headroom (requests remaining) by provider (GH-3). Approaching 0 explains stale mirrors that are not errors. |
 
+## Credential go-live gate telemetry
+
+The WS-9 S5 go-live gate (ISI-5818 oracle `toolcred.EvaluateRunGate`) withholds
+a `[sec]`-gated skill from a Run until its declared credential type(s) resolve
+to a materialized Secret. Design §6 threat model **T7 (audit trail)** requires a
+legible, operator-facing record of every admission decision. This span family
+(ISI-5850) is emitted by the driver pre-dispatch gate (ISI-5849), sibling to the
+apiserver credential funnel (`ksquad.credential.create`), and is guarded by
+`pkg/telemetry/semconv/credential_conformance_test.go`. A credential **value**
+never travels on any attribute, label or log field — the audit key is
+principal + credential type + namespace (NFR-2). The operational seam, the
+drop-in emitter helper and the companion structured audit log are specified in
+`docs/observability/credential-gate-check-span-spec.md`.
+
+### Credential-gate spans
+
+#### `ksquad.credential.gate_check`
+
+The go-live credential gate admission decision for one Run, recorded at the driver pre-dispatch point (ISI-5849) off run.reconcile. Carries the T7 audit trail — principal, declared gated skills + their declared credential TYPES, the admit/withhold outcome, and (when withheld) the missing types the Run is paused for. A credential VALUE never travels here (NFR-2); the decision shape is toolcred.RunGateDecision (ISI-5818, PR #902). A companion structured audit log (docs/observability/credential-gate-check-span-spec.md) carries the same keyset for log-based audit.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.run.id` | string | required | planned | WS-9 | The Run being admitted (Run CR UID). High-cardinality — span attribute only, never a metric label. |
+| `ksquad.agent.name` | string | recommended | planned | WS-9 | The principal the Run executes as (the agent/seat identity, T7 "principal"). An identity, never a secret. |
+| `ksquad.project.name` | string | required | planned | WS-9 | The Run's project (run.Spec.ProjectRef). This IS the credential scope: the gate resolves materialized Secrets by the project-encoded name proj-<project>-cred-<type> (toolcred.MaterializedSecretName), NOT a namespace label-list, so sibling projects sharing the team namespace cannot over-admit (ISI-5849 project-scoping hazard). |
+| `ksquad.work_item.ref` | string | recommended | planned | WS-9 | The work item / ticket the withheld-or-admitted Run is servicing (ticket→run audit drill-down). |
+| `k8s.namespace.name` | string | required | planned | WS-9 | The team namespace the Run and its materialized credential Secrets live in (T7 "namespace"). Standard OTel resource semconv key. |
+| `ksquad.credential.gated_skills` | string[] | recommended | planned | WS-9 | The gated skills the gate evaluated, each as its SourceName ("namespace/name"). Bounded by the Run's skill set. Skill names only — never credential material. |
+| `ksquad.credential.declared_types` | string[] | recommended | planned | WS-9 | The deduped union of every gated skill's declared credential TYPE(s) from the S1 binding vocabulary (an any-of comma-list declares several). Type NAMES only — never values. |
+| `ksquad.credential.admitted` | boolean | required | planned | WS-9 | toolcred.RunGateDecision.Admitted — true iff EVERY gated skill in the Run is admitted (each gating type any-of-satisfied by a materialized Secret). The Run advances; false pauses it (credential_required). |
+| `ksquad.credential.outcome` | string | required | planned | WS-9 | Bounded admission outcome: "admitted" | "withheld". The single metric label on ksquad.credential.gate_check.decisions. |
+| `ksquad.credential.withheld_skills` | string[] | conditional | planned | WS-9 | Present only when withheld: toolcred.RunGateDecision.WithheldSkills — each withheld skill's SourceName, in input order. Empty/absent when admitted. |
+| `ksquad.credential.missing_types` | string[] | conditional | planned | WS-9 | Present only when withheld: toolcred.RunGateDecision.MissingTypes — the deduped, sorted union of credential TYPES the Run is paused for. This is what the Paused(credential_required) operator message names. Type names only — never values. |
+
+### Credential-gate metrics
+
+Driver metrics on `telemetry.Meter()`. Labels are strictly bounded — `outcome`
+is a two-value enum and `credential_type` is the closed S1 binding vocabulary
+(`pkg/toolcred`); run/project/work-item ids are NEVER labels (cardinality).
+
+| Metric | Instrument | Unit | Labels | Stability | WS | Description |
+|---|---|---|---|---|---|---|
+| `ksquad.credential.gate_check.decisions` | counter | 1 | `outcome` | planned | WS-9 | Go-live gate admission decisions, one per Run admission, dimensioned by bounded outcome (admitted|withheld). The RED numerator for "what fraction of Runs are being withheld on credentials" and the signal that a withheld Run cleared. |
+| `ksquad.credential.gate_check.withheld_by_type` | counter | 1 | `credential_type` | planned | WS-9 | Per-credential-type withhold count: a Run withheld for N missing types increments each type once. credential_type is the bounded S1 binding vocabulary, so this is cardinality-safe and answers "which credential type blocks the most Runs" without any high-cardinality id. |
+
