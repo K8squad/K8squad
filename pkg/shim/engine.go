@@ -83,6 +83,14 @@ type Config struct {
 	// ISI-4382); empty in the operator-spawned stdio path where the shim is
 	// not pod-hosted. Sourced from env (KSQUAD_SANDBOX_POD / HOSTNAME).
 	SandboxPod string
+	// RunPath records which dispatch path executed this process's runs
+	// (AgentMesh S0/ISI-5833 I6 + S3/ISI-5822): "" (the default) = "claim",
+	// the legacy sandbox-spawn path; "mesh" = routed to a standing process
+	// by the AgentMesh gateway. A mesh pool pod's children are launched with
+	// KSQUAD_RUN_PATH=mesh, so every run.start they emit carries the canary
+	// label from the process that actually executed it. Run-root only, like
+	// model.tier.
+	RunPath string
 	// MCPEndpoints is the Run's resolved MCP IR (Epic C, ADR-044): parsed
 	// once at shim startup from the projected K8SQUAD_MCP_CONFIG document
 	// and handed to the runtime adapters, which render their native config
@@ -148,6 +156,10 @@ func (e *Engine) labels(tk *task) toolusage.Labels {
 		Team:       e.cfg.Identity.Squad,
 		Project:    e.cfg.Identity.Project,
 		SandboxPod: e.cfg.SandboxPod,
+		// RunPath is process-static (ISI-5822 S3): a mesh standing process
+		// only ever executes mesh-routed runs, so the launch env is the
+		// honest source — the legacy default stays "" (= "claim").
+		RunPath: e.cfg.RunPath,
 	}
 	if tk != nil {
 		l.RunID = tk.id

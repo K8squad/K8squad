@@ -1027,6 +1027,24 @@ func main() {
 			LLMStatus: rundrive.NewRunLLMStatusWriter(mgr.GetClient(), func(f string, a ...any) {
 				ctrl.Log.Error(nil, fmt.Sprintf(f, a...))
 			}),
+			// AgentMesh route-to-endpoint leg (chapter §5.2 D3.2, strangler
+			// S3, ISI-5822): per-team flag (KSQUAD_MESH_TEAMS, D9.3 — unset
+			// ⇒ the leg is off and dispatch is byte-identical legacy) over
+			// the coord.mesh_endpoint registry. Both legs terminate at the
+			// same coord.a2a_dispatch marker.
+			MeshRoute: func() *rundrive.MeshRouteConfig {
+				teams := rundrive.MeshTeamSetFromEnv(os.Getenv)
+				if len(teams) == 0 {
+					return nil
+				}
+				registry, err := coord.NewMeshRegistry(db)
+				if err != nil {
+					ctrl.Log.Error(err, "mesh registry unavailable; mesh route leg disabled")
+					return nil
+				}
+				ctrl.Log.Info("AgentMesh route-to-endpoint leg enabled", "teams", fmt.Sprintf("%v", teams))
+				return &rundrive.MeshRouteConfig{Teams: teams, Lookup: registry}
+			}(),
 		})
 		if a2aErr != nil {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")

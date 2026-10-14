@@ -208,12 +208,16 @@ func buildGateway() (*mesh.Gateway, error) {
 			Model:       os.Getenv("KSQUAD_MESH_MODEL"),
 			Skills:      splitList(os.Getenv("KSQUAD_MESH_SKILLS")),
 			Identity:    identity,
+			// Stamp the S0/S3 dispatch-path label at the source (ISI-5833 I6
+			// + ISI-5822): a mesh standing process only ever executes
+			// mesh-routed runs, so its run.start roots carry run.path=mesh.
+			Env: map[string]string{"KSQUAD_RUN_PATH": "mesh"},
 		},
-		Min:              gatewayMin(),
-		Pod:              env("KSQUAD_MESH_POD", os.Getenv("HOSTNAME")),
-		Team:             team,
-		Role:             role,
-		RegisterURL:      strings.TrimRight(os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"), "/"),
+		Min:             gatewayMin(),
+		Pod:             env("KSQUAD_MESH_POD", os.Getenv("HOSTNAME")),
+		Team:            team,
+		Role:            role,
+		RegisterURL:     strings.TrimRight(os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"), "/"),
 		RegisterInterval: gatewayRegisterIntervalFromEnv(),
 	})
 }

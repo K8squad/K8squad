@@ -410,15 +410,18 @@ func (r *Reconciler) recordPhaseTransition(ctx context.Context, run *api.Run, fr
 	// the SAME committed CR phase edge as the journal above, so the success rate
 	// it yields is authoritative run-state — the span-count rate is unusable
 	// (run.end spans are tail-sampled, biased toward failures). run.path defaults
-	// to "claim" today (empty arg); the mesh dispatch leg sets "mesh" at S3. The
+	// to "claim" (empty arg); the mesh dispatch leg (ISI-5822 S3) stamps the
+	// Run's ksquad.io/dispatch-path annotation at route time and THIS is the
+	// authoritative read for the canary slice — not span presence. The
 	// owning Team NAME is the bounded tenant label (NFR-OBS3, same as the
 	// resurrection/active counters), empty when unresolved.
 	// Nil-safe (r.Health may be nil in unit tests / un-wired deployments).
+	runPath := run.Annotations["ksquad.io/dispatch-path"]
 	switch toTok {
 	case phaseTokenComplete:
-		r.Health.ObserveRunEnd(ctx, "success", "", run.Spec.TeamRef.Name)
+		r.Health.ObserveRunEnd(ctx, "success", runPath, run.Spec.TeamRef.Name)
 	case phaseTokenFailed:
-		r.Health.ObserveRunEnd(ctx, "error", "", run.Spec.TeamRef.Name)
+		r.Health.ObserveRunEnd(ctx, "error", runPath, run.Spec.TeamRef.Name)
 	}
 }
 

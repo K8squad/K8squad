@@ -263,6 +263,10 @@ func configFromEnv() (shim.Config, error) {
 		// ksquad.sandbox.pod. Kubernetes sets HOSTNAME to the pod name by
 		// default; KSQUAD_SANDBOX_POD (downward-API metadata.name) overrides.
 		SandboxPod: env("KSQUAD_SANDBOX_POD", os.Getenv("HOSTNAME")),
+		// AgentMesh S3 (ISI-5822): the dispatch path this process's runs
+		// took — mesh pool children launch with "mesh"; everything else
+		// leaves it empty (= the "claim" legacy default, ISI-5833 I6).
+		RunPath: os.Getenv("KSQUAD_RUN_PATH"),
 	}
 	// Epic C (ADR-044 step 6): the projected MCP IR, parsed once at
 	// startup — fail-closed on a set-but-broken document so a Run never
