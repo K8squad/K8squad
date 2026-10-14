@@ -176,6 +176,39 @@ func TestCredTypesConsumedByAggregates(t *testing.T) {
 	}
 }
 
+// TestCredTypesAnyOfMultiType — a multi-provider gated skill (ISI-5819 S6)
+// declares an ANY-OF comma list "gemini,fal.ai"; BOTH types surface as separate
+// rows, each consumedBy the one skill. An unknown token mixed into a list fails
+// closed per-token (dropped) while its valid sibling still registers.
+func TestCredTypesAnyOfMultiType(t *testing.T) {
+	teamID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	reader := newDashboardClient(t,
+		team("squad-i", "imggen", teamID.String()),
+		settingsProject("squad-i", "studio", "https://x/y", "", "", nil),
+		gatedSkill("squad-i", "image-gen", "gemini,fal.ai"),
+		gatedSkill("squad-i", "video-gen", "heygen, not-a-type"), // one known, one bogus
+	)
+	h := testCredTypesServer(t, teamID, false, reader, nil)
+
+	_, _, resp := getCredTypes(t, h, devToken, "studio")
+	if resp == nil {
+		t.Fatal("want 200")
+	}
+	// gemini, fal.ai (from image-gen) + heygen (from video-gen); not-a-type dropped.
+	if resp.byType("gemini") == nil || resp.byType("fal.ai") == nil {
+		t.Fatalf("ANY-OF list did not surface both members: %+v", resp.Types)
+	}
+	if resp.byType("heygen") == nil {
+		t.Fatalf("valid sibling 'heygen' dropped alongside the bogus token: %+v", resp.Types)
+	}
+	if resp.byType("not-a-type") != nil {
+		t.Fatal("unknown token in a list leaked (per-token fail-closed violated)")
+	}
+	if cb := resp.byType("gemini").ConsumedBy; len(cb) != 1 || cb[0] != "image-gen" {
+		t.Errorf("gemini consumedBy = %v, want [image-gen]", cb)
+	}
+}
+
 // --- gate-state ---------------------------------------------------------------
 
 // TestCredTypesGateUnsatisfiedNoOracle — with no presence oracle every type is

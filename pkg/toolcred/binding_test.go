@@ -157,3 +157,55 @@ func TestAnnotationKeyStable(t *testing.T) {
 		t.Fatalf("AnnotationCredentialType = %q, want ksquad.io/credential-type", AnnotationCredentialType)
 	}
 }
+
+// TestSplitCredentialTypes pins the S6 annotation encoding (ISI-5819): a single
+// bare token, an ANY-OF comma list, whitespace tolerance, and the empty cases —
+// so the one reader S1/S5 share never drops a declared type nor invents one.
+func TestSplitCredentialTypes(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{"empty", "", nil},
+		{"whitespace only", "   ", nil},
+		{"single", "github", []string{"github"}},
+		{"single trimmed", "  github  ", []string{"github"}},
+		{"anyof two", "gemini,fal.ai", []string{"gemini", "fal.ai"}},
+		{"anyof spaced", "linkedin-publish, x-publish", []string{"linkedin-publish", "x-publish"}},
+		{"blank members dropped", "gemini,,fal.ai,", []string{"gemini", "fal.ai"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SplitCredentialTypes(tc.raw)
+			if len(got) != len(tc.want) {
+				t.Fatalf("SplitCredentialTypes(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("SplitCredentialTypes(%q)[%d] = %q, want %q", tc.raw, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestSplitCredentialTypesAllS6ValuesKnown is the end-to-end guard that every
+// value the S6 skill annotations carry splits into tokens the registry maps —
+// so a gated skill's declared ANY-OF list is fully consumable (no silent drop).
+func TestSplitCredentialTypesAllS6ValuesKnown(t *testing.T) {
+	// The exact annotation values authored on the WS-2/3/4/5 gated skills.
+	s6Values := []string{
+		"terraform", "ansible", "proxmox-api", // WS-2
+		"gemini,fal.ai", "heygen,fal.ai", "elevenlabs", // WS-3
+		"blog-publish",                    // WS-4
+		"x-publish", "linkedin-publish", "linkedin-publish,x-publish", // WS-5
+	}
+	for _, v := range s6Values {
+		for _, typ := range SplitCredentialTypes(v) {
+			if !IsKnownType(typ) {
+				t.Errorf("S6 annotation value %q yields unknown type %q (not in registry vocabulary)", v, typ)
+			}
+		}
+	}
+}
