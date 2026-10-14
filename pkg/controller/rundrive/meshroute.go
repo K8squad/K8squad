@@ -44,8 +44,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/K8squad/K8squad/pkg/coord"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/coord"
 )
 
 // MeshTeamFlag decides whether a team's Runs take the mesh route leg. The
@@ -85,6 +85,18 @@ func MeshTeamSetFromEnv(getenv func(string) string) MeshTeamSet {
 		getenv = os.Getenv
 	}
 	return NewMeshTeamSet(getenv("KSQUAD_MESH_TEAMS"))
+}
+
+// MeshCSV splits a comma-separated env list (whitespace-tolerant, empties
+// dropped) — the mesh env knobs' shared parsing (e.g. KSQUAD_MESH_SKILLS).
+func MeshCSV(csv string) []string {
+	var out []string
+	for _, v := range strings.Split(csv, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // MeshEndpointLookup is the registry read seam the route leg consumes —

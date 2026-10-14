@@ -1050,6 +1050,48 @@ func main() {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
 		}
 
+		// AgentMesh standing pool pods (chapter §2.3 D1.2 injection, ISI-5822
+		// P1.1): one `shim gateway` pod per flagged (team, role) pool —
+		// the thin thread's single coder pool, min:1 always-up. Booted as a
+		// manager Runnable so the client's cache is synced first; idempotent
+		// (create-if-missing), so operator restarts never double-boot. The
+		// RolePool CRD + scheduler target-N loop that own these pods
+		// declaratively are P1.3 (ISI-5824); the role must match the
+		// canary Runs' dispatch agent name (the (team, role) lookup key).
+		if meshTeams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(meshTeams) > 0 {
+			meshRole := os.Getenv("KSQUAD_MESH_ROLE")
+			if meshRole == "" {
+				meshRole = "coder"
+			}
+			meshImage := images.ImageFor(string(ksquadv1alpha1.RuntimeTypeOpenCode))
+			ingressURL := os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL")
+			meshNS := os.Getenv("KSQUAD_WARM_POOL_NAMESPACE")
+			_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				for team := range meshTeams {
+					spec := kubepool.MeshPoolSpec{
+						Team:       team,
+						Role:       meshRole,
+						Image:      meshImage,
+						Namespace:  meshNS,
+						Min:        1, // P1.1: min:1 always-up
+						IngressURL: ingressURL,
+						Model:      os.Getenv("KSQUAD_MESH_MODEL"),
+						Skills:     rundrive.MeshCSV(os.Getenv("KSQUAD_MESH_SKILLS")),
+						ProjectPVC: os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
+					}
+					if err := kubeProvisioner.BootMeshPool(ctx, spec); err != nil {
+						// Loud but non-fatal: a failed pool boot must not take
+						// the operator down — the canary's dispatch falls back
+						// to the legacy path while the pool is absent.
+						ctrl.Log.Error(err, "AgentMesh pool boot failed; dispatch falls back to the legacy path", "team", team, "role", meshRole)
+						continue
+					}
+					ctrl.Log.Info("AgentMesh standing pool pod booted", "team", team, "role", meshRole, "image", meshImage)
+				}
+				return nil
+			}))
+		}
+
 		// AgentMesh supervisor register ingress (chapter §2.5 seam table,
 		// ISI-5822 P1.1): serves POST /mesh/{register,deregister} over the
 		// same coord.mesh_endpoint registry the route leg reads, so gateways
