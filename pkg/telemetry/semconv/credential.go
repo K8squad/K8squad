@@ -53,7 +53,7 @@ package ksqsemconv
 // once per Run admission at the driver pre-dispatch gate (ISI-5849). Named in
 // the ksquad.credential.* family so it reads alongside the apiserver funnel's
 // ksquad.credential.create.
-const SpanCredentialGateCheck = "ksquad.credential.gate_check"
+const SpanCredentialGateCheck = "ksquad.credential.gate_check" // #nosec G101 -- a telemetry span NAME, not a credential value (NFR-2: no secret material ever rides this family).
 
 // CredentialSpanConventions documents the WS-9 go-live gate span family. These
 // spans do not exist on the wire yet (Stability Planned); the emitter lands in
