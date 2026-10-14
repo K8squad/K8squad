@@ -160,15 +160,11 @@ func TestOpenCodeLaunchEnvDeterministic(t *testing.T) {
 // the gateway never sees a concrete type (the "zero control-plane change at P2"
 // test).
 func TestOpenCodeIsRuntimeAdapter(t *testing.T) {
-	var _ RuntimeAdapter
 	a, err := NewOpenCodeAdapter(&fakeHost{})
 	if err != nil {
 		t.Fatalf("NewOpenCodeAdapter: %v", err)
 	}
-	var ra RuntimeAdapter = a
-	if ra == nil {
-		t.Fatal("opencode adapter must satisfy RuntimeAdapter")
-	}
+	var _ RuntimeAdapter = a
 }
 
 func hasEnv(env []string, kv string) bool {
