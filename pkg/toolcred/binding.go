@@ -58,6 +58,36 @@ import (
 // by the registrar on the authored CR, never self-declared by a fetched body.
 const AnnotationCredentialType = "ksquad.io/credential-type" // #nosec G101 -- this is an annotation KEY name, not a credential value
 
+// CredentialTypeSeparator joins multiple credential types inside a single
+// AnnotationCredentialType value. A gated CR that consumes more than one type
+// declares them comma-separated (e.g. "gemini,fal.ai"); a single-type CR carries
+// one bare token. The multi-type list is an ANY-OF: the CR drives whichever
+// listed type is provisioned (e.g. image-gen runs on EITHER Gemini or fal.ai),
+// so the go-live gate (S5) treats the list as satisfied once ANY member
+// resolves — never all-of. A single reader (SplitCredentialTypes) is the one
+// place that knows this encoding, so S1 (read model) and S5 (gate) cannot drift.
+const CredentialTypeSeparator = ","
+
+// SplitCredentialTypes parses an AnnotationCredentialType value into its declared
+// types: split on CredentialTypeSeparator, each token trimmed, blanks dropped. It
+// does NOT filter to known types — the caller applies the fail-closed
+// IsKnownType check so an unknown token is skipped per-token without discarding
+// its valid siblings in the same ANY-OF list. A single bare token yields a
+// one-element slice; an empty/whitespace value yields nil.
+func SplitCredentialTypes(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, CredentialTypeSeparator)
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // Consumption is how a materialized credential reaches the consuming tool. It
 // is a closed enum — a row whose Consumption is none of these is a malformed
 // table entry (ValidateBindings panics at init).

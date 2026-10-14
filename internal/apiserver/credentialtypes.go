@@ -134,20 +134,21 @@ func (s *CredentialTypesService) CredentialTypes(ctx context.Context, auth discu
 	// Collect type → consuming-CR names from every Skill and MCPServer in the
 	// project's namespace that DECLARES a credential type via the annotation and
 	// whose declared type the registry maps (fail closed: an unknown-type
-	// annotation is skipped, never surfaced as a consumable row).
+	// annotation is skipped, never surfaced as a consumable row). The annotation
+	// value is an ANY-OF list (toolcred.SplitCredentialTypes) so a multi-provider
+	// gated CR (image-gen → "gemini,fal.ai") surfaces EACH member it can consume.
 	consumers := map[string][]string{}
 	collect := func(annotations map[string]string, crName string) {
-		typ := annotations[toolcred.AnnotationCredentialType]
-		if typ == "" {
-			return
+		for _, typ := range toolcred.SplitCredentialTypes(annotations[toolcred.AnnotationCredentialType]) {
+			if !toolcred.IsKnownType(typ) {
+				// Unknown token: the gate declaration references a type outside the
+				// reviewed vocabulary. Fail closed PER TOKEN — this type never reaches
+				// the dropdown, while valid siblings in the same list still register.
+				// (S6 authors annotations against toolcred.BindingTypes.)
+				continue
+			}
+			consumers[typ] = append(consumers[typ], crName)
 		}
-		if !toolcred.IsKnownType(typ) {
-			// Unknown type: the gate declaration references a type outside the
-			// reviewed vocabulary. Fail closed — not consumable here, so it never
-			// reaches the dropdown. (S6 authors annotations against toolcred.BindingTypes.)
-			return
-		}
-		consumers[typ] = append(consumers[typ], crName)
 	}
 
 	var skills ksquadv1.SkillList
