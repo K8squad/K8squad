@@ -216,3 +216,49 @@ describe("<MessageItem> — ticket reference chips (ISI-5168)", () => {
     expect(chip.textContent).toContain("Fix login");
   });
 });
+
+// WS-3 / ISI-5783 — a settled transcript message renders its body as Markdown
+// (the in-flight stream is <ThinkingStream>, which stays plain). @mention text
+// and the author badge must survive the cutover.
+describe("<MessageItem> — settled body renders Markdown", () => {
+  it("renders Markdown block structure for a settled message body", () => {
+    render(
+      <ul>
+        <MessageItem
+          message={msg({
+            body: "## Status\n\nDeploy is **green** with a `helm upgrade`.",
+          })}
+        />
+      </ul>,
+    );
+    const body = screen.getByTestId("message-body");
+    expect(body.querySelector("h2")?.textContent).toBe("Status");
+    expect(body.querySelector("strong")?.textContent).toBe("green");
+    expect(body.querySelector("code")?.textContent).toBe("helm upgrade");
+  });
+
+  it("keeps @mention text intact inside a Markdown body", () => {
+    render(
+      <ul>
+        <MessageItem message={msg({ body: "cc @alfred — please review" })} />
+      </ul>,
+    );
+    const body = screen.getByTestId("message-body");
+    expect(body.textContent).toContain("@alfred");
+  });
+
+  it("does not render the Markdown body for a retracted message", () => {
+    render(
+      <ul>
+        <MessageItem
+          message={msg({
+            body: "## leaked",
+            invalidatedAt: "2026-09-09T11:00:00Z",
+          })}
+        />
+      </ul>,
+    );
+    expect(screen.queryByTestId("message-body")).toBeNull();
+    expect(screen.getByTestId("tombstone")).toBeTruthy();
+  });
+});

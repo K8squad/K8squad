@@ -23,6 +23,7 @@ import type { ThinkingRow } from "@/lib/discussion/liveFeed";
 import { deriveAuthorBadge } from "@/lib/discussion/provenance";
 import { parseAudience } from "@/lib/discussion/audience";
 import { reviewWorkItemHref } from "@/lib/github-links";
+import { Markdown } from "@/components/markdown/Markdown";
 import { AuthorBadge } from "./AuthorBadge";
 import { ProposalCard } from "./ProposalCard";
 import { WorkingIndicators } from "./WorkingIndicator";
@@ -160,7 +161,18 @@ export function MessageItem({
         />
       ) : (
         <>
-          <p className="ksq-message__body">{message.body}</p>
+          {/*
+            A transcript message is a durable, SETTLED post-back — the in-flight
+            run activity streams separately through <ThinkingStream> (which stays
+            plain pre-wrap). So the body is always past the streaming cutover and
+            renders as Markdown (WS-3 / ISI-5783, settle-then-render). The existing
+            ksq-message__body class is preserved on the <Markdown> root so layout
+            (margin/color) is unchanged; @mention text and the AuthorBadge above
+            are untouched. <Markdown> degrades to pre-wrap on oversize/parse-fail.
+          */}
+          <Markdown className="ksq-message__body" testId="message-body">
+            {message.body}
+          </Markdown>
           {result?.workItemId ? (
             <a
               className="ksq-chip ksq-result-chip"
