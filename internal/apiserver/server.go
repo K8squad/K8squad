@@ -143,6 +143,14 @@ type Options struct {
 	// like Dashboard. It rides the SAME §12.3 choke point + requireProjectRole
 	// gate as the dashboard — no settings-specific authz path.
 	ProjectSettings *ProjectSettingsService
+	// CredentialTypes is the WS-9 S1 (ISI-5811) per-project credential-type read
+	// model: GET /api/projects/{projectId}/credential-types projects the
+	// intersection of the tool-credential binding registry (pkg/toolcred) and the
+	// [sec]-gated skills/MCPServers enabled on the project, each with its go-live
+	// gate-state. When nil the route keeps the documented 501 (cluster-less dev
+	// run without an informer cache), exactly like ProjectSettings. It rides the
+	// SAME §12.3 choke point + requireProjectRole(viewer) gate as settings.
+	CredentialTypes *CredentialTypesService
 	// ReviewAutomation is the E1 (ISI-4763 / ISI-4750) PR-review-automation config
 	// service: GET (member+) / PUT-PATCH (contributor+)
 	// /api/projects/{projectId}/repo/review-automation reads and persists
@@ -988,6 +996,23 @@ func (s *Server) routes(opts Options) {
 			settings.HandleFunc("", s.projectSettings(opts.ProjectSettings)).Methods(http.MethodGet)
 		} else {
 			settings.HandleFunc("", notImplemented("project-settings read model", "ISI-3999: wire a ProjectSettingsService (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// WS-9 S1 credential-type intersection (ISI-5811): GET
+		// /api/projects/{projectId}/credential-types — the project-settings
+		// Credentials dropdown source. SAME §12.3 choke point + requireProjectRole
+		// (viewer) gate as settings (read = member+); no credential-specific authz
+		// path. Nil service (cluster-less dev run) keeps the documented 501.
+		credTypes := s.router.Path("/api/projects/{projectId}/credential-types").Subrouter()
+		credTypes.Use(authz)
+		if opts.ProjectRoles != nil {
+			credTypes.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.CredentialTypes != nil {
+			credTypes.HandleFunc("", s.credentialTypes(opts.CredentialTypes)).Methods(http.MethodGet)
+		} else {
+			credTypes.HandleFunc("", notImplemented("credential-types read model", "ISI-5811: wire a CredentialTypesService (informer cache) to enable")).
 				Methods(http.MethodGet)
 		}
 
