@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -70,12 +71,21 @@ import (
 const credentialMaxValueBytes = 8 << 10
 
 // SecretWriteClient is the cluster seam the credential write path needs:
-// Secret Create plus Team List (for UID→namespace resolution). Production
-// wires a direct (uncached) controller-runtime client — a just-created Secret
-// must be durable at the API server, and a cache on a write path is a
-// staleness hazard. Tests wire a fake client.
+// Secret Create + Delete plus Team List (for UID→namespace resolution).
+// Production wires a direct (uncached) controller-runtime client — a
+// just-created Secret must be durable at the API server, and a cache on a write
+// path is a staleness hazard. Tests wire a fake client.
+//
+// Delete carries the WS-9 S3 lifecycle (ISI-5816): rotation is create-new +
+// repoint under the SAME deterministic name — modelled as delete-then-recreate
+// because the create-only SA cannot update in place — and the credential-vault
+// delete verb. Both are narrowed to label-scoped managed-credential Secrets by
+// the apiserver-rbac.yaml grant (secrets:delete) + its ValidatingAdmissionPolicy
+// (oldObject must carry ksquad.io/managed-credential=true in a squad namespace),
+// so a regressed handler still cannot delete a non-managed Secret.
 type SecretWriteClient interface {
 	Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error
+	Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error
 	List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error
 }
 
@@ -279,6 +289,39 @@ func (s *SecretWriteService) handleCredentialCreate(w http.ResponseWriter, r *ht
 	})
 }
 
+// handleCredentialRotate is the handler behind PUT /api/credentials — the WS-9
+// S3 tool-credential rotation verb (ISI-5816). It is the {type}-axis sibling of
+// POST: a rotation names the credential by (type, projectId) and replaces its
+// material under the stable deterministic name. The paste-key {runtime,class}
+// axis has no rotation surface here (its lifecycle is the E3-S1 create +
+// delete-by-name path), so a body without a type is a 422.
+func (s *SecretWriteService) handleCredentialRotate(w http.ResponseWriter, r *http.Request) {
+	ctx, span := funnelSpan(r.Context(), "ksquad.credential.rotate")
+	defer span.End()
+	author, ok := discussion.AuthFromContext(r.Context())
+	if !ok || author.Principal == "" {
+		funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeUnauthenticated)
+		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+	funnelAttrs(span, attribute.String("team.id", author.TeamID.String()))
+
+	var req credentialCreateRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredInvalid)
+		return
+	}
+	if req.Type == "" {
+		funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredInvalid)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":  "validation failed",
+			"fields": []fieldError{{Field: "type", Message: "type is required to rotate a tool credential"}},
+		})
+		return
+	}
+	s.rotateToolCredential(ctx, span, w, r, author, req)
+}
+
 // createToolCredential is the WS-9 S2 tool-credential write (ISI-5815, design
 // §3.2 / §4). It materializes a vault credential into the EXACT Secret + data
 // key the gated skill's EMPTY-at-authoring credentialSecretRef resolves to:
@@ -304,29 +347,245 @@ func (s *SecretWriteService) handleCredentialCreate(w http.ResponseWriter, r *ht
 // (AlreadyExists ⇒ 409, the create-only grant can never overwrite — rotation is
 // create-new + repoint, design O-2 option (a)), and the credential.create span.
 func (s *SecretWriteService) createToolCredential(ctx context.Context, span trace.Span, w http.ResponseWriter, r *http.Request, author discussion.AuthorContext, req credentialCreateRequest) {
-	funnelAttrs(span, attribute.String("credential.type", req.Type))
-
-	// Fail CLOSED on an unknown type BEFORE anything else: the registry is the
-	// authority for the Secret name + data key, so a type it does not map cannot
-	// be materialized at all. The 422 lists the known vocabulary (type names are
-	// a reviewed, non-secret set) so the caller can correct.
-	binding, ok := toolcred.LookupBinding(req.Type)
+	target, ok := s.resolveToolCredTarget(ctx, span, w, r, author, req, funnelInst().credentialCreate, true)
 	if !ok {
-		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredInvalid)
+		return
+	}
+
+	secret := toolCredentialSecret(target, req)
+	if err := s.client.Create(r.Context(), secret); err != nil {
+		switch {
+		case apierrors.IsAlreadyExists(err):
+			// A vault entry for this (project, type) already exists. Create-only
+			// cannot overwrite (design O-2 (a): rotation is the delete+recreate
+			// PUT flow, not an in-place update), so this is an honest 409.
+			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredConflict)
+			writeJSONError(w, http.StatusConflict, "a credential of this type already exists for this project")
+		case apierrors.IsForbidden(err):
+			slog.ErrorContext(ctx, "tool-credential create FORBIDDEN — check apiserver-rbac.yaml grant + admission policy",
+				"namespace", target.ns, "name", target.secretName, "type", req.Type, "principal", author.Principal)
+			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredRejected)
+			writeJSONError(w, http.StatusBadGateway, "credential store rejected the write")
+		default:
+			slog.ErrorContext(ctx, "tool-credential create failed",
+				"namespace", target.ns, "name", target.secretName, "type", req.Type, "error", err)
+			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredError)
+			writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
+		}
+		return
+	}
+
+	slog.InfoContext(ctx, "tool credential materialized",
+		"namespace", target.ns, "name", target.secretName, "type", req.Type, "project", target.projectName, "principal", author.Principal)
+	funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredCreated)
+	writeJSON(w, http.StatusCreated, credentialCreateResult{
+		SecretRef: "secret://" + target.ns + "/" + target.secretName,
+		Name:      target.secretName,
+		Namespace: target.ns,
+		Class:     req.Type,
+	})
+}
+
+// rotateToolCredential is the WS-9 S3 rotation handler behind PUT
+// /api/credentials with a {type} body (ISI-5816, design §4/§6, O-2 option (a)).
+//
+// The apiserver SA holds secrets:create + secrets:delete but NOT update, so a
+// vault entry cannot be mutated in place. Rotation is therefore modelled as
+// "create-new + repoint" with the deterministic name held STABLE: delete the
+// existing materialization, then recreate it under the SAME
+// toolcred.MaterializedSecretName with the fresh value. Because the name never
+// changes, the run-time resolver (S5/S6) re-derives it unchanged — the "repoint"
+// is a no-op by construction — and no stale plaintext survives the cutover (the
+// old Secret is gone before the new one is written; acceptance: "rotation
+// produces fresh materialization, no stale plaintext"). A rotation of a
+// not-yet-set credential degrades to a plain create (the delete tolerates
+// NotFound), so the verb is an idempotent "set to this fresh value".
+//
+// Every no-echo / label-scope / tenancy property of the create path is reused
+// (the shared resolveToolCredTarget + toolCredentialSecret seam); only the
+// delete-then-create sequencing and the ksquad.credential.rotate span differ.
+func (s *SecretWriteService) rotateToolCredential(ctx context.Context, span trace.Span, w http.ResponseWriter, r *http.Request, author discussion.AuthorContext, req credentialCreateRequest) {
+	target, ok := s.resolveToolCredTarget(ctx, span, w, r, author, req, funnelInst().credentialRotate, true)
+	if !ok {
+		return
+	}
+
+	// Delete the existing materialization first (create-only SA cannot
+	// overwrite). NotFound is tolerated: rotating a credential that was never
+	// set is an honest create. Forbidden is a RBAC/VAP regression — loud in
+	// logs (ns/name/type only, NFR-2), opaque to the caller.
+	old := managedCredentialStub(target)
+	if err := s.client.Delete(r.Context(), old); err != nil && !apierrors.IsNotFound(err) {
+		if apierrors.IsForbidden(err) {
+			slog.ErrorContext(ctx, "tool-credential rotate DELETE FORBIDDEN — check apiserver-rbac.yaml delete grant + admission policy",
+				"namespace", target.ns, "name", target.secretName, "type", req.Type, "principal", author.Principal)
+			funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredRejected)
+			writeJSONError(w, http.StatusBadGateway, "credential store rejected the rotation")
+			return
+		}
+		slog.ErrorContext(ctx, "tool-credential rotate delete failed",
+			"namespace", target.ns, "name", target.secretName, "type", req.Type, "error", err)
+		funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredError)
+		writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
+		return
+	}
+
+	// Recreate under the SAME deterministic name with the fresh value.
+	secret := toolCredentialSecret(target, req)
+	if err := s.client.Create(r.Context(), secret); err != nil {
+		switch {
+		case apierrors.IsAlreadyExists(err):
+			// The delete did not take effect (e.g. a finalizer held the old
+			// Secret) — honest 409 rather than a silent miss. Secrets carry no
+			// finalizer by default, so this is a defensive branch.
+			funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredConflict)
+			writeJSONError(w, http.StatusConflict, "the previous credential is still being removed; retry the rotation")
+		case apierrors.IsForbidden(err):
+			slog.ErrorContext(ctx, "tool-credential rotate CREATE FORBIDDEN — check apiserver-rbac.yaml grant + admission policy",
+				"namespace", target.ns, "name", target.secretName, "type", req.Type, "principal", author.Principal)
+			funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredRejected)
+			writeJSONError(w, http.StatusBadGateway, "credential store rejected the rotation")
+		default:
+			slog.ErrorContext(ctx, "tool-credential rotate create failed",
+				"namespace", target.ns, "name", target.secretName, "type", req.Type, "error", err)
+			funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredError)
+			writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
+		}
+		return
+	}
+
+	slog.InfoContext(ctx, "tool credential rotated",
+		"namespace", target.ns, "name", target.secretName, "type", req.Type, "project", target.projectName, "principal", author.Principal)
+	funnelOutcome(ctx, span, funnelInst().credentialRotate, outcomeCredRotated)
+	writeJSON(w, http.StatusOK, credentialCreateResult{
+		SecretRef: "secret://" + target.ns + "/" + target.secretName,
+		Name:      target.secretName,
+		Namespace: target.ns,
+		Class:     req.Type,
+	})
+}
+
+// deleteToolCredential is the WS-9 S3 credential-vault delete behind DELETE
+// /api/credentials with a {type} body (ISI-5816, design §3.3/§6). It removes the
+// deterministic materialized Secret for (project, type). The grant is a NARROW
+// label-scoped delete: apiserver-rbac.yaml adds secrets:delete and its
+// ValidatingAdmissionPolicy denies any delete by the apiserver SA of a Secret
+// that does not carry ksquad.io/managed-credential=true in a squad namespace, so
+// even a regressed handler cannot touch a non-managed Secret. The handler itself
+// only ever addresses the deterministic managed-credential name, so the two
+// defenses agree by construction. No value is read or echoed on this path.
+func (s *SecretWriteService) deleteToolCredential(w http.ResponseWriter, r *http.Request) {
+	ctx, span := funnelSpan(r.Context(), "ksquad.credential.delete")
+	defer span.End()
+	author, ok := discussion.AuthFromContext(r.Context())
+	if !ok || author.Principal == "" {
+		funnelOutcome(ctx, span, funnelInst().credentialDelete, outcomeUnauthenticated)
+		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+	funnelAttrs(span, attribute.String("team.id", author.TeamID.String()))
+
+	var req credentialCreateRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		funnelOutcome(ctx, span, funnelInst().credentialDelete, outcomeCredInvalid)
+		return
+	}
+	// Delete is a tool-credential-axis verb only: the deterministic materialized
+	// name is derived from {type, projectId}. A request without a type is a
+	// paste-key shape, which has no managed delete surface here.
+	if req.Type == "" {
+		funnelOutcome(ctx, span, funnelInst().credentialDelete, outcomeCredInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "validation failed",
-			"fields": []fieldError{{Field: "type", Message: "unknown credential type; must be one of: " + strings.Join(toolcred.BindingTypes(), ", ")}},
+			"fields": []fieldError{{Field: "type", Message: "type is required to delete a tool credential"}},
 		})
 		return
 	}
 
-	if errs := validateToolCredential(req); len(errs) > 0 {
-		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredInvalid)
+	// requireValue=false: delete carries no material.
+	target, ok := s.resolveToolCredTarget(ctx, span, w, r, author, req, funnelInst().credentialDelete, false)
+	if !ok {
+		return
+	}
+
+	old := managedCredentialStub(target)
+	if err := s.client.Delete(r.Context(), old); err != nil {
+		switch {
+		case apierrors.IsNotFound(err):
+			// No materialization of this type for this project — existence-hiding
+			// 404, the same honest "nothing here" the read model gives.
+			funnelOutcome(ctx, span, funnelInst().credentialDelete, outcomeCredNotFound)
+			writeJSONError(w, http.StatusNotFound, "no credential of this type for this project")
+		case apierrors.IsForbidden(err):
+			slog.ErrorContext(ctx, "tool-credential delete FORBIDDEN — check apiserver-rbac.yaml delete grant + admission policy",
+				"namespace", target.ns, "name", target.secretName, "type", req.Type, "principal", author.Principal)
+			funnelOutcome(ctx, span, funnelInst().credentialDelete, outcomeCredRejected)
+			writeJSONError(w, http.StatusBadGateway, "credential store rejected the delete")
+		default:
+			slog.ErrorContext(ctx, "tool-credential delete failed",
+				"namespace", target.ns, "name", target.secretName, "type", req.Type, "error", err)
+			funnelOutcome(ctx, span, funnelInst().credentialDelete, outcomeCredError)
+			writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
+		}
+		return
+	}
+
+	slog.InfoContext(ctx, "tool credential deleted",
+		"namespace", target.ns, "name", target.secretName, "type", req.Type, "project", target.projectName, "principal", author.Principal)
+	funnelOutcome(ctx, span, funnelInst().credentialDelete, outcomeCredDeleted)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":    "deleted",
+		"name":      target.secretName,
+		"namespace": target.ns,
+		"type":      req.Type,
+	})
+}
+
+// toolCredTarget is the resolved materialization target of a tool-credential
+// verb: the registry binding, the Project's namespace + canonical name, and the
+// deterministic Secret name derived from them. It is the shared output of
+// resolveToolCredTarget consumed by create / rotate / delete.
+type toolCredTarget struct {
+	binding     toolcred.Binding
+	ns          string
+	projectName string
+	secretName  string
+}
+
+// resolveToolCredTarget runs the fail-closed resolution every tool-credential
+// verb shares (ISI-5815 S2 create + ISI-5816 S3 rotate/delete): registry lookup,
+// field validation, project-reader availability, project→(namespace, canonical
+// name) tenancy resolution and deterministic Secret-name derivation. On any
+// failure it writes the HTTP error AND records the span outcome on the supplied
+// counter, then returns ok=false — the caller must return immediately. It stamps
+// credential.type on the span first. requireValue gates the value-envelope check:
+// true for create/rotate (a value is written), false for delete (no material in
+// the body). This is the single resolution seam so the three verbs can never
+// drift on which Secret a given (project, type) maps to.
+func (s *SecretWriteService) resolveToolCredTarget(ctx context.Context, span trace.Span, w http.ResponseWriter, r *http.Request, author discussion.AuthorContext, req credentialCreateRequest, counter metric.Int64Counter, requireValue bool) (toolCredTarget, bool) {
+	funnelAttrs(span, attribute.String("credential.type", req.Type))
+
+	// Fail CLOSED on an unknown type BEFORE anything else: the registry is the
+	// authority for the Secret name + data key, so a type it does not map cannot
+	// be addressed at all. The 422 lists the known vocabulary (type names are a
+	// reviewed, non-secret set) so the caller can correct.
+	binding, ok := toolcred.LookupBinding(req.Type)
+	if !ok {
+		funnelOutcome(ctx, span, counter, outcomeCredInvalid)
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":  "validation failed",
+			"fields": []fieldError{{Field: "type", Message: "unknown credential type; must be one of: " + strings.Join(toolcred.BindingTypes(), ", ")}},
+		})
+		return toolCredTarget{}, false
+	}
+
+	if errs := validateToolCredential(req, requireValue); len(errs) > 0 {
+		funnelOutcome(ctx, span, counter, outcomeCredInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "validation failed",
 			"fields": errs,
 		})
-		return
+		return toolCredTarget{}, false
 	}
 
 	// The {type} axis needs the per-project resolver (the informer cache). A nil
@@ -334,20 +593,20 @@ func (s *SecretWriteService) createToolCredential(ctx context.Context, span trac
 	// honestly unavailable — the documented 501, exactly as S1's read model
 	// degrades — rather than a fabricated namespace.
 	if s.projects == nil {
-		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredError)
+		funnelOutcome(ctx, span, counter, outcomeCredError)
 		writeJSON(w, http.StatusNotImplemented, map[string]string{
 			"error":    "not implemented",
 			"detail":   "tool-credential materialization requires the project read model, which is unavailable on this host",
 			"tracking": "ISI-5815: wire a project reader (informer cache) to enable the {type} credential axis",
 		})
-		return
+		return toolCredTarget{}, false
 	}
 
 	// Resolve the Project to (namespace, canonical name) through the SAME tenancy
 	// spine S1 uses: team-fenced for a tenant (existence-hiding 404), fleet-wide
 	// for an admin (409 on a bare-name collision across squads). The canonical
 	// name — not the raw path input, which may be a uid or namespace/name — seeds
-	// the deterministic Secret name, so S5/S6 re-derive it identically.
+	// the deterministic Secret name, so every verb re-derives it identically.
 	var ns, projectName string
 	var err error
 	if author.IsAdmin {
@@ -358,96 +617,90 @@ func (s *SecretWriteService) createToolCredential(ctx context.Context, span trac
 	switch {
 	case err == nil:
 	case errors.Is(err, ErrTeamNotFound), errors.Is(err, ErrProjectNotFound):
-		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredNoNamespace)
+		funnelOutcome(ctx, span, counter, outcomeCredNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no project for this caller")
-		return
+		return toolCredTarget{}, false
 	case errors.Is(err, ErrProjectAmbiguous):
-		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredConflict)
+		funnelOutcome(ctx, span, counter, outcomeCredConflict)
 		writeJSONError(w, http.StatusConflict, "project name ambiguous across squads; address by uid")
-		return
+		return toolCredTarget{}, false
 	default:
 		slog.WarnContext(ctx, "tool-credential project resolution unavailable", "error", err)
-		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredError)
+		funnelOutcome(ctx, span, counter, outcomeCredError)
 		writeJSONError(w, http.StatusBadGateway, "project scope resolution unavailable")
-		return
+		return toolCredTarget{}, false
 	}
 
-	// Deterministic name (proj-<project>-cred-<type>) and data key — both from the
-	// registry, the single source of truth shared with the resolver. ok is
-	// guaranteed true (type proven known above) but checked rather than asserted.
+	// Deterministic name (proj-<project>-cred-<type>) — from the registry, the
+	// single source of truth shared with the resolver. ok is guaranteed true
+	// (type proven known above) but checked rather than asserted.
 	secretName, ok := toolcred.MaterializedSecretName(projectName, req.Type)
 	if !ok {
-		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredError)
+		funnelOutcome(ctx, span, counter, outcomeCredError)
 		writeJSONError(w, http.StatusBadGateway, "credential name derivation failed")
-		return
+		return toolCredTarget{}, false
 	}
 
-	secret := &corev1.Secret{
+	return toolCredTarget{binding: binding, ns: ns, projectName: projectName, secretName: secretName}, true
+}
+
+// toolCredentialSecret builds the managed-credential Secret for a resolved
+// target. The data key is the registry's binding.DataKey (write/read agreement,
+// F1) and the value stays write-only (it leaves only inside Secret.Data). The
+// credential TYPE is stamped as a label (the same vocabulary key the consuming
+// skill carries as an annotation) so S5's go-live gate oracle can label-SELECT
+// the materialized types in a project namespace without an apiserver Secret
+// get/list widening — the deterministic name already encodes it, the label makes
+// it listable.
+func toolCredentialSecret(target toolCredTarget, req credentialCreateRequest) *corev1.Secret {
+	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      secretName,
-			Namespace: ns,
+			Name:      target.secretName,
+			Namespace: target.ns,
 			Labels: map[string]string{
 				credential.LabelManagedCredential: credential.LabelManagedCredentialValue,
-				// The credential TYPE is stamped as a label (the same vocabulary
-				// key the consuming skill carries as an annotation) so S5's go-live
-				// gate oracle can label-SELECT the materialized types in a project
-				// namespace without an apiserver Secret get/list widening — the
-				// deterministic name already encodes it, the label makes it listable.
 				toolcred.AnnotationCredentialType: req.Type,
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{binding.DataKey: []byte(req.Value)},
+		Data: map[string][]byte{target.binding.DataKey: []byte(req.Value)},
 	}
-	if err := s.client.Create(r.Context(), secret); err != nil {
-		switch {
-		case apierrors.IsAlreadyExists(err):
-			// A vault entry for this (project, type) already exists. Create-only
-			// cannot overwrite (design O-2 (a): rotation is a delete+recreate flow,
-			// not an in-place update), so this is an honest 409.
-			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredConflict)
-			writeJSONError(w, http.StatusConflict, "a credential of this type already exists for this project")
-		case apierrors.IsForbidden(err):
-			slog.ErrorContext(ctx, "tool-credential create FORBIDDEN — check apiserver-rbac.yaml grant + admission policy",
-				"namespace", ns, "name", secretName, "type", req.Type, "principal", author.Principal)
-			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredRejected)
-			writeJSONError(w, http.StatusBadGateway, "credential store rejected the write")
-		default:
-			slog.ErrorContext(ctx, "tool-credential create failed",
-				"namespace", ns, "name", secretName, "type", req.Type, "error", err)
-			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredError)
-			writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
-		}
-		return
-	}
+}
 
-	slog.InfoContext(ctx, "tool credential materialized",
-		"namespace", ns, "name", secretName, "type", req.Type, "project", projectName, "principal", author.Principal)
-	funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredCreated)
-	writeJSON(w, http.StatusCreated, credentialCreateResult{
-		SecretRef: "secret://" + ns + "/" + secretName,
-		Name:      secretName,
-		Namespace: ns,
-		Class:     req.Type,
-	})
+// managedCredentialStub is the minimal object a Delete needs: name + namespace.
+// It is NOT read back, and the delete is further constrained to a labelled
+// managed-credential Secret by the cluster-side ValidatingAdmissionPolicy (the
+// apiserver SA cannot get/list, so the label check lives at admission on the
+// oldObject, not in this handler).
+func managedCredentialStub(target toolCredTarget) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      target.secretName,
+			Namespace: target.ns,
+		},
+	}
 }
 
 // validateToolCredential is the fail-closed field validation for the {type}
 // axis. Like validateCredentialCreate it NEVER copies the value into a message —
 // errors name the field, not the material. The type itself is validated against
 // the registry by the caller (fail-closed) before this runs; here we guard the
-// project id and the value envelope. The materialized Secret name is derived (not
-// user-supplied), so there is no name field to validate on this axis.
-func validateToolCredential(req credentialCreateRequest) []fieldError {
+// project id and (for the write verbs) the value envelope. The materialized
+// Secret name is derived (not user-supplied), so there is no name field to
+// validate on this axis. requireValue is true for create/rotate (a value is
+// written) and false for delete (which carries no material).
+func validateToolCredential(req credentialCreateRequest, requireValue bool) []fieldError {
 	var errs []fieldError
 	if req.ProjectID == "" {
 		errs = append(errs, fieldError{Field: "projectId", Message: "projectId is required for a tool credential"})
 	}
-	switch {
-	case req.Value == "":
-		errs = append(errs, fieldError{Field: "value", Message: "value is required"})
-	case len(req.Value) > credentialMaxValueBytes:
-		errs = append(errs, fieldError{Field: "value", Message: "value exceeds the credential size limit"})
+	if requireValue {
+		switch {
+		case req.Value == "":
+			errs = append(errs, fieldError{Field: "value", Message: "value is required"})
+		case len(req.Value) > credentialMaxValueBytes:
+			errs = append(errs, fieldError{Field: "value", Message: "value exceeds the credential size limit"})
+		}
 	}
 	return errs
 }

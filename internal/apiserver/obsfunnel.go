@@ -73,6 +73,20 @@ const (
 	outcomeCredError       = "store_error"       // 502 — store unavailable
 	outcomeCredCreated     = "created"           // 201
 
+	// PUT /api/credentials (WS-9 S3 rotation, ISI-5816) — span
+	// ksquad.credential.rotate. Rotation is create-new + repoint under the
+	// create-only SA: the deterministic Secret is deleted then recreated with
+	// fresh material (design O-2 (a)), so no stale plaintext survives the
+	// cutover. The pre-resolution failure modes reuse the Cred* outcomes above
+	// (invalid / no_namespace / rejected / store_error); rotated is the terminal.
+	outcomeCredRotated = "rotated" // 200 — fresh materialization written
+
+	// DELETE /api/credentials (WS-9 S3 delete, ISI-5816) — span
+	// ksquad.credential.delete. A label-scoped delete of the deterministic
+	// materialized Secret; existence-hiding 404 when no such credential exists.
+	outcomeCredNotFound = "not_found" // 404 — no managed credential of this type for the project
+	outcomeCredDeleted  = "deleted"   // 200 — materialization removed
+
 	// POST /api/credentials/{name}/test (ISI-3680, AD-7) — span
 	// ksquad.credential.test. A probe that ANSWERS is 200 either way, so the
 	// green/red split is a first-class bounded outcome, distinct from the
@@ -105,6 +119,8 @@ type funnel struct {
 	composeSquad       metric.Int64Counter   // ksquad.compose.squad.requests{outcome}
 	composeAgents      metric.Int64Histogram // ksquad.compose.squad.agents_applied
 	credentialCreate   metric.Int64Counter   // ksquad.credential.create.requests{outcome}
+	credentialRotate   metric.Int64Counter   // ksquad.credential.rotate.requests{outcome}
+	credentialDelete   metric.Int64Counter   // ksquad.credential.delete.requests{outcome}
 	credentialTest     metric.Int64Counter   // ksquad.credential.test.requests{outcome}
 	repoAuthTest       metric.Int64Counter   // ksquad.repo.auth.test.requests{outcome}
 }
@@ -135,6 +151,12 @@ func funnelInst() *funnel {
 		f.credentialCreate, _ = m.Int64Counter("ksquad.credential.create.requests",
 			metric.WithUnit("{request}"),
 			metric.WithDescription("Managed-credential creates by bounded outcome (ISI-3669, obs plan §4 / M3 funnel)."))
+		f.credentialRotate, _ = m.Int64Counter("ksquad.credential.rotate.requests",
+			metric.WithUnit("{request}"),
+			metric.WithDescription("Tool-credential rotations (delete+recreate, WS-9 S3 / ISI-5816) by bounded outcome."))
+		f.credentialDelete, _ = m.Int64Counter("ksquad.credential.delete.requests",
+			metric.WithUnit("{request}"),
+			metric.WithDescription("Tool-credential deletes (label-scoped, WS-9 S3 / ISI-5816) by bounded outcome."))
 		f.credentialTest, _ = m.Int64Counter("ksquad.credential.test.requests",
 			metric.WithUnit("{request}"),
 			metric.WithDescription("Managed-credential test-connection probes by bounded outcome (ISI-3669/ISI-3680, obs plan §4 / M3 funnel)."))

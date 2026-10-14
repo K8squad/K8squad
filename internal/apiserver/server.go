@@ -1182,9 +1182,17 @@ func (s *Server) routes(opts Options) {
 		}
 		if opts.SecretWriter != nil {
 			creds.HandleFunc("", opts.SecretWriter.handleCredentialCreate).Methods(http.MethodPost)
+			// WS-9 S3 tool-credential lifecycle (ISI-5816): PUT rotates (delete+
+			// recreate under the stable deterministic name, O-2 (a) — no stale
+			// plaintext), DELETE removes the label-scoped materialization. Both are
+			// {type}-axis verbs keyed off (type, projectId) and ride the SAME
+			// subrouter, authz choke point, CSRF guard and bounded body as POST —
+			// mux routes them by method, exactly as GET/POST already coexist here.
+			creds.HandleFunc("", opts.SecretWriter.handleCredentialRotate).Methods(http.MethodPut)
+			creds.HandleFunc("", opts.SecretWriter.deleteToolCredential).Methods(http.MethodDelete)
 		} else {
 			creds.HandleFunc("", notImplemented("managed-credential write", "ISI-3679: wire a SecretWriteService (direct client) to enable")).
-				Methods(http.MethodPost)
+				Methods(http.MethodPost, http.MethodPut, http.MethodDelete)
 		}
 		connect := s.router.Path("/api/credentials/connect").Subrouter()
 		connect.Use(authz)
