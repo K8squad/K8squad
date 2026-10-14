@@ -1050,6 +1050,32 @@ func main() {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
 		}
 
+		// AgentMesh supervisor register ingress (chapter §2.5 seam table,
+		// ISI-5822 P1.1): serves POST /mesh/{register,deregister} over the
+		// same coord.mesh_endpoint registry the route leg reads, so gateways
+		// can announce their standing endpoints. Started only when the mesh
+		// is flagged on (KSQUAD_MESH_TEAMS) — flag-off operators serve
+		// nothing new. The listener address is env-tunable for the pool pods'
+		// KSQUAD_SUPERVISOR_INGRESS_URL (default :8090).
+		if teams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(teams) > 0 {
+			if registry, err := coord.NewMeshRegistry(db); err == nil {
+				if ingress, err := rundrive.NewMeshIngress(registry); err == nil {
+					addr := os.Getenv("KSQUAD_SUPERVISOR_INGRESS_ADDR")
+					if addr == "" {
+						addr = ":8090"
+					}
+					go func() {
+						ctrl.Log.Info("AgentMesh supervisor register ingress serving", "addr", addr)
+						if err := rundrive.ServeMeshIngress(ctx, addr, ingress); err != nil {
+							ctrl.Log.Error(err, "AgentMesh register ingress stopped")
+						}
+					}()
+				}
+			} else {
+				ctrl.Log.Error(err, "mesh registry unavailable; register ingress not started")
+			}
+		}
+
 		// ISI-4346: run-owned sandbox teardown at agent completion. The
 		// dispatcher's background follow ends when the in-sandbox agent
 		// session truly does — long AFTER the durable machine settles

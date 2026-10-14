@@ -157,6 +157,27 @@ func (r *MeshRegistry) HeartbeatPod(ctx context.Context, pod string, endpointIDs
 	return res.RowsAffected()
 }
 
+// PrunePod drops every endpoint of pod EXCEPT the listed ids — the ingress's
+// per-heartbeat reconciliation: a gateway that recreated a process (new
+// endpoint id) leaves the dead id behind, and pruning it at the next
+// registration beat keeps the registry honest without waiting for the TTL.
+// Idempotent; safe for a pod with no rows.
+func (r *MeshRegistry) PrunePod(ctx context.Context, pod string, keepIDs []string) error {
+	if pod == "" {
+		return fmt.Errorf("coord.MeshRegistry.PrunePod: pod is required")
+	}
+	// pq.Array renders the keep-set as a Postgres array literal (driver-neutral
+	// encoding across pgx stdlib / lib/pq / sqlmock).
+	_, err := r.db.ExecContext(ctx, `
+		DELETE FROM coord.mesh_endpoint
+		 WHERE pod = $1 AND NOT (endpoint_id = ANY($2))`,
+		pod, pq.Array(keepIDs))
+	if err != nil {
+		return fmt.Errorf("coord.MeshRegistry.PrunePod %s: %w", pod, err)
+	}
+	return nil
+}
+
 // DeregisterPod drops every endpoint a pod's gateway registered — the clean
 // shutdown path, and the drain the Supervisor runs before asking the
 // Scheduler to recreate an unhealthy gateway's pod (chapter §2.4).
