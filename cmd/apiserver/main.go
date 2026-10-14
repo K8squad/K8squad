@@ -557,6 +557,19 @@ func main() {
 		log.Printf("ksquad-apiserver: project-settings read model ready (GET /api/projects/{id}/settings)")
 	}
 
+	// WS-9 S1 credential-type read model (ISI-5811): the intersection of the
+	// tool-credential binding registry (pkg/toolcred) and the project's enabled
+	// [sec]-gated skills/MCPServers that the project-settings Credentials dropdown
+	// renders. Shares the dashboard informer cache. The go-live gate-state oracle
+	// is nil for now (the create-only apiserver SA cannot read Secrets, so every
+	// type is honestly unsatisfied until S2/S5 wire a presence signal that does
+	// not widen the apiserver's Secret access). Nil cache ⇒ nil service ⇒ 501.
+	var credentialTypes *apiserver.CredentialTypesService
+	if dashboardReader != nil {
+		credentialTypes = apiserver.NewCredentialTypesService(dashboardReader, nil)
+		log.Printf("ksquad-apiserver: credential-types read model ready (GET /api/projects/{id}/credential-types)")
+	}
+
 	// 8.5 CRD-apply write surface (ISI-3198): the DIRECT controller-runtime client the
 	// compose endpoints apply through. Built where the host has cluster access (in-cluster
 	// SA or KUBECONFIG); when it cannot be built (cluster-less dev run) we log and leave it
@@ -836,6 +849,7 @@ func main() {
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
 		ProjectRoles:     memberships,
 		ProjectSettings:  projectSettings,
+		CredentialTypes:  credentialTypes,
 		ReviewAutomation: reviewAutomation,
 		IssueTriage:      issueTriage,
 		CiFailure:        ciFailure,
