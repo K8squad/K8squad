@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
 import { classifyCreateStatus } from "@/lib/credentials";
+import { CredentialsVaultCard } from "@/components/settings/CredentialsVaultCard";
 import {
   buildProjectPutBody,
   createScmCredential,
@@ -46,6 +47,7 @@ type Msg = { tone: "ok" | "bad"; text: string };
 /** The left-rail section anchors — id must match each card's id for scroll-spy. */
 const SECTIONS = [
   { id: "repository", label: "Repository" },
+  { id: "credentials", label: "Credentials" },
   { id: "access", label: "Access & credentials" },
   { id: "sync", label: "Sync" },
   { id: "docs", label: "Docs & conventions" },
@@ -460,6 +462,13 @@ function RepositoryAndCredentials({
           />
         )}
       </section>
+
+      {/* ── Credentials (WS-9 S4, ISI-5847) — the tool-credential vault: one row
+          per consumable type the project's gated skills declare, write-only value,
+          status from the go-live gate. Distinct concern from "Access & credentials"
+          below (that card owns the SCM PAT for the repo). canEdit is reused from
+          the SAME settings projection, so a row shown editable never 403s (§5). ── */}
+      <CredentialsVaultCard projectId={projectId} canEdit={canEdit} />
 
       {/* ── Access & credentials — status strip + Replace-token (one concern). ── */}
       <section id="settings-access" className="card settings__card" data-testid="settings-cred-panel">

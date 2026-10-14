@@ -277,10 +277,10 @@ describe("<ProjectSettingsScreen> — ISI-4839 section-nav scroll-spy", () => {
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
 
-    // On mount the first section is active, and all four section cards are observed
-    // (repository, access, sync, docs — the last added by ISI-5303).
+    // On mount the first section is active, and all five section cards are observed
+    // (repository, credentials, access, sync, docs — credentials added by ISI-5847).
     expect(screen.getByTestId("settings-nav-repository").className).toContain("settings__nav-link--active");
-    expect(observed.length).toBe(4);
+    expect(observed.length).toBe(5);
     expect(ioCallback).not.toBeNull();
 
     // "Access & credentials" scrolls into the trigger band → the active link follows it,
