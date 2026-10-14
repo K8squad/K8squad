@@ -441,6 +441,15 @@ spec:
                         for capability assembly (ADR-0004 Phase 1 keystone). Permissions are copied
                         verbatim from Skill.spec.permissions ONLY (never from body content — AC4/AC7 D8).
                       properties:
+                        credentialType:
+                          description: |-
+                            CredentialType is the raw ksquad.io/credential-type annotation value the
+                            Skill carries (WS-9 S5 go-live gate, ISI-5818/ISI-5849) — a comma-separated
+                            ANY-OF credential-type set for a [sec]-gated skill, empty for an ungated
+                            one. Recorded as provenance only (a TYPE token, never credential material —
+                            ADR-045) so the driver's pre-dispatch gate reads the gated set from the
+                            immutable manifest without re-listing Skills.
+                          type: string
                         git:
                           description: Git is the git source when sourceType=git (nil
                             for inline).
