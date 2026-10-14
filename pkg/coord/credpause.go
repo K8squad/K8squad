@@ -66,6 +66,16 @@ const (
 	// ReasonEndpointUnreachable (7.4/7.5): the BYO/Ollama endpoint credential's
 	// endpoint is unreachable. Refresh-resumed (Secret update / endpoint back).
 	ReasonEndpointUnreachable CredPauseReason = "endpoint_unreachable"
+	// ReasonCredentialRequired (WS-9 S5 go-live gate, ISI-5818/ISI-5849): a Run
+	// grants a [sec]-gated Skill/MCPServer whose declared credential type(s) are
+	// not yet materialized for the project. Admission-time, NOT per-credential-
+	// attributed (the point is which TYPE is missing, not which Secret failed),
+	// so it is held by coord.ApplyGateHold rather than the per-credential ledger;
+	// it is a member of this family so the status projector and the console
+	// credential-hold vocabulary treat it as the same legible Paused. Refresh-
+	// resumed: it clears when a managed-credential Secret lands and the driver's
+	// pre-dispatch gate re-evaluates (never on a timer).
+	ReasonCredentialRequired CredPauseReason = "credential_required"
 )
 
 // TimerResumed reports whether the reason resumes on the single durable wake
@@ -78,7 +88,8 @@ func (r CredPauseReason) TimerResumed() bool { return r == ReasonRateLimited }
 // Valid rejects an out-of-family reason up front (fail-closed).
 func (r CredPauseReason) Valid() bool {
 	switch r {
-	case ReasonRateLimited, ReasonCredentialExpired, ReasonCredentialRotated, ReasonEndpointUnreachable:
+	case ReasonRateLimited, ReasonCredentialExpired, ReasonCredentialRotated,
+		ReasonEndpointUnreachable, ReasonCredentialRequired:
 		return true
 	}
 	return false
