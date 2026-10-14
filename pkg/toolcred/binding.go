@@ -56,7 +56,7 @@ import (
 // vocabulary that annotation's value must name. The envelope-trust rule
 // (skill_types.go §Permissions / D8) still holds: the annotation is authorized
 // by the registrar on the authored CR, never self-declared by a fetched body.
-const AnnotationCredentialType = "ksquad.io/credential-type"
+const AnnotationCredentialType = "ksquad.io/credential-type" // #nosec G101 -- this is an annotation KEY name, not a credential value
 
 // Consumption is how a materialized credential reaches the consuming tool. It
 // is a closed enum — a row whose Consumption is none of these is a malformed
