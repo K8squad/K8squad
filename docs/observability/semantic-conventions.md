@@ -135,6 +135,47 @@ A skill entering the runtime session.
 | `ksquad.outcome` | string | required | stable |  | Load outcome (success|error|unknown). |
 | `ksquad.duration.ms` | int | required | stable | WS-C | Stamped for uniformity across activity spans; skill.load is a point event so this is the mapping instant (ISI-4385). |
 
+### `mesh.route`
+
+One routed A2A task arriving at a mesh pool Gateway and reaching a ready standing process — arrival→delivered, the ≤3 s recreate SLO window (chapter §6.1, D4.1). Nests under the dispatch trace so a routed run's trace is continuous from board to LLM call (§8.2).
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.team.name` | string | required | stable |  | The team whose (team, role) pool the standing process serves. |
+| `ksquad.mesh.role` | string | required | stable |  | The role the standing process is provisioned for (e.g. coder, coordinator). |
+| `ksquad.mesh.pod` | string | required | stable |  | The mesh pool pod hosting the standing process (the Gateway's pod identity). |
+| `ksquad.mesh.endpoint` | string | required | stable |  | The endpoint id of the standing process the span concerns. |
+| `ksquad.mesh.selection` | string | required | stable |  | How the process was selected: "idle" (standing idle process), "overflow" (recreated from the envelope on demand), "wake" (woken from hibernation — S4 only, never emitted in P1). |
+| `ksquad.duration.ms` | int | required | stable |  | Arrival→ready wall-clock duration in ms — backs ksquad.mesh.a2a.ready_latency. |
+| `ksquad.outcome` | string | required | stable |  | Route outcome (success|error|unknown). |
+
+### `mesh.spawn`
+
+A standing role process coming up: pool boot (source=cold) or recreate-from-envelope (source=envelope, the near-bare-exec RAM-reclaim path, chapter §6.1). On recreate it nests under the triggering mesh.route span.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.team.name` | string | required | stable |  | The team whose (team, role) pool the standing process serves. |
+| `ksquad.mesh.role` | string | required | stable |  | The role the standing process is provisioned for (e.g. coder, coordinator). |
+| `ksquad.mesh.pod` | string | required | stable |  | The mesh pool pod hosting the standing process (the Gateway's pod identity). |
+| `ksquad.mesh.endpoint` | string | required | stable |  | The endpoint id of the standing process the span concerns. |
+| `ksquad.mesh.spawn.source` | string | required | stable |  | "envelope" (recreate/rebuild from the pre-loaded role envelope) | "cold" (gateway pool boot spawn). |
+| `ksquad.duration.ms` | int | required | stable |  | Spawn wall-clock duration in ms — backs ksquad.mesh.spawn.latency. |
+| `ksquad.outcome` | string | required | stable |  | Spawn outcome (success|error|unknown). |
+
+### `mesh.wake`
+
+Planned S4 (ISI-5831): a hibernated process woken on route (SIGCONT base / cooperative override). NOT emitted in P1 — REV-4 cut hibernation from the batch path (chapter §6.1); the HIBERNATED state is dark until the strangler's S4 step carries the claim-never-frozen invariant (D9.1). The identity set stays Planned with the span so the conformance suite does not require an emitter that must not exist yet.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.team.name` | string | required | planned | S4 | The team whose (team, role) pool the standing process serves. |
+| `ksquad.mesh.role` | string | required | planned | S4 | The role the standing process is provisioned for. |
+| `ksquad.mesh.pod` | string | required | planned | S4 | The mesh pool pod hosting the standing process. |
+| `ksquad.mesh.endpoint` | string | required | planned | S4 | The endpoint id of the woken process. |
+| `ksquad.duration.ms` | int | required | planned | S4 | Wake→ready wall-clock duration in ms — backs ksquad.mesh.wake.latency. |
+| `ksquad.outcome` | string | required | planned | S4 | Wake outcome (success|error|unknown). |
+
 ## NATS domain lifecycle events
 
 Events ride the existing outbox→relay→JetStream spine. The relay composes the

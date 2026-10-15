@@ -117,7 +117,36 @@ const (
 	SpanToolCall  = "gen_ai.tool.call"
 	SpanMCPCall   = "mcp.call"
 	SpanSkillLoad = "skill.load"
+
+	// AgentMesh lifecycle spans (chapter §8.2, AgentMesh P1.2 ISI-5823).
+	// Emitted by the pod-side Gateway observer (pkg/telemetry/meshobs), not the
+	// toolusage mapper: mesh.route nests under the dispatch request's context
+	// so a routed run's trace stays continuous from board to LLM call, and
+	// mesh.spawn nests under mesh.route on the recreate (overflow) path.
+	SpanMeshRoute = "mesh.route"
+	SpanMeshSpawn = "mesh.spawn"
+	// SpanMeshWake is the S4 hibernation wake span (ISI-5831): Planned — the
+	// P1 batch path never hibernates (REV-4, chapter §6.1), so nothing emits
+	// it yet. Registered here so S4 lands against a written contract.
+	SpanMeshWake = "mesh.wake"
 )
+
+// meshIdentity is the bounded routing-identity set every mesh lifecycle span
+// carries (chapter §8.2: "reuse the run-identity set" for the mesh slice —
+// team/role/pod/endpoint, all bounded label-safe keys; a mesh span precedes run
+// creation on the recreate path, so ksquad.run.id is NOT part of this set).
+func meshIdentity() []Attribute {
+	return []Attribute{
+		{Key: "ksquad.team.name", Type: TypeString, Requirement: Required, Stability: Stable,
+			Brief: "The team whose (team, role) pool the standing process serves."},
+		{Key: "ksquad.mesh.role", Type: TypeString, Requirement: Required, Stability: Stable,
+			Brief: "The role the standing process is provisioned for (e.g. coder, coordinator)."},
+		{Key: "ksquad.mesh.pod", Type: TypeString, Requirement: Required, Stability: Stable,
+			Brief: "The mesh pool pod hosting the standing process (the Gateway's pod identity)."},
+		{Key: "ksquad.mesh.endpoint", Type: TypeString, Requirement: Required, Stability: Stable,
+			Brief: "The endpoint id of the standing process the span concerns."},
+	}
+}
 
 // runIdentity is the correlation set every run-trace span should carry. run.id
 // and agent.name ship today (WS-A prereq already met by ISI-4238); team,
@@ -262,6 +291,55 @@ var SpanConventions = []SpanConvention{
 			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable, Workstream: "WS-C",
 				Brief: "Stamped for uniformity across activity spans; skill.load is a point event so this is the mapping instant (ISI-4385)."},
 		),
+	},
+	// --- AgentMesh lifecycle spans (chapter §8.2, P1.2 ISI-5823) ---------------
+	// Emitted by pkg/telemetry/meshobs from the Gateway's lifecycle observer
+	// hooks. mesh.route covers A2A arrival → process-ready (the ≤3 s recreate
+	// SLO window, D4.1/D6.2); mesh.spawn covers spawn/recreate from the envelope
+	// (source=envelope) and pool boot (source=cold). mesh.wake is the S4
+	// contract (ISI-5831) — Planned, nothing emits it in P1 (REV-4: the batch
+	// path never hibernates).
+	{
+		Name:  SpanMeshRoute,
+		Brief: "One routed A2A task arriving at a mesh pool Gateway and reaching a ready standing process — arrival→delivered, the ≤3 s recreate SLO window (chapter §6.1, D4.1). Nests under the dispatch trace so a routed run's trace is continuous from board to LLM call (§8.2).",
+		Attributes: append(meshIdentity(),
+			Attribute{Key: "ksquad.mesh.selection", Type: TypeString, Requirement: Required, Stability: Stable,
+				Brief: "How the process was selected: \"idle\" (standing idle process), \"overflow\" (recreated from the envelope on demand), \"wake\" (woken from hibernation — S4 only, never emitted in P1)."},
+			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable,
+				Brief: "Arrival→ready wall-clock duration in ms — backs ksquad.mesh.a2a.ready_latency."},
+			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
+				Brief: "Route outcome (success|error|unknown)."},
+		),
+	},
+	{
+		Name:  SpanMeshSpawn,
+		Brief: "A standing role process coming up: pool boot (source=cold) or recreate-from-envelope (source=envelope, the near-bare-exec RAM-reclaim path, chapter §6.1). On recreate it nests under the triggering mesh.route span.",
+		Attributes: append(meshIdentity(),
+			Attribute{Key: "ksquad.mesh.spawn.source", Type: TypeString, Requirement: Required, Stability: Stable,
+				Brief: "\"envelope\" (recreate/rebuild from the pre-loaded role envelope) | \"cold\" (gateway pool boot spawn)."},
+			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable,
+				Brief: "Spawn wall-clock duration in ms — backs ksquad.mesh.spawn.latency."},
+			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
+				Brief: "Spawn outcome (success|error|unknown)."},
+		),
+	},
+	{
+		Name:  SpanMeshWake,
+		Brief: "Planned S4 (ISI-5831): a hibernated process woken on route (SIGCONT base / cooperative override). NOT emitted in P1 — REV-4 cut hibernation from the batch path (chapter §6.1); the HIBERNATED state is dark until the strangler's S4 step carries the claim-never-frozen invariant (D9.1). The identity set stays Planned with the span so the conformance suite does not require an emitter that must not exist yet.",
+		Attributes: []Attribute{
+			{Key: "ksquad.team.name", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S4",
+				Brief: "The team whose (team, role) pool the standing process serves."},
+			{Key: "ksquad.mesh.role", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S4",
+				Brief: "The role the standing process is provisioned for."},
+			{Key: "ksquad.mesh.pod", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S4",
+				Brief: "The mesh pool pod hosting the standing process."},
+			{Key: "ksquad.mesh.endpoint", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S4",
+				Brief: "The endpoint id of the woken process."},
+			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Planned, Workstream: "S4",
+				Brief: "Wake→ready wall-clock duration in ms — backs ksquad.mesh.wake.latency."},
+			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S4",
+				Brief: "Wake outcome (success|error|unknown)."},
+		},
 	},
 }
 
