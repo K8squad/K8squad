@@ -1029,3 +1029,89 @@ func TestSetupWithManagerDefaultsNilClient(t *testing.T) {
 		t.Fatal("SetupWithManager left the embedded client nil — every reconcile panics at the first r.Get")
 	}
 }
+
+// budgetProvider widens fakeProvider with the optional scm.RateBudgetReporter
+// seam (ISI-5989) so the pre-snapshot budget log can be asserted.
+type budgetProvider struct {
+	fakeProvider
+	remaining int64
+	reset     time.Time
+	seen      bool
+}
+
+func (p *budgetProvider) RateBudget() (int64, time.Time, bool) {
+	return p.remaining, p.reset, p.seen
+}
+
+// ISI-5989: every snapshot pass logs the provider rate budget it STARTS with
+// (X-RateLimit-Remaining + reset-in), so a shared PAT drained by co-tenants is
+// attributable from the operator log. A provider without the seam logs nothing,
+// and an unseen budget (first pass) logs nothing rather than a fabricated 0.
+func TestReconcileLogsRateBudgetBeforeSnapshot(t *testing.T) {
+	var lines []string
+	// newSink builds a context carrying a CAPTURING logger: Reconcile reads
+	// its logger via log.FromContext, so injecting it into the context (not
+	// swapping the package global, which earlier harness calls already bound)
+	// is the deterministic path.
+	newCtx := func() context.Context {
+		lines = nil
+		return log.IntoContext(context.Background(), funcr.New(func(_, msg string) {
+			lines = append(lines, msg)
+		}, funcr.Options{Verbosity: 1}))
+	}
+
+	resetAt := time.Now().Add(37 * time.Minute)
+	seen := &budgetProvider{fakeProvider: fakeProvider{name: "github", snapshot: sampleRecords()}, remaining: 4321, reset: resetAt, seen: true}
+	r, _ := newHarness(t, syncProject(300), seen)
+	if _, err := r.Reconcile(newCtx(), request()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var budgetLine string
+	for _, l := range lines {
+		if strings.Contains(l, "provider rate budget") {
+			budgetLine = l
+			break
+		}
+	}
+	if budgetLine == "" {
+		t.Fatalf("no pre-snapshot rate budget line; log: %v", lines)
+	}
+	if !strings.Contains(budgetLine, "rate_remaining") || !strings.Contains(budgetLine, "4321") {
+		t.Errorf("budget line missing rate_remaining=4321: %s", budgetLine)
+	}
+	if !strings.Contains(budgetLine, "rate_reset_in") {
+		t.Errorf("budget line missing rate_reset_in: %s", budgetLine)
+	}
+
+	// Budget seen but no reset header: remaining still logged, no reset field.
+	noReset := &budgetProvider{fakeProvider: fakeProvider{name: "github", snapshot: sampleRecords()}, remaining: 10, seen: true}
+	r2, _ := newHarness(t, syncProject(300), noReset)
+	if _, err := r2.Reconcile(newCtx(), request()); err != nil {
+		t.Fatalf("reconcile (no reset): %v", err)
+	}
+	budgetLine = ""
+	for _, l := range lines {
+		if strings.Contains(l, "provider rate budget") {
+			budgetLine = l
+			break
+		}
+	}
+	if budgetLine == "" {
+		t.Fatalf("no budget line for reset-less budget; log: %v", lines)
+	}
+	if !strings.Contains(budgetLine, "rate_remaining") || !strings.Contains(budgetLine, "10") || strings.Contains(budgetLine, "rate_reset_in") {
+		t.Errorf("reset-less budget line wrong: %s", budgetLine)
+	}
+
+	// Provider WITHOUT the seam (plain fake): no budget line at all.
+	plain := &fakeProvider{name: "github", snapshot: sampleRecords()}
+	r3, _ := newHarness(t, syncProject(300), plain)
+	if _, err := r3.Reconcile(newCtx(), request()); err != nil {
+		t.Fatalf("reconcile (plain): %v", err)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "provider rate budget") {
+			t.Errorf("budget line emitted for provider without RateBudgetReporter: %s", l)
+		}
+	}
+}

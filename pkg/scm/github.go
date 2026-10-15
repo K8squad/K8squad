@@ -214,11 +214,18 @@ type GitHubProvider struct {
 	// LastRateRemaining. Snapshot's fetchers run sequentially, but the field is
 	// atomic so a caller may read it without racing an in-flight pass.
 	lastRate atomic.Int64
+
+	// lastReset is the rate-limit window reset (unix seconds) reported on the
+	// most recent API response, or 0 before any call. It rides the SAME
+	// transport capture as lastRate and feeds RateBudget (ISI-5989): the
+	// reconciler logs remaining + reset-in BEFORE each snapshot so an
+	// exhausted shared budget is visible per pass in the operator log.
+	lastReset atomic.Int64
 }
 
 // LastRateRemaining reports the rate-limit headroom seen on the provider's most
 // recent API response, and whether any response has been observed yet. It
-// implements the scm.RateLimitReporter seam the reposync reconciler reads after
+// implements the scm.RateLimitReporter seam the repo-sync reconciler reads after
 // a Snapshot to feed the provider-headroom gauge (GH-3).
 func (p *GitHubProvider) LastRateRemaining() (int64, bool) {
 	v := p.lastRate.Load()
@@ -228,14 +235,34 @@ func (p *GitHubProvider) LastRateRemaining() (int64, bool) {
 	return v, true
 }
 
-// rateTrackingTransport records GitHub's X-RateLimit-Remaining response header
-// into a shared atomic on every round trip, so the provider's rate-limit
-// headroom is captured from ONE place — every list call, every pagination page,
-// every fan-out ref — with no per-fetcher plumbing. It is a pure observer: the
-// response and error pass through untouched.
+// RateBudget reports the rate-limit headroom AND the window reset time seen on
+// the provider's most recent API response, and whether any response has been
+// observed yet. It implements the scm.RateBudgetReporter seam the repo-sync
+// reconciler reads BEFORE a Snapshot (ISI-5989): logging "remaining=N reset-in=Xs"
+// per pass makes a shared-budget drain (several projects or external consumers
+// on one PAT) attributable from the operator log alone — the headroom value
+// alone cannot say whether the window is about to refill.
+func (p *GitHubProvider) RateBudget() (remaining int64, reset time.Time, ok bool) {
+	r := p.lastRate.Load()
+	if r < 0 {
+		return 0, time.Time{}, false
+	}
+	rs := p.lastReset.Load()
+	if rs > 0 {
+		return r, time.Unix(rs, 0), true
+	}
+	return r, time.Time{}, true
+}
+
+// rateTrackingTransport records GitHub's X-RateLimit-Remaining / -Reset
+// response headers into shared atomics on every round trip, so the provider's
+// rate-limit headroom is captured from ONE place — every list call, every
+// pagination page, every fan-out ref — with no per-fetcher plumbing. It is a
+// pure observer: the response and error pass through untouched.
 type rateTrackingTransport struct {
-	base      http.RoundTripper
 	remaining *atomic.Int64
+	reset     *atomic.Int64
+	base      http.RoundTripper
 }
 
 func (t *rateTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -248,6 +275,11 @@ func (t *rateTrackingTransport) RoundTrip(req *http.Request) (*http.Response, er
 		if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
 			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil {
 				t.remaining.Store(n)
+			}
+		}
+		if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
+			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+				t.reset.Store(n)
 			}
 		}
 	}
@@ -308,9 +340,9 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 			Source: ts,
 		}
 	}
-	// Wrap AFTER auth so the rate header (present on every GitHub response) is
-	// observed regardless of whether the call was authenticated (GH-3).
-	transport = &rateTrackingTransport{base: transport, remaining: &p.lastRate}
+	// Wrap AFTER auth so the rate headers (present on every GitHub response)
+	// are observed regardless of whether the call was authenticated (GH-3).
+	transport = &rateTrackingTransport{base: transport, remaining: &p.lastRate, reset: &p.lastReset}
 	// Outermost observer: stamps HTTP client semantics onto the active
 	// scm.fetch.<kind> span (ISI-5013). It reads the same request/response the
 	// rate tracker sees, so it can sit above it without losing anything.

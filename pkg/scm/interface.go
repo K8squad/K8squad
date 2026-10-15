@@ -105,6 +105,19 @@ type RateLimitReporter interface {
 	LastRateRemaining() (remaining int64, ok bool)
 }
 
+// RateBudgetReporter is an OPTIONAL provider capability (ISI-5989): a provider
+// that tracks BOTH the headroom and the window reset of its API responses
+// exposes the most recent pair so the reconciler can log the budget BEFORE each
+// snapshot pass. It widens RateLimitReporter with the reset timestamp because
+// "remaining=40" means something very different 1s vs 55min into the window;
+// providers that cannot report it simply do not implement this and the
+// reconciler skips the pre-snapshot budget line. ok is false before any
+// response has been observed; reset is the zero Time when the provider reports
+// headroom but no reset header.
+type RateBudgetReporter interface {
+	RateBudget() (remaining int64, reset time.Time, ok bool)
+}
+
 // WebhookEvent is the provider-agnostic summary of one webhook delivery,
 // extracted AFTER verification. It exists for logging/trigger attribution
 // only — the mirror is written exclusively from provider snapshots, never
