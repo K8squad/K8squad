@@ -48,6 +48,7 @@ package warmpool
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -182,6 +183,21 @@ func (s *RolePoolScheduler) Tick(ctx context.Context, pools []RolePoolConfig) ma
 	return out
 }
 
+// clampToInt32 bounds an int before the int32 conversion so a bogus count
+// can't wrap negative (gosec G115 — the codebase clamp pattern, cf.
+// jetstream/publisher.go ConsumerLag). Standing/target are process counts
+// bounded far below MaxInt32 in practice; the clamp only guards the CRD
+// status write against a hostile counter.
+func clampToInt32(n int) int32 {
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	// #nosec G115 -- n is bounded by the clamp above; gosec's range
+	// analysis does not track the guard. Process counts never approach
+	// MaxInt32 — the clamp is belt-and-suspenders for the CRD status write.
+	return int32(n)
+}
+
 // reconcileOne is the per-role target-N pass — the same shape as the
 // warm-pool Controller's Tick body (controller.go:22-48), one key per role:
 //
@@ -217,14 +233,14 @@ func (s *RolePoolScheduler) reconcileOne(ctx context.Context, rp RolePoolConfig)
 	}
 
 	report := RolePoolReport{
-		Target:             int32(target),
+		Target:             clampToInt32(target),
 		Pod:                MeshPoolPodName(rp.Namespace, rp.Role),
 		ObservedGeneration: rp.Generation,
 	}
 	if s.counter != nil {
 		standing, err := s.counter.StandingProcesses(ctx, rp.Namespace, rp.Role)
 		if err == nil {
-			report.Standing = int32(standing)
+			report.Standing = clampToInt32(standing)
 			report.StandingKnown = true
 		} // read failure: report without the count — status-only signal, next tick retries
 	}
