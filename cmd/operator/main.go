@@ -296,7 +296,8 @@ func activeRunSnapshots(cl client.Client) func(context.Context) []cphealth.RunSn
 // real liveness of the operator's hard dependencies, not just its own healthz
 // ping. postgres uses the coord pool's Ping; apiserver GETs /readyz through the
 // authenticated rest client; nats does a plain TCP dial of $KSQUAD_NATS_URL
-// (absent URL ⇒ no nats probe, so we never report a misleading "down").
+// (absent URL ⇒ no nats probe, so we never report a misleading "down");
+// gateway (ISI-6010 P1.4b) probes the MeshIngress health endpoint.
 func dependencyProbes(cfg *rest.Config, db *sql.DB) []cphealth.Dependency {
 	deps := []cphealth.Dependency{
 		{Name: "postgres", Probe: func(ctx context.Context) bool { return db.PingContext(ctx) == nil }},
@@ -304,6 +305,12 @@ func dependencyProbes(cfg *rest.Config, db *sql.DB) []cphealth.Dependency {
 	}
 	if raw := os.Getenv("KSQUAD_NATS_URL"); raw != "" {
 		deps = append(deps, cphealth.Dependency{Name: "nats", Probe: natsDialProbe(raw)})
+	}
+	// Gateway dependency (ISI-6010 P1.4b): only when the mesh is enabled
+	// (KSQUAD_MESH_TEAMS set and non-empty). The probe hits the MeshIngress
+	// health endpoint which verifies the registry is reachable.
+	if teams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(teams) > 0 {
+		deps = append(deps, cphealth.Dependency{Name: "gateway", Probe: meshIngressProbe(os.Getenv)})
 	}
 	return deps
 }
@@ -354,6 +361,28 @@ func natsDialProbe(raw string) func(context.Context) bool {
 		}
 		_ = conn.Close()
 		return true
+	}
+}
+
+// meshIngressProbe returns a probe that GETs the MeshIngress /health endpoint.
+// The address defaults to :8090 (KSQUAD_SUPERVISOR_INGRESS_ADDR).
+func meshIngressProbe(getenv func(string) string) func(context.Context) bool {
+	addr := getenv("KSQUAD_SUPERVISOR_INGRESS_ADDR")
+	if addr == "" {
+		addr = ":8090"
+	}
+	url := "http://" + strings.TrimLeft(addr, ":") + "/mesh/health"
+	return func(ctx context.Context) bool {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return false
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
 	}
 }
 
@@ -1058,7 +1087,9 @@ func main() {
 		// RolePool CRD + scheduler target-N loop that own these pods
 		// declaratively are P1.3 (ISI-5824); the role must match the
 		// canary Runs' dispatch agent name (the (team, role) lookup key).
-		if meshTeams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(meshTeams) > 0 {
+		// With the P1.3 RolePool scheduler enabled the CRs own the pools —
+		// this imperative single-pool boot stands down.
+		if meshTeams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(meshTeams) > 0 && os.Getenv("KSQUAD_MESH_ROLEPOOL_SCHEDULER") != "true" {
 			meshRole := os.Getenv("KSQUAD_MESH_ROLE")
 			if meshRole == "" {
 				meshRole = "coder"
@@ -1090,6 +1121,72 @@ func main() {
 				}
 				return nil
 			}))
+		}
+
+		// AgentMesh P1.3 prescheduling (chapter §3/§4 D2.1/D2.2, ISI-5824):
+		// the RolePool CRD scheduler — reconciles every flagged team's
+		// RolePool CRs into standing gateway pods carrying the resolved
+		// (Role × AgentRuntime) envelope and the min..max band; the in-pod
+		// gateway enforces the process count (floor at start, grow toward
+		// max on saturation, idle shrink); the bounded status (standing
+		// count, target, pod) writes back to the CR. Additive and flag-
+		// gated beside the P1.1 imperative boot (D9.3): unset ⇒ nothing
+		// new runs and dispatch is byte-identical.
+		if meshTeams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(meshTeams) > 0 && os.Getenv("KSQUAD_MESH_ROLEPOOL_SCHEDULER") == "true" {
+			registry, regErr := coord.NewMeshRegistry(db)
+			if regErr != nil {
+				ctrl.Log.Error(regErr, "mesh registry unavailable; RolePool scheduler disabled (pods would boot unroutable)")
+			} else {
+				teamSlice := make([]string, 0, len(meshTeams))
+				for team := range meshTeams {
+					teamSlice = append(teamSlice, team)
+				}
+				lister := &kubepool.CRLister{
+					Client:   mgr.GetClient(),
+					ImageFor: images.ImageFor,
+				}
+				sched := kubepool.NewRolePoolScheduler(
+					&kubepool.KubeEnsurer{Provisioner: kubeProvisioner},
+					&kubepool.RegistryStandingCounter{Registry: registry},
+					&kubepool.ClientStatusWriter{Client: mgr.GetClient()},
+					teamSlice,
+					os.Getenv("KSQUAD_WARM_POOL_NAMESPACE"),
+					os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"),
+					os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
+				)
+				schedTick := 30 * time.Second
+				if v := os.Getenv("KSQUAD_MESH_SCHEDULER_TICK"); v != "" {
+					if d, err := time.ParseDuration(v); err != nil || d <= 0 {
+						ctrl.Log.Error(err, "invalid KSQUAD_MESH_SCHEDULER_TICK; keeping default", "value", v)
+					} else {
+						schedTick = d
+					}
+				}
+				_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+					ticker := time.NewTicker(schedTick)
+					defer ticker.Stop()
+					ctrl.Log.Info("AgentMesh RolePool scheduler running",
+						"teams", fmt.Sprintf("%v", teamSlice), "tick", schedTick.String())
+					for {
+						select {
+						case <-ctx.Done():
+							return nil
+						case <-ticker.C:
+							pools, unresolved, err := lister.ListRolePools(ctx)
+							if err != nil {
+								ctrl.Log.Error(err, "RolePool list failed")
+								continue
+							}
+							for key, uerr := range unresolved {
+								ctrl.Log.Error(uerr, "RolePool references unresolved; pool skipped", "rolepool", key)
+							}
+							for key, rerr := range sched.Tick(ctx, pools) {
+								ctrl.Log.Error(rerr, "RolePool reconcile failed; retried next tick", "rolepool", key)
+							}
+						}
+					}
+				}))
+			}
 		}
 
 		// AgentMesh supervisor register ingress (chapter §2.5 seam table,
@@ -1539,6 +1636,29 @@ func main() {
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register cancel sweep")
 			os.Exit(1)
+		}
+
+		// AgentMesh gateway health supervisor (ISI-6010 P1.4b): the operator-side
+		// loop that drives the full health loop (D6.1/D6.2) by sweeping TTL-expired
+		// endpoints from coord.mesh_endpoint (the TTL-expiry half) and detecting
+		// downed gateway pods (the gateway-down half). Only started when the mesh
+		// is flagged on (KSQUAD_MESH_TEAMS). The recreate-on-demand path for stopped
+		// slots is handled by the gateway itself (P1.2, PR #914); whole-pod
+		// restarts are delegated to the pod's liveness probe.
+		if teams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(teams) > 0 {
+			if registry, err := coord.NewMeshRegistry(db); err == nil {
+				if svc, err := rundrive.NewMeshSupervisor(registry); err == nil {
+					if err := mgr.Add(svc); err != nil {
+						ctrl.Log.Error(err, "unable to register mesh supervisor")
+						os.Exit(1)
+					}
+					ctrl.Log.Info("AgentMesh supervisor registered (TTL sweep over coord.mesh_endpoint)")
+				} else {
+					ctrl.Log.Error(err, "mesh supervisor unavailable")
+				}
+			} else {
+				ctrl.Log.Error(err, "mesh registry unavailable; supervisor not started")
+			}
 		}
 
 		// ISI-5615 (ISI-5569 WS-D.1, ADR-0027 §3.2) — party-mode advancer: level-triggered ticker
