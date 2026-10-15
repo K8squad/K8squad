@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -127,7 +128,54 @@ func TestRateTrackingTransportIgnoresMissingHeader(t *testing.T) {
 	}
 }
 
-// TestFetchSpanCarriesHTTPSemantics (ISI-5013): a scm.fetch.<kind> span for a
+// TestRateBudgetReporterCapturesReset (ISI-5989): the transport records
+// X-RateLimit-Reset alongside remaining on a real round trip, and RateBudget
+// exposes the pair. Before any response, ok=false so the reconciler's
+// pre-snapshot budget log never fabricates a number.
+func TestRateBudgetReporterCapturesReset(t *testing.T) {
+	p, err := NewGitHubProvider("", ProviderCredentials{})
+	if err != nil {
+		t.Fatalf("NewGitHubProvider: %v", err)
+	}
+	if _, _, ok := p.RateBudget(); ok {
+		t.Fatal("RateBudget before any call ok=true, want false")
+	}
+
+	resetAt := time.Now().Add(37 * time.Minute).Unix()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "4321")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt, 10))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+
+	budget, err := NewGitHubProvider(srv.URL, ProviderCredentials{})
+	if err != nil {
+		t.Fatalf("NewGitHubProvider(stub): %v", err)
+	}
+	if _, err := budget.Snapshot(context.Background(), "https://github.com/acme/app",
+		SnapshotOptions{Types: []RecordType{RecordTypeIssue}}); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	remaining, reset, ok := budget.RateBudget()
+	if !ok {
+		t.Fatal("RateBudget after observed response ok=false, want true")
+	}
+	if remaining != 4321 {
+		t.Errorf("RateBudget remaining = %d, want 4321", remaining)
+	}
+	if !reset.Equal(time.Unix(resetAt, 0)) {
+		t.Errorf("RateBudget reset = %v, want %v", reset, time.Unix(resetAt, 0))
+	}
+
+	// The unexercised provider still reports ok=false (no cross-talk).
+	if _, _, ok := p.RateBudget(); ok {
+		t.Error("fresh provider RateBudget ok=true after another provider's call")
+	}
+}
+
+
 // provider Snapshot carries the outbound provider call's HTTP client semantics
 // — http.request.method, url.path, server.address and http.response.status_code
 // — stamped by the provider HTTP transport. Previously the span carried zero

@@ -56,6 +56,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	"github.com/go-logr/logr"
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
@@ -361,6 +362,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	}
 
 	// ── the level-triggered pass: provider snapshot → mirror upsert (AC2) ──
+	// ISI-5989: log the provider rate budget BEFORE the pass starts. A shared
+	// PAT drained by co-tenants (other Projects, agent runs, external scripts)
+	// is only attributable if each pass records the headroom it STARTED with —
+	// the post-pass gauge (GH-3) alone cannot distinguish "this pass spent it"
+	// from "it was already gone". One line per pass at the poll cadence.
+	r.logRateBudget(logger, provider, sync.Provider, projectKey)
 	records, err := provider.Snapshot(ctx, project.Spec.Repo.URL, r.snapshotOptions(sync))
 	// Feed the provider rate-limit headroom gauge from whatever the pass saw,
 	// success or failure (GH-3): a snapshot that just tripped the limit reports
@@ -638,6 +645,34 @@ func (r *Reconciler) observeRateLimit(provider scm.SourceProvider) {
 	if remaining, seen := reporter.LastRateRemaining(); seen {
 		r.Metrics.ObserveRateLimit(provider.Name(), remaining)
 	}
+}
+
+// logRateBudget logs the provider rate budget (X-RateLimit-Remaining and, when
+// the provider reports it, the time until the window resets) before a snapshot
+// pass starts (ISI-5989). It reads the optional scm.RateBudgetReporter seam —
+// providers without it are skipped, so the first pass on a fresh provider (no
+// response observed yet) logs nothing rather than a fabricated budget. The
+// reset is rendered as a coarse remaining-duration bucket, deliberately not a
+// wall-clock timestamp, so the line stays stable enough to tail across passes.
+func (r *Reconciler) logRateBudget(logger logr.Logger, provider scm.SourceProvider, providerName, projectKey string) {
+	reporter, ok := provider.(scm.RateBudgetReporter)
+	if !ok {
+		return
+	}
+	remaining, reset, seen := reporter.RateBudget()
+	if !seen {
+		return
+	}
+	if reset.IsZero() {
+		logger.Info("repo-sync: snapshot starting, provider rate budget",
+			"provider", providerName, "project", projectKey,
+			"rate_remaining", remaining)
+		return
+	}
+	logger.Info("repo-sync: snapshot starting, provider rate budget",
+		"provider", providerName, "project", projectKey,
+		"rate_remaining", remaining,
+		"rate_reset_in", time.Until(reset).Round(time.Second).String())
 }
 
 // SetupWithManager registers the reconciler for Project events.
