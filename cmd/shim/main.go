@@ -33,6 +33,10 @@ limitations under the License.
 //	                  serve /health + /ready on :8080, complete the Bind→pod
 //	                  task-io credential handshake at /handshake, and accept
 //	                  task envelopes at POST /task (D1 bridge endpoint).
+//	shim gateway      Run as the AgentMesh pool-pod Gateway (chapter §2.3
+//	                  D1.2, ISI-5822 P1.1): spawn the standing role-processes
+//	                  via the RuntimeAdapter, register their endpoints with
+//	                  the Supervisor, and route POST /task to a process.
 //
 // The runtime flavor and Agent config are read from the environment the
 // reconciler injects (arch §7.2/§7.3); the raw credential is held only in
@@ -85,6 +89,14 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	// and constructs the engine lazily at the first /task.
 	if cmd == "supervisor" {
 		return runSupervisor(args[1:])
+	}
+
+	// The AgentMesh pool-pod Gateway (chapter §2.3 D1.2, ISI-5822) is
+	// runtime-deferred the same way: it spawns `shim supervisor` children
+	// that lazily build their engines, so the gateway itself never needs a
+	// flavor before the first routed task.
+	if cmd == "gateway" {
+		return runGateway(args[1:])
 	}
 
 	runtimeType := env("KSQUAD_RUNTIME_TYPE", os.Getenv("RUNTIME"))
@@ -161,7 +173,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		writeMetricsTextfile(metricsReg)
 		return err
 	default:
-		return fmt.Errorf("unknown subcommand %q (want: card | run | read | supervisor)", cmd)
+		return fmt.Errorf("unknown subcommand %q (want: card | run | read | supervisor | gateway)", cmd)
 	}
 }
 
@@ -251,6 +263,10 @@ func configFromEnv() (shim.Config, error) {
 		// ksquad.sandbox.pod. Kubernetes sets HOSTNAME to the pod name by
 		// default; KSQUAD_SANDBOX_POD (downward-API metadata.name) overrides.
 		SandboxPod: env("KSQUAD_SANDBOX_POD", os.Getenv("HOSTNAME")),
+		// AgentMesh S3 (ISI-5822): the dispatch path this process's runs
+		// took — mesh pool children launch with "mesh"; everything else
+		// leaves it empty (= the "claim" legacy default, ISI-5833 I6).
+		RunPath: os.Getenv("KSQUAD_RUN_PATH"),
 	}
 	// Epic C (ADR-044 step 6): the projected MCP IR, parsed once at
 	// startup — fail-closed on a set-but-broken document so a Run never

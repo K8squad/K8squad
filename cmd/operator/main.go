@@ -1027,9 +1027,95 @@ func main() {
 			LLMStatus: rundrive.NewRunLLMStatusWriter(mgr.GetClient(), func(f string, a ...any) {
 				ctrl.Log.Error(nil, fmt.Sprintf(f, a...))
 			}),
+			// AgentMesh route-to-endpoint leg (chapter §5.2 D3.2, strangler
+			// S3, ISI-5822): per-team flag (KSQUAD_MESH_TEAMS, D9.3 — unset
+			// ⇒ the leg is off and dispatch is byte-identical legacy) over
+			// the coord.mesh_endpoint registry. Both legs terminate at the
+			// same coord.a2a_dispatch marker.
+			MeshRoute: func() *rundrive.MeshRouteConfig {
+				teams := rundrive.MeshTeamSetFromEnv(os.Getenv)
+				if len(teams) == 0 {
+					return nil
+				}
+				registry, err := coord.NewMeshRegistry(db)
+				if err != nil {
+					ctrl.Log.Error(err, "mesh registry unavailable; mesh route leg disabled")
+					return nil
+				}
+				ctrl.Log.Info("AgentMesh route-to-endpoint leg enabled", "teams", fmt.Sprintf("%v", teams))
+				return &rundrive.MeshRouteConfig{Teams: teams, Lookup: registry}
+			}(),
 		})
 		if a2aErr != nil {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
+		}
+
+		// AgentMesh standing pool pods (chapter §2.3 D1.2 injection, ISI-5822
+		// P1.1): one `shim gateway` pod per flagged (team, role) pool —
+		// the thin thread's single coder pool, min:1 always-up. Booted as a
+		// manager Runnable so the client's cache is synced first; idempotent
+		// (create-if-missing), so operator restarts never double-boot. The
+		// RolePool CRD + scheduler target-N loop that own these pods
+		// declaratively are P1.3 (ISI-5824); the role must match the
+		// canary Runs' dispatch agent name (the (team, role) lookup key).
+		if meshTeams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(meshTeams) > 0 {
+			meshRole := os.Getenv("KSQUAD_MESH_ROLE")
+			if meshRole == "" {
+				meshRole = "coder"
+			}
+			meshImage := images.ImageFor(string(ksquadv1alpha1.RuntimeTypeOpenCode))
+			ingressURL := os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL")
+			meshNS := os.Getenv("KSQUAD_WARM_POOL_NAMESPACE")
+			_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				for team := range meshTeams {
+					spec := kubepool.MeshPoolSpec{
+						Team:       team,
+						Role:       meshRole,
+						Image:      meshImage,
+						Namespace:  meshNS,
+						Min:        1, // P1.1: min:1 always-up
+						IngressURL: ingressURL,
+						Model:      os.Getenv("KSQUAD_MESH_MODEL"),
+						Skills:     rundrive.MeshCSV(os.Getenv("KSQUAD_MESH_SKILLS")),
+						ProjectPVC: os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
+					}
+					if err := kubeProvisioner.BootMeshPool(ctx, spec); err != nil {
+						// Loud but non-fatal: a failed pool boot must not take
+						// the operator down — the canary's dispatch falls back
+						// to the legacy path while the pool is absent.
+						ctrl.Log.Error(err, "AgentMesh pool boot failed; dispatch falls back to the legacy path", "team", team, "role", meshRole)
+						continue
+					}
+					ctrl.Log.Info("AgentMesh standing pool pod booted", "team", team, "role", meshRole, "image", meshImage)
+				}
+				return nil
+			}))
+		}
+
+		// AgentMesh supervisor register ingress (chapter §2.5 seam table,
+		// ISI-5822 P1.1): serves POST /mesh/{register,deregister} over the
+		// same coord.mesh_endpoint registry the route leg reads, so gateways
+		// can announce their standing endpoints. Started only when the mesh
+		// is flagged on (KSQUAD_MESH_TEAMS) — flag-off operators serve
+		// nothing new. The listener address is env-tunable for the pool pods'
+		// KSQUAD_SUPERVISOR_INGRESS_URL (default :8090).
+		if teams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(teams) > 0 {
+			if registry, err := coord.NewMeshRegistry(db); err == nil {
+				if ingress, err := rundrive.NewMeshIngress(registry); err == nil {
+					addr := os.Getenv("KSQUAD_SUPERVISOR_INGRESS_ADDR")
+					if addr == "" {
+						addr = ":8090"
+					}
+					go func() {
+						ctrl.Log.Info("AgentMesh supervisor register ingress serving", "addr", addr)
+						if err := rundrive.ServeMeshIngress(ctx, addr, ingress); err != nil {
+							ctrl.Log.Error(err, "AgentMesh register ingress stopped")
+						}
+					}()
+				}
+			} else {
+				ctrl.Log.Error(err, "mesh registry unavailable; register ingress not started")
+			}
 		}
 
 		// ISI-4346: run-owned sandbox teardown at agent completion. The

@@ -68,7 +68,14 @@ func credC1SingleWake(t *testing.T, dsn string) {
 	defer db.Close()
 	ctx := context.Background()
 
-	ra := 20 * time.Millisecond
+	// The pre-deadline check below races the roundtrip latency between
+	// PauseCredential's dbNow() read and ResumeDue's clock_timestamp():
+	// under -race on a loaded runner (image builds sharing the box) that
+	// path can exceed a 20ms window, making the row already-due and the
+	// assertion flake red (observed on PR #912's chaos run; reproduces on
+	// the merge base too). A 2s deadline keeps the check deterministic
+	// (100x margin) while the after-deadline sleep still proves the wake.
+	ra := 2 * time.Second
 	info, err := s.PauseCredential(ctx, coord.CredPauseRequest{
 		Credential: ref("ns/c1"), Reason: coord.ReasonRateLimited, RetryAfter: &ra,
 		Item: "item-1", Run: "run-1",

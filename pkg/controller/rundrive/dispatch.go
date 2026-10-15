@@ -148,6 +148,14 @@ type OperatorDispatchConfig struct {
 	// defaultDispatchHeaderTimeout; env-tunable via
 	// KSQUAD_SANDBOX_DISPATCH_HEADER_TIMEOUT.
 	DispatchHeaderTimeout time.Duration
+	// MeshRoute, when set, enables the AgentMesh route-to-endpoint leg
+	// (chapter §5.2 D3.2, strangler S3, ISI-5822): for a team whose flag is
+	// on, the task POSTs to a standing process looked up in
+	// coord.mesh_endpoint instead of the bound sandbox pod. Both legs
+	// terminate at the same coord.a2a_dispatch marker — at-most-once is
+	// independent of the transport. Nil disables the leg (flag-off is
+	// byte-identical legacy dispatch).
+	MeshRoute *MeshRouteConfig
 }
 
 // defaultDispatchHeaderTimeout bounds the supervisor response-header wait when
@@ -529,6 +537,26 @@ type sandboxTransport struct {
 }
 
 func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session, error) {
+	// The mesh route-to-endpoint leg (§5.2 D3.2, S3) runs FIRST: a flagged
+	// team's task goes to a standing process in the registry, and only an
+	// unflagged team, an empty registry, or a disabled leg falls through to
+	// the sandbox/stdio topologies below. Both legs terminate at the same
+	// a2a_dispatch marker — this choice carries no idempotency semantics.
+	if url, useMesh, err := st.d.meshRoute(ctx, t); err != nil {
+		return nil, err
+	} else if useMesh {
+		// Stamp the run-end SLI's path label source (§13.5 #1) — best-effort,
+		// after the route decision and before the POST so even a torn submit
+		// leaves the annotation consistent with the leg that was chosen.
+		st.d.markMeshDispatch(ctx, t.A2ATaskID)
+		ht := &a2a.HTTPTransport{
+			URL: func(context.Context, wire.Task) (string, error) { return url, nil },
+			// Same bounded-header client as the sandbox leg: the gateway
+			// answers 200 only after it routed to a standing process.
+			Client: st.d.httpClient,
+		}
+		return ht.Submit(ctx, t)
+	}
 	url, err := st.d.supervisorURL(ctx, t.A2ATaskID)
 	if err != nil {
 		return nil, err

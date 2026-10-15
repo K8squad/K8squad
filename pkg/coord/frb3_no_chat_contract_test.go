@@ -99,6 +99,27 @@ var allowedSurface = map[string]string{
 	"ProdClaimer.Renew": "§6.2 lease heartbeat under holder+fence+live-lease guard, stamps renewed_at",
 	"RunHeartbeater":    "§6.2 periodic driver for ProdClaimer.Renew; signals cancel vs lease-lost only",
 
+	// AgentMesh endpoint registry (chapter §5.1 D3.2, ISI-5822 P1.1). Service
+	// discovery ONLY: a row says "this standing process exists and serves",
+	// never "this work is mine". NOT an agent-to-agent channel and NOT custody:
+	// exclusivity stays in coord.claim, at-most-once in coord.a2a_dispatch
+	// (§5.4 D3.3); gateways register/heartbeat their own pod's endpoints and
+	// the Supervisor's route leg is the only reader. No worker content rides
+	// any of these ops — endpoint ids, addresses and opaque agent cards.
+	"MeshEndpoint":                "AgentMesh §5.1: one registered standing process row (id/team/role/pod/endpoint/card); discovery only",
+	"MeshEndpointTTL":             "AgentMesh §2.4 D1.3: routability window past last heartbeat (stale endpoints expire)",
+	"MeshRegistry":                "AgentMesh §5.1: the coord.mesh_endpoint store (gateway write side, Supervisor lookup side)",
+	"MeshRegistry.Register":       "AgentMesh §5.1: idempotent endpoint upsert by a gateway (no custody, no content)",
+	"MeshRegistry.HeartbeatPod":   "AgentMesh §5.1: pod-scoped last_seen_at refresh (same wire as register)",
+	"MeshRegistry.PrunePod":       "AgentMesh §5.1: per-heartbeat reconciliation delete of a pod's superseded endpoint ids (row hygiene, no custody, no content)",
+	"MeshRegistry.DeregisterPod":  "AgentMesh §2.4: clean-shutdown/drain delete by pod",
+	"MeshRegistry.LookupTeamRole": "AgentMesh §5.2 D3.2: live (team, role) endpoint lookup, LRU-ordered; the route leg's only read",
+	"MeshRegistry.Sweep":          "AgentMesh §2.4: TTL-expired row hygiene delete (correctness never depends on it)",
+	"MeshRegistryOption":          "AgentMesh: registry test seam option",
+	"NewMeshRegistry":             "AgentMesh: registry constructor over the coordination Postgres",
+	"WithMeshClock":               "AgentMesh: test clock seam for TTL aging",
+	"WithMeshTTL":                 "AgentMesh: test TTL override seam",
+
 	// §17.4 domain-event capture wiring (Story 12.1 / ISI-2260). Emit-only: the
 	// option co-commits ONE append-only coord.outbox event in the claim txn. NOT
 	// an agent-to-agent channel — events are one-way non-custodial projections

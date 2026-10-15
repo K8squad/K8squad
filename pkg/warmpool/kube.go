@@ -164,6 +164,42 @@ func bootEphemeralStorage(request, limit string) (string, string) {
 	return request, limit
 }
 
+// sandboxResources assembles the limits/requests every operator-booted pod
+// (claim-path sandbox and AgentMesh standing pool alike) carries:
+// ISI-4208 right-sized CPU/memory requests, ISI-5558 bounded ephemeral
+// storage. Extracted from Boot when the mesh pool pod (meshpool.go) needed
+// the identical posture.
+func (k *KubeProvisioner) sandboxResources() (corev1.ResourceList, corev1.ResourceList) {
+	limits := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse(k.cpuLimit),
+		corev1.ResourceMemory: resource.MustParse(k.memoryLimit),
+	}
+	// ISI-4208: requests default to the limits (Guaranteed QoS) unless the
+	// operator wired right-sized requests — a warm sandbox reserves only
+	// what it needs for scheduling, not the burst ceiling.
+	cpuReq, memReq := k.cpuLimit, k.memoryLimit
+	if k.cpuRequest != "" {
+		cpuReq = k.cpuRequest
+	}
+	if k.memoryRequest != "" {
+		memReq = k.memoryRequest
+	}
+	requests := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse(cpuReq),
+		corev1.ResourceMemory: resource.MustParse(memReq),
+	}
+	// ISI-5558: bound node-local disk. Without an ephemeral-storage request the
+	// scheduler is blind to disk and over-packs sandbox pods onto a small
+	// worker partition until the kubelet declares DiskPressure and evicts a
+	// bystander; without a limit a single churning sandbox can fill the node.
+	// Stamp BOTH (request < limit by default — Burstable on disk), defaulting
+	// when the operator left the knobs empty so bare installs are guarded too.
+	esReq, esLimit := bootEphemeralStorage(k.ephemeralStorageRequest, k.ephemeralStorageLimit)
+	requests[corev1.ResourceEphemeralStorage] = resource.MustParse(esReq)
+	limits[corev1.ResourceEphemeralStorage] = resource.MustParse(esLimit)
+	return limits, requests
+}
+
 // WithPodEnv stamps additional non-secret env into every sandbox container the
 // provisioner boots. Callers must pass values only (the OTLP endpoint
 // passthrough) — never secrets; the minimal-env invariant (ADR-0007) holds.
@@ -293,33 +329,7 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID, runI
 	if namespace == "" {
 		namespace = sandboxNamespace
 	}
-	limits := corev1.ResourceList{
-		corev1.ResourceCPU:    resource.MustParse(k.cpuLimit),
-		corev1.ResourceMemory: resource.MustParse(k.memoryLimit),
-	}
-	// ISI-4208: requests default to the limits (Guaranteed QoS) unless the
-	// operator wired right-sized requests — a warm sandbox reserves only
-	// what it needs for scheduling, not the burst ceiling.
-	cpuReq, memReq := k.cpuLimit, k.memoryLimit
-	if k.cpuRequest != "" {
-		cpuReq = k.cpuRequest
-	}
-	if k.memoryRequest != "" {
-		memReq = k.memoryRequest
-	}
-	requests := corev1.ResourceList{
-		corev1.ResourceCPU:    resource.MustParse(cpuReq),
-		corev1.ResourceMemory: resource.MustParse(memReq),
-	}
-	// ISI-5558: bound node-local disk. Without an ephemeral-storage request the
-	// scheduler is blind to disk and over-packs sandbox pods onto a small
-	// worker partition until the kubelet declares DiskPressure and evicts a
-	// bystander; without a limit a single churning sandbox can fill the node.
-	// Stamp BOTH (request < limit by default — Burstable on disk), defaulting
-	// when the operator left the knobs empty so bare installs are guarded too.
-	esReq, esLimit := bootEphemeralStorage(k.ephemeralStorageRequest, k.ephemeralStorageLimit)
-	requests[corev1.ResourceEphemeralStorage] = resource.MustParse(esReq)
-	limits[corev1.ResourceEphemeralStorage] = resource.MustParse(esLimit)
+	limits, requests := k.sandboxResources()
 
 	// ISI-4188 gap 1: the writable workdir contract. With a per-Project
 	// workspace (ISI-4127) the shared mount is the workdir; without one the
