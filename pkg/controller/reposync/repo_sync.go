@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -62,7 +63,6 @@ import (
 	"github.com/K8squad/K8squad/pkg/scmwriteback"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/scmmetrics"
-	"github.com/go-logr/logr"
 )
 
 // TriggerAnnotation is stamped (server-side patch) by the verified webhook
