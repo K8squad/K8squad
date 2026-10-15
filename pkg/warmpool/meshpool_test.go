@@ -256,17 +256,12 @@ func TestRecreateMeshPool_ReplacesExisting(t *testing.T) {
 	}
 	// Marker on the OLD pod — must not survive the recreate.
 	name := warmpool.MeshPoolPodName(spec.Team, spec.Role)
-	ns := "k8squad-sandbox" // sandboxNamespace default; resolved below from the booted pod
-	var booted corev1.Pod
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: "", Name: name}, &booted); err != nil {
-		// The default namespace comes from the provisioner; discover it.
-		var pods corev1.PodList
-		if err := cl.List(ctx, &pods); err != nil || len(pods.Items) != 1 {
-			t.Fatalf("list booted pods: %v (%d)", err, len(pods.Items))
-		}
-		booted = pods.Items[0]
+	var pods corev1.PodList
+	if err := cl.List(ctx, &pods); err != nil || len(pods.Items) != 1 {
+		t.Fatalf("list booted pods: %v (%d)", err, len(pods.Items))
 	}
-	ns = booted.Namespace
+	booted := pods.Items[0]
+	ns := booted.Namespace
 	booted.Annotations["test-marker"] = "old"
 	if err := cl.Update(ctx, &booted); err != nil {
 		t.Fatalf("mark old pod: %v", err)

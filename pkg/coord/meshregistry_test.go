@@ -181,8 +181,8 @@ func TestMeshRegistry_ListEndpoints(t *testing.T) {
 	pinned := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
 	mock.ExpectQuery("FROM coord.mesh_endpoint").
 		WillReturnRows(sqlmock.NewRows([]string{"endpoint_id", "team", "role", "pod", "endpoint", "agent_card", "registered_at", "last_seen_at"}).
-			AddRow("ep-a1", "team-acme", "coder", "pool-aaa", "http://10.0.0.1:8080", meshCard, pinned.Add(-time.Hour), pinned.Add(-5*time.Minute)). // expired
-			AddRow("ep-b1", "team-acme", "coder", "pool-bbb", "http://10.0.0.2:8080", meshCard, pinned.Add(-time.Hour), pinned.Add(-10*time.Second)))  // live
+			AddRow("ep-a1", "team-acme", "coder", "pool-aaa", "http://10.0.0.1:8080", meshCard, pinned.Add(-time.Hour), pinned.Add(-5*time.Minute)).  // expired
+			AddRow("ep-b1", "team-acme", "coder", "pool-bbb", "http://10.0.0.2:8080", meshCard, pinned.Add(-time.Hour), pinned.Add(-10*time.Second))) // live
 
 	eps, err := r.ListEndpoints(context.Background())
 	if err != nil {
