@@ -118,6 +118,21 @@ type Store interface {
 	// under eventType (markerTerminal or markerInitial). note is a short provenance
 	// string ("posted:<commentID>", "skipped: <reason>").
 	RecordWriteBack(ctx context.Context, workItemID, runID, eventType, note string) error
+
+	// PendingPRWriteBacks returns, for each labelled work item in projectID whose
+	// MOST-RECENT terminal run carried source changes (run_terminal payload
+	// source_branch) with no `github_pr_writeback` marker yet, the one pending PR
+	// write-back to open (ADR-0024 §3). Latest-only, like the comment legs.
+	PendingPRWriteBacks(ctx context.Context, projectID string) ([]PRPending, error)
+
+	// RecordPRConflictAttempt appends one `github_pr_conflict` audit row for a
+	// rebase-retry attempt (ADR-0024 §4). The rows ARE the attempt counter.
+	RecordPRConflictAttempt(ctx context.Context, workItemID, runID, note string) error
+
+	// EscalatePRConflict writes the hard-conflict handoff to coord.outbox (entity
+	// mesh, event conflict_escalated) when bounded rebase-retry exhausts
+	// (ADR-0024 §4).
+	EscalatePRConflict(ctx context.Context, esc PREscalation) error
 }
 
 // Pending is one transition owed a GitHub write-back — a terminal outcome

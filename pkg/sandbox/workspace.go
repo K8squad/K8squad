@@ -43,6 +43,12 @@ const (
 	// the concurrency semantics; 4.5 only partitions it per principal).
 	WorkspaceWorktreeDir = "worktrees"
 
+	// WorkspaceTeamMainDir holds the ONE shared team-main checkout per Project
+	// (ISI-6009 write discipline, ADR-0024 §2). It is mounted READ-ONLY to every
+	// agent process — the filesystem-level enforcement that agents write only
+	// inside their own per-process worktree/branch, never the mainline.
+	WorkspaceTeamMainDir = "team-main"
+
 	// principalHashLen is the hex length of the principal-hash suffix —
 	// mirrors the 4.1 namespace-hash discipline: a raw principal id can
 	// collide after normalization or contain unsafe path characters; the
@@ -147,11 +153,16 @@ func WorkspaceVolumeMounts(pvcName, pvcKey string, principal api.PrincipalRef) (
 	base := pvcKey
 	cacheSub := path.Join(base, partition)
 	worktreeSub := path.Join(base, WorkspaceWorktreeDir, path.Base(partition))
+	// team-main is deliberately NOT partitioned per principal: it is the team's
+	// one shared mainline checkout, safe to share precisely because the mount
+	// below is ReadOnly (ADR-0024 §2) — cross-principal reads leak nothing the
+	// repo does not already share, and no agent process can write it.
+	teamMainSub := path.Join(base, WorkspaceTeamMainDir)
 	// The caller-supplied pvcKey is the ONE component that can traverse —
 	// validating the partition alone checks the component that cannot.
 	// Fail-close on the JOINED subPaths: this covers both components and
 	// rejects any absolute or escaping result before it reaches a mount.
-	for _, sub := range []string{cacheSub, worktreeSub} {
+	for _, sub := range []string{cacheSub, worktreeSub, teamMainSub} {
 		if path.IsAbs(sub) || sub != path.Clean(sub) || sub == "." || sub == ".." || strings.HasPrefix(sub, "../") {
 			return nil, &PolicyError{Reason: fmt.Sprintf("workspace subPath %q escapes the volume root (pvcKey %q); refusing to emit the mount", sub, base)}
 		}
@@ -159,5 +170,10 @@ func WorkspaceVolumeMounts(pvcName, pvcKey string, principal api.PrincipalRef) (
 	return []corev1.VolumeMount{
 		{Name: "workspace-source", ReadOnly: false, MountPath: "/workspace/source", SubPath: worktreeSub},
 		{Name: "workspace-cache", ReadOnly: false, MountPath: "/workspace/cache", SubPath: cacheSub},
+		// ISI-6009 (ADR-0024 §2): the shared team-main checkout, mounted
+		// READ-ONLY to the agent process — mount-level (filesystem) enforcement
+		// of the write discipline, not convention. Agents write only inside
+		// their own worktree/branch under /workspace/source.
+		{Name: "workspace-team-main", ReadOnly: true, MountPath: "/workspace/team-main", SubPath: teamMainSub},
 	}, nil
 }

@@ -137,6 +137,55 @@ SELECT latest.wid::text,
            AND wb.event_type = 'github_writeback_initial'
        )`
 
+// pendingPRQuery is the PR-leg sibling of pendingQuery (ISI-6009, ADR-0024 §3):
+// per labelled work item, ONLY its most-recent SUCCEEDED terminal run that
+// carried source changes (payload->>'source_branch' non-empty, stamped by the
+// runtime when it pushed its per-process branch) and carries no
+// `github_pr_writeback` marker yet. It also reads the payload's optional
+// base_branch override and the work item's team_id (the escalation event's
+// squad component; NULL when unset). Same DISTINCT ON latest-only shape, same
+// label guard, same NOT EXISTS dedup — an operator restart re-derives the exact
+// same set and older terminals are never back-posted.
+const pendingPRQuery = `
+WITH latest AS (
+    SELECT DISTINCT ON (t.work_item_id)
+           t.work_item_id                AS wid,
+           t.run_id,
+           t.payload->>'source_branch'   AS source_branch,
+           COALESCE(t.payload->>'base_branch','') AS base_branch,
+           t.id                          AS audit_id
+      FROM coord.audit_log t
+      JOIN coord.work_item wi ON wi.id = t.work_item_id
+     WHERE wi.project_id = $1::uuid
+       AND t.event_type = 'run_terminal'
+       AND t.to_state = 'succeeded'
+       AND t.run_id IS NOT NULL
+       AND COALESCE(t.payload->>'source_branch','') <> ''
+       AND EXISTS (
+           SELECT 1 FROM unnest(wi.labels) l
+            WHERE l LIKE 'ksquad.github.issue=%'
+       )
+     ORDER BY t.work_item_id, t.created_at DESC, t.id DESC
+)
+SELECT latest.wid::text,
+       latest.run_id::text,
+       latest.source_branch,
+       latest.base_branch,
+       COALESCE(c.assignee_agent, ''),
+       wi.title,
+       COALESCE(wi.team_id, ''),
+       (SELECT l FROM unnest(wi.labels) l
+         WHERE l LIKE 'ksquad.github.issue=%' LIMIT 1)
+  FROM latest
+  JOIN coord.work_item wi ON wi.id = latest.wid
+  LEFT JOIN coord.claim  c ON c.work_item_id = latest.wid
+ WHERE NOT EXISTS (
+        SELECT 1 FROM coord.audit_log wb
+         WHERE wb.work_item_id = latest.wid
+           AND wb.run_id = latest.run_id
+           AND wb.event_type = 'github_pr_writeback'
+       )`
+
 // createdItemsQuery lists the sub-tickets a run authored via work_item_create,
 // in creation order. It reads the SAME run-scoped signal the per-run authoring
 // budget counter uses (pkg/coord AgentCreateWorkItem stamps run_id on every
@@ -258,7 +307,8 @@ func (s *SQLStore) createdItems(ctx context.Context, runID string) ([]CreatedIte
 
 // RecordWriteBack appends the append-only idempotency marker for one write-back
 // transition under eventType — `github_writeback` (terminal leg) or
-// `github_writeback_initial` (initial-findings leg, ISI-5602). The
+// `github_writeback_initial` (initial-findings leg, ISI-5602) or
+// `github_pr_writeback` (PR leg, ISI-6009). The
 // (work_item_id, run_id, eventType) triple is the dedup key the matching pending
 // query's NOT EXISTS reads back; the two legs use distinct event types so they
 // dedup independently and each fires exactly once per run. An empty eventType
@@ -283,6 +333,80 @@ func (s *SQLStore) RecordWriteBack(ctx context.Context, workItemID, runID, event
 		VALUES ($1::uuid, NULLIF($2,'')::uuid, $3, $4, $5::jsonb)`,
 		workItemID, runID, eventType, WriteBackPrincipal, string(payload)); err != nil {
 		return fmt.Errorf("scmwriteback: insert marker: %w", err)
+	}
+	return nil
+}
+
+// PendingPRWriteBacks runs pendingPRQuery and strips the label prefix down to
+// the bare `owner/repo#N` ref, exactly as PendingWriteBacks does (ADR-0024 §3).
+func (s *SQLStore) PendingPRWriteBacks(ctx context.Context, projectID string) ([]PRPending, error) {
+	rows, err := s.db.QueryContext(ctx, pendingPRQuery, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("scmwriteback: query PR pending: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PRPending
+	for rows.Next() {
+		var p PRPending
+		var label sql.NullString
+		if err := rows.Scan(&p.WorkItemID, &p.RunID, &p.SourceBranch, &p.BaseBranch, &p.AgentName, &p.Title, &p.TeamID, &label); err != nil {
+			return nil, fmt.Errorf("scmwriteback: scan PR pending: %w", err)
+		}
+		if !label.Valid || len(label.String) <= len(githubIssueLabelPrefix) {
+			// Matched the LIKE but not the exact prefix strip — malformed; skip
+			// rather than open a PR on a bogus ref (same guard as the other legs).
+			continue
+		}
+		p.IssueRef = label.String[len(githubIssueLabelPrefix):]
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scmwriteback: iterate PR pending: %w", err)
+	}
+	return out, nil
+}
+
+// RecordPRConflictAttempt appends one `github_pr_conflict` audit row for a
+// rebase-retry attempt (ADR-0024 §4). Same append-only audit discipline as the
+// markers; the row count for a (work_item, run) is the attempt counter.
+func (s *SQLStore) RecordPRConflictAttempt(ctx context.Context, workItemID, runID, note string) error {
+	payload, err := json.Marshal(map[string]string{"result": note})
+	if err != nil {
+		return fmt.Errorf("scmwriteback: marshal conflict note: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, payload)
+		VALUES ($1::uuid, NULLIF($2,'')::uuid, $3, $4, $5::jsonb)`,
+		workItemID, runID, markerPRConflict, WriteBackPrincipal, string(payload)); err != nil {
+		return fmt.Errorf("scmwriteback: insert conflict attempt: %w", err)
+	}
+	return nil
+}
+
+// EscalatePRConflict writes the hard-conflict handoff to coord.outbox (entity
+// mesh, event conflict_escalated — the family admitted by migration 0038 /
+// ISI-5833 S0, reused per ADR-0024 §4; no new entity). The relay publishes it
+// to NATS at-least-once; the coordinator/human subscriber owns resolution. The
+// row is plain SQL over a table coord already owns — no new export surface
+// (FR-B3 untouched).
+func (s *SQLStore) EscalatePRConflict(ctx context.Context, esc PREscalation) error {
+	payload, err := json.Marshal(map[string]any{
+		"source_branch": esc.SourceBranch,
+		"pr_number":     esc.PRNumber,
+		"attempts":      esc.Attempts,
+		"reason":        esc.Reason,
+	})
+	if err != nil {
+		return fmt.Errorf("scmwriteback: marshal escalation: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		VALUES ('mesh', $1::uuid, NULLIF($2,''), $3, $4::uuid, NULLIF($5,'')::uuid, $6::jsonb)`,
+		esc.ProjectID, esc.Squad, conflictEscalationEvent, esc.WorkItemID, esc.RunID, string(payload)); err != nil {
+		return fmt.Errorf("scmwriteback: insert conflict escalation: %w", err)
 	}
 	return nil
 }

@@ -85,6 +85,7 @@ const (
 	reasonCIFailureFail = "CIFailureTriggerError"
 	reasonWriteBackFail = "RunWriteBackError"
 	reasonInitialFail   = "RunInitialWriteBackError"
+	reasonPRFail        = "PRWriteBackError"
 )
 
 // SyncHistoryPrincipal is the honest, server-supplied actor stamped on every
@@ -529,6 +530,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			logger.Error(err, "repo-sync: run write-back pass failed", "project", req.NamespacedName)
 			reason = reasonWriteBackFail
 			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonWriteBackFail, err.Error())})
+			return ctrl.Result{}, err
+		}
+	}
+
+	// ── the ISI-6009 source→PR write-back: terminal run with source changes → PR to team-main ──
+	// The third sibling leg on the SAME provider + repo + Project UID (ADR-0024
+	// §3). For every labelled work item whose latest succeeded terminal run
+	// stamped payload source_branch with no `github_pr_writeback` marker yet, it
+	// opens ONE PR from the per-process branch back to team-main, then applies
+	// the bounded conflict policy (§4): inline rebase-retry, hard conflict
+	// escalates to coordinator/human via a mesh-entity outbox event. A provider
+	// that cannot open PRs (GitLab today) leaves the leg inert — never a wedge.
+	// Same at-least-once discipline: transient error fails the reconcile for the
+	// next level-triggered pass; permanent error is absorbed and marked.
+	if r.RunWriteBack != nil {
+		if _, err := r.RunWriteBack.WriteBackPRsProject(ctx, string(project.UID), project.Spec.Repo.URL, provider); err != nil {
+			logger.Error(err, "repo-sync: PR write-back pass failed", "project", req.NamespacedName)
+			reason = reasonPRFail
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonPRFail, err.Error())})
 			return ctrl.Result{}, err
 		}
 	}

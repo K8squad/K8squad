@@ -76,6 +76,13 @@ type Envelope struct {
 	// runtime (e.g. a resolved credential). Values may be secret material and
 	// MUST NOT be logged.
 	Env map[string]string
+
+	// Source is the per-process source-checkout layout (ISI-6009 write
+	// discipline, ADR-0024 §1): when set, the process runs on Source.Branch in
+	// Source.WorktreeDir — its exclusive write surface — with Source.TeamMainDir
+	// read-only to it. nil keeps the pre-P1.4a shape (plain WorkDir, no source
+	// isolation) for runtimes with no source output.
+	Source *SourceSpec
 }
 
 // Handle is an opaque reference to one standing process spawned by a
@@ -160,6 +167,10 @@ type LaunchSpec struct {
 	Env []string
 	// WorkDir is the process working directory; empty uses the host default.
 	WorkDir string
+	// Source, when non-nil, is the per-process source layout (ADR-0024 §1) the
+	// host provisions before exec: the worktree is created idempotently and the
+	// process lands in it (Source overrides WorkDir as the launch directory).
+	Source *SourceSpec
 	// Identity is the standing agent identity (telemetry labels).
 	Identity a2a.AgentIdentity
 }

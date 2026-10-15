@@ -134,12 +134,19 @@ func openCodeLaunch(rt runtimes.Runtime) func(Envelope) (LaunchSpec, error) {
 		for k, v := range env.Env {
 			procEnv[k] = v
 		}
-		return LaunchSpec{
+		spec := LaunchSpec{
 			RuntimeType: rt.Type(),
 			Env:         sortedEnv(procEnv),
 			WorkDir:     env.WorkDir,
 			Identity:    env.Identity,
-		}, nil
+			Source:      env.Source,
+		}
+		// Per-process write discipline (ISI-6009, ADR-0024 §1): the source layout
+		// wins over the plain WorkDir — the process runs in its own worktree.
+		if env.Source != nil {
+			spec.WorkDir = env.Source.WorktreeDir
+		}
+		return spec, nil
 	}
 }
 

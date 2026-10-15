@@ -29,12 +29,16 @@ import (
 // fakeStore is an in-memory Store: a fixed pending set (terminal + initial) + a
 // recorded-marker log.
 type fakeStore struct {
-	pending        []Pending // terminal leg
-	initialPending []Pending // initial leg
+	pending        []Pending   // terminal leg
+	initialPending []Pending   // initial leg
+	prPending      []PRPending // PR leg
 	listErr        error
 	initialListErr error
+	prListErr      error
 	recErr         error
 	recorded       []markerCall
+	conflicts      []string // RecordPRConflictAttempt notes, in order
+	escalations    []PREscalation
 }
 
 type markerCall struct{ workItemID, runID, eventType, note string }
@@ -52,6 +56,20 @@ func (f *fakeStore) RecordWriteBack(_ context.Context, workItemID, runID, eventT
 		return f.recErr
 	}
 	f.recorded = append(f.recorded, markerCall{workItemID, runID, eventType, note})
+	return nil
+}
+
+func (f *fakeStore) PendingPRWriteBacks(_ context.Context, _ string) ([]PRPending, error) {
+	return f.prPending, f.prListErr
+}
+
+func (f *fakeStore) RecordPRConflictAttempt(_ context.Context, _, _, note string) error {
+	f.conflicts = append(f.conflicts, note)
+	return nil
+}
+
+func (f *fakeStore) EscalatePRConflict(_ context.Context, esc PREscalation) error {
+	f.escalations = append(f.escalations, esc)
 	return nil
 }
 

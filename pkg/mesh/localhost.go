@@ -120,7 +120,17 @@ func (h *LocalHost) Launch(ctx context.Context, spec LaunchSpec) (Instance, erro
 	cmd := exec.Command(bin, args...)
 	cmd.Env = append(os.Environ(), spec.Env...)
 	cmd.Env = append(cmd.Env, envSupervisorAddr+"="+addr)
-	if spec.WorkDir != "" {
+	if spec.Source != nil {
+		// Per-process write discipline (ISI-6009, ADR-0024 §1): provision the
+		// process's own git worktree off team-main and land it there — never in
+		// the shared checkout. A provision failure is a launch failure: falling
+		// back into team-main would silently break the isolation this enforces.
+		if err := EnsureWorktree(ctx, *spec.Source); err != nil {
+			return nil, fmt.Errorf("mesh: launch %s: provision per-process worktree: %w", bin, err)
+		}
+		cmd.Dir = spec.Source.WorktreeDir
+		cmd.Env = append(cmd.Env, spec.Source.Env()...)
+	} else if spec.WorkDir != "" {
 		cmd.Dir = spec.WorkDir
 	}
 	if h.Stdout != nil {
