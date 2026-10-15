@@ -645,6 +645,58 @@ func (p *GitHubProvider) CreateComment(ctx context.Context, repoURL string, kind
 	return fmt.Sprintf("%d", githubComment.GetID()), nil
 }
 
+// CreatePR opens a pull request head→base and returns the PR number as a
+// string (ADR-0024 §3, ISI-6009): the source→team-main write-back for a
+// terminal run that carried source changes on its per-process branch. This is
+// a concrete GitHubProvider capability consumed through the narrow
+// scmwriteback.PROpener seam — the scm.SourceProvider interface is NOT widened
+// (a provider without PR support fails closed by not satisfying the seam).
+// Errors ride classifyGitHubWriteError: 422 (PR already exists for the branch,
+// no commits between branches, invalid head/base) is permanent; 429/5xx stay
+// transient for the level-triggered retry.
+func (p *GitHubProvider) CreatePR(ctx context.Context, repoURL, head, base, title, body string) (string, error) {
+	repoOwner, repoName, err := parseRepoURL(repoURL)
+	if err != nil {
+		return "", &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid repo URL: %v", err)}
+	}
+	if head == "" || base == "" {
+		return "", &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: "head and base branches are required"}
+	}
+	pr, _, err := p.client.PullRequests.Create(ctx, repoOwner, repoName, &github.NewPullRequest{
+		Title: &title,
+		Head:  &head,
+		Base:  &base,
+		Body:  &body,
+	})
+	if err != nil {
+		return "", classifyGitHubWriteError("failed to create pull request", err)
+	}
+	return strconv.Itoa(pr.GetNumber()), nil
+}
+
+// UpdatePRBranch merges the base branch into the PR head server-side (GitHub's
+// update-branch endpoint) — the auto-rebase-retry of the ADR-0024 §4 conflict
+// policy. A clean update (or an already-up-to-date branch) returns nil; a hard
+// merge conflict surfaces as 409/422 through classifyGitHubWriteError, which
+// the caller distinguishes from a transient failure via its HTTPCode.
+func (p *GitHubProvider) UpdatePRBranch(ctx context.Context, repoURL, prNumber string) error {
+	repoOwner, repoName, err := parseRepoURL(repoURL)
+	if err != nil {
+		return &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid repo URL: %v", err)}
+	}
+	num, err := strconv.Atoi(prNumber)
+	if err != nil {
+		return &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid PR number: %v", err)}
+	}
+	// nil options: the default update (merge base into head) is the rebase-retry;
+	// the expected_head_sha guard is unnecessary here because the caller keyed
+	// the PR open exactly-once (github_pr_writeback marker) before any retry.
+	if _, _, err := p.client.PullRequests.UpdateBranch(ctx, repoOwner, repoName, num, nil); err != nil {
+		return classifyGitHubWriteError("failed to update pull request branch", err)
+	}
+	return nil
+}
+
 // classifyGitHubWriteError maps a go-github write error onto the *ProviderError
 // classification contract. go-github (v57) returns a *github.ErrorResponse
 // carrying the HTTP status, but it never satisfies *ProviderError on its own, so

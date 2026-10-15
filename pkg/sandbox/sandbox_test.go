@@ -431,3 +431,36 @@ func TestSandboxScratchVolumeNameGuard(t *testing.T) {
 		t.Errorf("scratch /tmp volume missing from emitted pod spec: %+v", pod.Spec.Volumes)
 	}
 }
+
+// TestWorkspaceTeamMainMountReadOnly (ISI-6009, ADR-0024 §2): the shared
+// team-main checkout mounts READ-ONLY to every agent process — the
+// filesystem-level enforcement of the write discipline. The per-process
+// worktree mount stays writable; team-main never is.
+func TestWorkspaceTeamMainMountReadOnly(t *testing.T) {
+	alice := api.PrincipalRef("alice@corp.com")
+	mounts, err := WorkspaceVolumeMounts("workspace-pvc", "projects/widget", alice)
+	if err != nil {
+		t.Fatalf("mounts: %v", err)
+	}
+	var teamMain, source *corev1.VolumeMount
+	for i := range mounts {
+		switch mounts[i].Name {
+		case "workspace-team-main":
+			teamMain = &mounts[i]
+		case "workspace-source":
+			source = &mounts[i]
+		}
+	}
+	if teamMain == nil {
+		t.Fatalf("no workspace-team-main mount emitted: %+v", mounts)
+	}
+	if !teamMain.ReadOnly {
+		t.Errorf("team-main mount is writable — write discipline unenforced: %+v", *teamMain)
+	}
+	if teamMain.SubPath != "projects/widget/"+WorkspaceTeamMainDir {
+		t.Errorf("team-main subPath = %q, want projects/widget/%s", teamMain.SubPath, WorkspaceTeamMainDir)
+	}
+	if source == nil || source.ReadOnly {
+		t.Errorf("per-process worktree mount must stay writable: %+v", source)
+	}
+}
