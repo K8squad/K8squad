@@ -357,7 +357,13 @@ func (s *Server) reviewAutomationEligibleAgents(svc *ReviewAutomationService) ht
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		// decodePathVar (pathvars.go): the router runs UseEncodedPath(), so the
+		// captured var is the ESCAPED form — the console's canonical composite id
+		// arrives as "ns%2Fname" and MUST be unescaped before resolution, exactly
+		// as the config read above does. Without it the composite id never matches
+		// and the dropdown's roster read 404s (ISI-5964 — the still-empty-dropdown
+		// follow-up to ISI-5700; same class as the ISI-3982 double-encode trap).
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		view, err := svc.EligibleAgents(r.Context(), auth, projectID)
 		switch {
 		case err == nil:

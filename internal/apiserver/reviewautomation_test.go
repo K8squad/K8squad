@@ -410,6 +410,26 @@ func TestReviewAutoEligibleAgentsHidden404(t *testing.T) {
 	}
 }
 
+// ISI-5964 regression: the console addresses a Project by its canonical
+// composite id "namespace/name", percent-encoded to ONE path segment
+// ("squad-a%2Fweb") per lib/projectId.ts. The router runs UseEncodedPath(), so
+// the captured var arrives ESCAPED and the handler MUST decodePathVar it before
+// resolution. Without the decode the composite id matched neither the bare name
+// nor "ns/name" ⇒ 404 ⇒ the dialog silently degraded to an EMPTY dropdown —
+// the "dropdown is still empty" report against a cluster whose Role CRs were
+// already correct (ISI-5700 had fixed those).
+func TestReviewAutoEligibleAgentsEncodedCompositeProjectID(t *testing.T) {
+	cl := newRAClient(t, raFixtures()...)
+	h := testReviewAutoServer(t, cl)
+	rec, v := raEligible(t, h, raViewerToken, "squad-a%2Fweb")
+	if v == nil {
+		t.Fatalf("composite-id roster read want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(v.Agents) != 1 || v.Agents[0].Name != "rev" {
+		t.Fatalf("composite id must resolve the same roster as the bare name, got %+v", v.Agents)
+	}
+}
+
 // --- 501: nil service keeps the documented contract ---------------------------------------------
 
 func TestReviewAutoNilService501(t *testing.T) {
