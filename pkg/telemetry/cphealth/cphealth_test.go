@@ -317,3 +317,36 @@ func TestWrapReconcilerNilMetricsIsPassthrough(t *testing.T) {
 	var m *Metrics
 	m.ObserveReconcile(context.Background(), "x", time.Second, nil)
 }
+
+// The "gateway" dep (AgentMesh P1.4, ISI-6010) rides the same probe→gauge
+// path as postgres/nats/apiserver: registered with a scripted probe, its
+// bounded label value flows to ksquad.dependency.up{dep=gateway} and follows
+// the probe's flips. This is the prober-side unit proof for the fourth fixed
+// dep value; the probe assembly itself (registry lookup + /ready) is tested
+// in cmd/operator.
+func TestDependencyUpGatewayDep(t *testing.T) {
+	meter, reader := newTestMeter(t)
+	gwUp := true
+	m, err := Register(meter, Options{
+		Dependencies: []Dependency{
+			{Name: "gateway", Probe: func(context.Context) bool { return gwUp }},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	m.probeAll(context.Background())
+	g := collect(t, reader)[dependencyUpName].Data.(metricdata.Gauge[int64])
+	if len(g.DataPoints) != 1 || attrVal(g.DataPoints[0].Attributes, attrDep) != "gateway" || g.DataPoints[0].Value != 1 {
+		t.Fatalf("gateway dep up probe = %+v, want one point dep=gateway value=1", g.DataPoints)
+	}
+
+	// Gateway down: the cached state follows on the next probe.
+	gwUp = false
+	m.probeAll(context.Background())
+	g = collect(t, reader)[dependencyUpName].Data.(metricdata.Gauge[int64])
+	if g.DataPoints[0].Value != 0 {
+		t.Fatalf("gateway dep after down = %d, want 0", g.DataPoints[0].Value)
+	}
+}

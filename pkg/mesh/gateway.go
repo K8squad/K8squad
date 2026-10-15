@@ -519,6 +519,31 @@ func (g *Gateway) Ready() bool {
 	return len(g.procs) > 0
 }
 
+// ProbeReady reports whether the gateway serving baseURL answers GET /ready
+// with 200 inside ctx — the Supervisor-side "gateway up" signal (P1.4,
+// D6.1/D6.2). /ready (not /health) is the probe surface deliberately: the
+// health loop and the cphealth dep care about SERVING capability (the pool
+// can take a route), and a wedged-but-alive gateway must read as down so the
+// supervisor drains and recreates it instead of trusting a bare
+// process-alive ping. A nil client uses a default with a short timeout — the
+// probe always runs under a caller-bounded ctx (the cphealth probe timeout /
+// the supervisor sweep).
+func ProbeReady(ctx context.Context, client *http.Client, baseURL string) bool {
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/ready", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
 // Route delivers one task to a standing process and returns its live event
 // stream. target selects the process by endpoint id; an empty target picks
 // the LEAST-RECENTLY-USED idle process (§5.3 LRU tie-break), and — the P1.2
