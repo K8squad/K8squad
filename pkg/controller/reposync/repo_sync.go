@@ -56,13 +56,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	"github.com/go-logr/logr"
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/scmwriteback"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/scmmetrics"
+	"github.com/go-logr/logr"
 )
 
 // TriggerAnnotation is stamped (server-side patch) by the verified webhook

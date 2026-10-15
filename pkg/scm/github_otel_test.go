@@ -175,7 +175,6 @@ func TestRateBudgetReporterCapturesReset(t *testing.T) {
 	}
 }
 
-
 // provider Snapshot carries the outbound provider call's HTTP client semantics
 // — http.request.method, url.path, server.address and http.response.status_code
 // — stamped by the provider HTTP transport. Previously the span carried zero
