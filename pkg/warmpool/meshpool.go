@@ -71,6 +71,13 @@ type MeshPoolSpec struct {
 	Skills []string
 	// Min is the standing-process floor (default 1).
 	Min int
+	// Lifecycle is the per-pool lifecycle knob set (chapter §6.2 D4.2:
+	// checkInterval / idleToHibernate / hibernateToStop / alwaysUp). nil uses
+	// the gateway's operator defaults. Until the RolePool CRD lands (P1.3,
+	// ISI-5824) this struct IS the spec surface, stamped as
+	// KSQUAD_MESH_LIFECYCLE_* env on the pod (the KSQUAD_WARM_POOL_TARGET
+	// env-default pattern).
+	Lifecycle *MeshLifecycleSpec
 	// IngressURL is the Supervisor register ingress the gateway heartbeats
 	// (http://<operator>:8090/mesh). Empty boots an unregistered gateway
 	// (dev/debug only — it will never receive a route).
@@ -78,6 +85,16 @@ type MeshPoolSpec struct {
 	// ProjectPVC mounts the per-Project workspace shared at
 	// WorkspaceMountPath, exactly like a claim-path sandbox pod.
 	ProjectPVC string
+}
+
+// MeshLifecycleSpec is the declarative lifecycle knob set (RolePool.spec.
+// lifecycle's shape, chapter §6.2). Zero fields keep the operator default —
+// the gateway owns parsing, so the pod spec stays a pure pass-through.
+type MeshLifecycleSpec struct {
+	CheckInterval   string // duration string, e.g. "30s"
+	IdleToHibernate string // duration string, e.g. "5m"  (S4-reserved)
+	HibernateToStop string // duration string, e.g. "4h"
+	AlwaysUp        bool
 }
 
 // meshChildBasePortEnv is the children's first port (KSQUAD_MESH_BASE_PORT):
@@ -156,6 +173,22 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 	}
 	if len(spec.Skills) > 0 {
 		env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_SKILLS", Value: strings.Join(spec.Skills, ",")})
+	}
+	// Lifecycle knobs (D4.2): stamped only when the operator set them — the
+	// minimal-env invariant; unset knobs keep the gateway's defaults.
+	if lc := spec.Lifecycle; lc != nil {
+		if lc.CheckInterval != "" {
+			env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL", Value: lc.CheckInterval})
+		}
+		if lc.IdleToHibernate != "" {
+			env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_LIFECYCLE_IDLE_TO_HIBERNATE", Value: lc.IdleToHibernate})
+		}
+		if lc.HibernateToStop != "" {
+			env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_LIFECYCLE_HIBERNATE_TO_STOP", Value: lc.HibernateToStop})
+		}
+		if lc.AlwaysUp {
+			env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_LIFECYCLE_ALWAYS_UP", Value: "true"})
+		}
 	}
 	if spec.IngressURL != "" {
 		env = append(env, corev1.EnvVar{Name: "KSQUAD_SUPERVISOR_INGRESS_URL", Value: spec.IngressURL})

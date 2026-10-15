@@ -32,11 +32,14 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/mesh"
+	"github.com/K8squad/K8squad/pkg/telemetry/meshobs"
 	ksqsemconv "github.com/K8squad/K8squad/pkg/telemetry/semconv"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -93,6 +96,19 @@ func emitFullRunTrace(t *testing.T) map[string]sdktrace.ReadOnlySpan {
 
 	m.RunEnd(ctx, task, "completed", "")
 
+	// mesh.route / mesh.spawn (AgentMesh P1.2, ISI-5823): the run trace's
+	// routed-in counterpart, driven through the REAL mesh emitter the pod
+	// gateway plugs in (pkg/telemetry/meshobs). One idle route + one
+	// recreate route fully populates both spans' attribute sets.
+	meshObs := meshobs.New(tp.Tracer("conformance"), nil, meshobs.Labels{
+		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder"})
+	meshObs.ObserveRoute(ctx, mesh.RouteEvent{
+		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-1",
+		Selection: mesh.SelectionIdle, Duration: 4 * time.Millisecond})
+	meshObs.ObserveSpawn(ctx, mesh.SpawnEvent{
+		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-2",
+		Source: mesh.SpawnSourceEnvelope, Duration: 210 * time.Millisecond})
+
 	byName := map[string]sdktrace.ReadOnlySpan{}
 	for _, s := range sr.Ended() {
 		byName[s.Name()] = s
@@ -120,7 +136,12 @@ func TestConformance_StableAttributesPresent(t *testing.T) {
 	for _, sc := range ksqsemconv.SpanConventions {
 		span, ok := spans[sc.Name]
 		if !ok {
-			t.Errorf("span %q was never emitted by the mapper", sc.Name)
+			// A span with NO Stable-Required attributes is a Planned
+			// contract (e.g. mesh.wake, S4) — no emitter exists yet, so
+			// its absence is the specified state, not drift.
+			if len(ksqsemconv.RequiredStable(sc.Name)) > 0 || len(ksqsemconv.ConditionalStable(sc.Name)) > 0 {
+				t.Errorf("span %q was never emitted by the mapper", sc.Name)
+			}
 			continue
 		}
 		got := keysOf(span)

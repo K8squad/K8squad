@@ -179,3 +179,66 @@ func TestBootMeshPool_MinClampsToOne(t *testing.T) {
 		}
 	}
 }
+
+// envOf extracts one env value from the booted pod.
+func envOf(t *testing.T, pod *corev1.Pod, name string) string {
+	t.Helper()
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == name {
+			return e.Value
+		}
+	}
+	return ""
+}
+
+// The lifecycle knobs (D4.2) stamp the pod as KSQUAD_MESH_LIFECYCLE_* env —
+// only when set (the minimal-env invariant); alwaysUp stamps as "true".
+func TestBootMeshPool_LifecycleEnv(t *testing.T) {
+	k, cl := newMeshProvisioner(t)
+	err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{
+		Team: "t", Role: "coordinator", Image: "img",
+		Lifecycle: &warmpool.MeshLifecycleSpec{
+			CheckInterval:   "45s",
+			IdleToHibernate: "2m",
+			HibernateToStop: "1h",
+			AlwaysUp:        true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pod corev1.Pod
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coordinator"}, &pod); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL":    "45s",
+		"KSQUAD_MESH_LIFECYCLE_IDLE_TO_HIBERNATE": "2m",
+		"KSQUAD_MESH_LIFECYCLE_HIBERNATE_TO_STOP": "1h",
+		"KSQUAD_MESH_LIFECYCLE_ALWAYS_UP":         "true",
+	} {
+		if got := envOf(t, &pod, name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
+	}
+
+	// Unset knobs stamp nothing — the gateway keeps its defaults.
+	k2, cl2 := newMeshProvisioner(t)
+	if err := k2.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{Team: "t", Role: "coder", Image: "img"}); err != nil {
+		t.Fatal(err)
+	}
+	var bare corev1.Pod
+	if err := cl2.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &bare); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL",
+		"KSQUAD_MESH_LIFECYCLE_IDLE_TO_HIBERNATE",
+		"KSQUAD_MESH_LIFECYCLE_HIBERNATE_TO_STOP",
+		"KSQUAD_MESH_LIFECYCLE_ALWAYS_UP",
+	} {
+		if v := envOf(t, &bare, name); v != "" {
+			t.Fatalf("%s stamped %q on a spec with no lifecycle — minimal-env violation", name, v)
+		}
+	}
+}

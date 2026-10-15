@@ -65,6 +65,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/mesh"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/meshobs"
 )
 
 // gatewayAddr is the gateway's own listen address — the :8080 kube contract
@@ -130,6 +131,22 @@ func runGateway(args []string) error {
 		return fmt.Errorf("shim gateway: start pool: %w", err)
 	}
 	defer func() { _ = gw.Stop(context.Background()) }()
+
+	// The mesh lifecycle telemetry plug (P1.2, ISI-5823): the processes.active
+	// gauge reads the pool's live slot snapshot on every collection cycle
+	// (mesh.route/spawn spans + the latency instruments ride the Observer the
+	// gateway was built with — set before Start so even the cold-boot spawns
+	// are observed).
+	team, role := os.Getenv("KSQUAD_MESH_TEAM"), os.Getenv("KSQUAD_MESH_ROLE")
+	if reg, err := meshobs.RegisterProcessesGauge(telemetry.Meter(), team, role, func() map[mesh.ProcState]int64 {
+		counts := map[mesh.ProcState]int64{}
+		for _, p := range gw.Processes() {
+			counts[p.State]++
+		}
+		return counts
+	}); err == nil && reg != nil {
+		defer func() { _ = reg.Unregister() }()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -202,6 +219,10 @@ func buildGateway() (*mesh.Gateway, error) {
 		Squad:   team,
 		Project: os.Getenv("KSQUAD_MESH_PROJECT"),
 	}
+	pod := env("KSQUAD_MESH_POD", os.Getenv("HOSTNAME"))
+	// The lifecycle observer rides the OTLP spine the gateway process already
+	// exports through (telemetry.Tracer/Meter are safe pre-Setup: no-ops).
+	observer := meshobs.New(telemetry.Tracer(), telemetry.Meter(), meshobs.Labels{Team: team, Role: role, Pod: pod})
 	return mesh.NewGateway(mesh.GatewayConfig{
 		Adapter: adapter,
 		Envelope: mesh.Envelope{
@@ -215,7 +236,7 @@ func buildGateway() (*mesh.Gateway, error) {
 			Env: map[string]string{"KSQUAD_RUN_PATH": "mesh"},
 		},
 		Min:              gatewayMin(),
-		Pod:              env("KSQUAD_MESH_POD", os.Getenv("HOSTNAME")),
+		Pod:              pod,
 		Team:             team,
 		Role:             role,
 		RegisterURL:      strings.TrimRight(os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"), "/"),
@@ -225,7 +246,40 @@ func buildGateway() (*mesh.Gateway, error) {
 		// KSQUAD_MESH_ADVERTISE_URL overrides; the default derives from the
 		// downward-API POD_IP the mesh pool pod spec stamps.
 		AdvertiseURL: gatewayAdvertiseURL(),
+		// P1.2 lifecycle knobs (D4.2): KSQUAD_MESH_LIFECYCLE_* env the
+		// operator stamps per pool; unset fields keep the defaults (30s
+		// check / 5m idleToHibernate (S4-reserved) / 4h hibernateToStop /
+		// alwaysUp=false). The gateway owns the clock.
+		Lifecycle: gatewayLifecycleFromEnv(),
+		Observer:  observer,
 	})
+}
+
+// gatewayLifecycleFromEnv reads the per-pool lifecycle knobs (chapter §6.2
+// D4.2) from the pod-spec env. Malformed durations fall back to the operator
+// default rather than killing the pool pod — a bad knob must degrade to the
+// default cadence, not to CrashLoopBackOff.
+func gatewayLifecycleFromEnv() mesh.LifecycleConfig {
+	return mesh.LifecycleConfig{
+		CheckInterval:   envDuration("KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL"),
+		IdleToHibernate: envDuration("KSQUAD_MESH_LIFECYCLE_IDLE_TO_HIBERNATE"),
+		HibernateToStop: envDuration("KSQUAD_MESH_LIFECYCLE_HIBERNATE_TO_STOP"),
+		AlwaysUp:        os.Getenv("KSQUAD_MESH_LIFECYCLE_ALWAYS_UP") == "true",
+	}
+}
+
+// envDuration parses one duration knob; empty or malformed yields 0 (the
+// gateway default).
+func envDuration(key string) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // gatewayAdvertiseURL resolves the URL the registry advertises for this
@@ -252,25 +306,30 @@ func gatewayRegisterIntervalFromEnv() time.Duration {
 	return 0 // mesh.Gateway default (30s)
 }
 
-// handleGatewayReady is the pool-pod readiness gate: Ready iff the pool
-// holds at least one standing process. The body surfaces the idle count so
-// an operator can see saturation at a glance.
+// handleGatewayReady is the pool-pod readiness gate: Ready iff the pool can
+// SERVE — a standing process OR a stopped (recreate-on-demand) slot. A pool
+// that legitimately scaled its processes to zero overnight must NOT flip
+// NotReady: that would cycle the pod and defeat the reclaim (§6.1). The body
+// surfaces the state counts so an operator sees scale-to-zero at a glance.
 func handleGatewayReady(gw *mesh.Gateway) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		procs := gw.Processes()
-		idle := 0
+		counts := map[string]int{}
 		for _, p := range procs {
-			if !p.Busy {
-				idle++
-			}
+			counts[string(p.State)]++
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if len(procs) == 0 {
+		if !gw.Ready() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]any{"serving": true, "processes": 0, "ready": false})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"serving": true, "processes": len(procs), "idle": idle, "ready": true})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"serving":   true,
+			"processes": len(procs),
+			"states":    counts,
+			"ready":     true,
+		})
 	}
 }
 

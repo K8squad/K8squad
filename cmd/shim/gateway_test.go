@@ -150,7 +150,9 @@ func newTestGateway(t *testing.T, min int) (*httptest.Server, *mesh.Gateway, *fa
 	return srv, gw, fa
 }
 
-// /ready reports the pool: ready with the process count once >= 1 child.
+// /ready reports the pool: ready with the process count and state buckets
+// once >= 1 slot exists (a stopped slot keeps the pod Ready — recreate on
+// demand is serving capability, P1.2).
 func TestGatewayHTTP_Ready(t *testing.T) {
 	srv, _, _ := newTestGateway(t, 2)
 	resp, err := http.Get(srv.URL + "/ready")
@@ -162,16 +164,50 @@ func TestGatewayHTTP_Ready(t *testing.T) {
 		t.Fatalf("/ready = %d, want 200", resp.StatusCode)
 	}
 	var body struct {
-		Serving  bool `json:"serving"`
-		Ready    bool `json:"ready"`
-		Idle     int  `json:"idle"`
-		Processes int  `json:"processes"`
+		Serving   bool           `json:"serving"`
+		Ready     bool           `json:"ready"`
+		States    map[string]int `json:"states"`
+		Processes int            `json:"processes"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.Ready || body.Processes != 2 || body.Idle != 2 {
+	if !body.Ready || body.Processes != 2 || body.States["idle"] != 2 {
 		t.Fatalf("ready body = %+v, want ready pool of 2 idle", body)
+	}
+}
+
+// gatewayLifecycleFromEnv parses the D4.2 knobs; malformed values degrade to
+// the default (0 → gateway default), never an error — a bad knob must not
+// CrashLoop the pool pod.
+func TestGatewayLifecycleFromEnv(t *testing.T) {
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL", "45s")
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_IDLE_TO_HIBERNATE", "2m")
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_HIBERNATE_TO_STOP", "1h30m")
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_ALWAYS_UP", "true")
+
+	lc := gatewayLifecycleFromEnv()
+	if lc.CheckInterval != 45*time.Second {
+		t.Fatalf("checkInterval = %v, want 45s", lc.CheckInterval)
+	}
+	if lc.IdleToHibernate != 2*time.Minute {
+		t.Fatalf("idleToHibernate = %v, want 2m", lc.IdleToHibernate)
+	}
+	if lc.HibernateToStop != 90*time.Minute {
+		t.Fatalf("hibernateToStop = %v, want 1h30m", lc.HibernateToStop)
+	}
+	if !lc.AlwaysUp {
+		t.Fatal("alwaysUp = false, want true")
+	}
+
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL", "not-a-duration")
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_ALWAYS_UP", "")
+	lc = gatewayLifecycleFromEnv()
+	if lc.CheckInterval != 0 {
+		t.Fatalf("malformed checkInterval = %v, want 0 (gateway default)", lc.CheckInterval)
+	}
+	if lc.AlwaysUp {
+		t.Fatal("alwaysUp must default false")
 	}
 }
 

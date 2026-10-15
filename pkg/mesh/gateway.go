@@ -56,6 +56,9 @@ type Gateway struct {
 	started bool
 	// regWG tracks the registration loop goroutine.
 	regWG sync.WaitGroup
+	// lifeWG tracks the lifecycle sweep loop goroutine (P1.2, D4.2: the
+	// gateway owns the clock).
+	lifeWG sync.WaitGroup
 }
 
 // GatewayConfig assembles a Gateway. Adapter, Envelope and Pod are required;
@@ -98,6 +101,17 @@ type GatewayConfig struct {
 	// SAME loop is the heartbeat (§5.1 last_seen_at). Defaults to 30s,
 	// comfortably inside the registry's 90s TTL at three missed beats.
 	RegisterInterval time.Duration
+	// Lifecycle is the per-pool lifecycle knob set (P1.2, chapter §6.2 D4.2:
+	// checkInterval / idleToHibernate / hibernateToStop / alwaysUp). Zero
+	// fields take the operator defaults. The gateway owns the clock — it runs
+	// the CheckInterval sweep that drives IDLE→STOPPED and measures the
+	// ≤3s recreate-from-envelope path. HIBERNATED is dark in P1 (REV-4:
+	// the SIGSTOP tier ships at strangler S4, ISI-5831).
+	Lifecycle LifecycleConfig
+	// Observer receives route/spawn telemetry with timing (mesh.route /
+	// mesh.spawn spans + ksquad.mesh.* metrics on the k8squad side). nil
+	// disables lifecycle telemetry (tests, dev lanes).
+	Observer LifecycleObserver
 	// HTTPClient POSTs registrations. nil uses a default client with a
 	// short timeout — registration is a small JSON call, never a stream.
 	HTTPClient *http.Client
@@ -110,6 +124,16 @@ type GatewayConfig struct {
 type gatewayProc struct {
 	handle Handle
 	card   a2a.AgentCard
+	// state is the §6 lifecycle state. busy (below) is exactly
+	// state==StateActive — kept as its own flag because the P1.1 read surface
+	// (ProcessInfo.Busy, /ready idle counts) reports it directly.
+	state ProcState
+	// idleSince is when the process last flipped to IDLE (task settled, or
+	// spawn/recreate); the sweep's stop clock (D4.2).
+	idleSince time.Time
+	// recreating marks a stopped slot mid-recreate so a concurrent route
+	// cannot double-rebuild it (the sweep also skips it).
+	recreating bool
 	// busy is the gateway-local D3.3 guard #3: a process with an active
 	// routed task refuses a second route. Guarded by Gateway.mu.
 	busy bool
@@ -142,6 +166,7 @@ func NewGateway(cfg GatewayConfig) (*Gateway, error) {
 	if cfg.RegisterInterval <= 0 {
 		cfg.RegisterInterval = gatewayRegisterInterval
 	}
+	cfg.Lifecycle = cfg.Lifecycle.WithDefaults()
 	if cfg.Sink == nil {
 		cfg.Sink = NopSink{}
 	}
@@ -152,10 +177,12 @@ func NewGateway(cfg GatewayConfig) (*Gateway, error) {
 }
 
 // Start spawns the standing pool (Min children, each pre-loaded with the
-// role envelope) and, when a RegisterURL is configured, starts the
-// registration/heartbeat loop. It returns only after every child spawned
-// (or with the first failure) — a gateway that serves /ready before its
-// pool exists would be a lying pool pod.
+// role envelope) and starts the two gateway-owned loops: the registration
+// heartbeat (when a RegisterURL is configured) and the lifecycle sweep (the
+// D4.2 clock — checkInterval-paced, IDLE→STOPPED bound enforcement, alwaysUp
+// exemption). It returns only after every child spawned (or with the first
+// failure) — a gateway that serves /ready before its pool exists would be a
+// lying pool pod.
 func (g *Gateway) Start(ctx context.Context) error {
 	g.mu.Lock()
 	if g.started {
@@ -166,22 +193,19 @@ func (g *Gateway) Start(ctx context.Context) error {
 	g.mu.Unlock()
 
 	for i := 0; i < g.cfg.Min; i++ {
-		h, card, err := g.cfg.Adapter.Spawn(ctx, g.cfg.Envelope)
+		h, card, err := g.spawnOne(ctx, g.cfg.Envelope, SpawnSourceCold)
 		if err != nil {
 			return fmt.Errorf("mesh: spawn pool process %d: %w", i, err)
 		}
-		// Register at the seam: the adapter surfaces the card the process
-		// announced (the authoritative capability contract). Persisting it
-		// to coord.mesh_endpoint is the Supervisor-side half, driven by the
-		// registration loop below.
-		if _, err := g.cfg.Adapter.Register(ctx, h); err != nil {
-			_ = g.cfg.Adapter.Stop(ctx, h)
-			return fmt.Errorf("mesh: register pool process %d: %w", i, err)
-		}
 		g.mu.Lock()
-		g.procs = append(g.procs, &gatewayProc{handle: h, card: card})
+		g.procs = append(g.procs, &gatewayProc{handle: h, card: card, state: StateIdle, idleSince: time.Now()})
 		g.mu.Unlock()
 	}
+
+	// The lifecycle sweep runs regardless of registration — the clock is the
+	// gateway's, not the Supervisor's (D4.2).
+	g.lifeWG.Add(1)
+	go g.lifecycleLoop(ctx)
 
 	if g.cfg.RegisterURL != "" {
 		// Register immediately, then on the heartbeat ticker. A failure is
@@ -195,6 +219,108 @@ func (g *Gateway) Start(ctx context.Context) error {
 		go g.registrationLoop(ctx)
 	}
 	return nil
+}
+
+// spawnOne is the shared spawn leg (pool boot and recreate): launch via the
+// adapter, surface the card at the seam, observe the spawn with timing.
+func (g *Gateway) spawnOne(ctx context.Context, env Envelope, source SpawnSource) (Handle, a2a.AgentCard, error) {
+	t0 := time.Now()
+	h, card, err := g.cfg.Adapter.Spawn(ctx, env)
+	eh := ""
+	if h != nil {
+		eh = h.ID()
+	}
+	g.observeSpawn(ctx, SpawnEvent{
+		Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod, EndpointID: eh,
+		Source: source, Duration: time.Since(t0), Err: err,
+	})
+	if err != nil {
+		return nil, a2a.AgentCard{}, err
+	}
+	// Register at the seam: the adapter surfaces the card the process
+	// announced (the authoritative capability contract). Persisting it
+	// to coord.mesh_endpoint is the Supervisor-side half, driven by the
+	// registration loop below.
+	if _, err := g.cfg.Adapter.Register(ctx, h); err != nil {
+		_ = g.cfg.Adapter.Stop(ctx, h)
+		return nil, a2a.AgentCard{}, err
+	}
+	return h, card, nil
+}
+
+// lifecycleLoop is the D4.2 clock: on every CheckInterval tick the gateway
+// sweeps its own processes and applies the §6 lifecycle bounds. The sweep
+// never touches ACTIVE processes, skips mid-recreate slots, and exempts the
+// whole pool when alwaysUp is set (the coordinator: pinned ACTIVE/IDLE,
+// floor 1 — chapter §6 diagram note).
+func (g *Gateway) lifecycleLoop(ctx context.Context) {
+	defer g.lifeWG.Done()
+	ticker := time.NewTicker(g.cfg.Lifecycle.CheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			g.sweep(ctx)
+		}
+	}
+}
+
+// sweep applies one checkInterval pass: every IDLE process whose idle time
+// has reached hibernateToStop is stopped — RAM reclaimed; the slot stays for
+// on-demand recreate-from-envelope (§6.1: recreate is near-bare-exec because
+// the image, tools and envelope are already staged — target ready ≤3s).
+//
+// REV-4 (ISI-5807 X1): the two-tier idle→hibernate→stop ladder is collapsed
+// for the P1 batch path — hibernation is CUT (S4, ISI-5831), so idle time
+// accrues straight to the stop bound. IdleToHibernate is plumbed for S4 but
+// consumes nothing here; do NOT wire Hibernate/Wake into this sweep before
+// the S4 story lands its claim-never-frozen invariant (D9.1).
+func (g *Gateway) sweep(ctx context.Context) {
+	g.mu.Lock()
+	var toStop []*gatewayProc
+	if !g.cfg.Lifecycle.AlwaysUp {
+		now := time.Now()
+		for _, p := range g.procs {
+			if p.state != StateIdle || p.recreating {
+				continue
+			}
+			if now.Sub(p.idleSince) >= g.cfg.Lifecycle.HibernateToStop {
+				// Flip FIRST, terminate after: once marked Stopped the slot
+				// is unpickable by Route, so a task can never land on a
+				// process being torn down. recreating keeps the in-flight
+				// teardown slot out of Route's recreate picks until the old
+				// process is fully gone.
+				p.state = StateStopped
+				p.recreating = true
+				toStop = append(toStop, p)
+			}
+		}
+	}
+	g.mu.Unlock()
+
+	for _, p := range toStop {
+		g.cfg.Sink.OnLifecycle("lifecycle.stop", p.handle.ID(), p.handle.Endpoint(), nil)
+		if err := g.cfg.Adapter.Stop(ctx, p.handle); err != nil {
+			// Report, do not revert: a wedged process is exactly what
+			// Recreate's best-effort close exists to clean up after. The
+			// stale handle is closed again on recreate.
+			g.cfg.Sink.OnLifecycle("lifecycle.stop", p.handle.ID(), p.handle.Endpoint(), err)
+		}
+		g.mu.Lock()
+		p.recreating = false // the slot is now a clean recreate candidate
+		g.mu.Unlock()
+	}
+	if len(toStop) > 0 {
+		// Re-register immediately so the ingress prunes the stopped
+		// endpoints from coord.mesh_endpoint right away instead of waiting
+		// out the registry TTL (the registration POST carries only standing
+		// processes; the ingress PrunePod drops the rest).
+		if err := g.RegisterOnce(ctx); err != nil {
+			g.cfg.Sink.OnLifecycle("gateway.register", "", "", err)
+		}
+	}
 }
 
 // registrationLoop re-POSTs the endpoint set on the heartbeat cadence.
@@ -231,7 +357,15 @@ type RegisteredProcess struct {
 	Card       a2a.AgentCard
 }
 
-// RegisterOnce POSTs the current endpoint set to the Supervisor ingress.
+// RegisterOnce POSTs the current standing endpoint set to the Supervisor
+// ingress. Stopped slots are excluded — the ingress's PrunePod drops every
+// endpoint of this pod that is not in the POST, so the stopped processes
+// leave coord.mesh_endpoint promptly rather than at TTL expiry.
+//
+// A gateway whose every slot is STOPPED legitimately POSTs an EMPTY set (the
+// scale-to-zero end state — the prune is the whole point). Refusing an empty
+// POST applies only to a gateway that never held any process, which is the
+// broken-boot case the P1.1 guard existed for.
 func (g *Gateway) RegisterOnce(ctx context.Context) error {
 	client := g.cfg.HTTPClient
 	if client == nil {
@@ -243,18 +377,24 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 	// picks the process — a child's 127.0.0.1:<port> is routable only
 	// inside the pod (§5.2).
 	advertise := strings.TrimRight(g.cfg.AdvertiseURL, "/")
-	for _, p := range g.Processes() {
-		ep := p.Endpoint
+	// heldAny: the gateway HAS pool slots (standing or stopped). Only a
+	// gateway that never spawned anything refuses the empty POST — a pool
+	// whose every slot legitimately stopped must be able to prune.
+	g.mu.Lock()
+	heldAny := len(g.procs) > 0
+	g.mu.Unlock()
+	for _, p := range g.standing() {
+		ep := p.handle.Endpoint()
 		if advertise != "" {
 			ep = advertise
 		}
 		reg.Processes = append(reg.Processes, RegisteredProcess{
-			EndpointID: p.EndpointID,
+			EndpointID: p.handle.ID(),
 			Endpoint:   ep,
-			Card:       p.Card,
+			Card:       p.card,
 		})
 	}
-	if len(reg.Processes) == 0 {
+	if len(reg.Processes) == 0 && !heldAny {
 		return fmt.Errorf("mesh: refusing to register an empty endpoint set")
 	}
 	payload, err := json.Marshal(reg)
@@ -279,15 +419,33 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 	return nil
 }
 
-// ProcessInfo is the read-side snapshot of one standing process.
+// standing snapshots the slots that currently hold a live process (everything
+// but STOPPED — the recreate-on-demand slots).
+func (g *Gateway) standing() []*gatewayProc {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make([]*gatewayProc, 0, len(g.procs))
+	for _, p := range g.procs {
+		if p.state != StateStopped {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ProcessInfo is the read-side snapshot of one pool slot.
 type ProcessInfo struct {
 	EndpointID string
 	Endpoint   string
 	Card       a2a.AgentCard
 	Busy       bool
+	// State is the §6 lifecycle state (active|idle|hibernated|stopped). A
+	// stopped slot keeps its last EndpointID/Endpoint for debugging; its
+	// handle is stale and it is excluded from registration.
+	State ProcState
 }
 
-// Processes snapshots the pool's endpoint set (id, endpoint, card, busy).
+// Processes snapshots the pool's slot set (id, endpoint, card, busy, state).
 func (g *Gateway) Processes() []ProcessInfo {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -298,13 +456,18 @@ func (g *Gateway) Processes() []ProcessInfo {
 			Endpoint:   p.handle.Endpoint(),
 			Card:       p.card,
 			Busy:       p.busy,
+			State:      p.state,
 		})
 	}
 	return out
 }
 
-// Ready reports whether the pool serves at least one standing process — the
-// pool-pod readiness gate (a gateway with no children is a dead pool).
+// Ready reports whether the pool can serve a route: at least one standing
+// process OR at least one stopped slot (recreate-on-demand is serving
+// capability — §6.1: the next A2A request rebuilds from the envelope in
+// near-bare-exec time). A pool pod must not flip NotReady just because it
+// legitimately scaled its processes to zero overnight; that would cycle the
+// pod and defeat the reclaim.
 func (g *Gateway) Ready() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -313,23 +476,43 @@ func (g *Gateway) Ready() bool {
 
 // Route delivers one task to a standing process and returns its live event
 // stream. target selects the process by endpoint id; an empty target picks
-// the FIRST idle process in spawn order (the P1.1 selection: one pool,
-// prefer idle; LRU and wake-vs-overflow arrive with P1.2/P1.3 lifecycles).
+// the FIRST idle process in spawn order, and — the P1.2 lifecycle — when no
+// process stands idle, recreates a STOPPED slot from the envelope on demand
+// (selection=overflow, §6.1: near-bare-exec, target ≤3s). A target naming a
+// stopped slot recreates that slot.
 //
 // The D3.3 guard #3 is enforced HERE and, redundantly, by the child
 // supervisor's own one-task-at-a-time contract: a busy target refuses with
-// ErrProcessBusy, an all-busy pool refuses with ErrNoIdleProcess. The
-// process flips back to idle when the returned stream settles (its Events
-// channel closes) or is Closed. At-most-once does NOT live here — the
-// a2a_task_id dedup in coord.a2a_dispatch backstops any route race (§5.4).
+// ErrProcessBusy, an all-busy pool with no recreate slot refuses with
+// ErrNoIdleProcess. The process flips back to idle when the returned stream
+// settles (its Events channel closes) or is Closed. At-most-once does NOT
+// live here — the a2a_task_id dedup in coord.a2a_dispatch backstops any
+// route race (§5.4).
 func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stream, error) {
+	arrival := time.Now()
 	g.mu.Lock()
 	var pick *gatewayProc
+	selection := SelectionIdle
 	if target == "" {
 		for _, p := range g.procs {
-			if !p.busy {
+			if p.recreating {
+				continue
+			}
+			if p.state == StateIdle && !p.busy {
 				pick = p
 				break
+			}
+		}
+		if pick == nil {
+			// No idle standing process: the RAM-reclaim trade pays off here —
+			// rebuild a stopped slot from the pre-loaded envelope on demand.
+			for _, p := range g.procs {
+				if p.state == StateStopped && !p.recreating {
+					p.recreating = true
+					pick = p
+					selection = SelectionOverflow
+					break
+				}
 			}
 		}
 	} else {
@@ -343,24 +526,70 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 			g.mu.Unlock()
 			return nil, fmt.Errorf("mesh: no such target process %q", target)
 		}
-		if pick.busy {
-			g.mu.Unlock()
-			return nil, ErrProcessBusy
+		if pick.state == StateStopped && !pick.recreating {
+			pick.recreating = true
+			selection = SelectionOverflow
 		}
 	}
 	if pick == nil {
 		g.mu.Unlock()
 		return nil, ErrNoIdleProcess
 	}
+	if pick.busy || pick.recreating && selection != SelectionOverflow {
+		g.mu.Unlock()
+		return nil, ErrProcessBusy
+	}
 	pick.busy = true
+	pick.state = StateActive
 	handle := pick.handle
+	needRecreate := selection == SelectionOverflow
+	slot := pick
 	g.mu.Unlock()
+
+	if needRecreate {
+		var err error
+		handle, err = g.recreateSlot(ctx, slot)
+		g.mu.Lock()
+		slot.recreating = false
+		g.mu.Unlock()
+		if err != nil {
+			// The slot stays STOPPED and retryable; the busy flag set above
+			// must not leak a phantom ACTIVE.
+			g.mu.Lock()
+			slot.busy = false
+			if slot.state == StateActive {
+				slot.state = StateStopped
+			}
+			g.mu.Unlock()
+			return nil, err
+		}
+		// The recreated process takes this task immediately: it is ACTIVE
+		// until the stream settles and release() flips it back to IDLE.
+		g.mu.Lock()
+		slot.state = StateActive
+		g.mu.Unlock()
+	}
 
 	stream, err := g.cfg.Adapter.Route(ctx, handle, task)
 	if err != nil {
 		g.release(handle)
+		// A failed delivery still observes the route (outcome=error): the
+		// ready-latency histogram must see delivery failures, not just
+		// successes — a recreate that never delivers is the SLO breach.
+		// Guard-refusals (busy/saturated/no-target) do NOT span: they never
+		// reached a process and would pollute the SLO window.
+		g.observeRoute(ctx, RouteEvent{
+			Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+			EndpointID: handle.ID(), Selection: selection,
+			Duration: time.Since(arrival), Err: err,
+		})
 		return nil, err
 	}
+	g.observeRoute(ctx, RouteEvent{
+		Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+		EndpointID: handle.ID(), Selection: selection,
+		Duration: time.Since(arrival), Err: nil,
+	})
 	return &gatedStream{
 		inner:   stream,
 		release: func() { g.release(handle) },
@@ -369,27 +598,86 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 	}, nil
 }
 
+// recreateSlot rebuilds a stopped slot from the envelope via the adapter's
+// Recreate op (§6.1: best-effort close of the stale process — it may already
+// be dead, which is the common trigger — then a near-bare-exec spawn into the
+// staged image/tools). The returned handle is the slot's new process.
+func (g *Gateway) recreateSlot(ctx context.Context, slot *gatewayProc) (Handle, error) {
+	t0 := time.Now()
+	nh, err := g.cfg.Adapter.Recreate(ctx, slot.handle, g.cfg.Envelope)
+	eh := ""
+	if nh != nil {
+		eh = nh.ID()
+	}
+	g.observeSpawn(ctx, SpawnEvent{
+		Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod, EndpointID: eh,
+		Source: SpawnSourceEnvelope, Duration: time.Since(t0), Err: err,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("mesh: recreate from envelope: %w", err)
+	}
+	// Register at the seam returns the card the recreated process serves —
+	// the authoritative capability contract, exactly like the boot path.
+	card, err := g.cfg.Adapter.Register(ctx, nh)
+	if err != nil {
+		_ = g.cfg.Adapter.Stop(ctx, nh)
+		return nil, fmt.Errorf("mesh: register recreated process: %w", err)
+	}
+	g.mu.Lock()
+	slot.handle = nh
+	slot.card = card
+	slot.state = StateIdle
+	slot.idleSince = time.Now()
+	g.mu.Unlock()
+	return nh, nil
+}
+
+// observeRoute reports the routing decision to the observer (no-op without
+// one). Called with the dispatch request's ctx so the observer's span nests
+// under the run trace (§8.2).
+func (g *Gateway) observeRoute(ctx context.Context, e RouteEvent) {
+	if g.cfg.Observer != nil {
+		g.cfg.Observer.ObserveRoute(ctx, e)
+	}
+}
+
+// observeSpawn reports a spawn/recreate to the observer (no-op without one).
+func (g *Gateway) observeSpawn(ctx context.Context, e SpawnEvent) {
+	if g.cfg.Observer != nil {
+		g.cfg.Observer.ObserveSpawn(ctx, e)
+	}
+}
+
 // release flips a process back to idle (idempotent — both the stream pump's
-// natural end and an explicit Close may run).
+// natural end and an explicit Close may run). The idle clock restarts here:
+// this instant is what the sweep's stop bound measures from (D4.2).
 func (g *Gateway) release(h Handle) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, p := range g.procs {
 		if p.handle.ID() == h.ID() {
 			p.busy = false
+			if p.state == StateActive {
+				p.state = StateIdle
+				p.idleSince = time.Now()
+			}
 			return
 		}
 	}
 }
 
 // Stop terminates every standing child (the pod's graceful shutdown path).
-// Each stop is best-effort: a wedged child must not block the others.
+// Each stop is best-effort: a wedged child must not block the others. Slots
+// already STOPPED by the lifecycle sweep are skipped — their process is gone.
 func (g *Gateway) Stop(ctx context.Context) error {
 	g.mu.Lock()
 	procs := append([]*gatewayProc(nil), g.procs...)
 	g.mu.Unlock()
 	var firstErr error
 	for _, p := range procs {
+		if p.state == StateStopped {
+			continue
+		}
 		if err := g.cfg.Adapter.Stop(ctx, p.handle); err != nil && firstErr == nil {
 			firstErr = err
 		}
