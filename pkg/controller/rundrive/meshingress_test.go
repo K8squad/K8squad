@@ -94,7 +94,6 @@ func TestMeshIngress_RegisterValidation(t *testing.T) {
 	_, _, srv := newIngress(t)
 	cases := []string{
 		`{}`,
-		`{"pod":"pool-aaa","team":"t","role":"r","processes":[]}`,
 		`{"pod":"pool-aaa","team":"t","role":"r","processes":[{"endpoint_id":"","endpoint":"http://x"}]}`,
 		`not json`,
 	}
@@ -107,6 +106,33 @@ func TestMeshIngress_RegisterValidation(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("case %d = %d, want 400", i, resp.StatusCode)
 		}
+	}
+}
+
+// An empty process set is the scale-to-zero prune (chapter §6): a gateway
+// whose every slot stopped POSTs the empty set so the pod's endpoints leave
+// coord.mesh_endpoint right away. The ingress must accept it (200) and prune
+// the whole pod — P1.1's blanket 400 broke the P1.2 stop→prune contract
+// (ISI-5978 review RED-1).
+func TestMeshIngress_RegisterEmptySetPrunesPod(t *testing.T) {
+	_, mock, srv := newIngress(t)
+	mock.ExpectExec("DELETE FROM coord.mesh_endpoint").
+		WithArgs("pool-aaa", sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	payload, _ := json.Marshal(mesh.Registration{
+		Pod: "pool-aaa", Team: "team-acme", Role: "coder",
+	})
+	resp, err := http.Post(srv.URL+"/register", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("empty-set /register = %d, want 200 (scale-to-zero prune)", resp.StatusCode)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

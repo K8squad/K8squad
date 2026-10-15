@@ -80,8 +80,23 @@ func (in *MeshIngress) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("decode registration: %v", err), http.StatusBadRequest)
 		return
 	}
-	if reg.Pod == "" || reg.Team == "" || reg.Role == "" || len(reg.Processes) == 0 {
-		http.Error(w, "registration requires pod, team, role and a non-empty process set", http.StatusBadRequest)
+	if reg.Pod == "" || reg.Team == "" || reg.Role == "" {
+		http.Error(w, "registration requires pod, team and role", http.StatusBadRequest)
+		return
+	}
+	// An EMPTY process set is legitimate: a gateway whose every slot stopped
+	// (scale-to-zero end state, chapter §6) POSTs the empty set precisely so
+	// PrunePod drops all of the pod's endpoints right away instead of waiting
+	// out the registry TTL. The broken-boot guard (never held any process)
+	// lives gateway-side in RegisterOnce; ingress-side an empty beat from an
+	// unknown pod is a harmless no-op prune.
+	if len(reg.Processes) == 0 {
+		if err := in.registry.PrunePod(ctx, reg.Pod, nil); err != nil {
+			http.Error(w, fmt.Sprintf("prune pod %s: %v", reg.Pod, err), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
 		return
 	}
 
