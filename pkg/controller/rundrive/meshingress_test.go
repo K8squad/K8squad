@@ -210,3 +210,41 @@ func TestServeMeshIngress_Shutdown(t *testing.T) {
 		t.Fatalf("ServeMeshIngress: %v", err)
 	}
 }
+
+// The /health endpoint answers 200 when the registry is reachable (ISI-6010
+// P1.4b gateway dependency probe). A registry failure surfaces as 500.
+func TestMeshIngress_Health(t *testing.T) {
+	_, mock, srv := newIngress(t)
+	// The health check issues a LookupTeamRole with sentinel values; it must
+	// succeed even with empty results (registry reachable = healthy).
+	mock.ExpectQuery("SELECT endpoint_id").
+		WillReturnRows(sqlmock.NewRows([]string{"endpoint_id", "team", "role", "pod", "endpoint", "agent_card", "registered_at", "last_seen_at"}))
+
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/health = %d, want 200", resp.StatusCode)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A registry failure surfaces as 500 on /health.
+func TestMeshIngress_HealthRegistryDown(t *testing.T) {
+	_, mock, srv := newIngress(t)
+	mock.ExpectQuery("SELECT endpoint_id").
+		WillReturnError(context.DeadlineExceeded)
+
+	resp, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("/health = %d, want 500 on registry failure", resp.StatusCode)
+	}
+}

@@ -71,6 +71,12 @@ type MeshPoolSpec struct {
 	Skills []string
 	// Min is the standing-process floor (default 1).
 	Min int
+	// Max is the standing-process saturation ceiling (P1.3, ISI-5824):
+	// a saturated pool grows standing processes toward Max and serves
+	// bursts past it with transient cold-overflow. 0 or < Min means "no
+	// growth band" — the P1.2 single-floor shape. Counts gateway-managed
+	// PROCESSES, not pods (ISI-5812 verdict).
+	Max int
 	// Lifecycle is the per-pool lifecycle knob set (chapter §6.2 D4.2:
 	// checkInterval / idleToHibernate / hibernateToStop / alwaysUp). nil uses
 	// the gateway's operator defaults. Until the RolePool CRD lands (P1.3,
@@ -167,6 +173,11 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 		{Name: "POD_IP", ValueFrom: &corev1.EnvVarSource{
 			FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
 		}},
+	}
+	// The growth band (P1.3, ISI-5824): stamped only when a band exists —
+	// the minimal-env invariant; a band-less pod keeps the P1.2 shape.
+	if spec.Max > min {
+		env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_MAX", Value: strconv.Itoa(spec.Max)})
 	}
 	if spec.Model != "" {
 		env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_MODEL", Value: spec.Model})

@@ -64,9 +64,36 @@ func NewMeshIngress(registry *coord.MeshRegistry) (*MeshIngress, error) {
 // ServeMeshIngress; the paths below are relative to that mount).
 func (in *MeshIngress) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", in.handleHealth)
 	mux.HandleFunc("POST /register", in.handleRegister)
 	mux.HandleFunc("POST /deregister", in.handleDeregister)
 	return mux
+}
+
+// handleHealth returns 200 if the MeshIngress is serving (the "gateway"
+// dependency for cphealth, ISI-6010 P1.4b). This is a liveness check for the
+// MeshIngress process itself; per-gateway pod health is tracked via the registry
+// TTL in LookupTeamRole and does not gate this probe (zero registered gateways
+// during boot must not flapper the operator health).
+func (in *MeshIngress) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// The MeshIngress is healthy if it can reach its registry. A lightweight
+	// connectivity check suffices: if the DB connection works, the service is
+	// alive. We deliberately do NOT require live gateways here — that would
+	// create a chicken-and-egg problem on boot (operator reports unhealthy
+	// before any gateway registers). Per-gateway liveness is surfaced via the
+	// registry's last_seen_at TTL filter in LookupTeamRole.
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	// A simple SELECT 1 style check: lookup any team/role (will return empty or
+	// error). We reuse LookupTeamRole with a synthetic pair; an error means the
+	// registry (DB) is unreachable.
+	_, err := in.registry.LookupTeamRole(ctx, "__health_check__", "__probe__")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("registry unreachable: %v", err), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
 }
 
 // handleRegister upserts the posted endpoint set and prunes the pod's

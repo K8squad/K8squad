@@ -11,16 +11,17 @@
 // resolves that gap and delivers the control-plane health surface:
 //
 //	ksquad.runs.active{phase,team}          gauge      active Runs by phase + owning team
-//	ksquad.dependency.up{dep}               gauge      1/0 liveness of postgres|nats|apiserver
+//	ksquad.dependency.up{dep}               gauge      1/0 liveness of postgres|nats|apiserver|gateway
 //	ksquad.controller.reconcile.duration{controller}  histogram (s)  per-controller reconcile latency
 //	ksquad.controller.reconcile.errors{controller}    counter        per-controller reconcile errors
 //
 // Cardinality (NFR-OBS3 firewall): every label is BOUNDED — phase is the fixed
-// §8 enum, team is the tenant set, dep is a fixed 3-element set, controller is
-// the fixed controller name. run.id / work-item / ticket are NEVER metric
-// labels; those stay on spans and events. (When the OTLP metrics pipeline is
-// bridged to Prometheus these become ksquad_runs_active, ksquad_dependency_up,
-// etc. — the same names the ADR's D5 spec uses.)
+// §8 enum, team is the tenant set, dep is a fixed 4-element set (postgres, nats,
+// apiserver, gateway), controller is the fixed controller name. run.id /
+// work-item / ticket are NEVER metric labels; those stay on spans and events.
+// (When the OTLP metrics pipeline is bridged to Prometheus these become
+// ksquad_runs_active, ksquad_dependency_up, etc. — the same names the ADR's D5
+// spec uses.)
 package cphealth
 
 import (

@@ -164,8 +164,8 @@ func runGateway(args []string) error {
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
-	fmt.Fprintf(os.Stderr, "shim gateway: serving on %s (pool team=%s role=%s min=%d)\n",
-		addr, os.Getenv("KSQUAD_MESH_TEAM"), os.Getenv("KSQUAD_MESH_ROLE"), gatewayMin())
+	fmt.Fprintf(os.Stderr, "shim gateway: serving on %s (pool team=%s role=%s min=%d max=%d)\n",
+		addr, os.Getenv("KSQUAD_MESH_TEAM"), os.Getenv("KSQUAD_MESH_ROLE"), gatewayMin(), gatewayMax())
 
 	select {
 	case err := <-errCh:
@@ -189,6 +189,18 @@ func gatewayMin() int {
 		}
 	}
 	return 1
+}
+
+// gatewayMax reads the standing-process saturation ceiling (KSQUAD_MESH_MAX,
+// P1.3 ISI-5824). 0 or <= min means "no growth band": the pool keeps the
+// P1.2 single-floor shape (saturation refuses; no grow, no overflow).
+func gatewayMax() int {
+	if v := os.Getenv("KSQUAD_MESH_MAX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
 }
 
 // buildGateway assembles the mesh.Gateway from the pod-spec env the operator
@@ -236,6 +248,7 @@ func buildGateway() (*mesh.Gateway, error) {
 			Env: map[string]string{"KSQUAD_RUN_PATH": "mesh"},
 		},
 		Min:              gatewayMin(),
+		Max:              gatewayMax(),
 		Pod:              pod,
 		Team:             team,
 		Role:             role,

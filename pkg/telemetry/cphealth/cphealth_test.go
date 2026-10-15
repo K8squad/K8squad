@@ -215,6 +215,47 @@ func TestDependencyUpReflectsProbe(t *testing.T) {
 	}
 }
 
+// TestDependencyUpIncludesGateway verifies the gateway dependency can be
+// registered and probed alongside the legacy set (ISI-6010 P1.4b). The fixed
+// 4-element set (postgres|nats|apiserver|gateway) preserves the NFR-OBS3
+// cardinality firewall.
+func TestDependencyUpIncludesGateway(t *testing.T) {
+	meter, reader := newTestMeter(t)
+	gatewayUp := true
+	m, err := Register(meter, Options{
+		Dependencies: []Dependency{
+			{Name: "postgres", Probe: func(context.Context) bool { return true }},
+			{Name: "apiserver", Probe: func(context.Context) bool { return true }},
+			{Name: "nats", Probe: func(context.Context) bool { return true }},
+			{Name: "gateway", Probe: func(context.Context) bool { return gatewayUp }},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	m.probeAll(context.Background())
+	g := collect(t, reader)[dependencyUpName].Data.(metricdata.Gauge[int64])
+	byDep := map[string]int64{}
+	for _, dp := range g.DataPoints {
+		byDep[attrVal(dp.Attributes, attrDep)] = dp.Value
+	}
+	// All four dependencies must be present and up after first probe.
+	if byDep["postgres"] != 1 || byDep["apiserver"] != 1 || byDep["nats"] != 1 || byDep["gateway"] != 1 {
+		t.Errorf("dependency.up = %v, want all four deps = 1", byDep)
+	}
+
+	// Flip gateway down; next probe must reflect 0.
+	gatewayUp = false
+	m.probeAll(context.Background())
+	g = collect(t, reader)[dependencyUpName].Data.(metricdata.Gauge[int64])
+	for _, dp := range g.DataPoints {
+		if attrVal(dp.Attributes, attrDep) == "gateway" && dp.Value != 0 {
+			t.Errorf("gateway dependency.up = %d after going down, want 0", dp.Value)
+		}
+	}
+}
+
 func TestObserveReconcileCountsErrorsOnly(t *testing.T) {
 	meter, reader := newTestMeter(t)
 	m, err := Register(meter, Options{})

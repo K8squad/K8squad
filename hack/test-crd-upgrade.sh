@@ -93,9 +93,19 @@ bash "${ROOT}/hack/wrap-crd-template.sh" "$STRIPPED" > "${OLD_CRDS}/templates/ks
 # AC-6 (forward) + AC-4 setup: install k8squad-crds (OLD) first, then the CP
 # chart with the catalog enabled — Toolchain CR must be admitted.
 # ---------------------------------------------------------------------------
+# Expected CRD count is DERIVED, never hardcoded: config/crd/bases is the
+# controller-gen source of truth; the chart must carry exactly that many CRD
+# templates (helm-sync-crds drift guard), and the cluster exactly that many
+# installed (delivery guard). A new CRD lands in bases + chart together —
+# this script must not need a count bump per CRD (bitten by ISI-5824 RolePool).
+EXPECTED="$(find "${ROOT}/config/crd/bases" -maxdepth 1 -name 'ksquad.io_*.yaml' | wc -l | tr -d ' ')"
+CHART_CRDS="$(find "${CRDS_CHART}/templates" -maxdepth 1 -name 'ksquad.io_*.yaml' | wc -l | tr -d ' ')"
+[ "$CHART_CRDS" = "$EXPECTED" ] \
+  || fail "k8squad-crds chart carries ${CHART_CRDS} CRD templates but config/crd/bases has ${EXPECTED} — run make helm-sync-crds"
+
 echo "== AC-6 forward: install k8squad-crds (old) then CP chart =="
 helm install "$CRDS_REL" "$OLD_CRDS" -n "$CRDS_NS" --create-namespace --wait --timeout 120s
-[ "$(crd_count)" = "12" ] || fail "expected 12 CRDs after installing k8squad-crds, got $(crd_count)"
+[ "$(crd_count)" = "$EXPECTED" ] || fail "expected ${EXPECTED} CRDs after installing k8squad-crds, got $(crd_count)"
 # namespace.create=false: the CP chart otherwise renders+OWNS Namespace/$CP_NS, and
 # its own Helm release-storage secret lives in $CP_NS — so `helm uninstall` would
 # delete the namespace and cascade-delete that secret out from under Helm, failing
@@ -159,18 +169,18 @@ ok "CRD annotated helm.sh/resource-policy: keep"
 # ---------------------------------------------------------------------------
 echo "== AC-5: helm uninstall CP chart leaves CRDs + CRs intact =="
 helm uninstall "$CP_REL" -n "$CP_NS" --wait --timeout 120s
-[ "$(crd_count)" = "12" ] || fail "CP-chart uninstall changed CRD count to $(crd_count)"
+[ "$(crd_count)" = "$EXPECTED" ] || fail "CP-chart uninstall changed CRD count to $(crd_count)"
 kubectl get roles.ksquad.io survivor -n "$CR_NS" >/dev/null 2>&1 || fail "CP-chart uninstall deleted a user CR"
-ok "CP-chart uninstall left all 12 CRDs and the survivor CR intact"
+ok "CP-chart uninstall left all ${EXPECTED} CRDs and the survivor CR intact"
 
 # ---------------------------------------------------------------------------
 # AC-5: uninstall k8squad-crds with keep=true (default) → CRDs + CRs retained.
 # ---------------------------------------------------------------------------
 echo "== AC-5: helm uninstall k8squad-crds (keep=true) retains CRDs + CRs =="
 helm uninstall "$CRDS_REL" -n "$CRDS_NS" --wait --timeout 120s
-[ "$(crd_count)" = "12" ] || fail "keep=true uninstall removed CRDs (count now $(crd_count))"
+[ "$(crd_count)" = "$EXPECTED" ] || fail "keep=true uninstall removed CRDs (count now $(crd_count))"
 kubectl get roles.ksquad.io survivor -n "$CR_NS" >/dev/null 2>&1 || fail "keep=true uninstall deleted a user CR"
-ok "keep=true uninstall retained all 12 CRDs and the survivor CR"
+ok "keep=true uninstall retained all ${EXPECTED} CRDs and the survivor CR"
 
 # ---------------------------------------------------------------------------
 # AC-5: reinstall then uninstall k8squad-crds with keep=false → CRDs removed.

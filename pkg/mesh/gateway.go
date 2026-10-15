@@ -75,6 +75,20 @@ type GatewayConfig struct {
 	// min:1 always-up). Values < 1 clamp to 1 — a gateway with zero
 	// children is a dead pool pod, not a valid thin thread.
 	Min int
+	// Max is the saturation ceiling of the standing band (P1.3 preschedul-
+	// ing, chapter §4 D2.2/§5.3). A pool whose every standing process is
+	// busy grows standing processes toward Max (each grown slot is KEPT
+	// until the idle shrink reclaims it); at Max it serves the burst with
+	// transient cold-overflow processes torn down when the task settles.
+	// Max <= Min (the default) keeps the P1.2 shape exactly: saturation
+	// refuses with ErrNoIdleProcess and no overflow — additive-only, the
+	// band activates only when a RolePool declares one (D9.3).
+	Max int
+	// GrowIdleShrink bounds how long a saturation-grown slot may stand
+	// idle before the sweep reclaims it (the band's decay back toward
+	// Min). 0 takes DefaultGrowIdleShrink; negative disables grown-slot
+	// shrinking (the general HibernateToStop bound still applies).
+	GrowIdleShrink time.Duration
 	// Pod is the pod identity stamped on every registration (HOSTNAME
 	// in-cluster). The Supervisor drains stale registrations by pod.
 	Pod string
@@ -131,6 +145,14 @@ type gatewayProc struct {
 	// idleSince is when the process last flipped to IDLE (task settled, or
 	// spawn/recreate); the sweep's stop clock (D4.2).
 	idleSince time.Time
+	// lastUsed is when the process last took a route — the LRU tie-break
+	// input for idle selection (§5.3: spread wear, keep caches warm
+	// across the set).
+	lastUsed time.Time
+	// grown marks a saturation-grown slot (P1.3): it exists because a
+	// burst demanded it, and the sweep reclaims it after GrowIdleShrink
+	// idle — the band's decay back toward Min.
+	grown bool
 	// recreating marks a stopped slot mid-recreate so a concurrent route
 	// cannot double-rebuild it (the sweep also skips it).
 	recreating bool
@@ -141,6 +163,13 @@ type gatewayProc struct {
 
 // gatewayRegisterInterval is the default registration/heartbeat cadence.
 const gatewayRegisterInterval = 30 * time.Second
+
+// DefaultGrowIdleShrink is the default idle bound for saturation-grown slots
+// (P1.3): a slot spawned to serve a burst that has cleared is reclaimed after
+// this idle duration — far shorter than HibernateToStop because the slot was
+// never part of the declarative floor, and long enough that a straggler task
+// in the same burst still finds the warmth it grew.
+const DefaultGrowIdleShrink = 2 * time.Minute
 
 // ErrProcessBusy is the D3.3 guard #3 refusal: the target process already
 // has an active task. The HTTP edge maps it to 409 — the same shape the
@@ -162,6 +191,12 @@ func NewGateway(cfg GatewayConfig) (*Gateway, error) {
 	}
 	if cfg.Min < 1 {
 		cfg.Min = 1
+	}
+	if cfg.Max < cfg.Min {
+		cfg.Max = cfg.Min // no growth band — the P1.2 shape
+	}
+	if cfg.GrowIdleShrink == 0 {
+		cfg.GrowIdleShrink = DefaultGrowIdleShrink
 	}
 	if cfg.RegisterInterval <= 0 {
 		cfg.RegisterInterval = gatewayRegisterInterval
@@ -198,7 +233,7 @@ func (g *Gateway) Start(ctx context.Context) error {
 			return fmt.Errorf("mesh: spawn pool process %d: %w", i, err)
 		}
 		g.mu.Lock()
-		g.procs = append(g.procs, &gatewayProc{handle: h, card: card, state: StateIdle, idleSince: time.Now()})
+		g.procs = append(g.procs, &gatewayProc{handle: h, card: card, state: StateIdle, idleSince: time.Now(), lastUsed: time.Now()})
 		g.mu.Unlock()
 	}
 
@@ -286,7 +321,13 @@ func (g *Gateway) sweep(ctx context.Context) {
 			if p.state != StateIdle || p.recreating {
 				continue
 			}
-			if now.Sub(p.idleSince) >= g.cfg.Lifecycle.HibernateToStop {
+			idle := now.Sub(p.idleSince)
+			// P1.3 band decay: a saturation-grown slot shrinks after the
+			// (short) grown-idle bound — it exists because a burst demanded
+			// it, and a burst that cleared does not justify standing RAM.
+			// Core floor slots keep the P1.2 HibernateToStop bound only.
+			if (p.grown && g.cfg.GrowIdleShrink > 0 && idle >= g.cfg.GrowIdleShrink) ||
+				idle >= g.cfg.Lifecycle.HibernateToStop {
 				// Flip FIRST, terminate after: once marked Stopped the slot
 				// is unpickable by Route, so a task can never land on a
 				// process being torn down. recreating keeps the in-flight
@@ -443,6 +484,9 @@ type ProcessInfo struct {
 	// stopped slot keeps its last EndpointID/Endpoint for debugging; its
 	// handle is stale and it is excluded from registration.
 	State ProcState
+	// Grown marks a saturation-grown slot (P1.3) — standing beyond the
+	// declarative floor, reclaimed after GrowIdleShrink idle.
+	Grown bool
 }
 
 // Processes snapshots the pool's slot set (id, endpoint, card, busy, state).
@@ -457,6 +501,7 @@ func (g *Gateway) Processes() []ProcessInfo {
 			Card:       p.card,
 			Busy:       p.busy,
 			State:      p.state,
+			Grown:      p.grown,
 		})
 	}
 	return out
@@ -476,10 +521,12 @@ func (g *Gateway) Ready() bool {
 
 // Route delivers one task to a standing process and returns its live event
 // stream. target selects the process by endpoint id; an empty target picks
-// the FIRST idle process in spawn order, and — the P1.2 lifecycle — when no
-// process stands idle, recreates a STOPPED slot from the envelope on demand
-// (selection=overflow, §6.1: near-bare-exec, target ≤3s). A target naming a
-// stopped slot recreates that slot.
+// the LEAST-RECENTLY-USED idle process (§5.3 LRU tie-break), and — the P1.2
+// lifecycle — when no process stands idle, recreates a STOPPED slot from the
+// envelope on demand (selection=overflow, §6.1: near-bare-exec, target ≤3s).
+// With a growth band (Max > Min, P1.3) a fully-busy pool grows a new standing
+// slot toward Max or serves a transient cold-overflow process at Max (§5.3).
+// A target naming a stopped slot recreates that slot.
 //
 // The D3.3 guard #3 is enforced HERE and, redundantly, by the child
 // supervisor's own one-task-at-a-time contract: a busy target refuses with
@@ -494,13 +541,16 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 	var pick *gatewayProc
 	selection := SelectionIdle
 	if target == "" {
+		// Idle tier with the §5.3 LRU tie-break: among idle standing
+		// processes pick the least-recently-used — the warm investment is
+		// spread across the set instead of hammering spawn order (which
+		// would leave the tail cold and the head cache-thrashed).
 		for _, p := range g.procs {
-			if p.recreating {
+			if p.recreating || p.busy || p.state != StateIdle {
 				continue
 			}
-			if p.state == StateIdle && !p.busy {
+			if pick == nil || p.lastUsed.Before(pick.lastUsed) {
 				pick = p
-				break
 			}
 		}
 		if pick == nil {
@@ -514,6 +564,13 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 					break
 				}
 			}
+		}
+		if pick == nil && g.cfg.Max > g.cfg.Min {
+			// P1.3 saturation tiers (§5.3): grow standing toward Max, then
+			// transient cold-overflow at Max. Band-less pools (Max==Min)
+			// keep the P1.2 refusal exactly.
+			g.mu.Unlock()
+			return g.routeSaturated(ctx, task, arrival)
 		}
 	} else {
 		for _, p := range g.procs {
@@ -541,6 +598,7 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 	}
 	pick.busy = true
 	pick.state = StateActive
+	pick.lastUsed = time.Now()
 	handle := pick.handle
 	needRecreate := selection == SelectionOverflow
 	slot := pick
@@ -593,6 +651,90 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 	return &gatedStream{
 		inner:   stream,
 		release: func() { g.release(handle) },
+		events:  make(chan a2a.Event),
+		quit:    make(chan struct{}),
+	}, nil
+}
+
+// routeSaturated is the P1.3 §5.3 saturation ladder, entered only when a
+// band is configured (Max > Min) and the route found no idle standing
+// process and no stopped slot to recreate. Tiers, in order:
+//
+//  1. GROW — standing slots < Max: spawn a NEW standing slot from the
+//     envelope (spawn source=envelope — image/tools are already staged in
+//     the pod, so this is near-bare-exec like recreate). The slot is KEPT:
+//     this is the pool's standing count growing toward max under load, and
+//     GrowIdleShrink reclaims it once the burst has cleared.
+//  2. TRANSIENT cold-overflow at Max: serve the task with a process that
+//     is NOT a pool slot — torn down when the task settles (burst-clear
+//     reclaim, never kept as warmth).
+//
+// The pool_saturated signal (chapter §8.1) fires on entry — with in-pod
+// growth the reaction is immediate (tier 1/2); the event records the
+// pressure for the Supervisor's status/telemetry surfaces (the full NATS
+// mesh-entity ride is P1.4, ISI-5823).
+func (g *Gateway) routeSaturated(ctx context.Context, task a2a.Task, arrival time.Time) (Stream, error) {
+	g.cfg.Sink.OnLifecycle("pool.saturated", "", "", nil)
+
+	h, card, err := g.spawnOne(ctx, g.cfg.Envelope, SpawnSourceEnvelope)
+	if err != nil {
+		g.cfg.Sink.OnLifecycle("pool.grow", "", "", err)
+		return nil, fmt.Errorf("mesh: saturation spawn: %w", err)
+	}
+
+	// Reserve atomically: a concurrent saturated route may have taken the
+	// last grow room while this spawn ran — then this process serves as
+	// transient overflow instead of a kept slot (max stays honest).
+	g.mu.Lock()
+	grown := false
+	if len(g.procs) < g.cfg.Max {
+		grown = true
+		g.procs = append(g.procs, &gatewayProc{
+			handle: h, card: card, state: StateActive,
+			idleSince: time.Now(), lastUsed: time.Now(), grown: true, busy: true,
+		})
+	}
+	g.mu.Unlock()
+
+	if !grown {
+		// Tier 2 — transient cold-overflow: not a slot; dies with the task.
+		stream, rerr := g.cfg.Adapter.Route(ctx, h, task)
+		g.observeRoute(ctx, RouteEvent{
+			Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+			EndpointID: h.ID(), Selection: SelectionOverflow,
+			Duration: time.Since(arrival), Err: rerr,
+		})
+		if rerr != nil {
+			_ = g.cfg.Adapter.Stop(context.WithoutCancel(ctx), h)
+			return nil, rerr
+		}
+		return &gatedStream{
+			inner: stream,
+			// Detached context: the overflow process must die when the burst
+			// clears even if the request context is already gone.
+			release: func() { _ = g.cfg.Adapter.Stop(context.WithoutCancel(ctx), h) },
+			events:  make(chan a2a.Event),
+			quit:    make(chan struct{}),
+		}, nil
+	}
+
+	// Tier 1 — grow: the new process joins the standing set, ACTIVE for
+	// this task, idle (and shrink-eligible) after it settles.
+	stream, rerr := g.cfg.Adapter.Route(ctx, h, task)
+	g.observeRoute(ctx, RouteEvent{
+		Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+		EndpointID: h.ID(), Selection: SelectionOverflow,
+		Duration: time.Since(arrival), Err: rerr,
+	})
+	if rerr != nil {
+		// Delivery failed but the slot stands as idle grown warmth — the
+		// next route finds it instead of spawning again.
+		g.release(h)
+		return nil, rerr
+	}
+	return &gatedStream{
+		inner:   stream,
+		release: func() { g.release(h) },
 		events:  make(chan a2a.Event),
 		quit:    make(chan struct{}),
 	}, nil
