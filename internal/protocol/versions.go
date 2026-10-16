@@ -25,8 +25,6 @@ limitations under the License.
 // its adapter — no core rewrite (R11).
 package protocol
 
-import a2awire "github.com/K8sAgentMesh/K8sAgentMesh/a2a"
-
 // Pinned external-spec versions the v1 shim set is built against. These are
 // advertised on the Agent Card (story 5.2) so a peer can negotiate against
 // a known, explicit protocol revision rather than an implicit "latest".
@@ -44,10 +42,10 @@ const (
 
 // Versions is the immutable pinned set, rendered onto the Agent Card and
 // returned by conformance so a peer/vendor can assert exact wire revisions.
-// It is a type alias of the AgentMesh module's wire shape (P3.2, ISI-6035):
-// the module owns the wire form; the pinned VALUES stay compiled in here —
-// still the only place a version bump happens.
-type Versions = a2awire.ProtocolVersions
+type Versions struct {
+	A2A string `json:"a2a"`
+	MCP string `json:"mcp"`
+}
 
 // Pinned returns the compiled-in protocol pins. It is a function, not an
 // exported var, so callers cannot mutate the seam's source of truth.

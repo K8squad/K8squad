@@ -213,14 +213,12 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 	// empty and the IR arrives ONLY on the submit payload; the operator-spawned
 	// stdio path still carries it in the launch env and leaves the task field
 	// empty. Fail-closed: a task that demands MCP servers but whose credential
-	// VALUES are missing must never launch with a half-wired envelope. The
-	// module wire IR (t.MCPEndpoints) converts to the host assembly IR here —
-	// the renderers stay capability-typed (P3.2, ISI-6035).
-	endpoints := a2a.MCPEndpointsToCapability(t.MCPEndpoints)
+	// VALUES are missing must never launch with a half-wired envelope.
+	endpoints := t.MCPEndpoints
 	if len(endpoints) == 0 {
 		endpoints = e.cfg.MCPEndpoints
 	}
-	if err := validateMCPEnvelope(a2a.MCPEndpointsToCapability(t.MCPEndpoints), t.MCPTokenEnv); err != nil {
+	if err := validateMCPEnvelope(t.MCPEndpoints, t.MCPTokenEnv); err != nil {
 		e.mu.Unlock()
 		return a2a.Status{}, err
 	}
