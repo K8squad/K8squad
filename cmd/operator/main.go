@@ -1672,28 +1672,16 @@ func main() {
 			os.Exit(1)
 		}
 
-		// AgentMesh gateway health supervisor (ISI-6010 P1.4b): the operator-side
-		// loop that drives the full health loop (D6.1/D6.2) by sweeping TTL-expired
-		// endpoints from coord.mesh_endpoint (the TTL-expiry half) and detecting
-		// downed gateway pods (the gateway-down half). Only started when the mesh
-		// is flagged on (KSQUAD_MESH_TEAMS). The recreate-on-demand path for stopped
-		// slots is handled by the gateway itself (P1.2, PR #914); whole-pod
-		// restarts are delegated to the pod's liveness probe.
-		if teams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(teams) > 0 {
-			if registry, err := coord.NewMeshRegistry(db); err == nil {
-				if svc, err := rundrive.NewMeshSupervisor(registry); err == nil {
-					if err := mgr.Add(svc); err != nil {
-						ctrl.Log.Error(err, "unable to register mesh supervisor")
-						os.Exit(1)
-					}
-					ctrl.Log.Info("AgentMesh supervisor registered (TTL sweep over coord.mesh_endpoint)")
-				} else {
-					ctrl.Log.Error(err, "mesh supervisor unavailable")
-				}
-			} else {
-				ctrl.Log.Error(err, "mesh registry unavailable; supervisor not started")
-			}
-		}
+		// AgentMesh supervisor wiring (ISI-6010): the TTL sweep that ce1445f0
+		// registered here (rundrive.MeshSupervisor) is deliberately NOT
+		// registered alongside the gateway-health loop above. Sweep deletes
+		// TTL-expired rows — exactly the health loop's drain+recreate
+		// trigger — so running both races the signal: when Sweep wins, the
+		// dead pod's rows vanish before the health loop ever sees them and
+		// the pod is never recreated. The health loop's DrainPod subsumes the
+		// sweep's table-hygiene role (every all-expired pod is drained, which
+		// deletes its rows). rundrive.MeshSupervisor remains as the tested
+		// sweep-only seam for wiring that wants registry hygiene alone.
 
 		// ISI-5615 (ISI-5569 WS-D.1, ADR-0027 §3.2) — party-mode advancer: level-triggered ticker
 		// that drives active party sessions forward (mint facilitator rounds / close on budget). It
