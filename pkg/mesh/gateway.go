@@ -460,15 +460,25 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 	return nil
 }
 
+// standingProc is the registration read's per-slot snapshot: handle and card
+// copied out under g.mu because the recreate path swaps those same slot
+// fields under the mutex (recreateSlot) — returning *gatewayProc pointers
+// would leave the registration loop racing the swap (caught by -race in CI:
+// RegisterOnce read slot.handle while recreateSlot wrote it).
+type standingProc struct {
+	handle Handle
+	card   a2a.AgentCard
+}
+
 // standing snapshots the slots that currently hold a live process (everything
 // but STOPPED — the recreate-on-demand slots).
-func (g *Gateway) standing() []*gatewayProc {
+func (g *Gateway) standing() []standingProc {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	out := make([]*gatewayProc, 0, len(g.procs))
+	out := make([]standingProc, 0, len(g.procs))
 	for _, p := range g.procs {
 		if p.state != StateStopped {
-			out = append(out, p)
+			out = append(out, standingProc{handle: p.handle, card: p.card})
 		}
 	}
 	return out
