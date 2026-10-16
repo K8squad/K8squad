@@ -116,11 +116,11 @@ type GatewayConfig struct {
 	// comfortably inside the registry's 90s TTL at three missed beats.
 	RegisterInterval time.Duration
 	// Lifecycle is the per-pool lifecycle knob set (P1.2, chapter §6.2 D4.2:
-	// checkInterval / idleToHibernate / hibernateToStop / alwaysUp). Zero
-	// fields take the operator defaults. The gateway owns the clock — it runs
-	// the CheckInterval sweep that drives IDLE→STOPPED and measures the
-	// ≤3s recreate-from-envelope path. HIBERNATED is dark in P1 (REV-4:
-	// the SIGSTOP tier ships at strangler S4, ISI-5831).
+	// checkInterval / idleToHibernate / hibernateToStop / alwaysUp, plus the
+	// S4 Hibernate arm — ISI-5831). Zero fields take the operator defaults.
+	// The gateway owns the clock — it runs the CheckInterval sweep that
+	// drives IDLE→STOPPED (collapsed ladder) or IDLE→HIBERNATED→STOPPED
+	// (Hibernate armed, S4) and measures the ≤3s recreate-from-envelope path.
 	Lifecycle LifecycleConfig
 	// Observer receives route/spawn telemetry with timing (mesh.route /
 	// mesh.spawn spans + ksquad.mesh.* metrics on the k8squad side). nil
@@ -159,6 +159,23 @@ type gatewayProc struct {
 	// busy is the gateway-local D3.3 guard #3: a process with an active
 	// routed task refuses a second route. Guarded by Gateway.mu.
 	busy bool
+	// hibernatedSince is when the process entered HIBERNATED (S4,
+	// ISI-5831) — the hibernateToStop clock measures from THIS instant,
+	// not from idleSince (the frozen tier's bound is its own).
+	hibernatedSince time.Time
+	// hibInFlight guards the SIGSTOP landing window: the sweep has DECIDED
+	// to hibernate (state already flipped) but Adapter.Hibernate has not
+	// returned yet. The wake tier must not pick such a process — a SIGCONT
+	// racing ahead of the SIGSTOP would stop a process mid-delivery (the
+	// wake-during-write hazard class, Brainstormer-F3). Cleared once the
+	// SIGSTOP lands (wake tier unlocked) or on failure (back to IDLE).
+	hibInFlight bool
+	// spawnedModel is the envelope Model the live process was spawned or
+	// recreated with (S4 rebind-at-wake, ISI-5831): a wake compares it
+	// against the pool's CURRENT envelope and respawns on drift (X5 —
+	// runtimes bind model at launch, so rebind == respawn at the wake
+	// boundary, never mid-stream).
+	spawnedModel string
 }
 
 // gatewayRegisterInterval is the default registration/heartbeat cadence.
@@ -233,7 +250,11 @@ func (g *Gateway) Start(ctx context.Context) error {
 			return fmt.Errorf("mesh: spawn pool process %d: %w", i, err)
 		}
 		g.mu.Lock()
-		g.procs = append(g.procs, &gatewayProc{handle: h, card: card, state: StateIdle, idleSince: time.Now(), lastUsed: time.Now()})
+		g.procs = append(g.procs, &gatewayProc{
+			handle: h, card: card, state: StateIdle,
+			idleSince: time.Now(), lastUsed: time.Now(),
+			spawnedModel: g.cfg.Envelope.Model,
+		})
 		g.mu.Unlock()
 	}
 
@@ -302,62 +323,142 @@ func (g *Gateway) lifecycleLoop(ctx context.Context) {
 	}
 }
 
-// sweep applies one checkInterval pass: every IDLE process whose idle time
-// has reached hibernateToStop is stopped — RAM reclaimed; the slot stays for
-// on-demand recreate-from-envelope (§6.1: recreate is near-bare-exec because
-// the image, tools and envelope are already staged — target ready ≤3s).
+// sweep applies one checkInterval pass.
 //
-// REV-4 (ISI-5807 X1): the two-tier idle→hibernate→stop ladder is collapsed
-// for the P1 batch path — hibernation is CUT (S4, ISI-5831), so idle time
-// accrues straight to the stop bound. IdleToHibernate is plumbed for S4 but
-// consumes nothing here; do NOT wire Hibernate/Wake into this sweep before
-// the S4 story lands its claim-never-frozen invariant (D9.1).
+// Collapsed ladder (Hibernate disarmed — the REV-4 P1.2 shape, default):
+// every IDLE process whose idle time has reached hibernateToStop is stopped —
+// RAM reclaimed; the slot stays for on-demand recreate-from-envelope (§6.1:
+// recreate is near-bare-exec because the image, tools and envelope are already
+// staged — target ready ≤3s).
+//
+// Two-tier ladder (Hibernate armed — S4, ISI-5831, chapter §6.1 D4.1): an
+// IDLE process past idleToHibernate is SIGSTOP'd into HIBERNATED (cheap
+// freeze, instant wake — no RAM saving, stated honestly); a HIBERNATED
+// process past hibernateToStop — measured from the HIBERNATE instant, not
+// from idle — is woken (SIGCONT, so the graceful SIGTERM lands) and then
+// terminated. alwaysUp exempts the pool from both tiers.
+//
+// D9.1 claim-never-frozen (ISI-5807 M4, locked f93795d5): the sweep only ever
+// hibernates a VERIFIED-IDLE process — never ACTIVE, never mid-delivery — so
+// no at-most-once claim can sit behind a frozen process (the lease is
+// per-dispatch: acquired on dispatch, released on settle, and settle precedes
+// idle by construction). The hibInFlight flag keeps a route's SIGCONT from
+// racing ahead of an un-landed SIGSTOP (the wake-during-write hazard).
 func (g *Gateway) sweep(ctx context.Context) {
 	g.mu.Lock()
-	var toStop []*gatewayProc
+	type stopLeg struct {
+		p          *gatewayProc
+		h          Handle
+		fromHib    bool
+		endpointID string
+		endpoint   string
+	}
+	var toStop []stopLeg
+	type hibLeg struct {
+		p          *gatewayProc
+		h          Handle
+		endpointID string
+		endpoint   string
+	}
+	var toHibernate []hibLeg
 	if !g.cfg.Lifecycle.AlwaysUp {
 		now := time.Now()
 		for _, p := range g.procs {
-			if p.state != StateIdle || p.recreating {
+			if p.recreating || p.hibInFlight {
 				continue
 			}
-			idle := now.Sub(p.idleSince)
-			// P1.3 band decay: a saturation-grown slot shrinks after the
-			// (short) grown-idle bound — it exists because a burst demanded
-			// it, and a burst that cleared does not justify standing RAM.
-			// Core floor slots keep the P1.2 HibernateToStop bound only.
-			if (p.grown && g.cfg.GrowIdleShrink > 0 && idle >= g.cfg.GrowIdleShrink) ||
-				idle >= g.cfg.Lifecycle.HibernateToStop {
-				// Flip FIRST, terminate after: once marked Stopped the slot
-				// is unpickable by Route, so a task can never land on a
-				// process being torn down. recreating keeps the in-flight
-				// teardown slot out of Route's recreate picks until the old
-				// process is fully gone.
-				p.state = StateStopped
-				p.recreating = true
-				toStop = append(toStop, p)
+			switch p.state {
+			case StateIdle:
+				if p.busy {
+					continue // ACTIVE-in-flight: D9.1 — never freeze a holder
+				}
+				idle := now.Sub(p.idleSince)
+				// P1.3 band decay: a saturation-grown slot shrinks after the
+				// (short) grown-idle bound — it exists because a burst demanded
+				// it, and a burst that cleared does not justify standing RAM
+				// (nor a hibernate tier: grown warmth is disposable, so it
+				// stops directly). Core floor slots keep the stop bounds.
+				if (p.grown && g.cfg.GrowIdleShrink > 0 && idle >= g.cfg.GrowIdleShrink) ||
+					idle >= g.cfg.Lifecycle.HibernateToStop {
+					// Flip FIRST, terminate after: once marked Stopped the slot
+					// is unpickable by Route, so a task can never land on a
+					// process being torn down. recreating keeps the in-flight
+					// teardown slot out of Route's recreate picks until the old
+					// process is fully gone.
+					p.state = StateStopped
+					p.recreating = true
+					toStop = append(toStop, stopLeg{p: p, h: p.handle, endpointID: p.handle.ID(), endpoint: p.handle.Endpoint()})
+					continue
+				}
+				if g.cfg.Lifecycle.Hibernate && idle >= g.cfg.Lifecycle.IdleToHibernate {
+					// Same flip-first discipline: the slot leaves IDLE under
+					// the mutex, and hibInFlight keeps the wake tier away
+					// until the SIGSTOP lands.
+					p.state = StateHibernated
+					p.hibernatedSince = now
+					p.hibInFlight = true
+					toHibernate = append(toHibernate, hibLeg{p: p, h: p.handle, endpointID: p.handle.ID(), endpoint: p.handle.Endpoint()})
+				}
+			case StateHibernated:
+				// busy is impossible here in practice (Route flips a picked
+				// hibernated process to ACTIVE under the same mutex), but the
+				// guard keeps the invariant local and cheap.
+				if p.busy {
+					continue
+				}
+				if now.Sub(p.hibernatedSince) >= g.cfg.Lifecycle.HibernateToStop {
+					p.state = StateStopped
+					p.recreating = true
+					toStop = append(toStop, stopLeg{p: p, h: p.handle, fromHib: true, endpointID: p.handle.ID(), endpoint: p.handle.Endpoint()})
+				}
 			}
 		}
 	}
 	g.mu.Unlock()
 
-	for _, p := range toStop {
-		g.cfg.Sink.OnLifecycle("lifecycle.stop", p.handle.ID(), p.handle.Endpoint(), nil)
-		if err := g.cfg.Adapter.Stop(ctx, p.handle); err != nil {
+	for _, leg := range toHibernate {
+		err := g.cfg.Adapter.Hibernate(ctx, leg.h)
+		g.mu.Lock()
+		leg.p.hibInFlight = false
+		if err != nil {
+			// The SIGSTOP did not land — the process is still running, so the
+			// slot is IDLE again (idleSince kept: the bound still holds, the
+			// next sweep retries) and routable by the idle tier.
+			leg.p.state = StateIdle
+		}
+		g.mu.Unlock()
+		g.cfg.Sink.OnLifecycle("lifecycle.hibernate", leg.endpointID, leg.endpoint, err)
+	}
+
+	for _, leg := range toStop {
+		g.cfg.Sink.OnLifecycle("lifecycle.stop", leg.endpointID, leg.endpoint, nil)
+		if leg.fromHib {
+			// Wake first so the graceful SIGTERM in Stop is handled promptly —
+			// a SIGSTOP'd process holds signals pending until SIGCONT, and
+			// would otherwise ride the grace period straight into SIGKILL. A
+			// failed wake is not fatal here: Close's SIGKILL terminates a
+			// frozen process regardless.
+			if werr := g.cfg.Adapter.Wake(ctx, leg.h); werr != nil {
+				g.cfg.Sink.OnLifecycle("lifecycle.wake", leg.endpointID, leg.endpoint, werr)
+			}
+		}
+		if err := g.cfg.Adapter.Stop(ctx, leg.h); err != nil {
 			// Report, do not revert: a wedged process is exactly what
 			// Recreate's best-effort close exists to clean up after. The
 			// stale handle is closed again on recreate.
-			g.cfg.Sink.OnLifecycle("lifecycle.stop", p.handle.ID(), p.handle.Endpoint(), err)
+			g.cfg.Sink.OnLifecycle("lifecycle.stop", leg.endpointID, leg.endpoint, err)
 		}
 		g.mu.Lock()
-		p.recreating = false // the slot is now a clean recreate candidate
+		leg.p.recreating = false // the slot is now a clean recreate candidate
 		g.mu.Unlock()
 	}
 	if len(toStop) > 0 {
 		// Re-register immediately so the ingress prunes the stopped
 		// endpoints from coord.mesh_endpoint right away instead of waiting
 		// out the registry TTL (the registration POST carries only standing
-		// processes; the ingress PrunePod drops the rest).
+		// processes; the ingress PrunePod drops the rest). Hibernated
+		// processes stay standing and registered — routable via the wake
+		// tier (§5.3: prefer idle, then hibernated).
 		if err := g.RegisterOnce(ctx); err != nil {
 			g.cfg.Sink.OnLifecycle("gateway.register", "", "", err)
 		}
@@ -420,11 +521,16 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 	advertise := strings.TrimRight(g.cfg.AdvertiseURL, "/")
 	// heldAny: the gateway HAS pool slots (standing or stopped). Only a
 	// gateway that never spawned anything refuses the empty POST — a pool
-	// whose every slot legitimately stopped must be able to prune.
+	// whose every slot legitimately stopped must be able to prune. The
+	// process set is snapshotted UNDER the lock: a concurrent Route may be
+	// recreating a slot (replacing its handle/card) — reading those fields
+	// outside the mutex races the swap.
 	g.mu.Lock()
 	heldAny := len(g.procs) > 0
-	g.mu.Unlock()
-	for _, p := range g.standing() {
+	for _, p := range g.procs {
+		if p.state == StateStopped {
+			continue
+		}
 		ep := p.handle.Endpoint()
 		if advertise != "" {
 			ep = advertise
@@ -435,6 +541,7 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 			Card:       p.card,
 		})
 	}
+	g.mu.Unlock()
 	if len(reg.Processes) == 0 && !heldAny {
 		return fmt.Errorf("mesh: refusing to register an empty endpoint set")
 	}
@@ -458,20 +565,6 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 	}
 	g.cfg.Sink.OnLifecycle("gateway.register", "", "", nil)
 	return nil
-}
-
-// standing snapshots the slots that currently hold a live process (everything
-// but STOPPED — the recreate-on-demand slots).
-func (g *Gateway) standing() []*gatewayProc {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	out := make([]*gatewayProc, 0, len(g.procs))
-	for _, p := range g.procs {
-		if p.state != StateStopped {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 // ProcessInfo is the read-side snapshot of one pool slot.
@@ -553,6 +646,25 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 				pick = p
 			}
 		}
+		if pick == nil && g.cfg.Lifecycle.Hibernate {
+			// S4 wake tier (§5.3: prefer idle, then hibernated — §6.1 D4.1):
+			// a HIBERNATED process is woken with SIGCONT on the route — the
+			// instant-wake path hibernation exists for. hibInFlight slots
+			// are skipped: their SIGSTOP has not landed, and a SIGCONT
+			// racing ahead of it would freeze a process mid-delivery (the
+			// wake-during-write hazard, Brainstormer-F3).
+			for _, p := range g.procs {
+				if p.recreating || p.hibInFlight || p.state != StateHibernated {
+					continue
+				}
+				if pick == nil || p.lastUsed.Before(pick.lastUsed) {
+					pick = p
+				}
+			}
+			if pick != nil {
+				selection = SelectionWake
+			}
+		}
 		if pick == nil {
 			// No idle standing process: the RAM-reclaim trade pays off here —
 			// rebuild a stopped slot from the pre-loaded envelope on demand.
@@ -587,6 +699,16 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 			pick.recreating = true
 			selection = SelectionOverflow
 		}
+		if pick.state == StateHibernated && !pick.hibInFlight && !pick.recreating {
+			selection = SelectionWake
+		}
+		// A target still inside its SIGSTOP landing window is a transient
+		// race: refuse legibly (409) so the re-drive retries once the
+		// hibernate settles one way or the other.
+		if pick.state == StateHibernated && pick.hibInFlight {
+			g.mu.Unlock()
+			return nil, ErrProcessBusy
+		}
 	}
 	if pick == nil {
 		g.mu.Unlock()
@@ -601,6 +723,16 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 	pick.lastUsed = time.Now()
 	handle := pick.handle
 	needRecreate := selection == SelectionOverflow
+	// S4 rebind-at-wake (X5, ISI-5831): runtimes bind model at launch, so a
+	// wake whose envelope model DRIFTED since the process was spawned is a
+	// respawn from the CURRENT envelope — never a mid-stream rebind, and
+	// never a stale-model SIGCONT either.
+	rebindWake := false
+	if selection == SelectionWake && pick.spawnedModel != g.cfg.Envelope.Model {
+		rebindWake = true
+		needRecreate = true
+		pick.recreating = true
+	}
 	slot := pick
 	g.mu.Unlock()
 
@@ -626,6 +758,46 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 		g.mu.Lock()
 		slot.state = StateActive
 		g.mu.Unlock()
+		if rebindWake {
+			// The wake took the rebind path — observe it with the respawn's
+			// duration (the honest cost of a model-moved wake; the spawn
+			// itself is already observed by recreateSlot as source=envelope).
+			g.observeWake(ctx, WakeEvent{
+				Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+				EndpointID: handle.ID(), Rebind: true,
+			})
+		}
+	} else if selection == SelectionWake {
+		// SIGCONT before delivery: the task must land on a RUNNING process.
+		// A failed wake (stale handle — the process died frozen) reverts the
+		// slot to HIBERNATED so the next sweep's hibernateToStop bound (or a
+		// later wake retry) heals it; the route is refused loudly and the
+		// re-drive retries through the full selection ladder.
+		t0 := time.Now()
+		werr := g.cfg.Adapter.Wake(ctx, handle)
+		if werr == nil {
+			g.observeWake(ctx, WakeEvent{
+				Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+				EndpointID: handle.ID(), Duration: time.Since(t0),
+			})
+		} else {
+			g.observeWake(ctx, WakeEvent{
+				Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+				EndpointID: handle.ID(), Duration: time.Since(t0), Err: werr,
+			})
+			g.mu.Lock()
+			slot.busy = false
+			if slot.state == StateActive {
+				slot.state = StateHibernated
+			}
+			g.mu.Unlock()
+			g.observeRoute(ctx, RouteEvent{
+				Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+				EndpointID: handle.ID(), Selection: selection,
+				Duration: time.Since(arrival), Err: werr,
+			})
+			return nil, werr
+		}
 	}
 
 	stream, err := g.cfg.Adapter.Route(ctx, handle, task)
@@ -676,7 +848,12 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 func (g *Gateway) routeSaturated(ctx context.Context, task a2a.Task, arrival time.Time) (Stream, error) {
 	g.cfg.Sink.OnLifecycle("pool.saturated", "", "", nil)
 
-	h, card, err := g.spawnOne(ctx, g.cfg.Envelope, SpawnSourceEnvelope)
+	// Snapshot the envelope under the lock: UpdateEnvelope (the S4 rebind
+	// drift source) may move it concurrently with a saturation spawn.
+	g.mu.Lock()
+	env := g.cfg.Envelope
+	g.mu.Unlock()
+	h, card, err := g.spawnOne(ctx, env, SpawnSourceEnvelope)
 	if err != nil {
 		g.cfg.Sink.OnLifecycle("pool.grow", "", "", err)
 		return nil, fmt.Errorf("mesh: saturation spawn: %w", err)
@@ -692,6 +869,7 @@ func (g *Gateway) routeSaturated(ctx context.Context, task a2a.Task, arrival tim
 		g.procs = append(g.procs, &gatewayProc{
 			handle: h, card: card, state: StateActive,
 			idleSince: time.Now(), lastUsed: time.Now(), grown: true, busy: true,
+			spawnedModel: g.cfg.Envelope.Model,
 		})
 	}
 	g.mu.Unlock()
@@ -745,8 +923,12 @@ func (g *Gateway) routeSaturated(ctx context.Context, task a2a.Task, arrival tim
 // be dead, which is the common trigger — then a near-bare-exec spawn into the
 // staged image/tools). The returned handle is the slot's new process.
 func (g *Gateway) recreateSlot(ctx context.Context, slot *gatewayProc) (Handle, error) {
+	// Snapshot the envelope under the lock (UpdateEnvelope may move it).
+	g.mu.Lock()
+	env := g.cfg.Envelope
+	g.mu.Unlock()
 	t0 := time.Now()
-	nh, err := g.cfg.Adapter.Recreate(ctx, slot.handle, g.cfg.Envelope)
+	nh, err := g.cfg.Adapter.Recreate(ctx, slot.handle, env)
 	eh := ""
 	if nh != nil {
 		eh = nh.ID()
@@ -770,6 +952,7 @@ func (g *Gateway) recreateSlot(ctx context.Context, slot *gatewayProc) (Handle, 
 	slot.card = card
 	slot.state = StateIdle
 	slot.idleSince = time.Now()
+	slot.spawnedModel = env.Model
 	g.mu.Unlock()
 	return nh, nil
 }
@@ -788,6 +971,25 @@ func (g *Gateway) observeSpawn(ctx context.Context, e SpawnEvent) {
 	if g.cfg.Observer != nil {
 		g.cfg.Observer.ObserveSpawn(ctx, e)
 	}
+}
+
+// observeWake reports a hibernation wake to the observer (no-op without one).
+func (g *Gateway) observeWake(ctx context.Context, e WakeEvent) {
+	if g.cfg.Observer != nil {
+		g.cfg.Observer.ObserveWake(ctx, e)
+	}
+}
+
+// UpdateEnvelope moves the pool's role envelope (S4 rebind-at-wake,
+// ISI-5831): the drift source a supervisor signal (a role model rebalance)
+// writes, and the wake tier's rebind comparison reads. The new envelope
+// takes effect at the NEXT wake boundary — running processes are NEVER
+// rebound mid-stream (X5); each is respawned from the current envelope the
+// next time it is woken (or recreated, which always rebuilds from it).
+func (g *Gateway) UpdateEnvelope(env Envelope) {
+	g.mu.Lock()
+	g.cfg.Envelope = env
+	g.mu.Unlock()
 }
 
 // release flips a process back to idle (idempotent — both the stream pump's
@@ -811,6 +1013,8 @@ func (g *Gateway) release(h Handle) {
 // Stop terminates every standing child (the pod's graceful shutdown path).
 // Each stop is best-effort: a wedged child must not block the others. Slots
 // already STOPPED by the lifecycle sweep are skipped — their process is gone.
+// A HIBERNATED child is woken first so its SIGTERM is handled promptly
+// instead of riding the grace period into SIGKILL.
 func (g *Gateway) Stop(ctx context.Context) error {
 	g.mu.Lock()
 	procs := append([]*gatewayProc(nil), g.procs...)
@@ -819,6 +1023,12 @@ func (g *Gateway) Stop(ctx context.Context) error {
 	for _, p := range procs {
 		if p.state == StateStopped {
 			continue
+		}
+		if p.state == StateHibernated {
+			if err := g.cfg.Adapter.Wake(ctx, p.handle); err != nil && firstErr == nil {
+				// Non-fatal: Close's SIGKILL terminates a frozen process.
+				firstErr = err
+			}
 		}
 		if err := g.cfg.Adapter.Stop(ctx, p.handle); err != nil && firstErr == nil {
 			firstErr = err

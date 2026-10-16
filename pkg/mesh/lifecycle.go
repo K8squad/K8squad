@@ -25,18 +25,20 @@ import (
 //
 //	spawn ──▶ IDLE ◀── task done ── ACTIVE (routed task live)
 //	            │
-//	            │ hibernateToStop idle bound (no run)
+//	            │ idleToHibernate (S4: Hibernate armed)      ┌──────────┐
+//	            ▼                                          │ HIBERNATED│
+//	          HIBERNATED ── wake on route (SIGCONT) ────────▶└──────────┘
+//	            │
+//	            │ hibernateToStop from the hibernate instant (no run)
 //	            ▼
 //	          STOPPED ── next A2A request ──▶ Recreate from envelope (≤3 s)
 //
-// REV-4 reconciliation (ISI-5807 X1/M4, locked f93795d5): HIBERNATED is CUT
-// from the P1 batch path — the SIGSTOP/SIGCONT tier is the single
-// highest-hazard increment and ships LAST at strangler step S4 (ISI-5831),
-// carrying the claim-never-frozen invariant (D9.1). P1.2 exercises ONLY the
-// IDLE and STOPPED/recreate tiers (recreate-from-envelope is the real RAM
-// reclaim). StateHibernated exists so the S4 state machine inherits the enum,
-// the metrics label set and the knob surface unchanged; the transition itself
-// is dark — the gateway NEVER drives a process into it in P1.
+// REV-4 (ISI-5807 X1/M4, locked f93795d5) shipped P1 with HIBERNATED cut from
+// the batch path; S4 (ISI-5831) arms the two-tier ladder behind
+// LifecycleConfig.Hibernate — an explicit per-pool opt-in so the S4 rollout is
+// reversible independently of mesh routing (D9.3). With Hibernate disarmed the
+// gateway NEVER drives a process into StateHibernated: idle time accrues
+// straight to the stop bound (the P1.2 collapsed ladder, byte-identical).
 type ProcState string
 
 const (
@@ -46,8 +48,9 @@ const (
 	// toward the stop bound. A fresh spawn enters here (routable immediately —
 	// the P1.1 selection "prefer idle" treats it as the first pick).
 	StateIdle ProcState = "idle"
-	// StateHibernated: SIGSTOP'd, resident, instant wake — S4 (ISI-5831).
-	// Dark in P1: no gateway transition enters this state (REV-4).
+	// StateHibernated: SIGSTOP'd, resident, instant wake — S4 (ISI-5831),
+	// armed by LifecycleConfig.Hibernate. Dark when Hibernate is disarmed
+	// (the REV-4 P1.2 collapsed ladder).
 	StateHibernated ProcState = "hibernated"
 	// StateStopped: terminated — RAM reclaimed. The slot stays on the gateway
 	// so the next A2A request recreates it from the envelope (the ≤3 s
@@ -71,18 +74,27 @@ type LifecycleConfig struct {
 	// CheckInterval is the gateway's regular-pace state-sweep cadence
 	// (default 30s, mirroring the cphealth 15–30s cadence).
 	CheckInterval time.Duration
+	// Hibernate arms the S4 two-tier ladder (ISI-5831, chapter §6.1 D4.1):
+	// IDLE → (idleToHibernate) SIGSTOP → HIBERNATED → (hibernateToStop from
+	// the hibernate instant) → STOPPED, and Route gains the wake tier — a
+	// hibernated process is woken (SIGCONT) instead of recreated, with the
+	// model rebound at the wake boundary when the envelope drifted (X5:
+	// rebind-at-wake, never mid-stream). false (the default) keeps the
+	// REV-4 P1.2 collapsed ladder — idle time accrues straight to the stop
+	// bound and Hibernate/Wake stay dark — so S4 rolls out as an explicit,
+	// reversible per-pool opt-in (D9.3: the runtime kill-switch that lets
+	// ops disable hibernation without disabling mesh routing).
+	Hibernate bool
 	// IdleToHibernate bounds idle time before SIGSTOP hibernation (default
-	// 5m). S4-RESERVED (ISI-5831): parsed and plumbed so the spec surface is
-	// complete, but NO P1 transition consumes it — hibernation is cut from
-	// the batch path (REV-4) and idle time runs straight to the stop bound.
+	// 5m). Consumed ONLY when Hibernate is armed (S4, ISI-5831).
 	IdleToHibernate time.Duration
 	// HibernateToStop bounds how long a process may sit idle (or, at S4,
 	// hibernated) with no run before the gateway terminates it (default 4h).
 	// This is the real RAM reclaim: recreate-from-envelope on the next
 	// request is the ≤3s path back.
 	HibernateToStop time.Duration
-	// AlwaysUp exempts the pool from stop (and, at S4, hibernate): the
-	// coordinator role — pinned ACTIVE/IDLE, floor 1, never scaled away.
+	// AlwaysUp exempts the pool from stop and hibernate: the coordinator
+	// role — pinned ACTIVE/IDLE, floor 1, never scaled away.
 	AlwaysUp bool
 }
 
@@ -118,9 +130,9 @@ const (
 	// recreated from the envelope on demand (the RAM-reclaim trade: reclaim
 	// when cold, pay the recreate on the next request).
 	SelectionOverflow RouteSelection = "overflow"
-	// SelectionWake: a hibernated process was woken. S4 only (ISI-5831) —
-	// never produced in P1; part of the set so the S4 transition changes no
-	// schema.
+	// SelectionWake: a hibernated process was woken (SIGCONT) — S4 only
+	// (ISI-5831); produced exclusively by a Hibernate-armed pool, never by
+	// the P1.2 collapsed ladder.
 	SelectionWake RouteSelection = "wake"
 )
 
@@ -153,6 +165,11 @@ type LifecycleObserver interface {
 	// source. On the recreate path ctx is the triggering route's context, so
 	// the spawn span nests under mesh.route.
 	ObserveSpawn(ctx context.Context, e SpawnEvent)
+	// ObserveWake reports one hibernation wake (S4, ISI-5831): SIGCONT →
+	// process-ready, nesting under the triggering mesh.route span (§8.2 —
+	// mesh.wake, which backs ksquad.mesh.wake.latency). Called only by a
+	// Hibernate-armed pool; the P1.2 collapsed ladder never wakes.
+	ObserveWake(ctx context.Context, e WakeEvent)
 }
 
 // RouteEvent is one observed routing decision.
@@ -184,5 +201,23 @@ type SpawnEvent struct {
 	// Source is envelope.
 	Duration time.Duration
 	// Err is non-nil when the spawn failed.
+	Err error
+}
+
+// WakeEvent is one observed hibernation wake (S4, ISI-5831).
+type WakeEvent struct {
+	Team       string
+	Role       string
+	Pod        string
+	EndpointID string
+	// Duration is the wake's wall-clock time (SIGCONT → ready) — the
+	// instant-wake claim of §6.1, backing ksquad.mesh.wake.latency.
+	Duration time.Duration
+	// Rebind is true when the wake took the rebind path — the envelope's
+	// model moved while the process slept, so the wake respawned from the
+	// CURRENT envelope instead of SIGCONT (X5: rebind-at-wake, never
+	// mid-stream).
+	Rebind bool
+	// Err is non-nil when the wake failed.
 	Err error
 }

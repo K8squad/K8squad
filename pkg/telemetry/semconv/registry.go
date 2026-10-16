@@ -125,9 +125,11 @@ const (
 	// mesh.spawn nests under mesh.route on the recreate (overflow) path.
 	SpanMeshRoute = "mesh.route"
 	SpanMeshSpawn = "mesh.spawn"
-	// SpanMeshWake is the S4 hibernation wake span (ISI-5831): Planned — the
-	// P1 batch path never hibernates (REV-4, chapter §6.1), so nothing emits
-	// it yet. Registered here so S4 lands against a written contract.
+	// SpanMeshWake is the S4 hibernation wake span (ISI-5831), emitted by the
+	// pod-side Gateway observer (pkg/telemetry/meshobs) since S4 landed —
+	// only Hibernate-armed pools ever produce it; collapsed-ladder pools
+	// (the default) never do. Identity stays Planned until the P1.4 telemetry
+	// polish flips the mesh family Stable alongside the NATS entity.
 	SpanMeshWake = "mesh.wake"
 )
 
@@ -304,7 +306,7 @@ var SpanConventions = []SpanConvention{
 		Brief: "One routed A2A task arriving at a mesh pool Gateway and reaching a ready standing process — arrival→delivered, the ≤3 s recreate SLO window (chapter §6.1, D4.1). Nests under the dispatch trace so a routed run's trace is continuous from board to LLM call (§8.2).",
 		Attributes: append(meshIdentity(),
 			Attribute{Key: "ksquad.mesh.selection", Type: TypeString, Requirement: Required, Stability: Stable,
-				Brief: "How the process was selected: \"idle\" (standing idle process), \"overflow\" (recreated from the envelope on demand), \"wake\" (woken from hibernation — S4 only, never emitted in P1)."},
+				Brief: "How the process was selected: \"idle\" (standing idle process), \"overflow\" (recreated from the envelope on demand), \"wake\" (woken from hibernation — S4 pools only, ISI-5831; never emitted by a collapsed-ladder pool)."},
 			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable,
 				Brief: "Arrival→ready wall-clock duration in ms — backs ksquad.mesh.a2a.ready_latency."},
 			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
@@ -325,7 +327,7 @@ var SpanConventions = []SpanConvention{
 	},
 	{
 		Name:  SpanMeshWake,
-		Brief: "Planned S4 (ISI-5831): a hibernated process woken on route (SIGCONT base / cooperative override). NOT emitted in P1 — REV-4 cut hibernation from the batch path (chapter §6.1); the HIBERNATED state is dark until the strangler's S4 step carries the claim-never-frozen invariant (D9.1). The identity set stays Planned with the span so the conformance suite does not require an emitter that must not exist yet.",
+		Brief: "S4 (ISI-5831): a hibernated process woken on route (SIGCONT base / cooperative override), or respawned at the wake boundary when the envelope model drifted (rebind-at-wake, X5). Emitted by Hibernate-armed pools only — the collapsed-ladder default never wakes. Identity stays Planned until the P1.4 telemetry polish flips the mesh family Stable (the conformance suite then requires the emitter, which exists since S4).",
 		Attributes: []Attribute{
 			{Key: "ksquad.team.name", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "S4",
 				Brief: "The team whose (team, role) pool the standing process serves."},

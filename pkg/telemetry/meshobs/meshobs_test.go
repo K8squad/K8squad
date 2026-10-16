@@ -244,3 +244,89 @@ func TestMeshConformance_ProcessesGauge(t *testing.T) {
 		t.Fatalf("gauge buckets = %v, want idle=2 stopped=1", seen)
 	}
 }
+
+// TestMeshConformance_S4WakeInstruments is the S4 battery (ISI-5831): a
+// wake-served route increments hibernate.hits_total and records a
+// wake.latency point; a rebind wake (envelope model drifted — respawn, no
+// SIGCONT) emits the mesh.wake span with rebind=true and NO latency point;
+// the wake span carries the §8.2 identity set and outcome.
+func TestMeshConformance_S4WakeInstruments(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	reader := sdkmetric.NewManualReader()
+	t.Cleanup(func() { _ = reader.Shutdown(context.Background()) })
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	obs := meshobs.New(tp.Tracer("s4"), mp.Meter("s4"),
+		meshobs.Labels{Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder"})
+	ctx := context.Background()
+
+	// A clean SIGCONT wake served a route…
+	obs.ObserveWake(ctx, mesh.WakeEvent{
+		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-h",
+		Duration: 7 * time.Millisecond,
+	})
+	obs.ObserveRoute(ctx, mesh.RouteEvent{
+		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-h",
+		Selection: mesh.SelectionWake, Duration: 9 * time.Millisecond,
+	})
+	// …a rebind wake (respawn at the boundary) carries Rebind=true…
+	obs.ObserveWake(ctx, mesh.WakeEvent{
+		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-h2",
+		Rebind: true,
+	})
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	wakeLatency, hits := 0, int64(0)
+	for _, sm := range rm.ScopeMetrics {
+		for _, md := range sm.Metrics {
+			switch md.Name {
+			case "ksquad.mesh.hibernate.hits_total":
+				if d, ok := md.Data.(metricdata.Sum[int64]); ok {
+					for _, dp := range d.DataPoints {
+						hits += dp.Value
+					}
+				}
+			case "ksquad.mesh.wake.latency":
+				if d, ok := md.Data.(metricdata.Histogram[float64]); ok {
+					for _, dp := range d.DataPoints {
+						wakeLatency += int(dp.Count)
+					}
+				}
+			}
+		}
+	}
+	if hits != 1 {
+		t.Errorf("hibernate.hits_total = %d, want 1 (one wake-served route; rebind/errored wakes do not count)", hits)
+	}
+	if wakeLatency != 1 {
+		t.Errorf("wake.latency points = %d, want 1 (the rebind wake records no SIGCONT latency)", wakeLatency)
+	}
+
+	var wakeSpan sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.Name() == ksqsemconv.SpanMeshWake {
+			wakeSpan = s
+		}
+	}
+	if wakeSpan == nil {
+		t.Fatal("no mesh.wake span emitted")
+	}
+	kv := map[string]string{}
+	for _, a := range wakeSpan.Attributes() {
+		kv[string(a.Key)] = a.Value.String()
+	}
+	for _, want := range []string{"ksquad.team.name", "ksquad.mesh.role", "ksquad.mesh.pod", "ksquad.mesh.endpoint", "ksquad.duration.ms", "ksquad.outcome"} {
+		if _, ok := kv[want]; !ok {
+			t.Errorf("mesh.wake missing %s (%v)", want, kv)
+		}
+	}
+	if kv["ksquad.outcome"] != "success" {
+		t.Errorf("mesh.wake outcome = %s, want success", kv["ksquad.outcome"])
+	}
+}

@@ -28,10 +28,11 @@ limitations under the License.
 //
 // The generic mesh gateway reports through the seam and stays free of any
 // telemetry SDK (extraction contract, chapter §1A); this package is the
-// k8squad-side plug. Hibernation instruments are registered but stay at zero
-// in P1 — REV-4 cut the SIGSTOP tier from the batch path (S4, ISI-5831):
-// hibernate.misses_total counts had-to-recreate routes (the P1.2 signal);
-// hits wake-from-hibernate and never increments until S4.
+// k8squad-side plug. Hibernation instruments went live at S4 (ISI-5831,
+// LifecycleConfig.Hibernate): hibernate.misses_total counts had-to-recreate
+// routes; hibernate.hits_total counts wake-from-hibernate routes; wake.latency
+// measures SIGCONT→ready. They stay at zero on pools running the collapsed
+// (Hibernate-disarmed) ladder.
 //
 // Cardinality (NFR-OBS3 firewall): every label is bounded — team and role are
 // the pool identity, source ∈ {envelope, cold}, state is the fixed §6 enum.
@@ -56,6 +57,7 @@ import (
 const (
 	readyLatencyName  = "ksquad.mesh.a2a.ready_latency"
 	spawnLatencyName  = "ksquad.mesh.spawn.latency"
+	wakeLatencyName   = "ksquad.mesh.wake.latency"
 	hibernateHitsName = "ksquad.mesh.hibernate.hits_total"
 	hibernateMissName = "ksquad.mesh.hibernate.misses_total"
 	processesGauge    = "ksquad.mesh.processes.active"
@@ -85,6 +87,7 @@ type Observer struct {
 
 	readyLatency  metric.Float64Histogram
 	spawnLatency  metric.Float64Histogram
+	wakeLatency   metric.Float64Histogram
 	hibernateHits metric.Int64Counter
 	hibernateMiss metric.Int64Counter
 }
@@ -104,8 +107,10 @@ func New(tracer trace.Tracer, meter metric.Meter, labels Labels) *Observer {
 			metric.WithUnit("ms"), metric.WithDescription("Mesh route: A2A arrival → process-ready, ms. The ≤3s recreate-from-envelope SLO window (D4.1)."))
 		o.spawnLatency, _ = meter.Float64Histogram(spawnLatencyName,
 			metric.WithUnit("ms"), metric.WithDescription("Standing-process spawn/recreate wall-clock, ms, by source (envelope = recreate path, cold = pool boot)."))
+		o.wakeLatency, _ = meter.Float64Histogram(wakeLatencyName,
+			metric.WithUnit("ms"), metric.WithDescription("Hibernation wake wall-clock (SIGCONT → ready), ms — S4 pools (ISI-5831); zero on collapsed-ladder pools."))
 		o.hibernateHits, _ = meter.Int64Counter(hibernateHitsName,
-			metric.WithDescription("Routes served by waking a hibernated process. Zero in P1 — hibernation ships at S4 (ISI-5831, REV-4)."))
+			metric.WithDescription("Routes served by waking a hibernated process (S4 pools, ISI-5831); zero on collapsed-ladder pools."))
 		o.hibernateMiss, _ = meter.Int64Counter(hibernateMissName,
 			metric.WithDescription("Routes that had to recreate from the envelope (no idle standing process) — the RAM-reclaim trade paying out."))
 	}
@@ -153,6 +158,45 @@ func (o *Observer) ObserveRoute(ctx context.Context, e mesh.RouteEvent) {
 
 	if o.readyLatency != nil {
 		o.readyLatency.Record(ctx, float64(durationMS(e.Duration)),
+			metric.WithAttributes(
+				attribute.String(attrTeam, o.labels.Team),
+				attribute.String(attrRole, o.labels.Role),
+			))
+	}
+	// A wake-served route is the hibernate "hit" — the tier paying off (§8.3:
+	// hits vs misses_total is the hibernation value signal; both stay zero on
+	// collapsed-ladder pools because the wake tier never fires there).
+	if o.hibernateHits != nil && e.Err == nil && e.Selection == mesh.SelectionWake {
+		o.hibernateHits.Add(ctx, 1,
+			metric.WithAttributes(
+				attribute.String(attrTeam, o.labels.Team),
+				attribute.String(attrRole, o.labels.Role),
+			))
+	}
+}
+
+// ObserveWake emits one mesh.wake span (S4, ISI-5831 — chapter §8.2: it nests
+// under the triggering mesh.route, carrying the wake identity set) and records
+// the wake-latency histogram point (SIGCONT→ready — the instant-wake claim of
+// §6.1). A rebind wake (the envelope model drifted while the process slept)
+// carries ksquad.mesh.wake.rebind=true and no latency point: its cost is the
+// respawn, already recorded by the spawn observer as source=envelope.
+func (o *Observer) ObserveWake(ctx context.Context, e mesh.WakeEvent) {
+	attrs := append(o.poolAttrs(e.EndpointID),
+		attribute.Int("ksquad.duration.ms", durationMS(e.Duration)),
+		attribute.String("ksquad.outcome", outcome(e.Err)),
+		attribute.Bool("ksquad.mesh.wake.rebind", e.Rebind),
+	)
+	_, span := o.tracer.Start(ctx, ksqsemconv.SpanMeshWake, trace.WithAttributes(attrs...))
+	if e.Err != nil {
+		span.SetStatus(codes.Error, e.Err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+	span.End()
+
+	if o.wakeLatency != nil && e.Err == nil && !e.Rebind {
+		o.wakeLatency.Record(ctx, float64(durationMS(e.Duration)),
 			metric.WithAttributes(
 				attribute.String(attrTeam, o.labels.Team),
 				attribute.String(attrRole, o.labels.Role),

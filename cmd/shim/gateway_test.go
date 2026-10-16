@@ -209,6 +209,22 @@ func TestGatewayLifecycleFromEnv(t *testing.T) {
 	if lc.AlwaysUp {
 		t.Fatal("alwaysUp must default false")
 	}
+
+	// The S4 hibernation arm (ISI-5831): default dark; "true" arms the
+	// two-tier ladder. Anything but the exact "true" stays dark — the
+	// kill-switch fails closed.
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_HIBERNATE", "")
+	if gatewayLifecycleFromEnv().Hibernate {
+		t.Fatal("hibernate must default dark (collapsed P1.2 ladder)")
+	}
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_HIBERNATE", "true")
+	if !gatewayLifecycleFromEnv().Hibernate {
+		t.Fatal("hibernate=true must arm the S4 two-tier ladder")
+	}
+	t.Setenv("KSQUAD_MESH_LIFECYCLE_HIBERNATE", "1")
+	if gatewayLifecycleFromEnv().Hibernate {
+		t.Fatal("only the exact \"true\" arms the ladder — fail closed")
+	}
 }
 
 // /endpoints serves the live endpoint set.

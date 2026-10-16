@@ -242,3 +242,38 @@ func TestBootMeshPool_LifecycleEnv(t *testing.T) {
 		}
 	}
 }
+
+// The S4 hibernation arm (ISI-5831): KSQUAD_MESH_HIBERNATE_ENABLED=true on
+// the operator stamps KSQUAD_MESH_LIFECYCLE_HIBERNATE=true into every mesh
+// pool pod (arming the two-tier ladder); the default (unset) stamps NOTHING
+// — the pod keeps the collapsed P1.2 ladder, so the S4 rollout is an
+// explicit, reversible operator switch independent of KSQUAD_MESH_TEAMS.
+func TestBootMeshPool_S4HibernateArm(t *testing.T) {
+	t.Run("armed", func(t *testing.T) {
+		t.Setenv("KSQUAD_MESH_HIBERNATE_ENABLED", "true")
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{Team: "t", Role: "coder", Image: "img"}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		if got := envOf(t, &pod, "KSQUAD_MESH_LIFECYCLE_HIBERNATE"); got != "true" {
+			t.Fatalf("KSQUAD_MESH_LIFECYCLE_HIBERNATE = %q, want true (operator switch on)", got)
+		}
+	})
+	t.Run("default-dark", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{Team: "t", Role: "coder", Image: "img"}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		if got := envOf(t, &pod, "KSQUAD_MESH_LIFECYCLE_HIBERNATE"); got != "" {
+			t.Fatalf("KSQUAD_MESH_LIFECYCLE_HIBERNATE = %q, want unset (S4 default is dark)", got)
+		}
+	})
+}

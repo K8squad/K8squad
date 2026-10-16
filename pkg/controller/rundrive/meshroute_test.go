@@ -19,11 +19,13 @@ package rundrive
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -210,5 +212,93 @@ func TestSubmit_FlagOffSkipsMesh(t *testing.T) {
 	}
 	if _, ok := run.Annotations[annotationDispatchPath]; ok {
 		t.Fatal("flag-off dispatch must not stamp the mesh annotation")
+	}
+}
+
+// ---- ISI-5831 (AgentMesh S4, D9.1): queued-at-supervisor stamping --------
+
+// A mesh-leg saturation refusal (the gateway's 409 + the D3.3/§5.3 sentinel
+// text) stamps the Run's QueuedAtSupervisor condition — the legible wait the
+// zombie sweep exempts on; a subsequent DELIVERED dispatch clears it again.
+func TestSubmit_MeshSaturationStampsQueuedThenClears(t *testing.T) {
+	const runUID = "dddddddd-0000-4444-8888-dddddddddddd"
+
+	// The saturated gateway: 409 with the sentinel body, then a delivering
+	// pass (200 + one status event).
+	var saturated atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if saturated.Load() {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(wire.Event{Seq: 1, Type: wire.EventStatus, Payload: wire.StatusPayload{
+				State: wire.TaskCompleted,
+			}})
+			return
+		}
+		http.Error(w, "mesh: no idle process in pool", http.StatusConflict)
+	}))
+	t.Cleanup(srv.Close)
+
+	run := &v1alpha1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-mesh", Namespace: "team-acme", UID: types.UID(runUID)},
+		Spec:       v1alpha1.RunSpec{TeamRef: v1alpha1.ObjectRef{Name: "team-acme"}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).
+		WithObjects(run).WithStatusSubresource(&v1alpha1.Run{}).Build()
+	d := &operatorDispatch{
+		cfg: OperatorDispatchConfig{
+			Client:    cl,
+			MeshRoute: &MeshRouteConfig{Teams: MeshTeamSet{"team-acme": {}},
+				Lookup: fakeMeshLookup{eps: []coord.MeshEndpoint{{EndpointID: "e0", Endpoint: srv.URL}}}},
+		},
+		httpClient: srv.Client(),
+	}
+
+	st := sandboxTransport{d}
+	// 1) The saturated refusal fails the submit AND stamps the queued marker.
+	if _, err := st.Submit(context.Background(), meshTestTask(runUID)); err == nil {
+		t.Fatal("saturated submit must fail")
+	} else if !isMeshSaturation(err) {
+		t.Fatalf("isMeshSaturation(%v) = false, want true", err)
+	}
+	var got v1alpha1.Run
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "team-acme", Name: "run-mesh"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	c := meta.FindStatusCondition(got.Status.Conditions, ConditionQueuedAtSupervisor)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != "MeshPoolSaturated" {
+		t.Fatalf("QueuedAtSupervisor = %+v, want True/MeshPoolSaturated", c)
+	}
+
+	// 2) A non-saturation error must NOT stamp the marker (a wedged gateway
+	// is a dispatch error, not a queue position).
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusBadGateway)
+	}))
+	t.Cleanup(srv2.Close)
+	if isMeshSaturation(fmt.Errorf("a2a: POST %s: supervisor answered 502 Bad Gateway: boom", srv2.URL)) {
+		t.Fatal("502 must not read as saturation")
+	}
+	if !isMeshSaturation(fmt.Errorf("a2a: POST %s: supervisor answered 409 Conflict: mesh: target process has an active task", srv2.URL)) {
+		t.Fatal("409 + busy sentinel must read as saturation")
+	}
+	if isMeshSaturation(nil) {
+		t.Fatal("nil error is never saturation")
+	}
+
+	// 3) The delivered dispatch clears the stale marker.
+	saturated.Store(true) // the gateway now delivers
+	sess, err := st.Submit(context.Background(), meshTestTask(runUID))
+	if err != nil {
+		t.Fatalf("delivered submit: %v", err)
+	}
+	for range sess.Events() {
+	}
+	_ = sess.Close()
+	if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "team-acme", Name: "run-mesh"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if c := meta.FindStatusCondition(got.Status.Conditions, ConditionQueuedAtSupervisor); c != nil {
+		t.Fatalf("QueuedAtSupervisor = %+v after delivery, want cleared", c)
 	}
 }

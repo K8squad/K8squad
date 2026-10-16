@@ -555,7 +555,21 @@ func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session
 			// answers 200 only after it routed to a standing process.
 			Client: st.d.httpClient,
 		}
-		return ht.Submit(ctx, t)
+		sess, serr := ht.Submit(ctx, t)
+		if serr != nil {
+			// S4 (ISI-5831, D9.1): the saturation refusal (409 — every pool
+			// process busy, band exhausted) leaves the run queued at the
+			// Supervisor's re-drive. Stamp the legible-wait marker so the
+			// pod-less zombie sweep (ISI-5438) exempts it — a mesh run
+			// correctly boots no sandbox pod while it waits.
+			if isMeshSaturation(serr) {
+				st.d.markMeshQueued(ctx, t.A2ATaskID, true)
+			}
+			return nil, serr
+		}
+		// Delivered: clear any stale queued marker — the run is executing.
+		st.d.markMeshQueued(ctx, t.A2ATaskID, false)
+		return sess, nil
 	}
 	url, err := st.d.supervisorURL(ctx, t.A2ATaskID)
 	if err != nil {

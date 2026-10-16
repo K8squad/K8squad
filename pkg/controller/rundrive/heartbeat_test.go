@@ -787,3 +787,168 @@ func TestLiveRunsIsWaitingForEndpointSlot(t *testing.T) {
 		})
 	}
 }
+
+// ---- ISI-5831 (AgentMesh S4, D9.1): queued-at-supervisor exemption -------
+
+// fakeMeshQueueWait fakes the meshQueueWaitChecker seam.
+type fakeMeshQueueWait struct {
+	queued map[string]bool
+	err    error
+}
+
+func (f *fakeMeshQueueWait) IsQueuedAtSupervisor(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.queued[runID], nil
+}
+
+// A pod-less mesh run held past the stall grace but legitimately QUEUED at
+// the Supervisor behind a saturated mesh pool (QueuedAtSupervisor, ISI-5831
+// D9.1) is EXEMPT from the zombie reap: it is renewed, never force-failed,
+// so its re-drive queue position is preserved. A mesh run correctly boots no
+// sandbox pod, so the pod-less predicate alone would churn it
+// Claiming↔Failed every ~10 min — the ISI-5541/5542 zombie-Claiming class
+// the new run state exists to prevent.
+func TestHeartbeatSweepExemptsMeshQueuedRun(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute) // well past the 10m grace
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "claiming", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+	// NOTE: no ExpectBegin/release SQL — an exempt queued run must NOT be reaped.
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}}) // no pod (mesh runs boot none)
+	s.MeshQueueWait = &fakeMeshQueueWait{queued: map[string]bool{zRun: true}}
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("a Supervisor-queued mesh run must be renewed, never reaped; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations (a release txn means the queued run was wrongly reaped): %v", err)
+	}
+}
+
+// A genuinely wedged pod-less run that is NOT queued at the Supervisor is
+// still reaped even with the S4 exemption wired (D9.1 must not over-exempt):
+// the release transaction fires and the lease is never renewed.
+func TestHeartbeatSweepReapsZombieNotMeshQueued(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute)
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(9), "running", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE coord.claim`).
+		WithArgs(zItem, zRun).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.audit_log`).
+		WithArgs(zItem, zRun, OperatorPrincipal, int64(9), "zombie_no_sandbox").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.work_item`).
+		WithArgs(zItem, "todo").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})            // no pod
+	s.MeshQueueWait = &fakeMeshQueueWait{queued: map[string]bool{}} // not queued
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 0 {
+		t.Fatalf("a non-queued zombie must still be reaped, never renewed; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A mesh-queue check error fails SAFE toward the queued run (never reap on a
+// maybe) — renew and retry next tick.
+func TestHeartbeatSweepMeshQueueErrorExempts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute)
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "claiming", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})
+	s.MeshQueueWait = &fakeMeshQueueWait{err: fmt.Errorf("apiserver unavailable")}
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("a mesh-queue check error must fail safe to renew; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// IsQueuedAtSupervisor reports True only for a Run whose UID carries a True
+// QueuedAtSupervisor condition; a Run without it, or an unknown UID, is not
+// queued (ISI-5831).
+func TestLiveRunsIsQueuedAtSupervisor(t *testing.T) {
+	queued := &api.Run{}
+	queued.Name = "queued"
+	queued.Namespace = "ns"
+	queued.UID = "uid-queued"
+	meta.SetStatusCondition(&queued.Status.Conditions, metav1.Condition{
+		Type:   ConditionQueuedAtSupervisor,
+		Status: metav1.ConditionTrue,
+		Reason: "MeshPoolSaturated",
+	})
+
+	running := &api.Run{}
+	running.Name = "running"
+	running.Namespace = "ns"
+	running.UID = "uid-running"
+
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(queued, running).Build()
+	lr := &LiveRuns{Reader: cl}
+
+	cases := []struct {
+		name string
+		uid  string
+		want bool
+	}{
+		{"queued run", "uid-queued", true},
+		{"running run without the condition", "uid-running", false},
+		{"unknown uid", "uid-missing", false},
+		{"empty uid", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := lr.IsQueuedAtSupervisor(context.Background(), tc.uid)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("IsQueuedAtSupervisor(%q) = %v, want %v", tc.uid, got, tc.want)
+			}
+		})
+	}
+}
