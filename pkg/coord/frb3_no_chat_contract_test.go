@@ -115,6 +115,7 @@ var allowedSurface = map[string]string{
 	"MeshRegistry.DeregisterPod":  "AgentMesh §2.4: clean-shutdown/drain delete by pod",
 	"MeshRegistry.LookupTeamRole": "AgentMesh §5.2 D3.2: live (team, role) endpoint lookup, LRU-ordered; the route leg's only read",
 	"MeshRegistry.Sweep":          "AgentMesh §2.4: TTL-expired row hygiene delete (correctness never depends on it)",
+	"MeshRegistry.ListEndpoints":  "AgentMesh §2.4 (P1.4, ISI-6010): unfiltered endpoint listing for the supervisor health loop — the TTL-expired rows LookupTeamRole hides are exactly what the loop drains (row hygiene/health, no custody, no content)",
 	"MeshRegistryOption":          "AgentMesh: registry test seam option",
 	"NewMeshRegistry":             "AgentMesh: registry constructor over the coordination Postgres",
 	"WithMeshClock":               "AgentMesh: test clock seam for TTL aging",

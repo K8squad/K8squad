@@ -171,3 +171,33 @@ func TestMeshRegistry_Sweep(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// ListEndpoints returns ALL rows — live and TTL-expired alike — ordered by
+// (pod, endpoint_id): the supervisor health loop's unfiltered view (P1.4,
+// ISI-6010). LookupTeamRole would hide exactly the expired rows the loop
+// drains, so the loop must NOT read through it.
+func TestMeshRegistry_ListEndpoints(t *testing.T) {
+	r, mock := newMeshRegistry(t)
+	pinned := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	mock.ExpectQuery("FROM coord.mesh_endpoint").
+		WillReturnRows(sqlmock.NewRows([]string{"endpoint_id", "team", "role", "pod", "endpoint", "agent_card", "registered_at", "last_seen_at"}).
+			AddRow("ep-a1", "team-acme", "coder", "pool-aaa", "http://10.0.0.1:8080", meshCard, pinned.Add(-time.Hour), pinned.Add(-5*time.Minute)).  // expired
+			AddRow("ep-b1", "team-acme", "coder", "pool-bbb", "http://10.0.0.2:8080", meshCard, pinned.Add(-time.Hour), pinned.Add(-10*time.Second))) // live
+
+	eps, err := r.ListEndpoints(context.Background())
+	if err != nil {
+		t.Fatalf("ListEndpoints: %v", err)
+	}
+	if len(eps) != 2 {
+		t.Fatalf("endpoints = %d, want 2 (expired rows included)", len(eps))
+	}
+	if eps[0].EndpointID != "ep-a1" || eps[1].EndpointID != "ep-b1" {
+		t.Fatalf("order = %s,%s, want pod/endpoint_id order", eps[0].EndpointID, eps[1].EndpointID)
+	}
+	if eps[0].LastSeenAt.After(eps[1].LastSeenAt) {
+		t.Fatal("the expired row must keep its stale last_seen_at — the loop applies the TTL itself")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -231,3 +231,28 @@ func (r *MeshRegistry) Sweep(ctx context.Context) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// ListEndpoints returns EVERY registered endpoint, live and TTL-expired
+// alike, ordered by (pod, endpoint_id) — the supervisor health loop's input
+// (P1.4, ISI-6010, chapter §2.4). LookupTeamRole's TTL filter would hide
+// exactly the expired rows the health loop exists to drain, so the loop reads
+// through this unfiltered view and applies the TTL itself.
+func (r *MeshRegistry) ListEndpoints(ctx context.Context) ([]MeshEndpoint, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT endpoint_id, team, role, pod, endpoint, agent_card, registered_at, last_seen_at
+		  FROM coord.mesh_endpoint
+		 ORDER BY pod, endpoint_id`)
+	if err != nil {
+		return nil, fmt.Errorf("coord.MeshRegistry.ListEndpoints: %w", err)
+	}
+	defer rows.Close()
+	var out []MeshEndpoint
+	for rows.Next() {
+		var ep MeshEndpoint
+		if err := rows.Scan(&ep.EndpointID, &ep.Team, &ep.Role, &ep.Pod, &ep.Endpoint, &ep.AgentCard, &ep.RegisteredAt, &ep.LastSeenAt); err != nil {
+			return nil, fmt.Errorf("coord.MeshRegistry.ListEndpoints: %w", err)
+		}
+		out = append(out, ep)
+	}
+	return out, rows.Err()
+}

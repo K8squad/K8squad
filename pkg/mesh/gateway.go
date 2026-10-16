@@ -460,15 +460,25 @@ func (g *Gateway) RegisterOnce(ctx context.Context) error {
 	return nil
 }
 
+// standingProc is the registration read's per-slot snapshot: handle and card
+// copied out under g.mu because the recreate path swaps those same slot
+// fields under the mutex (recreateSlot) — returning *gatewayProc pointers
+// would leave the registration loop racing the swap (caught by -race in CI:
+// RegisterOnce read slot.handle while recreateSlot wrote it).
+type standingProc struct {
+	handle Handle
+	card   a2a.AgentCard
+}
+
 // standing snapshots the slots that currently hold a live process (everything
 // but STOPPED — the recreate-on-demand slots).
-func (g *Gateway) standing() []*gatewayProc {
+func (g *Gateway) standing() []standingProc {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	out := make([]*gatewayProc, 0, len(g.procs))
+	out := make([]standingProc, 0, len(g.procs))
 	for _, p := range g.procs {
 		if p.state != StateStopped {
-			out = append(out, p)
+			out = append(out, standingProc{handle: p.handle, card: p.card})
 		}
 	}
 	return out
@@ -517,6 +527,31 @@ func (g *Gateway) Ready() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return len(g.procs) > 0
+}
+
+// ProbeReady reports whether the gateway serving baseURL answers GET /ready
+// with 200 inside ctx — the Supervisor-side "gateway up" signal (P1.4,
+// D6.1/D6.2). /ready (not /health) is the probe surface deliberately: the
+// health loop and the cphealth dep care about SERVING capability (the pool
+// can take a route), and a wedged-but-alive gateway must read as down so the
+// supervisor drains and recreates it instead of trusting a bare
+// process-alive ping. A nil client uses a default with a short timeout — the
+// probe always runs under a caller-bounded ctx (the cphealth probe timeout /
+// the supervisor sweep).
+func ProbeReady(ctx context.Context, client *http.Client, baseURL string) bool {
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/ready", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 // Route delivers one task to a standing process and returns its live event

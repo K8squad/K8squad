@@ -18,6 +18,8 @@ package mesh
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 )
 
@@ -185,4 +187,274 @@ type SpawnEvent struct {
 	Duration time.Duration
 	// Err is non-nil when the spawn failed.
 	Err error
+}
+
+// ---------------------------------------------------------------------------
+// Supervisor-side gateway health (P1.4, ISI-6010; chapter §2.4, D6.1/D6.2).
+//
+// The GATEWAY owns its per-process lifecycle clock (D4.2, above); the
+// SUPERVISOR owns the gateway's own health: when a gateway goes down (its
+// heartbeat ages past the registry TTL) or stops SERVING while still beating
+// (the health leg), the supervisor drains the pod's endpoints from
+// coord.mesh_endpoint and recreates the pod from its envelope-stamped spec
+// (D2.3: the pod spec IS the envelope carrier, so a fresh pod re-spawns the
+// pool exactly like the first boot). The invariants ride the P1.2
+// recreate-from-envelope path one level up:
+//
+//   - DRAIN FIRST, recreate second: while a recreate is in flight or failed
+//     the registry holds nothing for the pod, so the route leg can never hand
+//     a task to a gateway that is going away (no phantom routable, the
+//     registry-level twin of P1.2's no-phantom-ACTIVE).
+//   - RETRYABLE: a failed recreate parks the pod in a pending set and every
+//     sweep retries until it succeeds — a wedged recreate never strands the
+//     pool silently.
+
+// EndpointHealth is the supervisor's view of one registered endpoint: the
+// registry row's identity plus its last heartbeat.
+type EndpointHealth struct {
+	EndpointID string
+	Pod        string
+	Team       string
+	Role       string
+	// Endpoint is the advertised routable base URL (the health probe target).
+	Endpoint   string
+	LastSeenAt time.Time
+}
+
+// SupervisorStore is the registry seam the health loop reads and drains
+// through. k8squad binds it to coord.MeshRegistry; the seam keeps this
+// package free of the control-plane store (the P3 extraction contract).
+type SupervisorStore interface {
+	// Endpoints lists EVERY registered endpoint, live and TTL-expired alike —
+	// the loop exists precisely to drain the expired rows a TTL-filtered
+	// lookup would hide.
+	Endpoints(ctx context.Context) ([]EndpointHealth, error)
+	// DrainPod deletes every endpoint a pod registered (§2.4: drain-by-pod).
+	// It must be idempotent.
+	DrainPod(ctx context.Context, pod string) error
+}
+
+// PodRecreator rebuilds a drained gateway pod from its envelope-stamped spec.
+// It MUST be safe to call repeatedly for the same pod — the health loop
+// retries a failed recreate on every sweep.
+type PodRecreator interface {
+	RecreatePod(ctx context.Context, pod string) error
+}
+
+// SupervisorHealthConfig assembles the supervisor health loop. Store and
+// Recreate are required; everything else has defaults.
+type SupervisorHealthConfig struct {
+	Store    SupervisorStore
+	Recreate PodRecreator
+	// Health probes one gateway's serving readiness (production: ProbeReady
+	// against the advertised endpoint). nil disables the health leg — the
+	// loop then reacts to TTL-expiry only.
+	Health func(ctx context.Context, endpoint string) bool
+	// TTL is the endpoint routability TTL (production: coord.MeshEndpointTTL,
+	// 90s — three missed 30s heartbeats). An endpoint whose LastSeenAt is
+	// older is expired. <= 0 defaults to 90s.
+	TTL time.Duration
+	// CheckInterval is the sweep cadence (default 30s, mirroring the gateway
+	// heartbeat).
+	CheckInterval time.Duration
+	// DownThreshold is the number of consecutive failed health probes before
+	// the loop drains/recreates a pod whose rows are still TTL-live (default
+	// 2): one flap must not bounce a healthy pool.
+	DownThreshold int
+	// Sink receives drain/recreate telemetry (ops "supervisor.drain" /
+	// "supervisor.recreate" / "supervisor.endpoints", handleID=pod). nil
+	// uses NopSink.
+	Sink TelemetrySink
+	// Now is the clock (a test seam). nil = time.Now.
+	Now func() time.Time
+}
+
+// SupervisorHealth is the supervisor's gateway-health loop: one sweep per
+// CheckInterval, drain+recreate on gateway down or TTL-expiry. Construct with
+// NewSupervisorHealth; run with Start (manager.Runnable-shaped) or drive
+// SweepOnce directly (tests).
+type SupervisorHealth struct {
+	cfg SupervisorHealthConfig
+
+	mu sync.Mutex
+	// downStreak counts consecutive failed health probes per pod (health leg).
+	downStreak map[string]int
+	// pending holds pods drained but not yet successfully recreated — the
+	// retry set. A pending pod is re-attempted every sweep until RecreatePod
+	// succeeds, so a failed recreate never strands a pool silently.
+	pending map[string]bool
+}
+
+// NewSupervisorHealth validates the config and returns the loop.
+func NewSupervisorHealth(cfg SupervisorHealthConfig) (*SupervisorHealth, error) {
+	if cfg.Store == nil {
+		return nil, fmt.Errorf("mesh.NewSupervisorHealth: Store is required")
+	}
+	if cfg.Recreate == nil {
+		return nil, fmt.Errorf("mesh.NewSupervisorHealth: Recreate is required")
+	}
+	if cfg.TTL <= 0 {
+		cfg.TTL = 90 * time.Second
+	}
+	if cfg.CheckInterval <= 0 {
+		cfg.CheckInterval = 30 * time.Second
+	}
+	if cfg.DownThreshold <= 0 {
+		cfg.DownThreshold = 2
+	}
+	if cfg.Sink == nil {
+		cfg.Sink = NopSink{}
+	}
+	if cfg.Now == nil {
+		cfg.Now = time.Now
+	}
+	return &SupervisorHealth{cfg: cfg, downStreak: map[string]int{}, pending: map[string]bool{}}, nil
+}
+
+// Start runs the sweep loop until ctx is done (manager.Runnable shape). It
+// sweeps ONCE immediately at boot — an operator restart inherits whatever
+// state the previous loop left, and a dead gateway should not wait a full
+// interval for its drain.
+func (s *SupervisorHealth) Start(ctx context.Context) error {
+	s.SweepOnce(ctx)
+	t := time.NewTicker(s.cfg.CheckInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			s.SweepOnce(ctx)
+		}
+	}
+}
+
+// SweepOnce runs one health pass: retry pending recreates, then evaluate every
+// registered pod on both legs —
+//
+//   - TTL leg: a pod with ZERO live endpoints missed three heartbeats; the
+//     gateway is down even if nothing watched it die.
+//   - Health leg: a pod with live rows whose /ready probe fails DownThreshold
+//     consecutive times is beating but cannot SERVE (wedged gateway).
+//
+// Either trigger drains the pod's endpoints FIRST and recreates the pod
+// SECOND (drain-first = the no-phantom invariant). A partially-stale pod
+// (some endpoints expired, some live) is left alone: the gateway's own
+// registration beat prunes its dead ids (the ingress PrunePod path), and its
+// P1.2 overflow route recreates stopped slots on demand.
+func (s *SupervisorHealth) SweepOnce(ctx context.Context) {
+	s.retryPending(ctx)
+
+	eps, err := s.cfg.Store.Endpoints(ctx)
+	if err != nil {
+		s.cfg.Sink.OnLifecycle("supervisor.endpoints", "", "", err)
+		return
+	}
+	type podView struct {
+		endpoint string // probe target: any live row's advertised URL
+		live     int
+	}
+	pods := map[string]*podView{}
+	cutoff := s.cfg.Now().Add(-s.cfg.TTL)
+	for _, ep := range eps {
+		v := pods[ep.Pod]
+		if v == nil {
+			v = &podView{}
+			pods[ep.Pod] = v
+		}
+		if ep.LastSeenAt.After(cutoff) {
+			v.live++
+			if v.endpoint == "" {
+				v.endpoint = ep.Endpoint
+			}
+		}
+	}
+	for pod, v := range pods {
+		if s.isPending(pod) {
+			continue // already drained; the retry above owns it
+		}
+		down := v.live == 0
+		if !down && s.cfg.Health != nil && v.endpoint != "" {
+			if s.cfg.Health(ctx, v.endpoint) {
+				s.resetDown(pod)
+			} else if s.bumpDown(pod) >= s.cfg.DownThreshold {
+				down = true
+			}
+		}
+		if !down {
+			continue
+		}
+		s.drainRecreate(ctx, pod)
+	}
+}
+
+// retryPending re-attempts every parked recreate. A success unparks the pod;
+// a failure leaves it parked for the next sweep.
+func (s *SupervisorHealth) retryPending(ctx context.Context) {
+	s.mu.Lock()
+	pods := make([]string, 0, len(s.pending))
+	for pod := range s.pending {
+		pods = append(pods, pod)
+	}
+	s.mu.Unlock()
+	for _, pod := range pods {
+		s.recreateOne(ctx, pod)
+	}
+}
+
+// drainRecreate drains the pod's endpoints, then recreates the pod. Drain
+// FIRST: while the recreate is in flight (or failed) the registry holds
+// nothing for the pod, so the route leg cannot hand a task to a gateway that
+// is going away. A failed DRAIN retries next sweep without a recreate (the
+// expired rows are still there for the TTL leg to re-find); a failed recreate
+// parks the pod in pending.
+func (s *SupervisorHealth) drainRecreate(ctx context.Context, pod string) {
+	if err := s.cfg.Store.DrainPod(ctx, pod); err != nil {
+		s.cfg.Sink.OnLifecycle("supervisor.drain", pod, "", err)
+		return
+	}
+	s.cfg.Sink.OnLifecycle("supervisor.drain", pod, "", nil)
+	s.setPending(pod, true)
+	s.recreateOne(ctx, pod)
+}
+
+// recreateOne runs one recreate attempt for a drained pod, clearing the
+// pending marker on success only.
+func (s *SupervisorHealth) recreateOne(ctx context.Context, pod string) {
+	if err := s.cfg.Recreate.RecreatePod(ctx, pod); err != nil {
+		s.cfg.Sink.OnLifecycle("supervisor.recreate", pod, "", err)
+		return // stays pending — retried next sweep
+	}
+	s.cfg.Sink.OnLifecycle("supervisor.recreate", pod, "", nil)
+	s.setPending(pod, false)
+	s.resetDown(pod)
+}
+
+func (s *SupervisorHealth) isPending(pod string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pending[pod]
+}
+
+func (s *SupervisorHealth) setPending(pod string, on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on {
+		s.pending[pod] = true
+	} else {
+		delete(s.pending, pod)
+	}
+}
+
+func (s *SupervisorHealth) bumpDown(pod string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.downStreak[pod]++
+	return s.downStreak[pod]
+}
+
+func (s *SupervisorHealth) resetDown(pod string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.downStreak, pod)
 }

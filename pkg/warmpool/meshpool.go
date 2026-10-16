@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -286,6 +287,59 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 // pool — the idempotency key BootMeshPool reconciles by.
 func MeshPoolPodName(team, role string) string {
 	return "mesh-" + team + "-" + role
+}
+
+// recreateMeshPoolWait bounds how long RecreateMeshPool waits for the old pod
+// object to disappear before booting the fresh one.
+const recreateMeshPoolWait = 2 * time.Minute
+
+// RecreateMeshPool rebuilds a standing pool pod (P1.4 gateway-down recovery,
+// ISI-6010, chapter §2.4): delete the current pod — a missing pod is fine,
+// recreate is the REPAIR path — wait for the object to actually disappear,
+// then BootMeshPool a fresh one from spec. The wait matters: BootMeshPool is
+// create-if-missing, so a still-terminating pod would read as "already
+// standing" and skip the create, leaving the pool dead. The pod spec carries
+// the envelope (D2.3 env pre-load), so the new pod re-spawns the pool from
+// the envelope exactly like the first boot.
+//
+// Retryable by contract (the supervisor health loop re-calls it every sweep
+// until it succeeds): every step is idempotent.
+func (k *KubeProvisioner) RecreateMeshPool(ctx context.Context, spec MeshPoolSpec) error {
+	if spec.Team == "" || spec.Role == "" {
+		return fmt.Errorf("warmpool.RecreateMeshPool: Team and Role are required")
+	}
+	ns := spec.Namespace
+	if ns == "" {
+		ns = sandboxNamespace
+	}
+	name := MeshPoolPodName(spec.Team, spec.Role)
+	key := client.ObjectKey{Namespace: ns, Name: name}
+
+	if err := k.client.Delete(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("warmpool.RecreateMeshPool: delete %s/%s: %w", ns, name, err)
+	}
+	// Wait (bounded) for the old object to disappear so the boot below cannot
+	// short-circuit on the terminating pod.
+	deadline := time.Now().Add(recreateMeshPoolWait)
+	for {
+		var cur corev1.Pod
+		err := k.client.Get(ctx, key, &cur)
+		if apierrors.IsNotFound(err) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("warmpool.RecreateMeshPool: read %s/%s while draining: %w", ns, name, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("warmpool.RecreateMeshPool: pod %s/%s still terminating after %s", ns, name, recreateMeshPoolWait)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return k.BootMeshPool(ctx, spec)
 }
 
 // meshResources sizes the standing pool pod with the same posture as a
