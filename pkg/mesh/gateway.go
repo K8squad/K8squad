@@ -580,6 +580,10 @@ type ProcessInfo struct {
 	// Grown marks a saturation-grown slot (P1.3) — standing beyond the
 	// declarative floor, reclaimed after GrowIdleShrink idle.
 	Grown bool
+	// Recreating reports whether the slot is currently being rebuilt via
+	// Recreate (route-driven) or torn down via Stop (sweep-driven). A stopped
+	// slot with Recreating=true is in-flight and not yet ready for a new route.
+	Recreating bool
 }
 
 // Processes snapshots the pool's slot set (id, endpoint, card, busy, state).
@@ -589,12 +593,13 @@ func (g *Gateway) Processes() []ProcessInfo {
 	out := make([]ProcessInfo, 0, len(g.procs))
 	for _, p := range g.procs {
 		out = append(out, ProcessInfo{
-			EndpointID: p.handle.ID(),
-			Endpoint:   p.handle.Endpoint(),
-			Card:       p.card,
-			Busy:       p.busy,
-			State:      p.state,
-			Grown:      p.grown,
+			EndpointID:  p.handle.ID(),
+			Endpoint:    p.handle.Endpoint(),
+			Card:        p.card,
+			Busy:        p.busy,
+			State:       p.state,
+			Grown:       p.grown,
+			Recreating:  p.recreating,
 		})
 	}
 	return out

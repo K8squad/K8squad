@@ -133,7 +133,8 @@ func TestS4_CollapsedLadderDefault_IsByteIdenticalP12(t *testing.T) {
 	}
 
 	waitFor(t, 2*time.Second, func() bool {
-		return gw.Processes()[0].State == mesh.StateStopped
+		p := gw.Processes()
+		return len(p) > 0 && p[0].State == mesh.StateStopped && !p[0].Recreating
 	}, "process never stopped (collapsed ladder)")
 	s, err := gw.Route(context.Background(), "", a2a.Task{A2ATaskID: "t-collapsed"})
 	if err != nil {
