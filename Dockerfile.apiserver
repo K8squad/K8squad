@@ -9,6 +9,8 @@ ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
+# The directory replace target must be readable by go mod download (P3.2 re-land, ISI-6035):
+COPY third_party/k8sagentmesh/go.mod ./third_party/k8sagentmesh/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
