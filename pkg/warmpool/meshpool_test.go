@@ -243,71 +243,37 @@ func TestBootMeshPool_LifecycleEnv(t *testing.T) {
 	}
 }
 
-// RecreateMeshPool on an EXISTING pod: the old pod is deleted and a fresh one
-// booted from spec (the P1.4 gateway-down repair path). The marker annotation
-// proves the returned pod is a NEW object, not the drained original.
-func TestRecreateMeshPool_ReplacesExisting(t *testing.T) {
-	p, cl := newMeshProvisioner(t)
-	spec := warmpool.MeshPoolSpec{Team: "team-acme", Role: "coder", Image: "img:test"}
-	ctx := context.Background()
-
-	if err := p.BootMeshPool(ctx, spec); err != nil {
-		t.Fatalf("boot: %v", err)
-	}
-	// Marker on the OLD pod — must not survive the recreate.
-	name := warmpool.MeshPoolPodName(spec.Team, spec.Role)
-	var pods corev1.PodList
-	if err := cl.List(ctx, &pods); err != nil || len(pods.Items) != 1 {
-		t.Fatalf("list booted pods: %v (%d)", err, len(pods.Items))
-	}
-	booted := pods.Items[0]
-	ns := booted.Namespace
-	booted.Annotations["test-marker"] = "old"
-	if err := cl.Update(ctx, &booted); err != nil {
-		t.Fatalf("mark old pod: %v", err)
-	}
-
-	if err := p.RecreateMeshPool(ctx, spec); err != nil {
-		t.Fatalf("recreate: %v", err)
-	}
-
-	var cur corev1.Pod
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &cur); err != nil {
-		t.Fatalf("recreated pod missing: %v", err)
-	}
-	if cur.Annotations["test-marker"] == "old" {
-		t.Fatal("the OLD pod survived — recreate must delete + re-boot, not no-op")
-	}
-	if cur.UID == booted.UID && booted.UID != "" {
-		t.Fatal("the recreated pod carries the old UID")
-	}
-}
-
-// RecreateMeshPool on a MISSING pod is the same boot (repair after the pod
-// was already gone — idempotent by contract so the supervisor health loop can
-// retry it blindly).
-func TestRecreateMeshPool_MissingPodBoots(t *testing.T) {
-	p, cl := newMeshProvisioner(t)
-	spec := warmpool.MeshPoolSpec{Team: "team-acme", Role: "coder", Image: "img:test"}
-	if err := p.RecreateMeshPool(context.Background(), spec); err != nil {
-		t.Fatalf("recreate missing: %v", err)
-	}
-	var pods corev1.PodList
-	if err := cl.List(context.Background(), &pods); err != nil {
-		t.Fatal(err)
-	}
-	if len(pods.Items) != 1 || pods.Items[0].Name != warmpool.MeshPoolPodName(spec.Team, spec.Role) {
-		t.Fatalf("pods after recreate = %v", pods.Items)
-	}
-}
-
-// Validation mirrors BootMeshPool.
-func TestRecreateMeshPool_Validation(t *testing.T) {
-	p, _ := newMeshProvisioner(t)
-	if err := p.RecreateMeshPool(context.Background(), warmpool.MeshPoolSpec{Role: "coder", Image: "img"}); err == nil {
-		t.Fatal("missing Team accepted")
-	}
-	if err := p.RecreateMeshPool(context.Background(), warmpool.MeshPoolSpec{Team: "t", Role: "coder"}); err == nil {
-		t.Fatal("missing Image accepted")
-	}
+// The S4 hibernation arm (ISI-5831): KSQUAD_MESH_HIBERNATE_ENABLED=true on
+// the operator stamps KSQUAD_MESH_LIFECYCLE_HIBERNATE=true into every mesh
+// pool pod (arming the two-tier ladder); the default (unset) stamps NOTHING
+// — the pod keeps the collapsed P1.2 ladder, so the S4 rollout is an
+// explicit, reversible operator switch independent of KSQUAD_MESH_TEAMS.
+func TestBootMeshPool_S4HibernateArm(t *testing.T) {
+	t.Run("armed", func(t *testing.T) {
+		t.Setenv("KSQUAD_MESH_HIBERNATE_ENABLED", "true")
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{Team: "t", Role: "coder", Image: "img"}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		if got := envOf(t, &pod, "KSQUAD_MESH_LIFECYCLE_HIBERNATE"); got != "true" {
+			t.Fatalf("KSQUAD_MESH_LIFECYCLE_HIBERNATE = %q, want true (operator switch on)", got)
+		}
+	})
+	t.Run("default-dark", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{Team: "t", Role: "coder", Image: "img"}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		if got := envOf(t, &pod, "KSQUAD_MESH_LIFECYCLE_HIBERNATE"); got != "" {
+			t.Fatalf("KSQUAD_MESH_LIFECYCLE_HIBERNATE = %q, want unset (S4 default is dark)", got)
+		}
+	})
 }

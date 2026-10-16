@@ -1490,7 +1490,13 @@ func main() {
 			// a slot, so it tripped the zombie predicate and was force-failed +
 			// re-minted every ~10 min (the 9-agent deepseek discussion churn).
 			EndpointWait: liveRuns,
-			Log:          func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+			// ISI-5831 (AgentMesh S4, D9.1): exempt a pod-less run that is
+			// legitimately QUEUED at the Supervisor behind a saturated mesh
+			// pool (QueuedAtSupervisor) — mesh runs never boot a sandbox pod,
+			// so the wait trips the pod-liveness zombie predicate exactly like
+			// the endpoint-slot case above.
+			MeshQueueWait: liveRuns,
+			Log:           func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register claim hygiene sweep")
 			os.Exit(1)

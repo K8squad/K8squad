@@ -95,6 +95,7 @@ type obsRecorder struct {
 	mu     sync.Mutex
 	routes []mesh.RouteEvent
 	spawns []mesh.SpawnEvent
+	wakes  []mesh.WakeEvent
 }
 
 func (o *obsRecorder) ObserveRoute(_ context.Context, e mesh.RouteEvent) {
@@ -107,6 +108,12 @@ func (o *obsRecorder) ObserveSpawn(_ context.Context, e mesh.SpawnEvent) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.spawns = append(o.spawns, e)
+}
+
+func (o *obsRecorder) ObserveWake(_ context.Context, e mesh.WakeEvent) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.wakes = append(o.wakes, e)
 }
 
 // waitFor polls cond until true or the deadline passes (the sweep loop runs
@@ -506,8 +513,10 @@ func newRegisterServer(got *[]mesh.Registration, mu *sync.Mutex) *httptest.Serve
 	}))
 }
 
-// hibernationSpy counts Hibernate/Wake calls — the REV-4 X1 dark-tier
-// canary's evidence surface (the gateway must NEVER drive them in P1).
+// hibernationSpy counts Hibernate/Wake calls — the S4 tier's evidence surface
+// (ISI-5831): the collapsed-ladder default must never touch them, and the
+// armed ladder's SIGSTOP/SIGCONT cadence is asserted against them. The S4
+// battery lives in hibernate_test.go.
 type hibernationSpy struct {
 	*recordingAdapter
 	mu        sync.Mutex
@@ -527,59 +536,6 @@ func (s *hibernationSpy) Wake(ctx context.Context, h mesh.Handle) error {
 	s.wake++
 	s.mu.Unlock()
 	return s.recordingAdapter.Wake(ctx, h)
-}
-
-// TestLifecycle_HibernationStaysDark is the REV-4 X1 canary (ISI-5807,
-// locked f93795d5): hibernation is CUT from the P1 batch path — even with
-// BOTH lifecycle bounds (idleToHibernate AND hibernateToStop) long past, the
-// gateway must never SIGSTOP a process into HIBERNATED and never Wake one.
-// The two-tier ladder ships at strangler S4 (ISI-5831) with the
-// claim-never-frozen invariant (D9.1); until then the only reclaim tier is
-// IDLE→STOPPED. If this test fails, someone wired Hibernate/Wake into the
-// sweep or the route path ahead of S4 — revert that, do not widen the test.
-func TestLifecycle_HibernationStaysDark(t *testing.T) {
-	spy := &hibernationSpy{recordingAdapter: newRecordingAdapter()}
-	gw, err := mesh.NewGateway(mesh.GatewayConfig{
-		Adapter:  spy,
-		Envelope: gatewayEnv(),
-		Min:      1,
-		Lifecycle: mesh.LifecycleConfig{
-			CheckInterval:   5 * time.Millisecond,
-			IdleToHibernate: 10 * time.Millisecond, // BOTH bounds tiny — the
-			HibernateToStop: 15 * time.Millisecond, // tier boundary is long past
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := gw.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-
-	// Run the pool past both bounds, then through a full stop+recreate
-	// cycle: no point in the machine may touch Hibernate/Wake.
-	waitFor(t, 2*time.Second, func() bool {
-		return gw.Processes()[0].State == mesh.StateStopped
-	}, "process never stopped")
-	s, err := gw.Route(context.Background(), "", a2a.Task{A2ATaskID: "t-dark"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	if spy.hibernate != 0 || spy.wake != 0 {
-		t.Fatalf("REV-4 X1 violation: Hibernate called %d×, Wake %d× — hibernation is S4-only (ISI-5831)",
-			spy.hibernate, spy.wake)
-	}
-	for _, p := range gw.Processes() {
-		if p.State == mesh.StateHibernated {
-			t.Fatal("REV-4 X1 violation: a process entered StateHibernated in P1")
-		}
-	}
 }
 
 // Lifecycle defaults (D4.2): the operator-default table.

@@ -261,8 +261,10 @@ func buildGateway() (*mesh.Gateway, error) {
 		AdvertiseURL: gatewayAdvertiseURL(),
 		// P1.2 lifecycle knobs (D4.2): KSQUAD_MESH_LIFECYCLE_* env the
 		// operator stamps per pool; unset fields keep the defaults (30s
-		// check / 5m idleToHibernate (S4-reserved) / 4h hibernateToStop /
-		// alwaysUp=false). The gateway owns the clock.
+		// check / 5m idleToHibernate / 4h hibernateToStop / alwaysUp=false).
+		// The gateway owns the clock. KSQUAD_MESH_LIFECYCLE_HIBERNATE=true
+		// arms the S4 two-tier ladder (ISI-5831); absent keeps the collapsed
+		// P1.2 ladder — hibernation rolls out pool-by-pool, reversibly.
 		Lifecycle: gatewayLifecycleFromEnv(),
 		Observer:  observer,
 	})
@@ -275,6 +277,7 @@ func buildGateway() (*mesh.Gateway, error) {
 func gatewayLifecycleFromEnv() mesh.LifecycleConfig {
 	return mesh.LifecycleConfig{
 		CheckInterval:   envDuration("KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL"),
+		Hibernate:       os.Getenv("KSQUAD_MESH_LIFECYCLE_HIBERNATE") == "true",
 		IdleToHibernate: envDuration("KSQUAD_MESH_LIFECYCLE_IDLE_TO_HIBERNATE"),
 		HibernateToStop: envDuration("KSQUAD_MESH_LIFECYCLE_HIBERNATE_TO_STOP"),
 		AlwaysUp:        os.Getenv("KSQUAD_MESH_LIFECYCLE_ALWAYS_UP") == "true",

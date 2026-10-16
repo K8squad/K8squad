@@ -145,7 +145,7 @@ One routed A2A task arriving at a mesh pool Gateway and reaching a ready standin
 | `ksquad.mesh.role` | string | required | stable |  | The role the standing process is provisioned for (e.g. coder, coordinator). |
 | `ksquad.mesh.pod` | string | required | stable |  | The mesh pool pod hosting the standing process (the Gateway's pod identity). |
 | `ksquad.mesh.endpoint` | string | required | stable |  | The endpoint id of the standing process the span concerns. |
-| `ksquad.mesh.selection` | string | required | stable |  | How the process was selected: "idle" (standing idle process), "overflow" (recreated from the envelope on demand), "wake" (woken from hibernation — S4 only, never emitted in P1). |
+| `ksquad.mesh.selection` | string | required | stable |  | How the process was selected: "idle" (standing idle process), "overflow" (recreated from the envelope on demand), "wake" (woken from hibernation — S4 pools only, ISI-5831; never emitted by a collapsed-ladder pool). |
 | `ksquad.duration.ms` | int | required | stable |  | Arrival→ready wall-clock duration in ms — backs ksquad.mesh.a2a.ready_latency. |
 | `ksquad.outcome` | string | required | stable |  | Route outcome (success|error|unknown). |
 
@@ -165,7 +165,7 @@ A standing role process coming up: pool boot (source=cold) or recreate-from-enve
 
 ### `mesh.wake`
 
-Planned S4 (ISI-5831): a hibernated process woken on route (SIGCONT base / cooperative override). NOT emitted in P1 — REV-4 cut hibernation from the batch path (chapter §6.1); the HIBERNATED state is dark until the strangler's S4 step carries the claim-never-frozen invariant (D9.1). The identity set stays Planned with the span so the conformance suite does not require an emitter that must not exist yet.
+S4 (ISI-5831): a hibernated process woken on route (SIGCONT base / cooperative override), or respawned at the wake boundary when the envelope model drifted (rebind-at-wake, X5). Emitted by Hibernate-armed pools only — the collapsed-ladder default never wakes. Identity stays Planned until the P1.4 telemetry polish flips the mesh family Stable (the conformance suite then requires the emitter, which exists since S4).
 
 | Attribute | Type | Requirement | Stability | WS | Description |
 |---|---|---|---|---|---|

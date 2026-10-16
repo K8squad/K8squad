@@ -33,6 +33,7 @@ package warmpool
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -201,6 +202,16 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 		if lc.AlwaysUp {
 			env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_LIFECYCLE_ALWAYS_UP", Value: "true"})
 		}
+	}
+	// S4 hibernation arm (ISI-5831, chapter §6.1/§13.4 — "ships only after
+	// the S3 batch canary is green"): the operator-wide rollout switch.
+	// Default OFF keeps every pool pod on the collapsed P1.2 ladder
+	// (idle accrues straight to stop; Hibernate/Wake stay dark), so the S4
+	// code ships dark and ops arm it per-cluster only on canary evidence —
+	// and can disarm it again without touching mesh routing (D9.3: the
+	// hibernation kill-switch is independent of KSQUAD_MESH_TEAMS).
+	if os.Getenv("KSQUAD_MESH_HIBERNATE_ENABLED") == "true" {
+		env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_LIFECYCLE_HIBERNATE", Value: "true"})
 	}
 	if spec.IngressURL != "" {
 		env = append(env, corev1.EnvVar{Name: "KSQUAD_SUPERVISOR_INGRESS_URL", Value: spec.IngressURL})

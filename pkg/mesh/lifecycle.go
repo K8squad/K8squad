@@ -73,10 +73,19 @@ type LifecycleConfig struct {
 	// CheckInterval is the gateway's regular-pace state-sweep cadence
 	// (default 30s, mirroring the cphealth 15–30s cadence).
 	CheckInterval time.Duration
+	// Hibernate arms the S4 two-tier ladder (ISI-5831, chapter §6.1 D4.1):
+	// IDLE → (idleToHibernate) SIGSTOP → HIBERNATED → (hibernateToStop from
+	// the hibernate instant) → STOPPED, and Route gains the wake tier — a
+	// hibernated process is woken (SIGCONT) instead of recreated, with the
+	// model rebound at the wake boundary when the envelope drifted (X5:
+	// rebind-at-wake, never mid-stream). false (the default) keeps the
+	// REV-4 P1.2 collapsed ladder — idle time accrues straight to the stop
+	// bound and Hibernate/Wake stay dark — so S4 rolls out as an explicit,
+	// reversible per-pool opt-in (D9.3: the runtime kill-switch that lets
+	// ops disable hibernation without disabling mesh routing).
+	Hibernate bool
 	// IdleToHibernate bounds idle time before SIGSTOP hibernation (default
-	// 5m). S4-RESERVED (ISI-5831): parsed and plumbed so the spec surface is
-	// complete, but NO P1 transition consumes it — hibernation is cut from
-	// the batch path (REV-4) and idle time runs straight to the stop bound.
+	// 5m). Consumed ONLY when Hibernate is armed (S4, ISI-5831).
 	IdleToHibernate time.Duration
 	// HibernateToStop bounds how long a process may sit idle (or, at S4,
 	// hibernated) with no run before the gateway terminates it (default 4h).
@@ -155,6 +164,9 @@ type LifecycleObserver interface {
 	// source. On the recreate path ctx is the triggering route's context, so
 	// the spawn span nests under mesh.route.
 	ObserveSpawn(ctx context.Context, e SpawnEvent)
+	// ObserveWake reports one hibernation wake (S4, ISI-5831): SIGCONT →
+	// ready — the instant-wake claim of §6.1, backing ksquad.mesh.wake.latency.
+	ObserveWake(ctx context.Context, e WakeEvent)
 }
 
 // RouteEvent is one observed routing decision.
@@ -457,4 +469,22 @@ func (s *SupervisorHealth) resetDown(pod string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.downStreak, pod)
+}
+
+// WakeEvent is one observed hibernation wake (S4, ISI-5831).
+type WakeEvent struct {
+	Team       string
+	Role       string
+	Pod        string
+	EndpointID string
+	// Duration is the wake's wall-clock time (SIGCONT → ready) — the
+	// instant-wake claim of §6.1, backing ksquad.mesh.wake.latency.
+	Duration time.Duration
+	// Rebind is true when the wake took the rebind path — the envelope's
+	// model moved while the process slept, so the wake respawned from the
+	// CURRENT envelope instead of SIGCONT (X5: rebind-at-wake, never
+	// mid-stream).
+	Rebind bool
+	// Err is non-nil when the wake failed.
+	Err error
 }

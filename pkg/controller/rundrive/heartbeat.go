@@ -166,6 +166,46 @@ func (l *LiveRuns) IsWaitingForEndpointSlot(ctx context.Context, runID string) (
 	return false, nil
 }
 
+// meshQueueWaitChecker answers "is this Run queued at the Supervisor on a
+// saturated mesh pool?" for the S4 zombie-reap exemption (ISI-5831, chapter
+// §5.4 D9.1). A mesh-routed Run whose dispatch was refused with 409 (every
+// standing process busy) sits in the Supervisor's re-drive queue with NO
+// sandbox pod — mesh runs never boot one — which is exactly the pod-less
+// predicate the ISI-5438 zombie gate reaps. The QueuedAtSupervisor condition
+// distinguishes "dispatched but waiting on Supervisor saturation" from
+// "executing" (and from "wedged"), so the zombie-Claiming reconciler
+// (ISI-5541/5542 class) does not mis-fire on it. Nil disables the exemption.
+type meshQueueWaitChecker interface {
+	IsQueuedAtSupervisor(ctx context.Context, runID string) (bool, error)
+}
+
+// IsQueuedAtSupervisor reports whether the Run with the given UID currently
+// carries a True QueuedAtSupervisor condition (ISI-5831) — the legible-wait
+// marker the dispatcher stamps while the run holds its re-drive queue
+// position behind a saturated mesh pool. Such a run is making forward
+// progress (the pool's processes are draining), not wedged: it must NOT be
+// reaped as a pod-less zombie, force-failed, and re-minted every ~10 min. A
+// list error is returned so the reaper fails SAFE toward the waiter (never
+// reap on a maybe). Fails CLOSED (false,nil) on an empty runID or a Run
+// whose UID is gone.
+func (l *LiveRuns) IsQueuedAtSupervisor(ctx context.Context, runID string) (bool, error) {
+	if l == nil || l.Reader == nil || runID == "" {
+		return false, nil
+	}
+	runs := &ksquadv1alpha1.RunList{}
+	if err := l.Reader.List(ctx, runs); err != nil {
+		return false, fmt.Errorf("rundrive.heartbeat: list runs: %w", err)
+	}
+	for i := range runs.Items {
+		if string(runs.Items[i].UID) != runID {
+			continue
+		}
+		c := meta.FindStatusCondition(runs.Items[i].Status.Conditions, ConditionQueuedAtSupervisor)
+		return c != nil && c.Status == metav1.ConditionTrue, nil
+	}
+	return false, nil
+}
+
 // TerminalOrGone reports whether the Run owning a sandbox pod has reached a
 // terminal phase (Succeeded/Failed/Cancelled) or no longer exists (ISI-5438).
 // A sandbox whose Run is terminal is LEAKED — the a2a-settlement reaper
@@ -238,6 +278,11 @@ type HeartbeatSweeper struct {
 	// endpoint (ISI-5591 / WaitingForEndpointSlot). Nil disables the exemption
 	// (pre-ISI-5591 behavior; tests opt in explicitly).
 	EndpointWait endpointWaitChecker
+	// MeshQueueWait exempts a pod-less in-flight claim from the ISI-5438
+	// zombie reap when its Run is legitimately queued at the Supervisor
+	// behind a saturated mesh pool (ISI-5831 / QueuedAtSupervisor — S4,
+	// D9.1). Nil disables the exemption (pre-S4 behavior; tests opt in).
+	MeshQueueWait meshQueueWaitChecker
 	// ZombieStallGrace overrides DefaultZombieStallGrace when > 0 (tests shrink
 	// it). A pod-less in-flight claim older than this is released as a zombie.
 	ZombieStallGrace time.Duration
@@ -342,9 +387,10 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 					// through to renew and retry next level-triggered tick.
 					s.logf("rundrive.heartbeat: sandbox liveness for %s run %s: %v — renewing, zombie check deferred",
 						hc.workItemID, hc.holderRun, err)
-				} else if !live && !s.endpointSlotWaiter(ctx, hc) {
-					// Pod-less past the grace AND not a legitimate endpoint-slot
-					// waiter (ISI-5591): a genuine zombie. Release it as failed.
+			} else if !live && !s.endpointSlotWaiter(ctx, hc) && !s.meshQueueWaiter(ctx, hc) {
+				// Pod-less past the grace AND not a legitimate endpoint-slot
+				// waiter (ISI-5591) AND not a Supervisor-queued mesh run
+				// (ISI-5831 S4): a genuine zombie. Release it as failed.
 					if err := s.releaseZombie(ctx, hc); err != nil {
 						s.logf("rundrive.heartbeat: zombie-release %s: %v", hc.workItemID, err)
 					} else {
@@ -609,6 +655,30 @@ func (s *HeartbeatSweeper) endpointSlotWaiter(ctx context.Context, hc heldClaim)
 	}
 	if waiting {
 		s.logf("rundrive.heartbeat: run %s (item %s) queued on busy BYO endpoint slot, held %s — exempt from zombie reap, renewing lease to hold queue position",
+			hc.holderRun, hc.workItemID, s.clock().Sub(hc.acquiredAt).Round(time.Second))
+	}
+	return waiting
+}
+
+// meshQueueWaiter reports whether a pod-less in-flight claim must be EXEMPTED
+// from the zombie reap because its Run is queued at the Supervisor behind a
+// saturated mesh pool (ISI-5831 S4, D9.1: QueuedAtSupervisor). The re-drive
+// retry IS the bounded saturation queue (§5.3); the claim is renewed to hold
+// the run's queue position, never released on the wait. Fails SAFE toward the
+// waiter on a checker error (never reap on a maybe) — identical discipline to
+// endpointSlotWaiter.
+func (s *HeartbeatSweeper) meshQueueWaiter(ctx context.Context, hc heldClaim) bool {
+	if s.MeshQueueWait == nil || hc.holderRun == "" {
+		return false
+	}
+	waiting, err := s.MeshQueueWait.IsQueuedAtSupervisor(ctx, hc.holderRun)
+	if err != nil {
+		s.logf("rundrive.heartbeat: mesh-queue check for %s run %s: %v — exempting from zombie reap (fail-safe), renewing",
+			hc.workItemID, hc.holderRun, err)
+		return true
+	}
+	if waiting {
+		s.logf("rundrive.heartbeat: run %s (item %s) queued at Supervisor on saturated mesh pool, held %s — exempt from zombie reap, renewing lease to hold queue position",
 			hc.holderRun, hc.workItemID, s.clock().Sub(hc.acquiredAt).Round(time.Second))
 	}
 	return waiting

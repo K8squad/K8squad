@@ -42,6 +42,8 @@ import (
 	"os"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	wire "github.com/K8squad/K8squad/pkg/a2a"
@@ -121,6 +123,75 @@ type MeshRouteConfig struct {
 // Run-CR contract is frozen for P1 (X4), and this adds no field to spec or
 // status.
 const annotationDispatchPath = "ksquad.io/dispatch-path"
+
+// ConditionQueuedAtSupervisor is the S4 legible-wait marker (ISI-5831,
+// chapter §5.4 D9.1): True means the Run's dispatch was accepted by the mesh
+// route leg but every (team, role) pool process is busy — the run sits in the
+// Supervisor's re-drive saturation queue, dispatched nowhere until a process
+// frees. It distinguishes "queued at the Supervisor" from "executing" so the
+// zombie-Claiming sweep (ISI-5541/5542 class, ISI-5438 gate) does not
+// mis-fire on a pod-less run that is legitimately waiting on pool capacity
+// (a mesh run never boots a sandbox pod). The dispatcher stamps it on a 409
+// saturation refusal and clears it on the first delivered dispatch — the same
+// discipline as WaitingForEndpointSlot (ISI-5591).
+const ConditionQueuedAtSupervisor = "QueuedAtSupervisor"
+
+// isMeshSaturation reports whether a mesh-leg submit error is the saturation
+// refusal (§5.3: every standing process busy, band exhausted). The gateway
+// answers 409 with the gateway-local sentinel text (D3.3 guard #3 /
+// ErrNoIdleProcess); the a2a HTTP transport folds status + body into the
+// returned error, so the exact status line and one of the sentinel texts
+// must appear. (Matched on "409 Conflict", not bare "409" — a port number in
+// the folded URL must never read as the status.)
+func isMeshSaturation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "409 Conflict") {
+		return false
+	}
+	return strings.Contains(msg, "mesh: target process has an active task") ||
+		strings.Contains(msg, "mesh: no idle process in pool")
+}
+
+// markMeshQueued stamps or clears the QueuedAtSupervisor condition on the
+// Run CR behind the task (best-effort, exactly like markMeshDispatch: the
+// queue MECHANISM is the re-drive retry, the condition is the legible
+// surface the zombie sweep exempts on). queued=true stamps
+// Reason=MeshPoolSaturated; queued=false removes a stale marker so a
+// delivered run reads as executing again.
+func (d *operatorDispatch) markMeshQueued(ctx context.Context, a2aTaskID string, queued bool) {
+	c := d.cfg.Client
+	if c == nil {
+		return
+	}
+	run, err := d.runByUID(ctx, cleanRunID(a2aTaskID))
+	if err != nil {
+		return // the dispatch already validated the Run exists; a race here is cosmetic
+	}
+	if queued {
+		patched := run.DeepCopy()
+		if meta.SetStatusCondition(&patched.Status.Conditions, metav1.Condition{
+			Type:               ConditionQueuedAtSupervisor,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: run.Generation,
+			Reason:             "MeshPoolSaturated",
+			Message: "Mesh route leg refused (pool saturated): the run is queued at the Supervisor " +
+				"and re-drives when a standing process frees. Exempt from the pod-less zombie reap (D9.1).",
+		}) {
+			_ = c.Status().Patch(ctx, patched, client.MergeFrom(run))
+		}
+		return
+	}
+	if meta.FindStatusCondition(run.Status.Conditions, ConditionQueuedAtSupervisor) == nil {
+		return
+	}
+	patched := run.DeepCopy()
+	if meta.RemoveStatusCondition(&patched.Status.Conditions, ConditionQueuedAtSupervisor) {
+		_ = c.Status().Patch(ctx, patched, client.MergeFrom(run))
+	}
+}
 
 // meshRoute resolves the mesh task URL for a dispatch, or reports that the
 // legacy path should run. team/role ride the task identity buildTask already
