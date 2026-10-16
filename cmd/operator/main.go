@@ -89,6 +89,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
+	"github.com/K8squad/K8squad/pkg/mesh"
 	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/scmwriteback"
@@ -1097,19 +1098,27 @@ func main() {
 			meshImage := images.ImageFor(string(ksquadv1alpha1.RuntimeTypeOpenCode))
 			ingressURL := os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL")
 			meshNS := os.Getenv("KSQUAD_WARM_POOL_NAMESPACE")
+			// The boot-time spec table: one MeshPoolSpec per flagged (team,
+			// role) pool, keyed by pod name. The SAME specs drive the P1.4
+			// gateway-health loop's recreate leg (ISI-6010) — a drained pod is
+			// rebuilt from exactly the spec it was booted with.
+			meshSpecs := map[string]kubepool.MeshPoolSpec{}
+			for team := range meshTeams {
+				meshSpecs[kubepool.MeshPoolPodName(team, meshRole)] = kubepool.MeshPoolSpec{
+					Team:       team,
+					Role:       meshRole,
+					Image:      meshImage,
+					Namespace:  meshNS,
+					Min:        1, // P1.1: min:1 always-up
+					IngressURL: ingressURL,
+					Model:      os.Getenv("KSQUAD_MESH_MODEL"),
+					Skills:     rundrive.MeshCSV(os.Getenv("KSQUAD_MESH_SKILLS")),
+					ProjectPVC: os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
+				}
+			}
 			_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 				for team := range meshTeams {
-					spec := kubepool.MeshPoolSpec{
-						Team:       team,
-						Role:       meshRole,
-						Image:      meshImage,
-						Namespace:  meshNS,
-						Min:        1, // P1.1: min:1 always-up
-						IngressURL: ingressURL,
-						Model:      os.Getenv("KSQUAD_MESH_MODEL"),
-						Skills:     rundrive.MeshCSV(os.Getenv("KSQUAD_MESH_SKILLS")),
-						ProjectPVC: os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
-					}
+					spec := meshSpecs[kubepool.MeshPoolPodName(team, meshRole)]
 					if err := kubeProvisioner.BootMeshPool(ctx, spec); err != nil {
 						// Loud but non-fatal: a failed pool boot must not take
 						// the operator down — the canary's dispatch falls back
@@ -1121,6 +1130,31 @@ func main() {
 				}
 				return nil
 			}))
+
+			// AgentMesh P1.4 gateway-health loop (ISI-6010, chapter §2.4,
+			// D6.1/D6.2): the supervisor consumes gateway health — on gateway
+			// down (endpoint TTL-expiry in coord.mesh_endpoint) or a wedged
+			// /ready surface, drain the pod's endpoints and recreate the pod
+			// from its envelope-stamped spec. Drain-first + retryable, the
+			// P1.2 invariants one level up. Runs as a manager Runnable so the
+			// cache/client are synced before the first sweep.
+			if registry, err := coord.NewMeshRegistry(db); err == nil {
+				sup, serr := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{
+					Store:    meshHealthStore{registry: registry},
+					Recreate: meshPodRecreator{provisioner: kubeProvisioner, specs: meshSpecs},
+					Health:   func(ctx context.Context, endpoint string) bool { return mesh.ProbeReady(ctx, nil, endpoint) },
+					TTL:      coord.MeshEndpointTTL,
+					Sink:     meshSupervisorLogSink{},
+				})
+				if serr == nil {
+					_ = mgr.Add(manager.RunnableFunc(sup.Start))
+					ctrl.Log.Info("AgentMesh supervisor gateway-health loop enabled", "ttl", coord.MeshEndpointTTL)
+				} else {
+					ctrl.Log.Error(serr, "AgentMesh supervisor gateway-health loop not started")
+				}
+			} else {
+				ctrl.Log.Error(err, "mesh registry unavailable; gateway-health loop not started")
+			}
 		}
 
 		// AgentMesh P1.3 prescheduling (chapter §3/§4 D2.1/D2.2, ISI-5824):
@@ -1644,28 +1678,16 @@ func main() {
 			os.Exit(1)
 		}
 
-		// AgentMesh gateway health supervisor (ISI-6010 P1.4b): the operator-side
-		// loop that drives the full health loop (D6.1/D6.2) by sweeping TTL-expired
-		// endpoints from coord.mesh_endpoint (the TTL-expiry half) and detecting
-		// downed gateway pods (the gateway-down half). Only started when the mesh
-		// is flagged on (KSQUAD_MESH_TEAMS). The recreate-on-demand path for stopped
-		// slots is handled by the gateway itself (P1.2, PR #914); whole-pod
-		// restarts are delegated to the pod's liveness probe.
-		if teams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(teams) > 0 {
-			if registry, err := coord.NewMeshRegistry(db); err == nil {
-				if svc, err := rundrive.NewMeshSupervisor(registry); err == nil {
-					if err := mgr.Add(svc); err != nil {
-						ctrl.Log.Error(err, "unable to register mesh supervisor")
-						os.Exit(1)
-					}
-					ctrl.Log.Info("AgentMesh supervisor registered (TTL sweep over coord.mesh_endpoint)")
-				} else {
-					ctrl.Log.Error(err, "mesh supervisor unavailable")
-				}
-			} else {
-				ctrl.Log.Error(err, "mesh registry unavailable; supervisor not started")
-			}
-		}
+		// AgentMesh supervisor wiring (ISI-6010): the TTL sweep that ce1445f0
+		// registered here (rundrive.MeshSupervisor) is deliberately NOT
+		// registered alongside the gateway-health loop above. Sweep deletes
+		// TTL-expired rows — exactly the health loop's drain+recreate
+		// trigger — so running both races the signal: when Sweep wins, the
+		// dead pod's rows vanish before the health loop ever sees them and
+		// the pod is never recreated. The health loop's DrainPod subsumes the
+		// sweep's table-hygiene role (every all-expired pod is drained, which
+		// deletes its rows). rundrive.MeshSupervisor remains as the tested
+		// sweep-only seam for wiring that wants registry hygiene alone.
 
 		// ISI-5615 (ISI-5569 WS-D.1, ADR-0027 §3.2) — party-mode advancer: level-triggered ticker
 		// that drives active party sessions forward (mint facilitator rounds / close on budget). It

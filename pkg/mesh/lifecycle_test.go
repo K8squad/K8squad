@@ -554,3 +554,326 @@ func TestLifecycle_Defaults(t *testing.T) {
 		t.Fatal("alwaysUp default = false")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// P1.4 supervisor gateway-health tests (ISI-6010): the drain/recreate loop
+// riding the same fake-seam harness as the P1.2 lifecycle tests above.
+
+// fakeSupervisorStore scripts the registry read and records drains.
+type fakeSupervisorStore struct {
+	mu     sync.Mutex
+	eps    []mesh.EndpointHealth
+	err    error
+	drains []string
+}
+
+func (s *fakeSupervisorStore) Endpoints(context.Context) ([]mesh.EndpointHealth, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]mesh.EndpointHealth(nil), s.eps...), nil
+}
+
+func (s *fakeSupervisorStore) DrainPod(_ context.Context, pod string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.drains = append(s.drains, pod)
+	// The real drain deletes the pod's rows; mirror that so the next sweep
+	// sees the drained state.
+	kept := s.eps[:0]
+	for _, ep := range s.eps {
+		if ep.Pod != pod {
+			kept = append(kept, ep)
+		}
+	}
+	s.eps = kept
+	return nil
+}
+
+func (s *fakeSupervisorStore) drained(pod string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.drains {
+		if d == pod {
+			return true
+		}
+	}
+	return false
+}
+
+// fakePodRecreator records recreates and can be scripted to fail.
+type fakePodRecreator struct {
+	mu    sync.Mutex
+	err   error
+	calls []string
+}
+
+func (r *fakePodRecreator) RecreatePod(_ context.Context, pod string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return r.err
+	}
+	r.calls = append(r.calls, pod)
+	return nil
+}
+
+func (r *fakePodRecreator) recreated(pod string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, c := range r.calls {
+		if c == pod {
+			n++
+		}
+	}
+	return n
+}
+
+// opRecorder records drain/recreate ORDER across both seams — the evidence
+// for the drain-first (no-phantom-routable) invariant.
+type opRecorder struct {
+	mu  sync.Mutex
+	ops []string
+}
+
+func (o *opRecorder) record(op string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ops = append(o.ops, op)
+}
+
+func supervisorFixture(now time.Time) (*fakeSupervisorStore, *fakePodRecreator) {
+	store := &fakeSupervisorStore{eps: []mesh.EndpointHealth{
+		// pool-aaa: heartbeat 5m ago — TTL-expired (gateway down).
+		{EndpointID: "ep-a1", Pod: "pool-aaa", Team: "team-acme", Role: "coder", Endpoint: "http://10.0.0.1:8080", LastSeenAt: now.Add(-5 * time.Minute)},
+		// pool-bbb: heartbeat 10s ago — live.
+		{EndpointID: "ep-b1", Pod: "pool-bbb", Team: "team-acme", Role: "coder", Endpoint: "http://10.0.0.2:8080", LastSeenAt: now.Add(-10 * time.Second)},
+	}}
+	return store, &fakePodRecreator{}
+}
+
+// The TTL leg: a pod with ZERO live endpoints is drained and recreated; a
+// live pod is untouched.
+func TestSupervisorHealth_TTLExpiryDrainsAndRecreates(t *testing.T) {
+	now := time.Now()
+	store, rec := supervisorFixture(now)
+	sup, err := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{
+		Store:    store,
+		Recreate: rec,
+		TTL:      90 * time.Second,
+		Now:      func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sup.SweepOnce(context.Background())
+
+	if !store.drained("pool-aaa") {
+		t.Fatalf("pool-aaa was not drained: drains=%v", store.drains)
+	}
+	if n := rec.recreated("pool-aaa"); n != 1 {
+		t.Fatalf("pool-aaa recreates = %d, want 1", n)
+	}
+	if store.drained("pool-bbb") || rec.recreated("pool-bbb") != 0 {
+		t.Fatalf("live pod pool-bbb was touched: drains=%v recreates=%d", store.drains, rec.recreated("pool-bbb"))
+	}
+
+	// A second sweep is a no-op: the drained pod is gone from the registry
+	// and its recreate succeeded (nothing parked in pending).
+	sup.SweepOnce(context.Background())
+	if n := rec.recreated("pool-aaa"); n != 1 {
+		t.Fatalf("pool-aaa recreated again on a quiet sweep: %d, want 1", n)
+	}
+}
+
+// A failed recreate is RETRYABLE (the P1.2 invariant one level up): the pod
+// stays drained (never phantom-routable) and every sweep retries until the
+// recreate succeeds.
+func TestSupervisorHealth_RecreateFailureRetryable(t *testing.T) {
+	now := time.Now()
+	store, rec := supervisorFixture(now)
+	rec.err = errors.New("scheduler boom")
+	sup, _ := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{
+		Store:    store,
+		Recreate: rec,
+		TTL:      90 * time.Second,
+		Now:      func() time.Time { return now },
+	})
+
+	sup.SweepOnce(context.Background())
+	if !store.drained("pool-aaa") {
+		t.Fatal("pool-aaa was not drained")
+	}
+	if n := rec.recreated("pool-aaa"); n != 0 {
+		t.Fatalf("failed recreate recorded a success: %d", n)
+	}
+
+	// Still failing: the pending pod is retried every sweep even though its
+	// rows are gone from the registry (the TTL leg can no longer see it).
+	sup.SweepOnce(context.Background())
+
+	// Recover: the next sweep's retry lands the recreate.
+	rec.mu.Lock()
+	rec.err = nil
+	rec.mu.Unlock()
+	sup.SweepOnce(context.Background())
+	if n := rec.recreated("pool-aaa"); n != 1 {
+		t.Fatalf("pool-aaa recreates after recovery = %d, want 1", n)
+	}
+
+	// Recovered and quiet: no further retries.
+	sup.SweepOnce(context.Background())
+	if n := rec.recreated("pool-aaa"); n != 1 {
+		t.Fatalf("pool-aaa recreated after success: %d, want 1", n)
+	}
+}
+
+// The health leg: a pod whose rows are TTL-live but whose /ready probe fails
+// is drained+recreated only after DownThreshold CONSECUTIVE failures — one
+// flap never bounces a healthy pool.
+func TestSupervisorHealth_ProbeDownThreshold(t *testing.T) {
+	now := time.Now()
+	store, rec := supervisorFixture(now)
+	// Drop the expired pod so only the live (probe-able) one remains.
+	store.eps = store.eps[1:]
+	down := true
+	sup, _ := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{
+		Store:    store,
+		Recreate: rec,
+		TTL:      90 * time.Second,
+		Health: func(context.Context, string) bool {
+			return !down
+		},
+		Now: func() time.Time { return now },
+	})
+
+	// First failed probe: below the default threshold (2) — no action.
+	sup.SweepOnce(context.Background())
+	if store.drained("pool-bbb") {
+		t.Fatal("one failed probe drained the pod — threshold must be 2 consecutive")
+	}
+
+	// A healthy probe resets the streak.
+	down = false
+	sup.SweepOnce(context.Background())
+	down = true
+	sup.SweepOnce(context.Background())
+	if store.drained("pool-bbb") {
+		t.Fatal("a healthy probe did not reset the consecutive-failure streak")
+	}
+
+	// Two consecutive failures: drain + recreate.
+	sup.SweepOnce(context.Background())
+	if !store.drained("pool-bbb") {
+		t.Fatal("two consecutive failed probes did not drain the pod")
+	}
+	if n := rec.recreated("pool-bbb"); n != 1 {
+		t.Fatalf("pool-bbb recreates = %d, want 1", n)
+	}
+}
+
+// Drain FIRST, recreate SECOND — while the recreate is in flight the registry
+// holds nothing for the pod, so the route leg can never hand a task to a
+// gateway that is going away (no phantom routable; P1.2's no-phantom-ACTIVE
+// one level up).
+func TestSupervisorHealth_DrainBeforeRecreate(t *testing.T) {
+	now := time.Now()
+	store, rec := supervisorFixture(now)
+	order := &opRecorder{}
+
+	// Wrap both seams with the order recorder.
+	orderedStore := &orderStore{inner: store, rec: order}
+	orderedRec := &orderRecreator{inner: rec, rec: order}
+
+	sup, _ := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{
+		Store:    orderedStore,
+		Recreate: orderedRec,
+		TTL:      90 * time.Second,
+		Now:      func() time.Time { return now },
+	})
+	sup.SweepOnce(context.Background())
+
+	order.mu.Lock()
+	defer order.mu.Unlock()
+	var drainIdx, recreateIdx = -1, -1
+	for i, op := range order.ops {
+		if op == "drain:pool-aaa" {
+			drainIdx = i
+		}
+		if op == "recreate:pool-aaa" {
+			recreateIdx = i
+		}
+	}
+	if drainIdx == -1 || recreateIdx == -1 {
+		t.Fatalf("missing drain or recreate: ops=%v", order.ops)
+	}
+	if drainIdx > recreateIdx {
+		t.Fatalf("recreate ran BEFORE drain: ops=%v — violates the no-phantom invariant", order.ops)
+	}
+}
+
+type orderStore struct {
+	inner *fakeSupervisorStore
+	rec   *opRecorder
+}
+
+func (s *orderStore) Endpoints(ctx context.Context) ([]mesh.EndpointHealth, error) {
+	return s.inner.Endpoints(ctx)
+}
+
+func (s *orderStore) DrainPod(ctx context.Context, pod string) error {
+	s.rec.record("drain:" + pod)
+	return s.inner.DrainPod(ctx, pod)
+}
+
+type orderRecreator struct {
+	inner *fakePodRecreator
+	rec   *opRecorder
+}
+
+func (r *orderRecreator) RecreatePod(ctx context.Context, pod string) error {
+	r.rec.record("recreate:" + pod)
+	return r.inner.RecreatePod(ctx, pod)
+}
+
+// Validation: the loop refuses a missing Store or Recreator.
+func TestSupervisorHealth_ConfigValidation(t *testing.T) {
+	if _, err := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{}); err == nil {
+		t.Fatal("nil Store accepted")
+	}
+	if _, err := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{Store: &fakeSupervisorStore{}}); err == nil {
+		t.Fatal("nil Recreate accepted")
+	}
+}
+
+// ProbeReady is the supervisor-side "gateway up" signal: 200 from /ready is
+// up; 503 (not serving), a wrong path, and an unreachable gateway are down.
+func TestProbeReady(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ready" {
+			t.Errorf("probe hit %s, want /ready", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer up.Close()
+	if !mesh.ProbeReady(context.Background(), nil, up.URL+"/") {
+		t.Fatal("200 /ready gateway probed down")
+	}
+
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer down.Close()
+	if mesh.ProbeReady(context.Background(), nil, down.URL) {
+		t.Fatal("503 /ready gateway probed up")
+	}
+
+	// Unreachable (a listener that never answers in time / a dead pod IP).
+	if mesh.ProbeReady(context.Background(), nil, "http://127.0.0.1:1") {
+		t.Fatal("unreachable gateway probed up")
+	}
+}
