@@ -454,8 +454,9 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		Identity:   identity,
 		// MCPEndpoints/MCPTokenEnv deliver the capability envelope to the
 		// pod per run (ISI-5017). MCPTokenEnv is secret material — never
-		// logged.
-		MCPEndpoints: mcpEndpoints,
+		// logged. The host assembly IR converts to the module wire IR at
+		// this seam (P3.2, ISI-6035).
+		MCPEndpoints: wire.MCPEndpointsFromCapability(mcpEndpoints),
 		MCPTokenEnv:  mcpTokens,
 		// CredentialsMounted is the §7.3 contract: the reconciler env-injects
 		// the credential Secret into the runtime container. The v1

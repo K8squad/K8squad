@@ -55,6 +55,7 @@ require (
 )
 
 require (
+	github.com/K8sAgentMesh/K8sAgentMesh v0.0.0-20261016153232-2454c8bf036b
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
@@ -126,3 +127,5 @@ require (
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
+
+replace github.com/K8sAgentMesh/K8sAgentMesh => ./third_party/k8sagentmesh

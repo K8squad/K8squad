@@ -1028,7 +1028,7 @@ func TestSubmitTaskDeliversMCPEnvelope(t *testing.T) {
 
 	_, err = e.SubmitTask(context.Background(), a2a.Task{
 		A2ATaskID: "run-mcp",
-		MCPEndpoints: []capability.Endpoint{{
+		MCPEndpoints: a2a.MCPEndpointsFromCapability([]capability.Endpoint{{
 			Name:       "ksquad-memory-authoring",
 			Transport:  "streamable-http",
 			URL:        "http://ksquad-memory.k8squad-system.svc.cluster.local:8080/mcp",
@@ -1037,7 +1037,7 @@ func TestSubmitTaskDeliversMCPEnvelope(t *testing.T) {
 			CredentialSecretRef: &apiv1alpha1.SecretRef{
 				Name: "run-mcp-authoring-token",
 			},
-		}},
+		}}),
 		MCPTokenEnv: map[string]string{"KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN": "sekret-token"},
 	})
 	if err != nil {
@@ -1098,12 +1098,12 @@ func TestSubmitTaskFailsClosedOnMissingMCPToken(t *testing.T) {
 	e := New(rt, &fakeRunner{outcome: Outcome{State: a2a.TaskCompleted}}, Config{ShimVersion: "test"})
 	_, err = e.SubmitTask(context.Background(), a2a.Task{
 		A2ATaskID: "run-missing-token",
-		MCPEndpoints: []capability.Endpoint{{
+		MCPEndpoints: a2a.MCPEndpointsFromCapability([]capability.Endpoint{{
 			Name:      "ksquad-memory-authoring",
 			Transport: "streamable-http",
 			URL:       "http://svc/mcp",
 			EnvNames:  []string{"KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN"},
-		}},
+		}}),
 	})
 	if err == nil {
 		t.Fatal("expected fail-closed error when the MCP credential value is absent")

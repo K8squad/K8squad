@@ -16,6 +16,7 @@ via Syft and signed with cosign. Regenerate a local snapshot with:
 
 | Module | Version | License | SPDX ID |
 |--------|---------|---------|---------|
+| github.com/K8sAgentMesh/K8sAgentMesh | v0.0.0-20261016153232-2454c8bf036b | Apache License 2.0 | Apache-2.0 |
 | github.com/stretchr/testify | v1.9.0 | MIT | MIT |
 | k8s.io/apimachinery | v0.31.3 | Apache License 2.0 | Apache-2.0 |
 | sigs.k8s.io/controller-runtime | v0.19.3 | Apache License 2.0 | Apache-2.0 |
@@ -48,6 +49,14 @@ any distributed KSquad binary or container image.
     LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
+
+### Apache-2.0 — github.com/K8sAgentMesh/K8sAgentMesh
+
+The K8sAgentMesh module (vendored at `third_party/k8sagentmesh` until the
+P3.7 cutover pin) is distributed under the Apache License, Version 2.0, the
+same license that governs KSquad. Its `LICENSE` and `NOTICE` are reproduced
+in `third_party/k8sagentmesh/`; the code was lifted out of this repository's
+`pkg/a2a` (roadmap P3, ISI-5827/ISI-6035).
 
 ### Apache-2.0 — k8s.io/apimachinery, sigs.k8s.io/controller-runtime
 
