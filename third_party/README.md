@@ -19,7 +19,7 @@ here.
 
 - Source: https://github.com/K8sAgentMesh/K8sAgentMesh
 - Pinned commit: `2454c8bf036bc035b88ba9ad4d4ba4817be762f5`
-  (pseudo-version `v0.0.0-20261016153232-2454c8bf036b`, kept in `go.mod`'s
+  (pseudo-version `v0.0.0-20261016133232-2454c8bf036b`, kept in `go.mod`'s
   `require` line as provenance for the pin)
 - Synced: 2026-10-16 (ISI-6035, P3.2 — the a2a package lift)
 

@@ -16,7 +16,7 @@ via Syft and signed with cosign. Regenerate a local snapshot with:
 
 | Module | Version | License | SPDX ID |
 |--------|---------|---------|---------|
-| github.com/K8sAgentMesh/K8sAgentMesh | v0.0.0-20261016153232-2454c8bf036b | Apache License 2.0 | Apache-2.0 |
+| github.com/K8sAgentMesh/K8sAgentMesh | v0.0.0-20261016133232-2454c8bf036b | Apache License 2.0 | Apache-2.0 |
 | github.com/stretchr/testify | v1.9.0 | MIT | MIT |
 | k8s.io/apimachinery | v0.31.3 | Apache License 2.0 | Apache-2.0 |
 | sigs.k8s.io/controller-runtime | v0.19.3 | Apache License 2.0 | Apache-2.0 |
