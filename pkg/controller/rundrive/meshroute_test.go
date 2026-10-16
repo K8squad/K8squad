@@ -33,16 +33,16 @@ import (
 
 	"github.com/K8squad/K8squad/api/v1alpha1"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
-	"github.com/K8squad/K8squad/pkg/coord"
+	agentmesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
 )
 
 // fakeMeshLookup is the registry-read seam bound in tests.
 type fakeMeshLookup struct {
-	eps []coord.MeshEndpoint
+	eps []agentmesh.Endpoint
 	err error
 }
 
-func (f fakeMeshLookup) LookupTeamRole(context.Context, string, string) ([]coord.MeshEndpoint, error) {
+func (f fakeMeshLookup) LookupTeamRole(context.Context, string, string) ([]agentmesh.Endpoint, error) {
 	return f.eps, f.err
 }
 
@@ -50,7 +50,7 @@ func (f fakeMeshLookup) LookupTeamRole(context.Context, string, string) ([]coord
 // registry (the reversibility fallback); routes to the first LRU endpoint
 // for a flagged team; errors loudly on a registry failure.
 func TestMeshRoute_Decisions(t *testing.T) {
-	eps := []coord.MeshEndpoint{{EndpointID: "e0", Endpoint: "http://10.0.0.1:8081"}}
+	eps := []agentmesh.Endpoint{{EndpointID: "e0", Endpoint: "http://10.0.0.1:8081"}}
 	task := wire.Task{A2ATaskID: "run-1", Identity: wire.AgentIdentity{Squad: "team-acme", Name: "coder"}}
 
 	t.Run("nil config", func(t *testing.T) {
@@ -158,7 +158,7 @@ func meshTestTask(runUID string) wire.Task {
 // Submit routes a flagged team's task to the registered endpoint AND stamps
 // the Run's dispatch-path annotation — the run-end canary slice's source.
 func TestSubmit_MeshRoutesAndStampsRun(t *testing.T) {
-	eps := []coord.MeshEndpoint{{EndpointID: "e0", Endpoint: ""}} // endpoint filled below
+	eps := []agentmesh.Endpoint{{EndpointID: "e0", Endpoint: ""}} // endpoint filled below
 	d, srv, hits := newMeshDispatchTest(t, MeshTeamSet{"team-acme": {}}, nil)
 	eps[0].Endpoint = srv.URL
 	d.cfg.MeshRoute.Lookup = fakeMeshLookup{eps: eps}
@@ -194,7 +194,7 @@ func TestSubmit_FlagOffSkipsMesh(t *testing.T) {
 
 	// Point the lookup at the server anyway: a flag-off dispatch must not
 	// reach it even though an endpoint exists.
-	d.cfg.MeshRoute.Lookup = fakeMeshLookup{eps: []coord.MeshEndpoint{{EndpointID: "e0", Endpoint: srv.URL}}}
+	d.cfg.MeshRoute.Lookup = fakeMeshLookup{eps: []agentmesh.Endpoint{{EndpointID: "e0", Endpoint: srv.URL}}}
 
 	st := sandboxTransport{d}
 	// The legacy leg with no bound sandbox spawns `shim run` via stdio —
@@ -249,7 +249,7 @@ func TestSubmit_MeshSaturationStampsQueuedThenClears(t *testing.T) {
 		cfg: OperatorDispatchConfig{
 			Client:    cl,
 			MeshRoute: &MeshRouteConfig{Teams: MeshTeamSet{"team-acme": {}},
-				Lookup: fakeMeshLookup{eps: []coord.MeshEndpoint{{EndpointID: "e0", Endpoint: srv.URL}}}},
+				Lookup: fakeMeshLookup{eps: []agentmesh.Endpoint{{EndpointID: "e0", Endpoint: srv.URL}}}},
 		},
 		httpClient: srv.Client(),
 	}

@@ -38,7 +38,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/K8squad/K8squad/pkg/a2a"
-	"github.com/K8squad/K8squad/pkg/mesh"
+	mesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
 	"github.com/K8squad/K8squad/pkg/telemetry/meshobs"
 	ksqsemconv "github.com/K8squad/K8squad/pkg/telemetry/semconv"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"

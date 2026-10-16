@@ -216,7 +216,7 @@ func TestMeshThinThreadE2E(t *testing.T) {
 			Client: cl,
 			MeshRoute: &MeshRouteConfig{
 				Teams:  MeshTeamSet{team: {}},
-				Lookup: registry,
+				Lookup: AsMeshRegistry(registry),
 			},
 		},
 		httpClient: newDispatchHTTPClient(time.Second * 30),

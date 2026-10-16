@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package meshobs is the pod-side AgentMesh lifecycle telemetry observer
 // (chapter §8.2/§8.3, AgentMesh P1.2 — ISI-5823). It implements the generic
-// pkg/mesh.LifecycleObserver seam on the k8squad OTel spine:
+// mesh.LifecycleObserver seam (the K8sAgentMesh module) on the k8squad OTel spine:
 //
 //   - mesh.route / mesh.spawn spans (registry: pkg/telemetry/semconv — the
 //     conformance test drives THIS package, so the registry contract and the
@@ -49,7 +49,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/K8squad/K8squad/pkg/mesh"
+	mesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
 	ksqsemconv "github.com/K8squad/K8squad/pkg/telemetry/semconv"
 )
 

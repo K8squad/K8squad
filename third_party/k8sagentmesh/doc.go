@@ -7,7 +7,12 @@
 //   - mesh    — the RuntimeAdapter 7-op contract (Spawn/Register/Route/
 //     Hibernate/Wake/Stop/Recreate), the per-pod Gateway process manager,
 //     the router, the lifecycle state machine, the child-process substrate
-//     and the runtime adapters (opencode #1, codex #2).
+//     and the runtime adapters (opencode #1, codex #2); plus the
+//     Supervisor-side registration seams: the mesh Registry store interface
+//     (upsert/heartbeat/prune/deregister/lookup/sweep/list), the
+//     registration Ingress (the gateway POST surface), the TTL-prune
+//     Sweeper loop, the health-sweep Supervisor loop and the
+//     route-to-endpoint selection leg.
 //   - a2a     — the A2A wire types (Task/Event/Status/AgentCard/...).
 //
 // Hosts (adopters) keep their own control planes and plug in behind these

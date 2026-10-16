@@ -34,11 +34,18 @@ limitations under the License.
 // mesh when a gateway is actually registered and heartbeating, so flag-on
 // with no pool is a no-op, and rollback is a flag flip (or gateway
 // deregistration) with in-flight runs re-driving safely.
+//
+// At P3.7 the selection mechanism — the flag/set, the (team, role) endpoint
+// lookup seam, the LRU first-pick and the saturation refusal match — is the
+// AgentMesh module's mesh.Route/mesh.IsSaturation (lifted verbatim at P3.4);
+// the re-export aliases below keep the host names. What stays k8squad-side on
+// purpose: the KSQUAD_MESH_TEAMS env knob, the store binding
+// (coord.MeshRegistry via AsMeshRegistry), the Run CR annotation/condition
+// surfaces and the at-most-once/claim guards (D3.3).
 package rundrive
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 
@@ -47,38 +54,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	wire "github.com/K8squad/K8squad/pkg/a2a"
-	"github.com/K8squad/K8squad/pkg/coord"
+
+	agentmesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
 )
 
 // MeshTeamFlag decides whether a team's Runs take the mesh route leg. The
 // default is the env-comma-list set (KSQUAD_MESH_TEAMS, D9.3 per-team
-// canary); tests bind a fake.
-type MeshTeamFlag interface {
-	// Enabled reports whether team's dispatch should route-to-endpoint.
-	Enabled(team string) bool
-}
+// canary); tests bind a fake. The module's route leg consumes the same
+// interface, so the host's flag implementations satisfy both.
+type MeshTeamFlag = agentmesh.TeamFlag
 
 // MeshTeamSet is the env-backed MeshTeamFlag: a set of team names parsed
 // from a comma-separated list. An empty set (flag unset) means the mesh leg
 // is off cluster-wide — every Run takes the legacy path byte-identically.
-type MeshTeamSet map[string]struct{}
+type MeshTeamSet = agentmesh.TeamSet
 
 // NewMeshTeamSet parses "team-a,team-b" (whitespace-tolerant, empties
 // dropped).
 func NewMeshTeamSet(csv string) MeshTeamSet {
-	set := MeshTeamSet{}
-	for _, name := range strings.Split(csv, ",") {
-		if name = strings.TrimSpace(name); name != "" {
-			set[name] = struct{}{}
-		}
-	}
-	return set
-}
-
-// Enabled implements MeshTeamFlag.
-func (s MeshTeamSet) Enabled(team string) bool {
-	_, ok := s[team]
-	return ok
+	return agentmesh.NewTeamSet(csv)
 }
 
 // MeshTeamSetFromEnv reads the flag from KSQUAD_MESH_TEAMS.
@@ -103,17 +97,14 @@ func MeshCSV(csv string) []string {
 
 // MeshEndpointLookup is the registry read seam the route leg consumes —
 // the Supervisor-side half of the (team, role) lookup. The production
-// binding is coord.MeshRegistry; tests bind a fake.
-type MeshEndpointLookup interface {
-	LookupTeamRole(ctx context.Context, team, role string) ([]coord.MeshEndpoint, error)
-}
+// binding is the host store view (AsMeshRegistry over coord.MeshRegistry);
+// tests bind a fake. The module's route leg consumes the same interface.
+type MeshEndpointLookup = agentmesh.EndpointLookup
 
 // MeshRouteConfig assembles the mesh route leg. Nil (or nil Teams/Lookup)
-// disables the leg entirely — the pre-S3 operator shape.
-type MeshRouteConfig struct {
-	Teams  MeshTeamFlag
-	Lookup MeshEndpointLookup
-}
+// disables the leg entirely — the pre-S3 operator shape. The module's
+// mesh.Route consumes it directly.
+type MeshRouteConfig = agentmesh.RouteConfig
 
 // annotationDispatchPath records on the Run CR which dispatch path executed
 // it ("mesh"; absent ⇒ legacy claim). The kill-criteria run-end SLI reads
@@ -140,19 +131,12 @@ const ConditionQueuedAtSupervisor = "QueuedAtSupervisor"
 // refusal (§5.3: every standing process busy, band exhausted). The gateway
 // answers 409 with the gateway-local sentinel text (D3.3 guard #3 /
 // ErrNoIdleProcess); the a2a HTTP transport folds status + body into the
-// returned error, so the exact status line and one of the sentinel texts
-// must appear. (Matched on "409 Conflict", not bare "409" — a port number in
-// the folded URL must never read as the status.)
+// returned error, so the module's IsSaturation match — "409 Conflict" plus
+// one of the sentinel texts — is the contract (matched on "409 Conflict",
+// not bare "409": a port number in the folded URL must never read as the
+// status).
 func isMeshSaturation(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "409 Conflict") {
-		return false
-	}
-	return strings.Contains(msg, "mesh: target process has an active task") ||
-		strings.Contains(msg, "mesh: no idle process in pool")
+	return agentmesh.IsSaturation(err)
 }
 
 // markMeshQueued stamps or clears the QueuedAtSupervisor condition on the
@@ -194,8 +178,9 @@ func (d *operatorDispatch) markMeshQueued(ctx context.Context, a2aTaskID string,
 }
 
 // meshRoute resolves the mesh task URL for a dispatch, or reports that the
-// legacy path should run. team/role ride the task identity buildTask already
-// stamped (Identity.Squad = TeamRef, Identity.Name = the dispatch agent).
+// legacy path should run — the module's route leg (mesh.Route) over the host
+// store binding. team/role ride the task identity buildTask already stamped
+// (Identity.Squad = TeamRef, Identity.Name = the dispatch agent).
 //
 // Empty-registry fallback: a flagged team whose pool has no live registered
 // endpoint takes the LEGACY path — the canary only routes when a gateway is
@@ -204,25 +189,8 @@ func (d *operatorDispatch) markMeshQueued(ctx context.Context, a2aTaskID string,
 // ERROR, in contrast, is loud: the marker has not been written yet, so the
 // re-drive retries cleanly.
 func (d *operatorDispatch) meshRoute(ctx context.Context, t wire.Task) (url string, useMesh bool, err error) {
-	mr := d.cfg.MeshRoute
-	if mr == nil || mr.Teams == nil || mr.Lookup == nil {
-		return "", false, nil
-	}
 	team, role := t.Identity.Squad, t.Identity.Name
-	if team == "" || role == "" || !mr.Teams.Enabled(team) {
-		return "", false, nil
-	}
-	eps, err := mr.Lookup.LookupTeamRole(ctx, team, role)
-	if err != nil {
-		return "", false, fmt.Errorf("rundrive: mesh lookup %s/%s: %w", team, role, err)
-	}
-	if len(eps) == 0 {
-		return "", false, nil
-	}
-	// LookupTeamRole is LRU-ordered; the first live endpoint is the pick.
-	// Saturation handling (bounded queue + scale signal) is P1.3; a busy
-	// gateway answers 409 and the re-drive retries.
-	return strings.TrimRight(eps[0].Endpoint, "/") + "/task", true, nil
+	return agentmesh.Route(ctx, d.cfg.MeshRoute, team, role)
 }
 
 // markMeshDispatch stamps the Run CR's dispatch-path annotation so the

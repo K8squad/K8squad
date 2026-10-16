@@ -14,42 +14,144 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// meshingress.go — the Supervisor-side registration ingress (chapter §2.5
-// seam table, ISI-5822 P1.1): the HTTP surface gateways POST their endpoint
-// sets to. One POST is both the initial registration and the heartbeat —
-// the ingress upserts every listed endpoint (refreshing last_seen_at),
-// prunes ids the pod no longer serves, and answers 200. On the gateway side
-// the same Registration wire type builds the POST (pkg/mesh), so there is
-// one contract, not two.
+// meshingress.go — the k8squad binding of the registration Ingress (chapter
+// §2.5 seam table, ISI-5822 P1.1; mechanism lifted to the AgentMesh module at
+// P3.4): the HTTP surface gateways POST their endpoint sets to is the
+// module's mesh.Ingress, a stateless decoder over the mesh.Registry store
+// contract. The host keeps what §1A of the AgentMesh chapter draws as host
+// territory: the authoritative store (coord.MeshRegistry, the Postgres
+// coord.mesh_endpoint table), the operator wiring and the listener.
 //
-// Surface (mounted under /mesh on the operator's ingress listener):
+// Surface (mounted under /mesh on the operator's ingress listener; the
+// gateway env points KSQUAD_SUPERVISOR_INGRESS_URL at it):
 //
 //	POST /mesh/register    {pod, team, role, processes:[{endpoint_id,
 //	                       endpoint, card}]} — upsert + prune + heartbeat.
 //	POST /mesh/deregister  {pod} — drain every endpoint of a pod (clean
 //	                       shutdown; the §2.4 unhealthy-gateway drain).
+//	GET  /mesh/health      — liveness for the ingress process itself.
 //
-// The ingress holds NO state: it is a thin decoder over MeshRegistry, which
-// is the authoritative store. A gateway that dies stops heartbeating and
-// its endpoints TTL out even if this process never hears a deregister.
+// On the gateway side the same Registration wire type builds the POST
+// (pkg/mesh re-exports it from the module), so there is one contract, not
+// two. A gateway that dies stops heartbeating and its endpoints TTL out even
+// if this process never hears a deregister.
 package rundrive
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/K8squad/K8squad/pkg/coord"
-	"github.com/K8squad/K8squad/pkg/mesh"
+
+	agentmesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
 )
 
-// MeshIngress serves the gateway registration surface over a MeshRegistry.
+// meshRegistryAdapter binds the host store to the module's mesh.Registry
+// contract (P3.4's seam; the module owns the interface, every store stays
+// host-side). The row shapes are field-identical (coord.MeshEndpoint and
+// mesh.Endpoint are both the endpoint_id/team/role/pod/endpoint/agent_card/
+// registered_at/last_seen_at row), so the adapter is a pure pass-through —
+// zero behavior change by construction.
+type meshRegistryAdapter struct {
+	store *coord.MeshRegistry
+}
+
+// AsMeshRegistry returns the module's Registry view of the host's
+// coord.mesh_endpoint store — the one binding used by the ingress, the sweep
+// supervisor and the route leg, so all three read the same authoritative
+// rows.
+func AsMeshRegistry(registry *coord.MeshRegistry) agentmesh.Registry {
+	if registry == nil {
+		return nil
+	}
+	return meshRegistryAdapter{store: registry}
+}
+
+// Register upserts one endpoint (the module ingress's per-beat upsert).
+func (a meshRegistryAdapter) Register(ctx context.Context, ep agentmesh.Endpoint) error {
+	return a.store.Register(ctx, meshEndpointFromModule(ep))
+}
+
+// HeartbeatPod refreshes last_seen_at for every endpoint a pod's gateway
+// registered.
+func (a meshRegistryAdapter) HeartbeatPod(ctx context.Context, pod string, endpointIDs []string) (int64, error) {
+	return a.store.HeartbeatPod(ctx, pod, endpointIDs)
+}
+
+// PrunePod drops every endpoint of pod EXCEPT the listed ids.
+func (a meshRegistryAdapter) PrunePod(ctx context.Context, pod string, keepIDs []string) error {
+	return a.store.PrunePod(ctx, pod, keepIDs)
+}
+
+// DeregisterPod drops every endpoint a pod's gateway registered.
+func (a meshRegistryAdapter) DeregisterPod(ctx context.Context, pod string) error {
+	return a.store.DeregisterPod(ctx, pod)
+}
+
+// LookupTeamRole returns the LIVE endpoints serving (team, role), ordered
+// least-recently-seen first.
+func (a meshRegistryAdapter) LookupTeamRole(ctx context.Context, team, role string) ([]agentmesh.Endpoint, error) {
+	eps, err := a.store.LookupTeamRole(ctx, team, role)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentmesh.Endpoint, len(eps))
+	for i, ep := range eps {
+		out[i] = meshEndpointToModule(ep)
+	}
+	return out, nil
+}
+
+// Sweep deletes TTL-expired rows.
+func (a meshRegistryAdapter) Sweep(ctx context.Context) (int64, error) {
+	return a.store.Sweep(ctx)
+}
+
+// ListEndpoints returns EVERY registered endpoint, live and TTL-expired
+// alike — the health loop's unfiltered input.
+func (a meshRegistryAdapter) ListEndpoints(ctx context.Context) ([]agentmesh.Endpoint, error) {
+	eps, err := a.store.ListEndpoints(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]agentmesh.Endpoint, len(eps))
+	for i, ep := range eps {
+		out[i] = meshEndpointToModule(ep)
+	}
+	return out, nil
+}
+
+func meshEndpointToModule(ep coord.MeshEndpoint) agentmesh.Endpoint {
+	return agentmesh.Endpoint{
+		EndpointID:   ep.EndpointID,
+		Team:         ep.Team,
+		Role:         ep.Role,
+		Pod:          ep.Pod,
+		Endpoint:     ep.Endpoint,
+		AgentCard:    ep.AgentCard,
+		RegisteredAt: ep.RegisteredAt,
+		LastSeenAt:   ep.LastSeenAt,
+	}
+}
+
+func meshEndpointFromModule(ep agentmesh.Endpoint) coord.MeshEndpoint {
+	return coord.MeshEndpoint{
+		EndpointID:   ep.EndpointID,
+		Team:         ep.Team,
+		Role:         ep.Role,
+		Pod:          ep.Pod,
+		Endpoint:     ep.Endpoint,
+		AgentCard:    ep.AgentCard,
+		RegisteredAt: ep.RegisteredAt,
+		LastSeenAt:   ep.LastSeenAt,
+	}
+}
+
+// MeshIngress serves the gateway registration surface: the module's stateless
+// Ingress decoder over the host's coord.mesh_endpoint store.
 type MeshIngress struct {
-	registry *coord.MeshRegistry
-	// now bounds request handling (telemetry/deadline hygiene only).
-	now func() time.Time
+	ingress *agentmesh.Ingress
 }
 
 // NewMeshIngress binds the ingress to the registry.
@@ -57,130 +159,17 @@ func NewMeshIngress(registry *coord.MeshRegistry) (*MeshIngress, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("rundrive.NewMeshIngress: nil registry")
 	}
-	return &MeshIngress{registry: registry, now: time.Now}, nil
+	in, err := agentmesh.NewIngress(AsMeshRegistry(registry))
+	if err != nil {
+		return nil, err
+	}
+	return &MeshIngress{ingress: in}, nil
 }
 
 // Handler returns the ingress's HTTP handler (mounted under /mesh/ by
 // ServeMeshIngress; the paths below are relative to that mount).
 func (in *MeshIngress) Handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", in.handleHealth)
-	mux.HandleFunc("POST /register", in.handleRegister)
-	mux.HandleFunc("POST /deregister", in.handleDeregister)
-	return mux
-}
-
-// handleHealth returns 200 if the MeshIngress is serving (the "gateway"
-// dependency for cphealth, ISI-6010 P1.4b). This is a liveness check for the
-// MeshIngress process itself; per-gateway pod health is tracked via the registry
-// TTL in LookupTeamRole and does not gate this probe (zero registered gateways
-// during boot must not flapper the operator health).
-func (in *MeshIngress) handleHealth(w http.ResponseWriter, r *http.Request) {
-	// The MeshIngress is healthy if it can reach its registry. A lightweight
-	// connectivity check suffices: if the DB connection works, the service is
-	// alive. We deliberately do NOT require live gateways here — that would
-	// create a chicken-and-egg problem on boot (operator reports unhealthy
-	// before any gateway registers). Per-gateway liveness is surfaced via the
-	// registry's last_seen_at TTL filter in LookupTeamRole.
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-	defer cancel()
-	// A simple SELECT 1 style check: lookup any team/role (will return empty or
-	// error). We reuse LookupTeamRole with a synthetic pair; an error means the
-	// registry (DB) is unreachable.
-	_, err := in.registry.LookupTeamRole(ctx, "__health_check__", "__probe__")
-	if err != nil {
-		http.Error(w, fmt.Sprintf("registry unreachable: %v", err), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok\n"))
-}
-
-// handleRegister upserts the posted endpoint set and prunes the pod's
-// unlisted ids — one idempotent beat of the registration loop.
-func (in *MeshIngress) handleRegister(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	var reg mesh.Registration
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&reg); err != nil {
-		http.Error(w, fmt.Sprintf("decode registration: %v", err), http.StatusBadRequest)
-		return
-	}
-	if reg.Pod == "" || reg.Team == "" || reg.Role == "" {
-		http.Error(w, "registration requires pod, team and role", http.StatusBadRequest)
-		return
-	}
-	// An EMPTY process set is legitimate: a gateway whose every slot stopped
-	// (scale-to-zero end state, chapter §6) POSTs the empty set precisely so
-	// PrunePod drops all of the pod's endpoints right away instead of waiting
-	// out the registry TTL. The broken-boot guard (never held any process)
-	// lives gateway-side in RegisterOnce; ingress-side an empty beat from an
-	// unknown pod is a harmless no-op prune.
-	if len(reg.Processes) == 0 {
-		if err := in.registry.PrunePod(ctx, reg.Pod, nil); err != nil {
-			http.Error(w, fmt.Sprintf("prune pod %s: %v", reg.Pod, err), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-		return
-	}
-
-	keep := make([]string, 0, len(reg.Processes))
-	for _, p := range reg.Processes {
-		if p.EndpointID == "" || p.Endpoint == "" {
-			http.Error(w, "every process requires endpoint_id and endpoint", http.StatusBadRequest)
-			return
-		}
-		card, err := json.Marshal(p.Card)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("encode agent card: %v", err), http.StatusBadRequest)
-			return
-		}
-		if err := in.registry.Register(ctx, coord.MeshEndpoint{
-			EndpointID: p.EndpointID,
-			Team:       reg.Team,
-			Role:       reg.Role,
-			Pod:        reg.Pod,
-			Endpoint:   p.Endpoint,
-			AgentCard:  card,
-		}); err != nil {
-			http.Error(w, fmt.Sprintf("register %s: %v", p.EndpointID, err), http.StatusInternalServerError)
-			return
-		}
-		keep = append(keep, p.EndpointID)
-	}
-	if err := in.registry.PrunePod(ctx, reg.Pod, keep); err != nil {
-		http.Error(w, fmt.Sprintf("prune pod %s: %v", reg.Pod, err), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok\n"))
-}
-
-// handleDeregister drains a pod's endpoint set.
-func (in *MeshIngress) handleDeregister(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	var req struct {
-		Pod string `json:"pod"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("decode deregister: %v", err), http.StatusBadRequest)
-		return
-	}
-	if req.Pod == "" {
-		http.Error(w, "deregister requires pod", http.StatusBadRequest)
-		return
-	}
-	if err := in.registry.DeregisterPod(ctx, req.Pod); err != nil {
-		http.Error(w, fmt.Sprintf("deregister %s: %v", req.Pod, err), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok\n"))
+	return in.ingress.Handler()
 }
 
 // ServeMeshIngress runs the ingress HTTP server until ctx is done. addr is
@@ -188,24 +177,8 @@ func (in *MeshIngress) handleDeregister(w http.ResponseWriter, r *http.Request) 
 // :8090); the gateway env points KSQUAD_SUPERVISOR_INGRESS_URL at
 // http://<operator-svc>:8090/mesh.
 func ServeMeshIngress(ctx context.Context, addr string, in *MeshIngress) error {
-	mux := http.NewServeMux()
-	mux.Handle("/mesh/", http.StripPrefix("/mesh", in.Handler()))
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
+	if in == nil {
+		return fmt.Errorf("rundrive.ServeMeshIngress: nil ingress")
 	}
-	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
-	select {
-	case err := <-errCh:
-		if err == http.ErrServerClosed {
-			return nil
-		}
-		return fmt.Errorf("rundrive mesh ingress: %w", err)
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
-	}
+	return agentmesh.ServeIngress(ctx, addr, in.ingress)
 }
