@@ -494,6 +494,69 @@ func (c *ProdClaims) RequeuePaused(ctx context.Context, workItemID string) (bool
 	return true, nil
 }
 
+// PauseRateLimited is the 5.10 signal consumer's durable half of the 2.11/3.7
+// park (the PauseRun verdict: NO fallback is configured): guarded move
+// running/dispatching/collecting/paused → paused(rate_limited), custody
+// RETAINED (the §8 short-pause rule — only the step moves), audited and
+// outboxed. The pausable set is inlined in the statement: it is a
+// compile-time contract (terminal steps must never resurrect into a pause;
+// claiming_sandbox predates any dispatched signal), not a knob. The resume_at
+// wake episode itself is a SEPARATE write the caller owns
+// (ProdResumeStore.Pause with the provider Retry-After), so the wake timing
+// and the step move stay independently idempotent: a repeat signal re-writes
+// the episode (new window) while this move is a durable no-op.
+func (c *ProdClaims) PauseRateLimited(ctx context.Context, workItemID string) (bool, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.PauseRateLimited: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE coord.claim
+		   SET reconcile_step = 'paused(rate_limited)'
+		 WHERE work_item_id = $1::uuid
+		   AND reconcile_step IN ('running', 'dispatching', 'collecting', 'paused',
+		                          'paused(rate_limited)')`, workItemID)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.PauseRateLimited: update: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.PauseRateLimited: rows: %w", err)
+	}
+	if n == 0 {
+		return false, nil // terminal, pre-dispatch, or already parked: nothing to move
+	}
+
+	runID := c.runIDFor(ctx, tx, workItemID)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, from_state, to_state)
+		VALUES ($1::uuid, NULLIF($2,'')::uuid, 'paused_rate_limited', $3,
+		        'running', 'paused(rate_limited)')`,
+		workItemID, runID, c.principal); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.PauseRateLimited: audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'paused',
+		       wi.id, NULLIF($2,'')::uuid,
+		       jsonb_build_object('reason', 'rate_limited',
+		                          'resume_mode', 'timer',
+		                          'from_step', 'running',
+		                          'to_step', 'paused(rate_limited)')
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
+		workItemID, runID); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.PauseRateLimited: outbox: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.PauseRateLimited: commit: %w", err)
+	}
+	return true, nil
+}
+
 // GateHold implements Claims.GateHold: the WS-9 S5 go-live gate's pre-dispatch
 // admission hold (ISI-5818/ISI-5849). The guarded move is claiming_sandbox →
 // paused(credential_required) ONLY — the pre-dispatch edge — so a Run already
