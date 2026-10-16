@@ -16,56 +16,73 @@ limitations under the License.
 
 package warmpool_test
 
-// rolepool_test.go — the P1.3 scheduler pins (chapter §4 D2.2, ISI-5824):
-// the 12/5→2–3 math (a team's ~5 RolePools at min 2–3 fan out to one gateway
-// pod each, floors summing to ~12 standing processes), the coordinator
-// always-up floor, the D9.3 flagged-team blast radius, and the bounded
-// status read-back. The selection/saturation halves of the proof live in
-// pkg/mesh/gateway_band_test.go.
+// rolepool_test.go — the P1.3 POLICY #1 pins (chapter §4 D2.2, ISI-5824;
+// P3.5 leak L3, ISI-6038): the 12/5→2–3 math resolved through the
+// SchedulingPolicy seam, the coordinator always-up floor, the D9.3
+// flagged-team blast radius, the unresolved-reference skip — and the
+// acceptance proof that RolePool drives the mesh Scheduler through the
+// policy interface ONLY (module agentmesh.NewScheduler + this policy, no
+// host loop). The selection/saturation halves of the proof live in
+// pkg/mesh/gateway_band_test.go; the generic loop's own pins live in the
+// module (mesh/scheduling_test.go).
 
 import (
 	"context"
 	"errors"
-	"sort"
 	"sync"
 	"testing"
+	"time"
+
+	agentmesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/K8squad/K8squad/pkg/warmpool"
 )
 
-// fakeEnsurer records the pool-pod specs the scheduler asked to stand up.
-type fakeEnsurer struct {
-	mu    sync.Mutex
-	specs []warmpool.MeshPoolSpec
-	// failNamespace fails every ensure for this team (blast-radius probe).
-	failNamespace string
+// rolePoolLister serves a fixed resolved set (or a listing failure).
+type rolePoolLister struct {
+	pools      []warmpool.RolePoolConfig
+	unresolved map[string]error
+	err        error
 }
 
-func (f *fakeEnsurer) EnsureMeshPool(_ context.Context, spec warmpool.MeshPoolSpec) error {
+func (f *rolePoolLister) ListRolePools(context.Context) ([]warmpool.RolePoolConfig, map[string]error, error) {
+	return f.pools, f.unresolved, f.err
+}
+
+// meshPoolProvisioner records the plans the mesh Scheduler asked to stand up.
+type meshPoolProvisioner struct {
+	mu       sync.Mutex
+	plans    []agentmesh.PoolPlan
+	failTeam string
+}
+
+func (f *meshPoolProvisioner) EnsurePool(_ context.Context, plan agentmesh.PoolPlan) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.failNamespace != "" && spec.Team == f.failNamespace {
-		return errors.New("ensurer: injected failure")
+	if f.failTeam != "" && plan.Team == f.failTeam {
+		return errors.New("provisioner: injected failure")
 	}
-	f.specs = append(f.specs, spec)
+	f.plans = append(f.plans, plan)
 	return nil
 }
 
-func (f *fakeEnsurer) snapshot() []warmpool.MeshPoolSpec {
+func (f *meshPoolProvisioner) snapshot() []agentmesh.PoolPlan {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]warmpool.MeshPoolSpec, len(f.specs))
-	copy(out, f.specs)
+	out := make([]agentmesh.PoolPlan, len(f.plans))
+	copy(out, f.plans)
 	return out
 }
 
-// fakeCounter serves per-(team, role) standing counts; an empty team errors.
-type fakeCounter struct {
+// meshPoolCounter serves per-(team, role) standing counts; nil counts error.
+type meshPoolCounter struct {
 	mu     sync.Mutex
 	counts map[string]int // "team/role"
 }
 
-func (f *fakeCounter) StandingProcesses(_ context.Context, team, role string) (int, error) {
+func (f *meshPoolCounter) StandingProcesses(_ context.Context, team, role string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.counts == nil {
@@ -78,23 +95,23 @@ func (f *fakeCounter) StandingProcesses(_ context.Context, team, role string) (i
 	return n, nil
 }
 
-// fakeStatus records the bounded reports written per RolePool.
-type fakeStatus struct {
+// meshPoolStatus records the bounded reports written per pool.
+type meshPoolStatus struct {
 	mu      sync.Mutex
-	written map[string]warmpool.RolePoolReport
+	written map[string]agentmesh.PoolStatusReport
 }
 
-func (f *fakeStatus) WriteRolePoolStatus(_ context.Context, namespace, name string, report warmpool.RolePoolReport) error {
+func (f *meshPoolStatus) WritePoolStatus(_ context.Context, plan agentmesh.PoolPlan, report agentmesh.PoolStatusReport) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.written == nil {
-		f.written = map[string]warmpool.RolePoolReport{}
+		f.written = map[string]agentmesh.PoolStatusReport{}
 	}
-	f.written[namespace+"/"+name] = report
+	f.written[plan.Team+"/"+plan.Name] = report
 	return nil
 }
 
-func (f *fakeStatus) get(key string) (warmpool.RolePoolReport, bool) {
+func (f *meshPoolStatus) get(key string) (agentmesh.PoolStatusReport, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	r, ok := f.written[key]
@@ -110,7 +127,7 @@ func roster(team string) []warmpool.RolePoolConfig {
 			Namespace:   team,
 			Name:        name,
 			Role:        name,
-			Image:       "registry.local/ksquad/opencode:latest",
+			RuntimeType: "opencode",
 			Min:         min,
 			Max:         max,
 			Coordinator: coordinator,
@@ -127,60 +144,63 @@ func roster(team string) []warmpool.RolePoolConfig {
 	}
 }
 
-// THE 12/5→2–3 pin: five RolePools reconcile into five distinct gateway pods
-// (one per (team, role)), each carrying its declared band, the floors
-// summing to exactly 12 standing processes across the team.
-func TestRolePoolScheduler_12Over5Math(t *testing.T) {
-	ensurer := &fakeEnsurer{}
-	status := &fakeStatus{}
-	counter := &fakeCounter{counts: map[string]int{}}
-	sched := warmpool.NewRolePoolScheduler(ensurer, counter, status,
-		[]string{"team-acme"}, "ksquad-sandbox", "http://op:8090/mesh", "")
+func newRolePoolPolicy(lister warmpool.RolePoolLister, teams ...string) *warmpool.RolePoolPolicy {
+	return warmpool.NewRolePoolPolicy(lister, teams, nil)
+}
 
-	pools := roster("team-acme")
-	for _, rp := range pools {
-		counter.counts["team-acme/"+rp.Name] = rp.Min // registry mirror reports the floors standing
+// THE ACCEPTANCE PIN: RolePool drives the mesh through the policy
+// interface only — the module's generic Scheduler (agentmesh.NewScheduler)
+// runs the loop; this policy is the only RolePool knowledge in the path.
+// Five flagged RolePools reconcile into five ensured pools, the floors
+// summing to exactly 12 standing processes across the team, every pool
+// getting its bounded status with the target and the counter's standing
+// count.
+func TestRolePoolDrivesMeshScheduler_12Over5Math(t *testing.T) {
+	policy := newRolePoolPolicy(&rolePoolLister{pools: roster("team-acme")}, "team-acme")
+	provisioner := &meshPoolProvisioner{}
+	status := &meshPoolStatus{}
+	counter := &meshPoolCounter{counts: map[string]int{}}
+	sched := agentmesh.NewScheduler(policy, provisioner, counter, status)
+
+	for _, rp := range roster("team-acme") {
+		counter.counts["team-acme/"+rp.Role] = rp.Min // registry mirror reports the floors standing
 	}
-	errs := sched.Tick(context.Background(), pools)
+	errs, rerr := sched.Tick(context.Background())
+	if rerr != nil {
+		t.Fatalf("resolve error: %v", rerr)
+	}
 	if len(errs) != 0 {
 		t.Fatalf("reconcile errors: %v", errs)
 	}
 
-	specs := ensurer.snapshot()
-	if len(specs) != 5 {
-		t.Fatalf("ensured %d pool pods, want 5 (one per role)", len(specs))
+	got := provisioner.snapshot()
+	if len(got) != 5 {
+		t.Fatalf("ensured %d pools, want 5 (one per role)", len(got))
 	}
 	sum := 0
-	for _, spec := range specs {
-		if spec.Team != "team-acme" || spec.Role == "" {
-			t.Fatalf("bad pool identity: %+v", spec)
+	for _, plan := range got {
+		if plan.Team != "team-acme" || plan.Role == "" {
+			t.Fatalf("bad pool identity: %+v", plan)
 		}
-		if spec.Min < 2 || spec.Min > 3 {
-			t.Fatalf("pool %s min=%d, want the 2–3 per-pool band", spec.Role, spec.Min)
+		if plan.Min < 2 || plan.Min > 3 {
+			t.Fatalf("pool %s min=%d, want the 2–3 per-pool band", plan.Role, plan.Min)
 		}
-		if spec.Max < spec.Min {
-			t.Fatalf("pool %s max=%d < min=%d", spec.Role, spec.Max, spec.Min)
+		if plan.Max < plan.Min {
+			t.Fatalf("pool %s max=%d < min=%d", plan.Role, plan.Max, plan.Min)
 		}
-		if spec.Namespace != "ksquad-sandbox" {
-			t.Fatalf("pool %s booted in %q, want the operator sandbox namespace", spec.Role, spec.Namespace)
+		if plan.Envelope.RuntimeType != "opencode" || plan.Envelope.Model != "glm-4.7" {
+			t.Fatalf("pool %s missing resolved envelope: %+v", plan.Role, plan.Envelope)
 		}
-		if spec.Lifecycle == nil || spec.IngressURL != "http://op:8090/mesh" {
-			t.Fatalf("pool %s missing lifecycle/ingress envelope: %+v", spec.Role, spec.Lifecycle)
-		}
-		sum += spec.Min
+		sum += plan.Min
 	}
 	if sum != 12 {
 		t.Fatalf("standing floors sum to %d across 5 roles, want 12", sum)
 	}
 
-	// Every pool got its bounded status with the pod name and target.
-	for _, rp := range pools {
+	for _, rp := range roster("team-acme") {
 		report, ok := status.get("team-acme/" + rp.Name)
 		if !ok {
 			t.Fatalf("no status written for %s", rp.Name)
-		}
-		if report.Pod != warmpool.MeshPoolPodName("team-acme", rp.Name) {
-			t.Fatalf("status pod = %q, want %q", report.Pod, warmpool.MeshPoolPodName("team-acme", rp.Name))
 		}
 		if report.Target != int32(rp.Min) {
 			t.Fatalf("status target = %d, want %d", report.Target, rp.Min)
@@ -191,123 +211,230 @@ func TestRolePoolScheduler_12Over5Math(t *testing.T) {
 	}
 }
 
-// The coordinator floor (D2.2): a coordinator RolePool (or alwaysUp) never
-// targets below one standing process and stamps ALWAYS_UP on the pod so the
-// gateway's sweep exempts it — the always-up team driver.
-func TestRolePoolScheduler_CoordinatorFloor(t *testing.T) {
-	ensurer := &fakeEnsurer{}
-	sched := warmpool.NewRolePoolScheduler(ensurer, &fakeCounter{}, &fakeStatus{},
-		[]string{"team-acme"}, "ns", "", "")
-
-	errs := sched.Tick(context.Background(), []warmpool.RolePoolConfig{{
+// The coordinator floor (D2.2), resolved by the POLICY: a coordinator
+// RolePool (or alwaysUp) never targets below one standing process and its
+// plan carries AlwaysUp so the gateway's sweep exempts it; a plain min:0
+// pool keeps target 0 — pure on-demand.
+func TestRolePoolPolicy_CoordinatorFloor(t *testing.T) {
+	policy := newRolePoolPolicy(&rolePoolLister{pools: []warmpool.RolePoolConfig{{
 		Namespace: "team-acme", Name: "coordinator", Role: "coordinator",
 		Min: 0, Max: 1, // floor zero — the coordinator rule must lift it to 1
 		Coordinator: true, Generation: 7,
-	}})
-	if len(errs) != 0 {
-		t.Fatalf("reconcile errors: %v", errs)
+	}}}, "team-acme")
+
+	plans, err := policy.ResolvePools(context.Background())
+	if err != nil {
+		t.Fatalf("ResolvePools: %v", err)
 	}
-	specs := ensurer.snapshot()
-	if len(specs) != 1 || specs[0].Min != 1 {
-		t.Fatalf("coordinator pool spec = %+v, want min lifted to the floor 1", specs)
+	if len(plans) != 1 || plans[0].Min != 1 {
+		t.Fatalf("coordinator plan = %+v, want min lifted to the floor 1", plans)
 	}
-	if specs[0].Lifecycle == nil || !specs[0].Lifecycle.AlwaysUp {
-		t.Fatalf("coordinator pool must stamp ALWAYS_UP: %+v", specs[0].Lifecycle)
+	if plans[0].Lifecycle == nil || !plans[0].Lifecycle.AlwaysUp {
+		t.Fatalf("coordinator plan must carry AlwaysUp: %+v", plans[0].Lifecycle)
 	}
 
-	// A plain min:0 role-pool WITHOUT alwaysUp/coordinator keeps target 0 —
-	// pure on-demand (the floor rule is conditional, not global).
-	errs = sched.Tick(context.Background(), []warmpool.RolePoolConfig{{
+	plain := newRolePoolPolicy(&rolePoolLister{pools: []warmpool.RolePoolConfig{{
 		Namespace: "team-acme", Name: "ondemand", Role: "ondemand", Min: 0, Max: 2,
-	}})
-	if len(errs) != 0 {
-		t.Fatalf("reconcile errors: %v", errs)
+	}}}, "team-acme")
+	plans, err = plain.ResolvePools(context.Background())
+	if err != nil {
+		t.Fatalf("ResolvePools: %v", err)
 	}
-	specs = ensurer.snapshot()
-	last := specs[len(specs)-1]
-	if last.Lifecycle == nil || last.Lifecycle.AlwaysUp {
-		t.Fatalf("non-coordinator pool must not be always-up: %+v", last.Lifecycle)
+	if len(plans) != 1 || plans[0].Min != 0 {
+		t.Fatalf("plain pool plan = %+v, want target 0 (on-demand)", plans)
+	}
+	if plans[0].Lifecycle == nil || plans[0].Lifecycle.AlwaysUp {
+		t.Fatalf("non-coordinator plan must not be always-up: %+v", plans[0].Lifecycle)
+	}
+}
+
+// Lifecycle knobs ride the plan in their generic (parsed) shape: valid
+// duration strings parse, malformed ones degrade to zero — the gateway
+// default cadence, never a wrong-shaped pod.
+func TestRolePoolPolicy_LifecycleKnobsCarried(t *testing.T) {
+	policy := newRolePoolPolicy(&rolePoolLister{pools: []warmpool.RolePoolConfig{{
+		Namespace: "team-acme", Name: "coder", Role: "coder", Min: 1, Max: 2,
+		Lifecycle: warmpool.MeshLifecycleSpec{
+			CheckInterval:   "45s",
+			IdleToHibernate: "10m",
+			HibernateToStop: "not-a-duration", // degrades to zero, not an error
+		},
+	}}}, "team-acme")
+
+	plans, err := policy.ResolvePools(context.Background())
+	if err != nil {
+		t.Fatalf("ResolvePools: %v", err)
+	}
+	lc := plans[0].Lifecycle
+	if lc == nil {
+		t.Fatalf("plan carries no lifecycle: %+v", plans[0])
+	}
+	if lc.CheckInterval != 45*time.Second || lc.IdleToHibernate != 10*time.Minute {
+		t.Fatalf("lifecycle knobs not carried: %+v", lc)
+	}
+	if lc.HibernateToStop != 0 {
+		t.Fatalf("malformed knob must degrade to zero, got %v", lc.HibernateToStop)
 	}
 }
 
 // D9.3 blast radius: a RolePool in an UNFLAGGED team is skipped entirely —
 // the canary flag set is the rollout unit, and a stray CR in another
-// namespace boots nothing.
-func TestRolePoolScheduler_UnflaggedTeamSkipped(t *testing.T) {
-	ensurer := &fakeEnsurer{}
-	sched := warmpool.NewRolePoolScheduler(ensurer, &fakeCounter{}, &fakeStatus{},
-		[]string{"team-canary"}, "ns", "", "")
+// namespace plans nothing.
+func TestRolePoolPolicy_UnflaggedTeamSkipped(t *testing.T) {
+	policy := newRolePoolPolicy(&rolePoolLister{pools: roster("team-other")}, "team-canary")
 
-	errs := sched.Tick(context.Background(), roster("team-other"))
-	if len(errs) != 0 {
-		t.Fatalf("unflagged pools must be skipped silently, got errors: %v", errs)
+	plans, err := policy.ResolvePools(context.Background())
+	if err != nil {
+		t.Fatalf("ResolvePools: %v", err)
 	}
-	if got := len(ensurer.snapshot()); got != 0 {
-		t.Fatalf("ensured %d pods for an unflagged team, want 0", got)
+	if len(plans) != 0 {
+		t.Fatalf("planned %d pools for an unflagged team, want 0", len(plans))
 	}
 }
 
-// One bad pool never blocks the fan-out: the failing team's pool reports an
-// error, the healthy pools still reconcile (level-triggered — the next tick
-// retries just the failure).
-func TestRolePoolScheduler_OneBadPoolDoesNotBlockFanOut(t *testing.T) {
-	ensurer := &fakeEnsurer{failNamespace: "team-bad"}
-	sched := warmpool.NewRolePoolScheduler(ensurer, &fakeCounter{}, &fakeStatus{},
-		[]string{"team-good", "team-bad"}, "ns", "", "")
+// A half-configured CR never reaches the scheduler: unresolved references
+// are skipped and reported through the onUnresolved hook; the resolvable
+// pools still plan.
+func TestRolePoolPolicy_UnresolvedRefsSkippedAndReported(t *testing.T) {
+	lister := &rolePoolLister{
+		pools: roster("team-acme")[:1],
+		unresolved: map[string]error{
+			"team-acme/broken": errors.New("resolve roleRef \"nope\": not found"),
+		},
+	}
+	var reported []string
+	policy := warmpool.NewRolePoolPolicy(lister, []string{"team-acme"}, func(key string, err error) {
+		if err == nil {
+			t.Fatalf("unresolved hook called without an error for %s", key)
+		}
+		reported = append(reported, key)
+	})
 
-	good := warmpool.RolePoolConfig{Namespace: "team-good", Name: "coder", Role: "coder", Min: 2, Max: 3}
-	bad := warmpool.RolePoolConfig{Namespace: "team-bad", Name: "coder", Role: "coder", Min: 2, Max: 3}
-	errs := sched.Tick(context.Background(), []warmpool.RolePoolConfig{good, bad})
-	if len(errs) != 1 {
-		t.Fatalf("errors = %v, want exactly the bad pool's", errs)
+	plans, err := policy.ResolvePools(context.Background())
+	if err != nil {
+		t.Fatalf("ResolvePools: %v", err)
 	}
-	if _, exists := errs["team-bad/coder"]; !exists {
-		t.Fatalf("errors = %v, want keyed team-bad/coder", errs)
+	if len(plans) != 1 {
+		t.Fatalf("planned %d pools, want the 1 resolvable one", len(plans))
 	}
-	if got := len(ensurer.snapshot()); got != 1 {
-		t.Fatalf("ensured %d pods, want the 1 healthy pool", got)
-	}
-}
-
-// The bounded status survives a counter outage: StandingKnown=false is
-// reported (floor still reconciled), never a fake zero.
-func TestRolePoolScheduler_CounterOutageReportsUnknown(t *testing.T) {
-	sched := warmpool.NewRolePoolScheduler(&fakeEnsurer{}, &fakeCounter{}, &fakeStatus{},
-		[]string{"team-acme"}, "ns", "", "")
-	errs := sched.Tick(context.Background(), []warmpool.RolePoolConfig{{
-		Namespace: "team-acme", Name: "coder", Role: "coder", Min: 2, Max: 3,
-	}})
-	if len(errs) != 0 {
-		t.Fatalf("a counter outage must not fail the pass: %v", errs)
+	if len(reported) != 1 || reported[0] != "team-acme/broken" {
+		t.Fatalf("unresolved reported = %v, want [team-acme/broken]", reported)
 	}
 }
 
-// Tick is deterministic across passes: the same roster reconciles in
-// namespace/name order regardless of input order (stable fan-out).
-func TestRolePoolScheduler_DeterministicOrder(t *testing.T) {
-	ensurer := &fakeEnsurer{}
-	sched := warmpool.NewRolePoolScheduler(ensurer, &fakeCounter{}, &fakeStatus{},
-		[]string{"team-acme"}, "ns", "", "")
+// A listing failure fails the whole pass: the policy's source is unreadable,
+// so nothing can be trusted this tick.
+func TestRolePoolPolicy_ResolveErrorPropagates(t *testing.T) {
+	policy := newRolePoolPolicy(&rolePoolLister{err: errors.New("api server down")}, "team-acme")
+	if _, err := policy.ResolvePools(context.Background()); err == nil {
+		t.Fatalf("listing failure must propagate")
+	}
+}
 
-	pools := roster("team-acme")
-	shuffled := make([]warmpool.RolePoolConfig, len(pools))
-	copy(shuffled, pools)
-	sort.Slice(shuffled, func(i, j int) bool { return shuffled[i].Name > shuffled[j].Name }) // reversed
-	_ = sched.Tick(context.Background(), shuffled)
+// THE COMPOSITION-ROOT PIN (P2 close-out follow-up, ISI-5826 b09e1970):
+// KubeEnsurer maps one generic plan onto the standing pool pod — the
+// resolved runtime type stamped as KSQUAD_RUNTIME_TYPE (the in-pod
+// composition root binds the matching RuntimeAdapter from it), the image
+// resolved from the runtime type, the band and envelope from the plan,
+// the substrate placement (sandbox namespace, ingress, PVC) from the host
+// wiring. An untyped plan boots no runtime env — byte-identical to the
+// pre-seam pod shape.
+func TestKubeEnsurer_EnsurePoolBootsTypedPod(t *testing.T) {
+	k, cl := newMeshProvisioner(t)
+	ensurer := &warmpool.KubeEnsurer{
+		Provisioner: k,
+		ImageFor: func(runtimeType string) string {
+			return "ghcr.io/k8squad/shim-" + runtimeType + ":dev"
+		},
+		PodNS:   "ksquad-sandbox",
+		Ingress: "http://operator:8090/mesh",
+		WorkPVC: "proj-workspace",
+	}
 
-	got := ensurer.snapshot()
-	want := []string{"coder", "coordinator", "implementer", "reviewer", "tester"}
-	for i, spec := range got {
-		if spec.Role != want[i] {
-			t.Fatalf("reconcile order = %v, want sorted %v", rolesOf(got), want)
+	err := ensurer.EnsurePool(context.Background(), agentmesh.PoolPlan{
+		Team: "team-acme", Name: "coder", Role: "coder",
+		Envelope: agentmesh.Envelope{RuntimeType: "codex", Model: "gpt-5.2-codex", Skills: []string{"go"}},
+		Min:      2, Max: 3,
+		Lifecycle: &agentmesh.LifecycleConfig{
+			CheckInterval:   45 * time.Second,
+			IdleToHibernate: 10 * time.Minute,
+			AlwaysUp:        true,
+		},
+		Generation: 4,
+	})
+	if err != nil {
+		t.Fatalf("EnsurePool: %v", err)
+	}
+
+	var pod corev1.Pod
+	if err := cl.Get(context.Background(), client.ObjectKey{
+		Namespace: "ksquad-sandbox", Name: warmpool.MeshPoolPodName("team-acme", "coder"),
+	}, &pod); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	env := map[string]string{}
+	for _, e := range pod.Spec.Containers[0].Env {
+		env[e.Name] = e.Value
+	}
+	for name, want := range map[string]string{
+		"KSQUAD_RUNTIME_TYPE":                     "codex",
+		"KSQUAD_MESH_MODEL":                       "gpt-5.2-codex",
+		"KSQUAD_MESH_SKILLS":                      "go",
+		"KSQUAD_MESH_MIN":                         "2",
+		"KSQUAD_MESH_MAX":                         "3",
+		"KSQUAD_MESH_LIFECYCLE_CHECK_INTERVAL":    "45s",
+		"KSQUAD_MESH_LIFECYCLE_IDLE_TO_HIBERNATE": "10m0s",
+		"KSQUAD_MESH_LIFECYCLE_ALWAYS_UP":         "true",
+		"KSQUAD_SUPERVISOR_INGRESS_URL":           "http://operator:8090/mesh",
+	} {
+		if env[name] != want {
+			t.Fatalf("env %s = %q, want %q", name, env[name], want)
 		}
 	}
+	if pod.Spec.Containers[0].Image != "ghcr.io/k8squad/shim-codex:dev" {
+		t.Fatalf("image = %q, want the runtime-resolved sandbox image", pod.Spec.Containers[0].Image)
+	}
+
+	// An untyped plan (the P1.1 imperative shape) stamps nothing new —
+	// the pod the pre-seam operator booted, byte-identical.
+	k2, cl2 := newMeshProvisioner(t)
+	plain := &warmpool.KubeEnsurer{
+		Provisioner: k2,
+		ImageFor:    func(string) string { return "ghcr.io/k8squad/shim-opencode:dev" },
+		PodNS:       "ksquad-sandbox",
+	}
+	if err := plain.EnsurePool(context.Background(), agentmesh.PoolPlan{
+		Team: "team-acme", Name: "coder", Role: "coder", Min: 1, Max: 1,
+		Envelope: agentmesh.Envelope{}, // untyped: the P1.1 imperative shape
+	}); err != nil {
+		t.Fatalf("EnsurePool (untyped): %v", err)
+	}
+	var bare corev1.Pod
+	if err := cl2.Get(context.Background(), client.ObjectKey{
+		Namespace: "ksquad-sandbox", Name: warmpool.MeshPoolPodName("team-acme", "coder"),
+	}, &bare); err != nil {
+		t.Fatalf("get bare pod: %v", err)
+	}
+	if v := envOf(t, &bare, "KSQUAD_RUNTIME_TYPE"); v != "" {
+		t.Fatalf("untyped plan must not stamp KSQUAD_RUNTIME_TYPE, got %q", v)
+	}
 }
 
-func rolesOf(specs []warmpool.MeshPoolSpec) []string {
-	out := make([]string, len(specs))
-	for i, s := range specs {
-		out[i] = s.Role
+// The ensure failure rides the per-pool error map (the module loop pins
+// the fan-out isolation; this proves the host adapter's error shape).
+func TestKubeEnsurer_UnknownRuntimeTypeFailsBoot(t *testing.T) {
+	k, _ := newMeshProvisioner(t)
+	ensurer := &warmpool.KubeEnsurer{
+		Provisioner: k,
+		ImageFor:    func(string) string { return "" }, // unknown type → no image
+		PodNS:       "ksquad-sandbox",
 	}
-	return out
+	err := ensurer.EnsurePool(context.Background(), agentmesh.PoolPlan{
+		Team: "team-acme", Name: "alien", Role: "alien",
+		Envelope: agentmesh.Envelope{RuntimeType: "martian"},
+		Min:      1, Max: 1,
+	})
+	if err == nil {
+		t.Fatalf("a pool with no resolvable image must fail closed, never boot a wrong-shaped pod")
+	}
 }

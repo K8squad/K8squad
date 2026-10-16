@@ -66,6 +66,13 @@ type MeshPoolSpec struct {
 	Team  string
 	Role  string
 	Image string
+	// RuntimeType is the resolved AgentRuntime type the pool's children run
+	// (RolePool spec.runtimeRef → AgentRuntime.spec.type). It is stamped as
+	// KSQUAD_RUNTIME_TYPE so the in-pod composition root binds the matching
+	// RuntimeAdapter (the P2 close-out follow-up, ISI-5826 comment b09e1970
+	// — additive, outside the pkg/mesh seam). Empty keeps "opencode", the
+	// P1/P2 default every untyped pool has always run.
+	RuntimeType string
 	// Namespace defaults to the provisioner's sandbox namespace.
 	Namespace string
 	// Model, Skills pre-load the role envelope (D2.3).
@@ -186,6 +193,13 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 	}
 	if len(spec.Skills) > 0 {
 		env = append(env, corev1.EnvVar{Name: "KSQUAD_MESH_SKILLS", Value: strings.Join(spec.Skills, ",")})
+	}
+	// The resolved runtime type (P2 close-out follow-up, ISI-5826 comment
+	// b09e1970): stamped only when the pool declares one — the minimal-env
+	// invariant; an untyped pod keeps the composition root's "opencode"
+	// default, byte-identical to every pod booted before this seam.
+	if spec.RuntimeType != "" {
+		env = append(env, corev1.EnvVar{Name: "KSQUAD_RUNTIME_TYPE", Value: spec.RuntimeType})
 	}
 	// Lifecycle knobs (D4.2): stamped only when the operator set them — the
 	// minimal-env invariant; unset knobs keep the gateway's defaults.
