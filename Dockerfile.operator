@@ -9,6 +9,9 @@ ARG TARGETARCH
 WORKDIR /src
 # Dependency layer first so it only re-resolves when go.{mod,sum} change.
 COPY go.mod go.sum ./
+# The K8sAgentMesh module is a directory replace (third_party/k8sagentmesh, ISI-6035): go mod
+# download reads its go.mod, so the vendored tree must exist before this layer.
+COPY third_party/k8sagentmesh ./third_party/k8sagentmesh
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
