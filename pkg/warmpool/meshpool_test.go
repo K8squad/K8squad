@@ -277,3 +277,38 @@ func TestBootMeshPool_S4HibernateArm(t *testing.T) {
 		}
 	})
 }
+
+// The resolved runtime type (P2 close-out follow-up, ISI-5826 comment
+// b09e1970): a typed pool stamps KSQUAD_RUNTIME_TYPE so the in-pod
+// composition root binds the matching RuntimeAdapter; an untyped pool
+// stamps nothing — byte-identical to every pod booted before the seam.
+func TestBootMeshPool_RuntimeTypeEnv(t *testing.T) {
+	t.Run("typed", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{
+			Team: "t", Role: "coder", Image: "img", RuntimeType: "codex",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		if got := envOf(t, &pod, "KSQUAD_RUNTIME_TYPE"); got != "codex" {
+			t.Fatalf("KSQUAD_RUNTIME_TYPE = %q, want codex", got)
+		}
+	})
+	t.Run("untyped-keeps-default", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{Team: "t", Role: "coder", Image: "img"}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		if got := envOf(t, &pod, "KSQUAD_RUNTIME_TYPE"); got != "" {
+			t.Fatalf("KSQUAD_RUNTIME_TYPE = %q, want unset (minimal-env invariant)", got)
+		}
+	})
+}

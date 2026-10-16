@@ -206,9 +206,11 @@ func gatewayMax() int {
 // buildGateway assembles the mesh.Gateway from the pod-spec env the operator
 // stamped at Boot (D9.2 envelope pre-load): team/role/identity, model,
 // skills, pool floor, and the Supervisor registration ingress. The adapter
-// is opencode behind the RuntimeAdapter seam (adapter #1, D8.1) on the
-// LocalHost child-process substrate; a kube host replaces it without the
-// gateway changing (that substitution is the P2 seam proof).
+// is bound from the pool's declared runtime type (KSQUAD_RUNTIME_TYPE, the
+// RolePool spec.runtimeRef resolution — the P2 close-out follow-up, ISI-5826
+// comment b09e1970: composition-root binding, additive, outside the pkg/mesh
+// seam) on the LocalHost child-process substrate; a kube host replaces it
+// without the gateway changing (that substitution is the P2 seam proof).
 func buildGateway() (*mesh.Gateway, error) {
 	team := os.Getenv("KSQUAD_MESH_TEAM")
 	role := os.Getenv("KSQUAD_MESH_ROLE")
@@ -222,9 +224,10 @@ func buildGateway() (*mesh.Gateway, error) {
 		}
 	}
 	host := &mesh.LocalHost{BasePort: base}
-	adapter, err := mesh.NewOpenCodeAdapter(host)
+	runtimeType := env("KSQUAD_RUNTIME_TYPE", "opencode")
+	adapter, err := buildRuntimeAdapter(runtimeType, host)
 	if err != nil {
-		return nil, fmt.Errorf("shim gateway: opencode adapter: %w", err)
+		return nil, fmt.Errorf("shim gateway: %s adapter: %w", runtimeType, err)
 	}
 	identity := a2a.AgentIdentity{
 		Name:    env("KSQUAD_MESH_AGENT_NAME", role),
@@ -238,7 +241,7 @@ func buildGateway() (*mesh.Gateway, error) {
 	return mesh.NewGateway(mesh.GatewayConfig{
 		Adapter: adapter,
 		Envelope: mesh.Envelope{
-			RuntimeType: "opencode",
+			RuntimeType: runtimeType,
 			Model:       os.Getenv("KSQUAD_MESH_MODEL"),
 			Skills:      splitList(os.Getenv("KSQUAD_MESH_SKILLS")),
 			Identity:    identity,
@@ -268,6 +271,24 @@ func buildGateway() (*mesh.Gateway, error) {
 		Lifecycle: gatewayLifecycleFromEnv(),
 		Observer:  observer,
 	})
+}
+
+// buildRuntimeAdapter binds the pool's declared runtime type to its
+// RuntimeAdapter at the composition root: the gateway itself never picks a
+// runtime — the pod's stamped type decides (opencode #1, codex #2, chapter
+// §1B/§9.3). An untyped pod keeps "opencode", exactly what every mesh pool
+// ran before this seam existed; an unknown type fails closed — a
+// wrong-shaped pool must crash honestly, never silently run opencode
+// under another runtime's image.
+func buildRuntimeAdapter(runtimeType string, host mesh.PlatformHost) (mesh.RuntimeAdapter, error) {
+	switch runtimeType {
+	case "opencode":
+		return mesh.NewOpenCodeAdapter(host)
+	case "codex":
+		return mesh.NewCodexAdapter(host)
+	default:
+		return nil, fmt.Errorf("no RuntimeAdapter bound for runtime type %q (have: opencode, codex)", runtimeType)
+	}
 }
 
 // gatewayLifecycleFromEnv reads the per-pool lifecycle knobs (chapter §6.2

@@ -14,42 +14,45 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// rolepool.go — the AgentMesh P1.3 prescheduling scheduler (chapter §4 D2.2,
-// ISI-5824): the reconcile loop that consumes RolePool CRs and drives each
-// (team, role) standing pool toward its declarative band. This is the same
-// base-stock target-N loop the §9.2 warm-pool Controller runs
-// (controller.go:22-48) — live-vs-target, scale-up immediate, warming counts
-// toward live — keyed per-ROLE instead of per-PoolKey, with two unit-seam
-// adaptations the ISI-5812 DevOps verdict pinned:
+// rolepool.go — the AgentMesh P1.3 prescheduling POLICY #1 (chapter §4 D2.2,
+// ISI-5824; P3.5 leak L3, ISI-6038): the RolePool target-N prescheduling
+// moved from OWNING the reconcile loop to implementing the mesh scheduling
+// seam. The generic target-N loop (deterministic fan-out, level-triggered
+// per-pool reconcile, bounded status read-back) is the module's
+// mesh.Scheduler; this file is the policy that feeds it — it resolves each
+// RolePool CR's prescheduling inputs (role → target-N band, envelope) into
+// generic mesh.PoolPlans:
 //
-//   - standing.min/max counts gateway-managed PROCESSES, not pods: the
-//     operator reconciles the pool POD carrying the band (BootMeshPool,
-//     idempotent), and the in-pod gateway enforces the process count itself
-//     (spawns Min at start, grows toward Max on saturation, shrinks grown
-//     slots on idle — mesh/gateway.go). The pod IS the durable unit the
-//     operator owns; process spawn has no operator-facing verb by design
-//     (the RuntimeAdapter lives in-pod, chapter §2.5).
-//   - dynamic keys: RolePools appear and disappear at runtime, so Tick
-//     reconciles whatever set the lister returns each pass — the mesh twin
-//     of the DevOps "dynamic key registration" seam.
+//   - standing.min/max counts gateway-managed PROCESSES, not pods (the
+//     ISI-5812 DevOps verdict): the scheduler's provisioner reconciles the
+//     pool POD carrying the band (BootMeshPool, idempotent), and the in-pod
+//     gateway enforces the process count itself (spawns Min at start,
+//     grows toward Max on saturation, shrinks grown slots on idle). The pod
+//     IS the durable unit the operator owns; process spawn has no
+//     operator-facing verb by design (the RuntimeAdapter lives in-pod,
+//     chapter §2.5).
+//   - dynamic keys: RolePools appear and disappear at runtime, so the policy
+//     re-resolves the listed set every pass (the mesh twin of the DevOps
+//     "dynamic key registration" seam).
 //
 // Coordinator floor (D2.2): target = max(standing.min, 1) when the pool's
 // Role is a Coordinator or lifecycle.alwaysUp is set — the always-up process
 // that drives the team is exempt from the idle→stop sweep (stamped as the
-// pod's ALWAYS_UP env, which the gateway honors).
+// pod's ALWAYS_UP env, which the gateway honors). The floor is applied HERE,
+// in the policy — the scheduler never re-derives a policy's math.
 //
 // Saturation (D2.2/§5.3): the growth reaction is in-pod (the gateway sees
-// saturation at route time and grows toward Max); the scheduler's job here is
-// the floor, the band stamp, and the bounded status read-back
-// (RolePoolStatus: standing processes from coord.mesh_endpoint, never a
-// per-process list — the ISI-5812 shaping nit).
+// saturation at route time and grows toward Max); the policy's job here is
+// the floor, the band, and the envelope. The bounded status read-back is
+// the scheduler's (mesh.PoolStatusReport), persisted host-side through the
+// CRD status subresource.
 package warmpool
 
 import (
 	"context"
-	"fmt"
-	"math"
-	"sort"
+	"time"
+
+	agentmesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
 )
 
 // RolePoolConfig is one RESOLVED RolePool — the CR's spec plus the Role and
@@ -61,10 +64,12 @@ type RolePoolConfig struct {
 	Namespace string // CR namespace == team
 	Name      string // CR name (usually the role name)
 	Role      string // spec.roleRef.name
-	// RuntimeType is spec.runtimeRef's resolved AgentRuntime.spec.type;
-	// Image is that type's resolved sandbox image.
+	// RuntimeType is spec.runtimeRef's resolved AgentRuntime.spec.type —
+	// the coding-agent flavor the pool's children run. The substrate
+	// resolves it to a sandbox image (KubeEnsurer.ImageFor); the
+	// composition root binds the matching RuntimeAdapter from it (the P2
+	// close-out follow-up, ISI-5826 comment b09e1970).
 	RuntimeType string
-	Image       string
 	Min         int
 	Max         int
 	// Coordinator is the referenced Role's spec.coordinator flag.
@@ -95,159 +100,104 @@ func (c RolePoolConfig) AlwaysUp() bool {
 	return c.Coordinator || c.Lifecycle.AlwaysUp
 }
 
-// PoolEnsurer boots (idempotently, create-if-missing) one standing mesh pool
-// pod for spec — the KubeProvisioner.BootMeshPool seam, interface'd so the
-// scheduler is provable L1 against a fake.
-type PoolEnsurer interface {
-	EnsureMeshPool(ctx context.Context, spec MeshPoolSpec) error
+// RolePoolLister resolves the cluster's RolePool CRs into scheduler-ready
+// RolePoolConfigs: for each CR it dereferences spec.roleRef (model, skills,
+// coordinator) and spec.runtimeRef (runtime type). A CR whose references do
+// not resolve is reported in the unresolved map keyed "namespace/name" — a
+// half-configured pool must never reach the scheduler, and must never block
+// the pools that do resolve. (Production: CRLister, rolepool_prod.go.)
+type RolePoolLister interface {
+	ListRolePools(ctx context.Context) ([]RolePoolConfig, map[string]error, error)
 }
 
-// StandingCounter reports the LIVE standing-process count for one (team,
-// role) pool — production reads coord.mesh_endpoint (LookupTeamRole); the
-// scheduler only needs the count for its bounded status read-back.
-type StandingCounter interface {
-	StandingProcesses(ctx context.Context, team, role string) (int, error)
+// RolePoolPolicy is SchedulingPolicy implementation #1: it turns the
+// cluster's RolePool CRs into the mesh's generic prescheduling inputs — one
+// mesh.PoolPlan per resolved (team, role) pool carrying the target-N band
+// (floor already coordinator-floored) and the resolved standing envelope.
+// The mesh.Scheduler consumes this seam and nothing else: RolePool drives
+// the mesh through the policy interface only (ISI-6038 acceptance).
+type RolePoolPolicy struct {
+	lister RolePoolLister
+	teams  map[string]struct{} // D9.3: only flagged teams reconcile
+	// onUnresolved, when set, is told about every half-configured CR the
+	// lister could not resolve (keyed "namespace/name") — the operator
+	// wires it to its log; the pool is skipped either way.
+	onUnresolved func(key string, err error)
 }
 
-// RolePoolStatusWriter writes one RolePool's bounded status (production: the
-// controller-runtime status subresource update).
-type RolePoolStatusWriter interface {
-	WriteRolePoolStatus(ctx context.Context, namespace, name string, status RolePoolReport) error
-}
-
-// RolePoolReport is the scheduler's status read-back shape (the CRD status
-// fields the writer persists). StandingKnown=false means the live count read
-// failed this pass — the floor is still reconciled, the count is simply not
-// fresh (level-triggered: the next tick retries).
-type RolePoolReport struct {
-	Standing           int32
-	StandingKnown      bool
-	Target             int32
-	Pod                string
-	ObservedGeneration int64
-}
-
-// RolePoolScheduler reconciles a team's RolePools: for each resolved pool it
-// ensures the standing gateway pod exists carrying the right envelope and
-// band, then reports the live standing count back into the CR's status. One
-// Tick = one pass over the full listed set (level-triggered; failed pools are
-// retried on the next tick, exactly like the warm-pool Controller's Tick).
-type RolePoolScheduler struct {
-	ensurer PoolEnsurer
-	counter StandingCounter
-	status  RolePoolStatusWriter
-	ingress string
-	podNS   string
-	workPVC string
-	teams   map[string]struct{} // D9.3: only flagged teams reconcile
-}
-
-// NewRolePoolScheduler assembles the scheduler. podNS is the namespace pool
-// pods boot in (the operator's sandbox namespace — NOT the team namespace:
-// the provisioner's RBAC is scoped there); ingress is the Supervisor
-// registration ingress stamped on the pod; workPVC the optional per-Project
-// workspace PVC.
-func NewRolePoolScheduler(ensurer PoolEnsurer, counter StandingCounter, status RolePoolStatusWriter, teams []string, podNS, ingress, workPVC string) *RolePoolScheduler {
+// NewRolePoolPolicy assembles the policy. teams is the D9.3 canary set —
+// a RolePool in an unflagged namespace is inert (blast radius: the canary
+// set only).
+func NewRolePoolPolicy(lister RolePoolLister, teams []string, onUnresolved func(key string, err error)) *RolePoolPolicy {
 	set := make(map[string]struct{}, len(teams))
 	for _, t := range teams {
 		set[t] = struct{}{}
 	}
-	return &RolePoolScheduler{ensurer: ensurer, counter: counter, status: status, teams: set, podNS: podNS, ingress: ingress, workPVC: workPVC}
+	return &RolePoolPolicy{lister: lister, teams: set, onUnresolved: onUnresolved}
 }
 
-// Tick reconciles the given resolved RolePools (deterministic order: sorted
-// by namespace/name, so fan-out is stable across ticks). A pool whose team
-// is not flagged is skipped (D9.3 blast radius: the canary set only). Each
-// pool reconciles independently — one bad pool never blocks the fan-out; the
-// per-pool error is returned in the map keyed "namespace/name".
-func (s *RolePoolScheduler) Tick(ctx context.Context, pools []RolePoolConfig) map[string]error {
-	sorted := make([]RolePoolConfig, len(pools))
-	copy(sorted, pools)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Namespace != sorted[j].Namespace {
-			return sorted[i].Namespace < sorted[j].Namespace
+// ResolvePools lists and resolves the cluster's RolePools into the generic
+// plan set (dynamic keys: whatever exists this pass). Unresolved references
+// are skipped (reported through onUnresolved — a half-configured pool must
+// never boot a wrong-shaped pod); unflagged teams are skipped (D9.3); a
+// listing failure fails the pass whole.
+func (p *RolePoolPolicy) ResolvePools(ctx context.Context) ([]agentmesh.PoolPlan, error) {
+	pools, unresolved, err := p.lister.ListRolePools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for key, uerr := range unresolved {
+		if p.onUnresolved != nil {
+			p.onUnresolved(key, uerr)
 		}
-		return sorted[i].Name < sorted[j].Name
-	})
+	}
 
-	out := map[string]error{}
-	for _, rp := range sorted {
-		key := rp.Namespace + "/" + rp.Name
-		if _, flagged := s.teams[rp.Namespace]; !flagged {
+	plans := make([]agentmesh.PoolPlan, 0, len(pools))
+	for _, rp := range pools {
+		if _, flagged := p.teams[rp.Namespace]; !flagged {
 			continue // not a mesh team (D9.3): the CR is inert until flagged
 		}
-		if err := s.reconcileOne(ctx, rp); err != nil {
-			out[key] = err
-		}
+		plans = append(plans, planForRolePool(rp))
 	}
-	return out
+	return plans, nil
 }
 
-// clampToInt32 bounds an int before the int32 conversion so a bogus count
-// can't wrap negative (gosec G115 — the codebase clamp pattern, cf.
-// jetstream/publisher.go ConsumerLag). Standing/target are process counts
-// bounded far below MaxInt32 in practice; the clamp only guards the CRD
-// status write against a hostile counter.
-func clampToInt32(n int) int32 {
-	if n > math.MaxInt32 {
-		return math.MaxInt32
-	}
-	// #nosec G115 -- n is bounded by the clamp above; gosec's range
-	// analysis does not track the guard. Process counts never approach
-	// MaxInt32 — the clamp is belt-and-suspenders for the CRD status write.
-	return int32(n)
-}
-
-// reconcileOne is the per-role target-N pass — the same shape as the
-// warm-pool Controller's Tick body (controller.go:22-48), one key per role:
-//
-//	target = StandingTarget(rp)          ← the POLICY (static declarative
-//	                                       floor, D2.2; coordinator rule)
-//	live   = pod standing? (idempotent   ← the MECHANISM state — the pod IS
-//	          create-if-missing)             the durable unit (ISI-5812)
-//	pod missing → Boot (scale UP immediate, warming counts toward live on
-//	              the gateway's own spawn loop)
-//	status ← registry standing count      ← bounded read-back, never a list
-func (s *RolePoolScheduler) reconcileOne(ctx context.Context, rp RolePoolConfig) error {
-	target := rp.StandingTarget()
-	spec := MeshPoolSpec{
-		Team:      rp.Namespace,
-		Role:      rp.Role,
-		Image:     rp.Image,
-		Namespace: s.podNS,
-		Model:     rp.Model,
-		Skills:    rp.Skills,
-		Min:       target,
-		Max:       rp.Max,
-		Lifecycle: &MeshLifecycleSpec{
-			CheckInterval:   rp.Lifecycle.CheckInterval,
-			IdleToHibernate: rp.Lifecycle.IdleToHibernate,
-			HibernateToStop: rp.Lifecycle.HibernateToStop,
+// planForRolePool converts one resolved RolePool into the mesh's generic
+// prescheduling input: the target-N band (floor coordinator-floored here,
+// ceiling as declared) and the standing envelope (runtime type, model,
+// skills — the D2.3 pre-load facts).
+func planForRolePool(rp RolePoolConfig) agentmesh.PoolPlan {
+	return agentmesh.PoolPlan{
+		Team: rp.Namespace,
+		Name: rp.Name,
+		Role: rp.Role,
+		Envelope: agentmesh.Envelope{
+			RuntimeType: rp.RuntimeType,
+			Model:       rp.Model,
+			Skills:      rp.Skills,
+		},
+		Min: rp.StandingTarget(),
+		Max: rp.Max,
+		Lifecycle: &agentmesh.LifecycleConfig{
+			CheckInterval:   durationOrZero(rp.Lifecycle.CheckInterval),
+			IdleToHibernate: durationOrZero(rp.Lifecycle.IdleToHibernate),
+			HibernateToStop: durationOrZero(rp.Lifecycle.HibernateToStop),
 			AlwaysUp:        rp.AlwaysUp(),
 		},
-		IngressURL: s.ingress,
-		ProjectPVC: s.workPVC,
+		Generation: rp.Generation,
 	}
-	if err := s.ensurer.EnsureMeshPool(ctx, spec); err != nil {
-		return fmt.Errorf("ensure pool pod: %w", err)
-	}
+}
 
-	report := RolePoolReport{
-		Target:             clampToInt32(target),
-		Pod:                MeshPoolPodName(rp.Namespace, rp.Role),
-		ObservedGeneration: rp.Generation,
+// durationOrZero parses one CRD lifecycle knob (a duration string). Empty
+// or malformed yields 0 — the gateway's default cadence — so a bad knob
+// degrades to the default, never to a wrong-shaped pod.
+func durationOrZero(s string) time.Duration {
+	if s == "" {
+		return 0
 	}
-	if s.counter != nil {
-		standing, err := s.counter.StandingProcesses(ctx, rp.Namespace, rp.Role)
-		if err == nil {
-			report.Standing = clampToInt32(standing)
-			report.StandingKnown = true
-		} // read failure: report without the count — status-only signal, next tick retries
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0
 	}
-	if s.status != nil {
-		if err := s.status.WriteRolePoolStatus(ctx, rp.Namespace, rp.Name, report); err != nil {
-			return fmt.Errorf("write status: %w", err)
-		}
-	}
-	return nil
+	return d
 }

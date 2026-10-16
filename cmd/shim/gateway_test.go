@@ -369,3 +369,55 @@ func TestBuildGatewayRequiresPoolIdentity(t *testing.T) {
 		t.Fatal("expected pool identity validation error")
 	}
 }
+
+// The composition-root runtime binding (P2 close-out follow-up, ISI-5826
+// comment b09e1970 — additive, outside the pkg/mesh seam): the declared
+// runtime type binds the matching RuntimeAdapter; an untyped pod keeps the
+// opencode default; an unknown type fails closed (never silently run
+// opencode under another runtime's image).
+func TestBuildRuntimeAdapterBindsDeclaredType(t *testing.T) {
+	host := &mesh.LocalHost{}
+	for _, tc := range []struct {
+		runtimeType string
+		wantErr     bool
+	}{
+		{"opencode", false}, // adapter #1 — the pre-seam default
+		{"codex", false},    // adapter #2 — the P2 proof runtime
+		{"", true},          // never reached via buildGateway (env default)
+		{"martian", true},   // fail closed
+	} {
+		adapter, err := buildRuntimeAdapter(tc.runtimeType, host)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("runtime type %q must fail closed", tc.runtimeType)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("runtime type %q: %v", tc.runtimeType, err)
+		}
+		if adapter == nil {
+			t.Fatalf("runtime type %q bound no adapter", tc.runtimeType)
+		}
+	}
+}
+
+// buildGateway assembles through the same binding: a codex pool builds
+// (the runtime re-check — a second runtime drives the gateway with zero
+// control-plane change), and an unknown type fails the build honestly.
+func TestBuildGatewayBindsRuntimeTypeFromEnv(t *testing.T) {
+	t.Setenv("KSQUAD_MESH_TEAM", "team-acme")
+	t.Setenv("KSQUAD_MESH_ROLE", "coder")
+	t.Setenv("KSQUAD_RUNTIME_TYPE", "codex")
+	if _, err := buildGateway(); err != nil {
+		t.Fatalf("codex pool must build: %v", err)
+	}
+	t.Setenv("KSQUAD_RUNTIME_TYPE", "martian")
+	if _, err := buildGateway(); err == nil {
+		t.Fatal("unknown runtime type must fail the build closed")
+	}
+	t.Setenv("KSQUAD_RUNTIME_TYPE", "")
+	if _, err := buildGateway(); err != nil {
+		t.Fatalf("untyped pod must keep the opencode default: %v", err)
+	}
+}

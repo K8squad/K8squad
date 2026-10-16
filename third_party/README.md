@@ -18,10 +18,11 @@ here.
 ## Provenance
 
 - Source: https://github.com/K8sAgentMesh/K8sAgentMesh
-- Pinned commit: `2454c8bf036bc035b88ba9ad4d4ba4817be762f5`
-  (pseudo-version `v0.0.0-20261016133232-2454c8bf036b`, kept in `go.mod`'s
+- Pinned commit: `29d1e027b31eb811eaaa40ea02083eec7ccdd344`
+  (pseudo-version `v0.0.0-20261016193516-29d1e027b31e`, kept in `go.mod`'s
   `require` line as provenance for the pin)
-- Synced: 2026-10-16 (ISI-6035, P3.2 — the a2a package lift)
+- Synced: 2026-10-16 (ISI-6038, P3.5 — adds the `mesh` package: the P3.3
+  pkg/mesh lift + the SchedulingPolicy scheduling seam)
 
 ## Sync
 
@@ -30,6 +31,8 @@ convenience only. Re-sync after a module change:
 
     rsync -a --delete --exclude .git --exclude .github --exclude hack \
       /path/to/K8sAgentMesh/a2a/ third_party/k8sagentmesh/a2a/
+    rsync -a --delete --exclude .git --exclude .github --exclude hack \
+      /path/to/K8sAgentMesh/mesh/ third_party/k8sagentmesh/mesh/
     cp /path/to/K8sAgentMesh/{doc.go,go.mod,LICENSE,NOTICE} third_party/k8sagentmesh/
 
 Then update the `require` line in `go.mod` to the synced commit's

@@ -65,6 +65,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	agentmesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
 	"github.com/K8squad/K8squad/internal/cifailuredispatch"
@@ -1157,15 +1158,18 @@ func main() {
 			}
 		}
 
-		// AgentMesh P1.3 prescheduling (chapter §3/§4 D2.1/D2.2, ISI-5824):
-		// the RolePool CRD scheduler — reconciles every flagged team's
-		// RolePool CRs into standing gateway pods carrying the resolved
-		// (Role × AgentRuntime) envelope and the min..max band; the in-pod
-		// gateway enforces the process count (floor at start, grow toward
-		// max on saturation, idle shrink); the bounded status (standing
-		// count, target, pod) writes back to the CR. Additive and flag-
-		// gated beside the P1.1 imperative boot (D9.3): unset ⇒ nothing
-		// new runs and dispatch is byte-identical.
+		// AgentMesh P1.3 prescheduling (chapter §3/§4 D2.1/D2.2, ISI-5824;
+		// P3.5 leak L3, ISI-6038): RolePool is SchedulingPolicy #1 — the
+		// generic target-N loop is the K8sAgentMesh module's Scheduler
+		// (agentmesh.NewScheduler), fed through the policy seam only; the
+		// host supplies the policy (CR lister + D9.3 flagged teams), the
+		// substrate adapters (pool-pod provisioner, coord standing
+		// counter, CRD status writer) and the pod placement wiring. The
+		// in-pod gateway enforces the process count (floor at start, grow
+		// toward max on saturation, idle shrink); the bounded status
+		// (standing count, target, pod) writes back to the CR. Additive
+		// and flag-gated beside the P1.1 imperative boot (D9.3): unset ⇒
+		// nothing new runs and dispatch is byte-identical.
 		if meshTeams := rundrive.MeshTeamSetFromEnv(os.Getenv); len(meshTeams) > 0 && os.Getenv("KSQUAD_MESH_ROLEPOOL_SCHEDULER") == "true" {
 			registry, regErr := coord.NewMeshRegistry(db)
 			if regErr != nil {
@@ -1175,18 +1179,24 @@ func main() {
 				for team := range meshTeams {
 					teamSlice = append(teamSlice, team)
 				}
-				lister := &kubepool.CRLister{
-					Client:   mgr.GetClient(),
-					ImageFor: images.ImageFor,
-				}
-				sched := kubepool.NewRolePoolScheduler(
-					&kubepool.KubeEnsurer{Provisioner: kubeProvisioner},
+				lister := &kubepool.CRLister{Client: mgr.GetClient()}
+				policy := kubepool.NewRolePoolPolicy(lister, teamSlice, func(key string, err error) {
+					ctrl.Log.Error(err, "RolePool references unresolved; pool skipped", "rolepool", key)
+				})
+				// RolePool drives the mesh through the policy interface
+				// only (ISI-6038 acceptance): the operator holds the
+				// module Scheduler + the host adapters, nothing else.
+				sched := agentmesh.NewScheduler(
+					policy,
+					&kubepool.KubeEnsurer{
+						Provisioner: kubeProvisioner,
+						ImageFor:    images.ImageFor,
+						PodNS:       os.Getenv("KSQUAD_WARM_POOL_NAMESPACE"),
+						Ingress:     os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"),
+						WorkPVC:     os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
+					},
 					&kubepool.RegistryStandingCounter{Registry: registry},
 					&kubepool.ClientStatusWriter{Client: mgr.GetClient()},
-					teamSlice,
-					os.Getenv("KSQUAD_WARM_POOL_NAMESPACE"),
-					os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"),
-					os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
 				)
 				schedTick := 30 * time.Second
 				if v := os.Getenv("KSQUAD_MESH_SCHEDULER_TICK"); v != "" {
@@ -1206,15 +1216,12 @@ func main() {
 						case <-ctx.Done():
 							return nil
 						case <-ticker.C:
-							pools, unresolved, err := lister.ListRolePools(ctx)
-							if err != nil {
-								ctrl.Log.Error(err, "RolePool list failed")
+							errs, rerr := sched.Tick(ctx)
+							if rerr != nil {
+								ctrl.Log.Error(rerr, "RolePool list failed")
 								continue
 							}
-							for key, uerr := range unresolved {
-								ctrl.Log.Error(uerr, "RolePool references unresolved; pool skipped", "rolepool", key)
-							}
-							for key, rerr := range sched.Tick(ctx, pools) {
+							for key, rerr := range errs {
 								ctrl.Log.Error(rerr, "RolePool reconcile failed; retried next tick", "rolepool", key)
 							}
 						}
