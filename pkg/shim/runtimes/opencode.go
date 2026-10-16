@@ -47,10 +47,15 @@ func (openCode) Capabilities() a2a.Capabilities {
 		ToolCalls:         true,
 		InteractivePrompt: true,
 		BYOModelEndpoint:  true,
-		ArtifactKinds:     []string{"file", "patch"},
-		Docker:            true,
-		GitHub:            true,
-		PackageInstall:    false, // opencode owns its own package sandbox
+		// ISI-6054: the adapter now emits the standardized §4 EventRateLimited
+		// on provider throttles (parseOpenCodeLine's error frame), so the card
+		// advertises the signal honestly — peers may rely on it for the 5.11
+		// fallback / 2.11 pause instead of the backoff-only path.
+		RateLimitSignal: true,
+		ArtifactKinds:   []string{"file", "patch"},
+		Docker:          true,
+		GitHub:          true,
+		PackageInstall:  false, // opencode owns its own package sandbox
 	}
 }
 
@@ -472,11 +477,7 @@ func parseOpenCodeLine(line string) []Progress {
 		if ev.Error != nil && ev.Error.Data.Message != "" {
 			text = name + ": " + ev.Error.Data.Message
 		}
-		// ISI-5015: a model-call failure (timeout/provider error) is ALSO an
-		// EventUsage carrying the error so the llm.call span records the
-		// exception (exception.type=name, exception.message=detail) — while the
-		// message event above preserves the user-facing error text in the stream.
-		return []Progress{
+		out := []Progress{
 			{
 				Kind:    a2a.EventMessage,
 				Message: &a2a.MessagePayload{Role: "agent", Text: text, Trust: "untrusted"},
@@ -486,9 +487,43 @@ func parseOpenCodeLine(line string) []Progress {
 				Usage: &a2a.UsagePayload{ErrorType: name, Error: detail},
 			},
 		}
+		// ISI-6054 (story 5.10 producer half): a provider throttle is ALSO an
+		// EventRateLimited so the core's bridge can act on it mid-Run — the
+		// 5.11 SwitchModel fallback or the 2.11 scheduled pause. Detection is
+		// signature-based over the error text (opencode does not surface the
+		// HTTP status structurally): the canonical 429/limit shapes across
+		// OpenAI-compatible providers (zai's observed "Weekly/Monthly Limit
+		// Exhausted" among them). RetryAfter stays empty — opencode's error
+		// frame carries no provider window, which the payload treats as the
+		// backoff path.
+		if isRateLimitError(name, detail) {
+			out = append(out, Progress{
+				Kind:        a2a.EventRateLimited,
+				RateLimited: &a2a.RateLimitedPayload{},
+			})
+		}
+		return out
 	default: // step_start and future shapes: bookkeeping, not wire events
 		return nil
 	}
+}
+
+// isRateLimitError reports whether an opencode error frame is a provider
+// throttle (the 5.10 EventRateLimited producer gate). Signature-based on the
+// lowercased name+detail text: the canonical HTTP 429 phrasings and the quota
+// exhaustion shapes OpenAI-compatible providers emit (zai's observed 429
+// "Weekly/Monthly Limit Exhausted" included). Deliberately narrow — a false
+// positive parks a Run needlessly, so ordinary timeouts/provider errors never
+// match.
+func isRateLimitError(name, detail string) bool {
+	s := strings.ToLower(name + " " + detail)
+	return strings.Contains(s, "429") ||
+		strings.Contains(s, "rate limit") ||
+		strings.Contains(s, "rate_limit") ||
+		strings.Contains(s, "ratelimit") ||
+		strings.Contains(s, "too many requests") ||
+		strings.Contains(s, "limit exhausted") ||
+		strings.Contains(s, "quota exceeded")
 }
 
 // isShellTool reports whether an opencode tool name is a shell-family tool

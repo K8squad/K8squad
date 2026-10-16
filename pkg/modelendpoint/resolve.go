@@ -320,9 +320,18 @@ func (r *Resolver) resolveFallback(ctx context.Context, t tierInput) (endpoint E
 	if err != nil {
 		return Endpoint{}, true, err
 	}
-	// The fallback rides the SAME tier's credential (ADR-045): a BYO fallback
-	// endpoint authenticates with the agent's credentialSecretRef token, just
-	// like the primary, unless the fallback's own endpoint Secret carries one.
+	// Cross-provider credential precedence (the documented "unless"): when the
+	// fallback names its OWN endpoint Secret and that Secret carries an
+	// apiToken, that token is the fallback provider's credential and WINS over
+	// the tier's credentialSecretRef — the agent's credential (the PRIMARY
+	// provider's, e.g. a zai key) must never be dialed against the fallback
+	// provider's endpoint (a deepseek URL would 401 on the zai token). The
+	// tier's credential still applies when the fallback rode the tier's own
+	// endpoint Secret (same wire, second model — the same-provider case ADR-045
+	// describes) or when the fallback's Secret carries no token.
+	if t.fallback.ModelEndpointRef != nil && ep.Token != "" {
+		return ep, true, nil
+	}
 	return r.applyCredentialToken(ctx, t.namespace, t.credentialRef, ep), true, nil
 }
 

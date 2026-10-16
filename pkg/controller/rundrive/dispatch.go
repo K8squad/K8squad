@@ -42,6 +42,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/orgops"
 	"github.com/K8squad/K8squad/pkg/roleprompt"
@@ -220,6 +221,20 @@ func NewOperatorDispatcher(cfg OperatorDispatchConfig) (*a2a.Dispatcher, error) 
 	if d.now == nil {
 		d.now = time.Now
 	}
+	// ISI-6054: the 5.10/5.11 rate-limit consumer's durable halves — the
+	// guarded pause step move (ProdClaims) and the Retry-After wake episode
+	// (ProdResumeStore over the same coord.run_pause table the driver's timer
+	// drives). Construction is infallible here by contract (DB is non-nil),
+	// so the bridge is always wired in the assembled dispatcher.
+	d.claims = NewProdClaims(cfg.DB, OperatorPrincipal)
+	if rs, err := coord.NewProdResumeStore(cfg.DB, coord.DefaultProdResumeConfig(), nil); err == nil {
+		d.pauses = rs
+	} else {
+		// Unreachable with DefaultProdResumeConfig; keep the dispatcher alive
+		// and degrade honestly: the PauseRun verdict no-ops (logged in parker)
+		// while SwitchModel stays fully wired.
+		slog.Warn("rundrive: rate-limit wake store unavailable; PauseRun verdict degrades to no-op", "err", err)
+	}
 	// ISI-5524: the sandbox-topology POST client bounds the supervisor
 	// response-HEADER wait only, never the streamed event body.
 	d.httpClient = newDispatchHTTPClient(cfg.DispatchHeaderTimeout)
@@ -237,6 +252,13 @@ type operatorDispatch struct {
 	cfg     OperatorDispatchConfig
 	shimBin string
 	source  dispatchSource
+	// claims/pauses are the 5.10 consumer's durable halves (ISI-6054): the
+	// guarded paused(rate_limited) step move and the run_pause wake episode.
+	// Nil (ledger-only lanes constructed by hand in tests) degrades the
+	// PauseRun verdict to a logged no-op; the SwitchModel verdict needs only
+	// cfg.Client and stays fully wired.
+	claims *ProdClaims
+	pauses *coord.ProdResumeStore
 	// now is the clock supervisorURL reads to age the bound sandbox pod against
 	// podIPReadyDeadline (nil = time.Now; the seam tests pin it).
 	now func() time.Time
@@ -376,9 +398,18 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 	var modelRoute wire.ModelRoute
 	var modelTier string
 	if len(run.Spec.Agents) > 0 {
-		endpoint, tier, err := d.resolveEffectiveEndpoint(ctx, run)
+		endpoint, fallback, tier, hasFallback, err := d.resolveEffectiveEndpoint(ctx, run)
 		if err != nil {
 			return wire.Task{}, err
+		}
+		// 5.11 mid-Run model fallback (ISI-6054): once the rate-limit bridge has
+		// closed a portion with reason rate_limited (the switch marker the
+		// SwitchModel executor stamps on Run.status.modelSegments), every later
+		// lap of THIS Run dispatches on the winning tier's fallback endpoint —
+		// the same Run, the same checkout, no re-intake. Marker-less Runs are
+		// byte-identical to the pre-5.11 dispatch.
+		if hasFallback && fallbackActive(run) {
+			endpoint = fallback
 		}
 		// The winning tier is the resolved model-origin (agent|role|default);
 		// it rides the submit payload so the shim stamps ksquad.model.tier on
@@ -790,7 +821,7 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 	// Best-effort: an endpoint resolution glitch falls back to the agent-model
 	// family default rather than aborting assembly (AC6 no-regression).
 	window := contextsource.WindowForModel(agent.Spec.Model)
-	if ep, _, err := d.resolveEffectiveEndpoint(ctx, run); err == nil {
+	if ep, _, _, _, err := d.resolveEffectiveEndpoint(ctx, run); err == nil {
 		window = contextsource.WindowFor(ep.Model, ep.ContextWindow)
 	}
 	if snap := run.Status.ContextSnapshot; snap != nil && snap.ContextWindow != nil {
@@ -865,7 +896,7 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 	// gap yields "" and the shim falls back to its own provider default (the
 	// hard fail-closed guarantee lives at admission and in buildTask's
 	// ErrNoModel abort, so an empty here is a degraded-not-wrong shim env).
-	endpoint, _, err := d.resolveEffectiveEndpoint(ctx, run)
+	endpoint, _, _, _, err := d.resolveEffectiveEndpoint(ctx, run)
 	if err != nil {
 		return ""
 	}
@@ -900,10 +931,12 @@ func (d *operatorDispatch) roleFor(ctx context.Context, agent *api.Agent) (*api.
 // resolveEffectiveEndpoint walks the Model-Per-Role tiers (agent → role →
 // system-default ModelConfig) for the Run's dispatch Agent (first spec.agents
 // entry) and returns the effective PRIMARY endpoint plus the tier that supplied
-// it (ISI-4430 S4, plan rev v3 §4d). It is the SINGLE effective-model seam both
-// dispatch topologies read — the a2a wire.Task (buildTask) and the
-// operator-spawned KSQUAD_MODEL env (agentModel) — so the model the shim runs on
-// is identical whichever topology drives the Run.
+// it (ISI-4430 S4, plan rev v3 §4d), and the winning tier's FALLBACK pair when
+// one is configured (ISI-6054: the 5.11 SwitchModel route source). It is the
+// SINGLE effective-model seam both dispatch topologies read — the a2a
+// wire.Task (buildTask) and the operator-spawned KSQUAD_MODEL env (agentModel)
+// — so the model the shim runs on is identical whichever topology drives the
+// Run.
 //
 // Fail-closed (D3): ErrNoModel (no tier supplies a model) and every endpoint
 // resolution failure (dangling Secret, malformed URL) propagate as errors — the
@@ -913,7 +946,7 @@ func (d *operatorDispatch) roleFor(ctx context.Context, agent *api.Agent) (*api.
 // matching the operator's own default namespace and the Helm chart) rather than
 // threaded from POD_NAMESPACE — a known ceiling if the operator ever runs in a
 // non-default namespace; wire cfg.SystemNamespace when that lands.
-func (d *operatorDispatch) resolveEffectiveEndpoint(ctx context.Context, run *api.Run) (modelendpoint.Endpoint, modelendpoint.Tier, error) {
+func (d *operatorDispatch) resolveEffectiveEndpoint(ctx context.Context, run *api.Run) (modelendpoint.Endpoint, modelendpoint.Endpoint, modelendpoint.Tier, bool, error) {
 	ref := run.Spec.Agents[0]
 	ns := ref.Namespace
 	if ns == "" {
@@ -921,18 +954,18 @@ func (d *operatorDispatch) resolveEffectiveEndpoint(ctx context.Context, run *ap
 	}
 	var agent api.Agent
 	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
-		return modelendpoint.Endpoint{}, "", fmt.Errorf("rundrive: resolve dispatch Agent %s/%s: %w", ns, ref.Name, err)
+		return modelendpoint.Endpoint{}, modelendpoint.Endpoint{}, "", false, fmt.Errorf("rundrive: resolve dispatch Agent %s/%s: %w", ns, ref.Name, err)
 	}
 	role, err := d.roleFor(ctx, &agent)
 	if err != nil {
-		return modelendpoint.Endpoint{}, "", err
+		return modelendpoint.Endpoint{}, modelendpoint.Endpoint{}, "", false, err
 	}
 	resolver := modelendpoint.Resolver{Reader: d.cfg.Client}
-	primary, _, tier, _, err := resolver.ResolveEffective(ctx, &agent, role)
+	primary, fallback, tier, hasFallback, err := resolver.ResolveEffective(ctx, &agent, role)
 	if err != nil {
-		return modelendpoint.Endpoint{}, "", fmt.Errorf("rundrive: resolve effective model for Agent %s/%s: %w", ns, agent.Name, err)
+		return modelendpoint.Endpoint{}, modelendpoint.Endpoint{}, "", false, fmt.Errorf("rundrive: resolve effective model for Agent %s/%s: %w", ns, agent.Name, err)
 	}
-	return primary, tier, nil
+	return primary, fallback, tier, hasFallback, nil
 }
 
 // recordModelProvenance stamps the winning tier's model onto
@@ -1167,12 +1200,20 @@ func (d *operatorDispatch) materializeSkills(ctx context.Context, run *api.Run) 
 // status projection (when configured) chains as the innermost sink: the CR
 // projection sees the raw event before any other inner consumer, and its
 // own failures are internal (never abort the dispatch).
+//
+// ISI-6054: the composed sink is wrapped in the 5.10 rate-limit bridge — every
+// EventRateLimited drives the 5.11 decision (SwitchModel → the switch marker
+// buildTask routes the next lap on; PauseRun → the 2.11/3.7 park) BEFORE the
+// event reaches telemetry/forwarding. The bridge is per-Run (the sink is), so
+// both transport legs — legacy sandbox supervisor and the AgentMesh gateway
+// /task route — consume the signal identically with no transport change.
 func (d *operatorDispatch) sinkFor(runID string) a2a.EventSink {
 	inner := d.cfg.RunEvents
 	if d.cfg.LLMStatus != nil {
 		inner = chainSinks(d.cfg.LLMStatus, inner)
 	}
-	return a2a.NewTelemetrySink(inner, d.cfg.Mapper, d.telemetryLabels(cleanRunID(runID)))
+	sink := a2a.NewTelemetrySink(inner, d.cfg.Mapper, d.telemetryLabels(cleanRunID(runID)))
+	return d.rateLimitBridge(cleanRunID(runID)).Sink(sink)
 }
 
 // telemetryLabels resolves the WS-A run-trace identity set (ISI-4382,

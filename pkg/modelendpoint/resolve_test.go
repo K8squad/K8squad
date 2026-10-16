@@ -447,4 +447,29 @@ func TestResolveCredentialSecretRefPrecedence(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, "sk-shared", ep.Token, "fallback BYO endpoint authenticates with the agent's credential token")
 	})
+
+	// ISI-6054: the documented "unless" — when the fallback's OWN endpoint
+	// Secret carries an apiToken, that token wins over the tier's
+	// credentialSecretRef. A cross-provider fallback (zai primary → deepseek
+	// fallback) must dial the fallback provider with the FALLBACK's token;
+	// the agent credential (the primary provider's key) would 401.
+	t.Run("fallback endpoint Secret's own apiToken wins over the credential token", func(t *testing.T) {
+		r := newResolver(t,
+			endpointSecret("primary-ep", map[string][]byte{"endpointURL": []byte("https://api.zai.com/v1")}),
+			endpointSecret("fallback-ep", map[string][]byte{
+				"endpointURL": []byte("https://api.deepseek.com/v1"),
+				"apiToken":    []byte("sk-fallback-own"),
+			}),
+			endpointSecret("zai-credentials", map[string][]byte{"apiToken": []byte("sk-zai-primary")}),
+		)
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.ModelEndpointRef = &api.SecretRef{Name: "primary-ep"}
+			s.CredentialSecretRef = api.SecretRef{Name: "zai-credentials"}
+			s.FallbackModel = &api.FallbackModel{Model: "deepseek-chat", ModelEndpointRef: &api.SecretRef{Name: "fallback-ep"}}
+		})
+		ep, ok, err := r.ResolveFallback(ctx, a)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "sk-fallback-own", ep.Token, "cross-provider fallback authenticates with its own endpoint Secret's token, never the primary's credential")
+	})
 }
