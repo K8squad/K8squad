@@ -38,6 +38,13 @@ type task struct {
 	agent   string
 	team    string
 	project string
+	// ticketKey is the work item's HUMAN ticket key (ISI-6061) — the
+	// board-readable identifier resolved by the dispatch leg from the work
+	// item's labels and carried on the submit payload (a2a.Task.TicketKey).
+	// It stamps ksquad.ticket.ref on the run-trace spans alongside the
+	// opaque workItem uuid; empty ⇒ the attribute is omitted, never
+	// fabricated (the pod has no board access to resolve it itself).
+	ticketKey string
 	// model is the model this run actually launches against — the resolved
 	// route (ModelRoute.Model → launch override → runtime default), matching
 	// runtimes.resolveModel (ISI-4238). It is the truthful attribution for a

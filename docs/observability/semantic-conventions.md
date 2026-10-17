@@ -30,10 +30,11 @@ Root span of a run's trace: opens at dispatch, stays open for the run's lifetime
 |---|---|---|---|---|---|
 | `ksquad.run.id` | string | required | stable |  | The Run's stable id; the run trace's correlation key. High-cardinality — spans/events only, never a metric label. |
 | `ksquad.agent.name` | string | required | stable |  | The agent executing the run (e.g. "coder"). |
-| `ksquad.team.name` | string | required | planned | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
-| `ksquad.project.name` | string | required | planned | WS-A | The project the run belongs to. Drill-down axis. |
-| `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
-| `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
+| `ksquad.team.name` | string | required | stable | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
+| `ksquad.project.name` | string | required | stable | WS-A | The project the run belongs to. Drill-down axis. |
+| `ksquad.work_item.ref` | string | required | stable | WS-A | The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3). |
+| `ksquad.sandbox.pod` | string | recommended | stable | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `ksquad.run.state` | string | recommended | stable |  | Terminal state stamped onto the root at RunEnd (completed|failed|canceled|unknown). |
 | `ksquad.outcome` | string | recommended | stable |  | Mapped outcome stamped at RunEnd (success|error|unknown). |
 | `ksquad.model.tier` | string | recommended | stable |  | Which Model-Per-Role tier supplied the run's effective model at dispatch (agent|role|default) — the resolved origin so an operator sees WHY the run used its model, without re-deriving the tier walk (ISI-4430 S5). Empty on runtime-default runs. Run root only; the per-step serving model of a fallback rides gen_ai.response.model + ksquad.llm.fallback on llm.call. |
@@ -41,10 +42,17 @@ Root span of a run's trace: opens at dispatch, stays open for the run's lifetime
 
 ### `run.end`
 
-Terminal marker child emitted at RunEnd; the run's end instant, queryable on its own.
+Terminal marker child emitted at RunEnd; the run's end instant, queryable on its own. ISI-6061: it carries the full run identity set (run/agent/team/project/work-item/ticket), so filtering on run.end alone still answers whose run ended.
 
 | Attribute | Type | Requirement | Stability | WS | Description |
 |---|---|---|---|---|---|
+| `ksquad.run.id` | string | required | stable |  | The Run's stable id; the run trace's correlation key. High-cardinality — spans/events only, never a metric label. |
+| `ksquad.agent.name` | string | required | stable |  | The agent executing the run (e.g. "coder"). |
+| `ksquad.team.name` | string | required | stable | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
+| `ksquad.project.name` | string | required | stable | WS-A | The project the run belongs to. Drill-down axis. |
+| `ksquad.work_item.ref` | string | required | stable | WS-A | The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3). |
+| `ksquad.sandbox.pod` | string | recommended | stable | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `ksquad.run.state` | string | required | stable |  | Terminal a2a task state (completed|failed|canceled|unknown). |
 | `ksquad.outcome` | string | required | stable |  | Mapped outcome (success|error|unknown). |
 | `ksquad.run.trace_id` | string | recommended | stable |  | The run root's trace id, so the marker back-references the whole trace. |
@@ -57,10 +65,11 @@ One model round-trip (step). Carries OTel gen-AI semconv model + token attribute
 |---|---|---|---|---|---|
 | `ksquad.run.id` | string | required | stable |  | The Run's stable id; the run trace's correlation key. High-cardinality — spans/events only, never a metric label. |
 | `ksquad.agent.name` | string | required | stable |  | The agent executing the run (e.g. "coder"). |
-| `ksquad.team.name` | string | required | planned | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
-| `ksquad.project.name` | string | required | planned | WS-A | The project the run belongs to. Drill-down axis. |
-| `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
-| `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
+| `ksquad.team.name` | string | required | stable | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
+| `ksquad.project.name` | string | required | stable | WS-A | The project the run belongs to. Drill-down axis. |
+| `ksquad.work_item.ref` | string | required | stable | WS-A | The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3). |
+| `ksquad.sandbox.pod` | string | recommended | stable | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `gen_ai.request.model` | string | required | stable |  | The model requested for this step. |
 | `gen_ai.usage.input_tokens` | int | required | stable |  | Prompt/input token count for the step. |
 | `gen_ai.usage.output_tokens` | int | required | stable |  | Completion/output token count (reasoning currently folded in; WS-B splits it out). |
@@ -84,10 +93,11 @@ A local/CLI tool call. Follows OTel gen-AI tool-call conventions; raw arguments 
 |---|---|---|---|---|---|
 | `ksquad.run.id` | string | required | stable |  | The Run's stable id; the run trace's correlation key. High-cardinality — spans/events only, never a metric label. |
 | `ksquad.agent.name` | string | required | stable |  | The agent executing the run (e.g. "coder"). |
-| `ksquad.team.name` | string | required | planned | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
-| `ksquad.project.name` | string | required | planned | WS-A | The project the run belongs to. Drill-down axis. |
-| `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
-| `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
+| `ksquad.team.name` | string | required | stable | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
+| `ksquad.project.name` | string | required | stable | WS-A | The project the run belongs to. Drill-down axis. |
+| `ksquad.work_item.ref` | string | required | stable | WS-A | The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3). |
+| `ksquad.sandbox.pod` | string | recommended | stable | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `gen_ai.tool.name` | string | required | stable |  | The tool invoked. |
 | `gen_ai.operation.name` | string | required | stable |  | The gen-AI operation; always "execute_tool" on a tool-execution span (ISI-4970, GH #636). |
 | `ksquad.tool.type` | string | required | stable | WS-C | Tool category (bash|git|docker|kubectl|helm|node|python|mcp|system) so traces group by tool kind (ISI-4540). |
@@ -105,10 +115,11 @@ A tool call served by an MCPServer. Same shape as gen_ai.tool.call plus the serv
 |---|---|---|---|---|---|
 | `ksquad.run.id` | string | required | stable |  | The Run's stable id; the run trace's correlation key. High-cardinality — spans/events only, never a metric label. |
 | `ksquad.agent.name` | string | required | stable |  | The agent executing the run (e.g. "coder"). |
-| `ksquad.team.name` | string | required | planned | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
-| `ksquad.project.name` | string | required | planned | WS-A | The project the run belongs to. Drill-down axis. |
-| `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
-| `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
+| `ksquad.team.name` | string | required | stable | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
+| `ksquad.project.name` | string | required | stable | WS-A | The project the run belongs to. Drill-down axis. |
+| `ksquad.work_item.ref` | string | required | stable | WS-A | The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3). |
+| `ksquad.sandbox.pod` | string | recommended | stable | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `gen_ai.tool.name` | string | required | stable |  | The tool invoked via MCP. |
 | `gen_ai.operation.name` | string | required | stable |  | The gen-AI operation; always "execute_tool" on a tool-execution span (ISI-4970, GH #636). |
 | `ksquad.tool.type` | string | required | stable | WS-C | Tool category; always "mcp" on this span (ISI-4540). |
@@ -126,10 +137,11 @@ A skill entering the runtime session.
 |---|---|---|---|---|---|
 | `ksquad.run.id` | string | required | stable |  | The Run's stable id; the run trace's correlation key. High-cardinality — spans/events only, never a metric label. |
 | `ksquad.agent.name` | string | required | stable |  | The agent executing the run (e.g. "coder"). |
-| `ksquad.team.name` | string | required | planned | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
-| `ksquad.project.name` | string | required | planned | WS-A | The project the run belongs to. Drill-down axis. |
-| `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
-| `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
+| `ksquad.team.name` | string | required | stable | WS-A | The team/squad the run belongs to. Drill-down axis for the WS-F dashboard. |
+| `ksquad.project.name` | string | required | stable | WS-A | The project the run belongs to. Drill-down axis. |
+| `ksquad.work_item.ref` | string | required | stable | WS-A | The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3). |
+| `ksquad.sandbox.pod` | string | recommended | stable | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `ksquad.skill.name` | string | required | stable |  | The skill loaded. |
 | `ksquad.skill.source.sha` | string | conditional | stable |  | Pinned source SHA of the loaded skill, when known. |
 | `ksquad.outcome` | string | required | stable |  | Load outcome (success|error|unknown). |
@@ -137,7 +149,7 @@ A skill entering the runtime session.
 
 ### `mesh.route`
 
-One routed A2A task arriving at a mesh pool Gateway and reaching a ready standing process — arrival→delivered, the ≤3 s recreate SLO window (chapter §6.1, D4.1). Nests under the dispatch trace so a routed run's trace is continuous from board to LLM call (§8.2).
+One routed A2A task arriving at a mesh pool Gateway and reaching a ready standing process — arrival→delivered, the ≤3 s recreate SLO window (chapter §6.1, D4.1). Nests under the dispatch trace so a routed run's trace is continuous from board to LLM call (§8.2). ISI-6061: carries the routed task's id and project so the mesh leg answers "which task/project" without joining back to the dispatch side.
 
 | Attribute | Type | Requirement | Stability | WS | Description |
 |---|---|---|---|---|---|
@@ -146,6 +158,8 @@ One routed A2A task arriving at a mesh pool Gateway and reaching a ready standin
 | `ksquad.mesh.pod` | string | required | stable |  | The mesh pool pod hosting the standing process (the Gateway's pod identity). |
 | `ksquad.mesh.endpoint` | string | required | stable |  | The endpoint id of the standing process the span concerns. |
 | `ksquad.mesh.selection` | string | required | stable |  | How the process was selected: "idle" (standing idle process), "overflow" (recreated from the envelope on demand), "wake" (woken from hibernation — S4 pools only, ISI-5831; never emitted by a collapsed-ladder pool). |
+| `ksquad.task.a2a_id` | string | conditional | stable |  | The routed a2a task's id (== the run's id, spec §3 V1) — task identity on the routing leg (ISI-6061). Span attribute only, never a metric label. |
+| `ksquad.project.name` | string | conditional | stable |  | The routed run's project identity, from the task payload (ISI-6061). |
 | `ksquad.duration.ms` | int | required | stable |  | Arrival→ready wall-clock duration in ms — backs ksquad.mesh.a2a.ready_latency. |
 | `ksquad.outcome` | string | required | stable |  | Route outcome (success|error|unknown). |
 
@@ -175,6 +189,40 @@ S4 (ISI-5831): a hibernated process woken on route (SIGCONT base / cooperative o
 | `ksquad.mesh.endpoint` | string | required | planned | S4 | The endpoint id of the woken process. |
 | `ksquad.duration.ms` | int | required | planned | S4 | Wake→ready wall-clock duration in ms — backs ksquad.mesh.wake.latency. |
 | `ksquad.outcome` | string | required | planned | S4 | Wake outcome (success|error|unknown). |
+
+### `gateway.handle_task`
+
+The mesh pool Gateway's inbound task edge: one routed A2A task decoded and handed to a standing process (cmd/shim gateway.handle_task, SpanKindServer, on the dispatch trace since ISI-6058). Carries the shared taskspan identity set (ISI-6061) plus the routing target.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.task.a2a_id` | string | required | stable |  | The a2a task id (== the Run's id, spec §3 V1). |
+| `ksquad.task.work_item_id` | string | required | stable |  | The work item (coord uuid) the task serves. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061), resolved by the dispatch leg and carried on the submit payload; present only when a key resolved. |
+| `ksquad.agent.name` | string | conditional | stable |  | The per-run agent identity from the submit payload (ISI-4439); empty on the operator-spawned stdio path. |
+| `ksquad.team.name` | string | conditional | stable |  | The per-run team identity from the submit payload (ISI-4439). |
+| `ksquad.project.name` | string | conditional | stable |  | The per-run project identity from the submit payload (ISI-4439). |
+| `ksquad.model.tier` | string | conditional | stable |  | The resolved model-origin (agent|role|default) from the submit payload (ISI-4430 S5). |
+| `ksquad.task.model_route.endpoint` | string | conditional | stable |  | The resolved BYO model-route endpoint from the submit payload. |
+| `ksquad.task.model_route.model` | string | conditional | stable |  | The resolved model from the submit payload. |
+| `ksquad.task.target` | string | recommended | stable |  | The ?target= endpoint id the caller pinned, if any ("" picks an idle process). |
+
+### `supervisor.handle_task`
+
+The sandbox Supervisor's inbound task edge: one A2A task decoded and submitted to the runtime engine (cmd/shim supervisor.handle_task, SpanKindServer, grafted onto the run's distributed trace since ISI-6059). Carries the shared taskspan identity set (ISI-6061).
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.task.a2a_id` | string | required | stable |  | The a2a task id (== the Run's id, spec §3 V1). |
+| `ksquad.task.work_item_id` | string | required | stable |  | The work item (coord uuid) the task serves. |
+| `ksquad.ticket.ref` | string | conditional | stable |  | The work item's HUMAN ticket key (ISI-6061), resolved by the dispatch leg and carried on the submit payload; present only when a key resolved. |
+| `ksquad.agent.name` | string | conditional | stable |  | The per-run agent identity from the submit payload (ISI-4439); empty on the operator-spawned stdio path. |
+| `ksquad.team.name` | string | conditional | stable |  | The per-run team identity from the submit payload (ISI-4439). |
+| `ksquad.project.name` | string | conditional | stable |  | The per-run project identity from the submit payload (ISI-4439). |
+| `ksquad.model.tier` | string | conditional | stable |  | The resolved model-origin (agent|role|default) from the submit payload (ISI-4430 S5). |
+| `ksquad.task.model_route.endpoint` | string | conditional | stable |  | The resolved BYO model-route endpoint from the submit payload. |
+| `ksquad.task.model_route.model` | string | conditional | stable |  | The resolved model from the submit payload. |
+| `ksquad.task.id` | string | recommended | stable |  | The ?taskid= correlation param the operator's bridge passes. |
 
 ## NATS domain lifecycle events
 

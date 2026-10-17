@@ -69,6 +69,8 @@ func emitMeshLifecycle(t *testing.T) (map[string]sdktrace.ReadOnlySpan, *sdkmetr
 	})
 	obs.ObserveRoute(ctx, mesh.RouteEvent{
 		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-1",
+		// ISI-6061: the routed task's identity rides the route span.
+		TaskID: "task-1", Project: "proj-acme",
 		Selection: mesh.SelectionIdle, Duration: 5 * time.Millisecond,
 	})
 	obs.ObserveSpawn(ctx, mesh.SpawnEvent{
@@ -77,10 +79,12 @@ func emitMeshLifecycle(t *testing.T) (map[string]sdktrace.ReadOnlySpan, *sdkmetr
 	})
 	obs.ObserveRoute(ctx, mesh.RouteEvent{
 		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-2",
+		TaskID: "task-1", Project: "proj-acme",
 		Selection: mesh.SelectionOverflow, Duration: 460 * time.Millisecond,
 	})
 	obs.ObserveRoute(ctx, mesh.RouteEvent{
 		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-3",
+		TaskID: "task-1", Project: "proj-acme",
 		Selection: mesh.SelectionOverflow, Duration: 4 * time.Second,
 		Err: errors.New("recreate deadline"),
 	})
@@ -148,6 +152,27 @@ func TestMeshConformance_NoUndocumentedKeys(t *testing.T) {
 
 // TestMeshConformance_SpanNamesAgree pins the observer's span vocabulary to
 // the registry constants.
+// TestMeshRouteCarriesTaskIdentity (ISI-6061): a routed task's id and project
+// ride the mesh.route span so the routing leg answers "which task/project"
+// without joining back to the dispatch side. A taskless route omits both.
+func TestMeshRouteCarriesTaskIdentity(t *testing.T) {
+	spans, _ := emitMeshLifecycle(t)
+	route := spans[ksqsemconv.SpanMeshRoute]
+	if route == nil {
+		t.Fatal("mesh.route span was never emitted")
+	}
+	got := map[string]string{}
+	for _, kv := range route.Attributes() {
+		got[string(kv.Key)] = kv.Value.String()
+	}
+	if got["ksquad.task.a2a_id"] != "task-1" {
+		t.Errorf("mesh.route ksquad.task.a2a_id = %q, want task-1", got["ksquad.task.a2a_id"])
+	}
+	if got["ksquad.project.name"] != "proj-acme" {
+		t.Errorf("mesh.route ksquad.project.name = %q, want proj-acme", got["ksquad.project.name"])
+	}
+}
+
 func TestMeshConformance_SpanNamesAgree(t *testing.T) {
 	spans, _ := emitMeshLifecycle(t)
 	for _, want := range []string{ksqsemconv.SpanMeshRoute, ksqsemconv.SpanMeshSpawn} {

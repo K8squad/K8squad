@@ -77,8 +77,9 @@ func (s *TelemetrySink) Event(ctx context.Context, ev wire.Event) error {
 			if p, ok := statusPayload(ev.Payload); ok && p.State.IsTerminal() {
 				// ISI-4238: run.end marker core-side (a RunEnd without a
 				// core-side RunStart emits the marker alone — outcome +
-				// state still land in the trace).
-				s.mapper.RunEnd(ctx, ev.A2ATaskID, string(p.State), p.Reason)
+				// state still land in the trace). ISI-6061: the sink's
+				// labels ride the marker so it carries the identity set.
+				s.mapper.RunEnd(ctx, s.labels, ev.A2ATaskID, string(p.State), p.Reason)
 				s.mapper.FinishTask(ctx, ev.A2ATaskID)
 			}
 		}

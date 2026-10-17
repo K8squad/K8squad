@@ -242,6 +242,16 @@ type Task struct {
 	// logs/telemetry; this map is secret material and MUST NOT be logged.
 	// +optional
 	MCPTokenEnv map[string]string `json:"mcp_token_env,omitempty"`
+	// TicketKey is the work item's HUMAN ticket key (e.g. an external board
+	// key like ISI-6040, or a GitHub issue ref owner/repo#N) — the identifier
+	// an operator reads off the board, as opposed to the opaque
+	// WorkItemID uuid. It is resolved by the dispatching host at submit time
+	// (best-effort from the work item record; empty when the item carries no
+	// human key) and rides the submit payload so the shim can stamp it as the
+	// ksquad.ticket.ref span attribute on the run trace (ISI-6061) without any
+	// shim-side lookup — the pod has no board access. It never fabricates a
+	// key: an unresolved work item simply omits the attribute. +optional
+	TicketKey string `json:"ticket_key,omitempty"`
 }
 
 // Status is the V3 GetStatus result (spec §3 V3): the current task state, an

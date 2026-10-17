@@ -68,6 +68,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/taskspan"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
@@ -583,13 +584,11 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add task correlation attributes
-	taskHandleSpan.SetAttributes(
-		attribute.String("ksquad.task.a2a_id", task.A2ATaskID),
-		attribute.String("ksquad.task.work_item_id", task.WorkItemID),
-		attribute.String("ksquad.task.model_route.endpoint", task.ModelRoute.Endpoint),
-		attribute.String("ksquad.task.model_route.model", task.ModelRoute.Model),
-	)
+	// Task correlation attributes. ISI-6061: the shared taskspan identity set
+	// (a2a id, work item, human ticket key, agent/team/project, model
+	// tier/route) — the same vocabulary the gateway's handle_task stamps, so
+	// both dispatch edges carry the same task identity.
+	taskHandleSpan.SetAttributes(taskspan.TaskAttrs(task)...)
 
 	// ISI-4238: submit on the handshake's trace context when it landed so
 	// the run's spans join the Run's distributed trace; the request ctx

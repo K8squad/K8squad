@@ -36,11 +36,13 @@ import (
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
-	"github.com/K8squad/K8squad/pkg/a2a"
 	mesh "github.com/K8sAgentMesh/K8sAgentMesh/mesh"
+	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/telemetry/meshobs"
 	ksqsemconv "github.com/K8squad/K8squad/pkg/telemetry/semconv"
+	"github.com/K8squad/K8squad/pkg/telemetry/taskspan"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
@@ -55,7 +57,14 @@ func emitFullRunTrace(t *testing.T) map[string]sdktrace.ReadOnlySpan {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
 	m := toolusage.NewMapper(tp.Tracer("conformance"), nil)
-	labels := toolusage.Labels{RunID: "run-conformance", Agent: "coder", ModelTier: "role"}
+	// ISI-6061: the identity set is fully populated (team/project/work-item/
+	// ticket key/sandbox pod) so the conformance suite enforces the whole
+	// correlation set on every run-trace span, run.end included.
+	labels := toolusage.Labels{
+		RunID: "run-conformance", Agent: "coder", Team: "team-acme",
+		Project: "proj-acme", WorkItemRef: "9c8b7a6d-0000-4000-8000-000000000001",
+		TicketKey: "ISI-6061", SandboxPod: "sandbox-1", ModelTier: "role",
+	}
 	const task = "task-1"
 
 	ctx := context.Background()
@@ -94,7 +103,26 @@ func emitFullRunTrace(t *testing.T) map[string]sdktrace.ReadOnlySpan {
 		Name: "restart-deploy", SHA256: "abc123", OK: boolPtr(true),
 	})
 
-	m.RunEnd(ctx, task, "completed", "")
+	m.RunEnd(ctx, labels, task, "completed", "")
+
+	// Dispatch-edge handle_task spans (ISI-6061): the REAL identity builder
+	// both cmd/shim handlers stamp after decoding the a2a.Task
+	// (pkg/telemetry/taskspan), driven with a fully-populated payload so the
+	// shared set is enforced on both edges.
+	fullTask := a2a.Task{
+		A2ATaskID:  "task-1",
+		WorkItemID: "9c8b7a6d-0000-4000-8000-000000000001",
+		TicketKey:  "ISI-6061",
+		Identity:   a2a.AgentIdentity{Name: "coder", Squad: "team-acme", Project: "proj-acme"},
+		ModelTier:  "role",
+		ModelRoute: a2a.ModelRoute{Endpoint: "http://ollama:11434/v1", Model: "qwen3"},
+	}
+	_, gws := tp.Tracer("conformance").Start(ctx, ksqsemconv.SpanGatewayHandleTask,
+		trace.WithAttributes(taskspan.TaskAttrs(fullTask)...))
+	gws.End()
+	_, sups := tp.Tracer("conformance").Start(ctx, ksqsemconv.SpanSupervisorHandleTask,
+		trace.WithAttributes(taskspan.TaskAttrs(fullTask)...))
+	sups.End()
 
 	// mesh.route / mesh.spawn (AgentMesh P1.2, ISI-5823): the run trace's
 	// routed-in counterpart, driven through the REAL mesh emitter the pod
@@ -104,6 +132,7 @@ func emitFullRunTrace(t *testing.T) map[string]sdktrace.ReadOnlySpan {
 		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder"})
 	meshObs.ObserveRoute(ctx, mesh.RouteEvent{
 		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-1",
+		TaskID: "task-1", Project: "proj-acme",
 		Selection: mesh.SelectionIdle, Duration: 4 * time.Millisecond})
 	meshObs.ObserveSpawn(ctx, mesh.SpawnEvent{
 		Team: "team-acme", Role: "coder", Pod: "mesh-team-acme-coder", EndpointID: "ep-2",
