@@ -1390,7 +1390,11 @@ func main() {
 		runner := rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
 			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient(),
 				images, defaultRuntimeClass)), a2aDispatcher)
-		if credWriter := rundrive.NewSecretCredentialWriter(mgr.GetClient(), taskIOMinter, taskIOCoordURL); credWriter != nil {
+		// ISI-6060 (ISI-6055 P1): pass the SAME mesh team flag the dispatcher
+		// consults so mesh-flagged teams' binds mint no bind-time trace carrier —
+		// the request's own W3C carrier (ISI-6058/6059) is authoritative on
+		// that leg, and a reconcile-context traceparent is a dangling parent.
+		if credWriter := rundrive.NewSecretCredentialWriter(mgr.GetClient(), taskIOMinter, taskIOCoordURL, rundrive.MeshTeamSetFromEnv(os.Getenv)); credWriter != nil {
 			runner = runner.WithCredentialWriter(credWriter)
 		}
 		runner = runner.WithSandboxRefObserver(rundrive.NewRunStatusSandboxWriter(mgr.GetClient()))

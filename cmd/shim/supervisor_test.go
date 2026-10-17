@@ -212,10 +212,10 @@ func TestSupervisorSpansShareRunTraceID(t *testing.T) {
 	}
 
 	// Replay the supervisor call chain the way handleTask threads it: graft the
-	// run trace, open handle_task, hand that live ctx to runtime (runtime.init),
-	// and open run.start on the detached handshake ctx (as SubmitTask's submitCtx
-	// does).
-	ctx := sup.runTraceContext(context.Background())
+	// run trace (no request carrier, as the legacy stdio/sandbox topology),
+	// open handle_task, hand that live ctx to runtime (runtime.init), and open
+	// run.start on the detached handshake ctx (as SubmitTask's submitCtx does).
+	ctx := sup.runTraceContext(context.Background(), nil)
 	ctx, handle := telemetry.Tracer().Start(ctx, "supervisor.handle_task")
 	_, _ = sup.runtime(ctx) // KSQUAD_RUNTIME_TYPE unset: still opens+ends runtime.init
 	handle.End()
@@ -463,5 +463,155 @@ func TestSupervisorSubmitTraceContextFallsBackToRequestCarrier(t *testing.T) {
 	bare := oteltrace.SpanContextFromContext(sup.submitTraceContext(oteltrace.SpanContext{}))
 	if bare.IsValid() {
 		t.Errorf("submit trace = %v with no carrier, want a fresh background root", bare.TraceID())
+	}
+}
+
+// setupTraceExporter installs an in-memory span exporter as the global OTel
+// provider (TraceContext propagator), restoring the prior globals on cleanup.
+func setupTraceExporter(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+	return exp
+}
+
+// handleTaskTraceID finds the nth supervisor.handle_task span in exp and
+// returns its trace ID.
+func handleTaskTraceID(t *testing.T, exp *tracetest.InMemoryExporter, n int) oteltrace.TraceID {
+	t.Helper()
+	seen := 0
+	for _, s := range exp.GetSpans() {
+		if s.Name != "supervisor.handle_task" {
+			continue
+		}
+		if seen == n {
+			return s.SpanContext.TraceID()
+		}
+		seen++
+	}
+	t.Fatalf("expected at least %d supervisor.handle_task spans, saw %d", n+1, seen)
+	return oteltrace.TraceID{}
+}
+
+// TestSupervisorHandleTaskPrefersRequestTrace covers ISI-6059 work item 1: when
+// the /task request carries a W3C traceparent header (the mesh dispatcher's
+// per-request continuation), supervisor.handle_task must parent on THAT
+// context — never the credential graft, and never the once-cached handshake
+// context whose trace belongs to whichever run bound the pod FIRST.
+func TestSupervisorHandleTaskPrefersRequestTrace(t *testing.T) {
+	exp := setupTraceExporter(t)
+
+	dir := t.TempDir()
+	prev := supervisorCoordMountPath
+	supervisorCoordMountPath = dir
+	t.Cleanup(func() { supervisorCoordMountPath = prev })
+
+	// A credential carrier for a DIFFERENT trace exists on disk, and the
+	// handshake cache holds a third — both must lose to the request header.
+	writeCred(t, dir, "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaa-01")
+	staleTID, _ := oteltrace.TraceIDFromHex("0000000000000000000000000000beef")
+	staleSID, _ := oteltrace.SpanIDFromHex("000000000000beef")
+	staleCtx := oteltrace.ContextWithRemoteSpanContext(context.Background(),
+		oteltrace.NewSpanContext(oteltrace.SpanContextConfig{TraceID: staleTID, SpanID: staleSID, TraceFlags: oteltrace.FlagsSampled, Remote: true}))
+	sup := &supervisor{busy: true, traceCtx: staleCtx}
+
+	req := httptest.NewRequest(http.MethodPost, "/task?taskid=t1", nil)
+	req.Header.Set("traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+	sup.handleTask(httptest.NewRecorder(), req)
+
+	want, _ := oteltrace.TraceIDFromHex("0123456789abcdef0123456789abcdef")
+	got := handleTaskTraceID(t, exp, 0)
+	if got != want {
+		t.Errorf("supervisor.handle_task traceID = %s, want request-header trace %s (per-request graft must win)", got, want)
+	}
+}
+
+// TestSupervisorHandleTaskReRootsPerRunCredential is the ISI-6059 regression
+// test in the ISI-5331 R1 class (warm-pod bleed), at the handle_task seam:
+// two successive runs on the SAME warm pod (no request carrier — the legacy
+// stdio/sandbox fallback) must parent each handle_task on the CURRENT
+// credential's trace, never on run #1's — the bluebox 8d777056ee45bc94
+// dangling-parent symptom.
+func TestSupervisorHandleTaskReRootsPerRunCredential(t *testing.T) {
+	exp := setupTraceExporter(t)
+
+	dir := t.TempDir()
+	prev := supervisorCoordMountPath
+	supervisorCoordMountPath = dir
+	t.Cleanup(func() { supervisorCoordMountPath = prev })
+
+	// s.traceCtx is the stale cache from run #1's handshake: reusing it (the
+	// pre-ISI-6059 bug) would bleed run #1's trace into run #2.
+	staleTID, _ := oteltrace.TraceIDFromHex("0000000000000000000000000000beef")
+	staleSID, _ := oteltrace.SpanIDFromHex("000000000000beef")
+	staleCtx := oteltrace.ContextWithRemoteSpanContext(context.Background(),
+		oteltrace.NewSpanContext(oteltrace.SpanContextConfig{TraceID: staleTID, SpanID: staleSID, TraceFlags: oteltrace.FlagsSampled, Remote: true}))
+	sup := &supervisor{traceCtx: staleCtx}
+
+	// Run #1 binds: the credential carries trace A.
+	traceA := "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaa-01"
+	writeCred(t, dir, traceA)
+	sup.handleTask(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/task?taskid=a", nil))
+	gotA := handleTaskTraceID(t, exp, 0)
+
+	// Warm-pool reuse: the operator rebinds the SAME pod for run #2 and
+	// rewrites the credential with trace B. handle_task must re-read the
+	// credential per task and root on B.
+	traceB := "00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bbbbbbbbbbbbbbbb-01"
+	writeCred(t, dir, traceB)
+	sup.handleTask(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/task?taskid=b", nil))
+	gotB := handleTaskTraceID(t, exp, 1)
+
+	if gotA == gotB {
+		t.Fatalf("successive runs share one handle_task trace %s (R1 bleed not fixed)", gotA)
+	}
+	wantA, _ := oteltrace.TraceIDFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	wantB, _ := oteltrace.TraceIDFromHex("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if gotA != wantA {
+		t.Errorf("run-A handle_task traceID = %s, want run-A carrier trace %s (not stale cache %s)", gotA, wantA, staleTID)
+	}
+	if gotB != wantB {
+		t.Errorf("run-B handle_task traceID = %s, want run-B carrier trace %s (per-task re-read)", gotB, wantB)
+	}
+	if gotA == staleTID || gotB == staleTID {
+		t.Errorf("a run grafted the stale handshake cache %s (run #1 bleed)", staleTID)
+	}
+}
+
+// TestSupervisorHandleTaskLegacyFallbackKeepsCredentialGraft covers ISI-6059
+// work item 2: with no request carrier and no readable per-task credential
+// carrier, handle_task still grafts the credential context extracted at the
+// handshake (s.traceCtx) — the legacy stdio/sandbox topologies keep the
+// ISI-5143/ISI-5144 behavior.
+func TestSupervisorHandleTaskLegacyFallbackKeepsCredentialGraft(t *testing.T) {
+	exp := setupTraceExporter(t)
+
+	// supervisorCoordMountPath stays at its default: the coordinator mount is
+	// absent in tests, so credentialCarrier() finds nothing and the cached
+	// handshake context must carry the graft.
+	runTraceID, _ := oteltrace.TraceIDFromHex("00000000000000000000000000004540")
+	parentSpanID, _ := oteltrace.SpanIDFromHex("0000000000005143")
+	runSC := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+		TraceID:    runTraceID,
+		SpanID:     parentSpanID,
+		TraceFlags: oteltrace.FlagsSampled,
+		Remote:     true,
+	})
+	sup := &supervisor{busy: true, traceCtx: oteltrace.ContextWithRemoteSpanContext(context.Background(), runSC)}
+
+	sup.handleTask(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/task?taskid=t1", nil))
+
+	got := handleTaskTraceID(t, exp, 0)
+	if got != runTraceID {
+		t.Errorf("supervisor.handle_task traceID = %s, want cached credential trace %s (legacy fallback must be preserved)", got, runTraceID)
 	}
 }
