@@ -132,7 +132,7 @@ func TestWSAIdentityAttrsRideSpans(t *testing.T) {
 	m.ToolEvent(runCtx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
 	m.UsageEvent(runCtx, labels, "task-1", a2a.UsagePayload{Model: "sonnet", Input: 3, Output: 5})
 	m.SkillEvent(runCtx, labels, a2a.SkillLoadPayload{Name: "restart-deploy"})
-	m.RunEnd(runCtx, "task-1", "completed", "")
+	m.RunEnd(runCtx, Labels{}, "task-1", "completed", "")
 
 	want := map[string]string{
 		"ksquad.team.name":     "alpha",
@@ -162,7 +162,7 @@ func TestModelTierOnRunStartOnly(t *testing.T) {
 	runCtx, _ := m.RunStart(ctx, labels, "task-1")
 	m.UsageEvent(runCtx, labels, "task-1", a2a.UsagePayload{Model: "sonnet", Input: 3, Output: 5})
 	m.ToolEvent(runCtx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
-	m.RunEnd(runCtx, "task-1", "completed", "")
+	m.RunEnd(runCtx, Labels{}, "task-1", "completed", "")
 
 	if got := attrMap(findSpan(t, sr, SpanRunStart).Attributes())["ksquad.model.tier"]; got != "role" {
 		t.Errorf("run.start ksquad.model.tier = %q, want %q", got, "role")
@@ -188,7 +188,7 @@ func TestRunPathOnRunStartOnly(t *testing.T) {
 	runCtx, _ := m.RunStart(ctx, labels, "task-1")
 	m.UsageEvent(runCtx, labels, "task-1", a2a.UsagePayload{Model: "sonnet", Input: 3, Output: 5})
 	m.ToolEvent(runCtx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
-	m.RunEnd(runCtx, "task-1", "completed", "")
+	m.RunEnd(runCtx, Labels{}, "task-1", "completed", "")
 
 	if got := attrMap(findSpan(t, sr, SpanRunStart).Attributes())["ksquad.run.path"]; got != "claim" {
 		t.Errorf("run.start ksquad.run.path = %q, want %q (empty Labels.RunPath defaults to claim)", got, "claim")
@@ -203,7 +203,7 @@ func TestRunPathOnRunStartOnly(t *testing.T) {
 	m2, sr2, _ := newTestMapper(t)
 	meshLabels := Labels{RunID: "run-mesh", Agent: "coder", RunPath: "mesh"}
 	runCtx2, _ := m2.RunStart(context.Background(), meshLabels, "task-2")
-	m2.RunEnd(runCtx2, "task-2", "completed", "")
+	m2.RunEnd(runCtx2, Labels{}, "task-2", "completed", "")
 	if got := attrMap(findSpan(t, sr2, SpanRunStart).Attributes())["ksquad.run.path"]; got != "mesh" {
 		t.Errorf("run.start ksquad.run.path = %q, want %q", got, "mesh")
 	}
@@ -216,7 +216,7 @@ func TestModelTierEmptyOmitted(t *testing.T) {
 	m, sr, _ := newTestMapper(t)
 	ctx := context.Background()
 	runCtx, _ := m.RunStart(ctx, Labels{RunID: "run-nodefault", Agent: "coder"}, "task-1")
-	m.RunEnd(runCtx, "task-1", "completed", "")
+	m.RunEnd(runCtx, Labels{}, "task-1", "completed", "")
 
 	if _, ok := attrMap(findSpan(t, sr, SpanRunStart).Attributes())["ksquad.model.tier"]; ok {
 		t.Error("run.start emitted ksquad.model.tier for an empty tier; it must be omitted")
@@ -814,7 +814,7 @@ func TestRunStartMarksRootSpan(t *testing.T) {
 	m, sr, _ := newTestMapper(t)
 
 	runCtx, _ := m.RunStart(context.Background(), Labels{RunID: "run-r", Agent: "dev"}, "run-r")
-	m.RunEnd(runCtx, "run-r", "completed", "")
+	m.RunEnd(runCtx, Labels{}, "run-r", "completed", "")
 
 	s := findSpan(t, sr, SpanRunStart)
 	if got := attrMap(s.Attributes())["request.is_root_span"]; got != "true" {
@@ -906,7 +906,7 @@ func TestRunTraceLifecycle(t *testing.T) {
 
 	// A child llm.call started with the returned ctx must join the trace.
 	m.UsageEvent(ctx, Labels{RunID: "r", Agent: "a"}, "r", a2a.UsagePayload{Model: "m", Input: 1})
-	m.RunEnd(ctx, "r", "completed", "")
+	m.RunEnd(ctx, Labels{}, "r", "completed", "")
 
 	end := findSpan(t, sr, SpanRunEnd)
 	if end.SpanContext().TraceID() != rootID {
@@ -937,11 +937,84 @@ func TestRunTraceLifecycle(t *testing.T) {
 	}
 }
 
+// TestTicketKeyOnRunTraceSpans (ISI-6061): the human ticket key
+// (Labels.TicketKey → ksquad.ticket.ref) rides every run-trace span alongside
+// the opaque work-item uuid — run.start, llm.call, gen_ai.tool.call, mcp.call
+// and run.end — so a backend filters traces by the identifier an operator
+// reads without a uuid→ticket join. Empty key ⇒ attribute omitted, never
+// fabricated.
+func TestTicketKeyOnRunTraceSpans(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	labels := Labels{
+		RunID: "r", Agent: "coder", Team: "team-acme", Project: "proj-acme",
+		WorkItemRef: "9c8b7a6d-0000-4000-8000-000000000001", TicketKey: "ISI-6061",
+	}
+	ctx, _ := m.RunStart(context.Background(), labels, "r")
+	m.UsageEvent(ctx, labels, "r", a2a.UsagePayload{Model: "m", Input: 1})
+	m.ToolEvent(ctx, labels, "r", a2a.ToolPayload{Name: "kubectl", Phase: "start"})
+	m.ToolEvent(ctx, labels, "r", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+	m.ToolEvent(ctx, labels, "r", a2a.ToolPayload{Name: "search", Phase: "start", Server: "memory-mcp"})
+	m.ToolEvent(ctx, labels, "r", a2a.ToolPayload{Name: "search", Phase: "result", Server: "memory-mcp", OK: boolPtr(true)})
+	m.RunEnd(ctx, labels, "r", "completed", "")
+
+	for _, name := range []string{SpanRunStart, SpanLLMCall, SpanToolCall, SpanMCPCall, SpanRunEnd} {
+		attrs := attrMap(findSpan(t, sr, name).Attributes())
+		if attrs["ksquad.ticket.ref"] != "ISI-6061" {
+			t.Errorf("span %s ksquad.ticket.ref = %q, want ISI-6061", name, attrs["ksquad.ticket.ref"])
+		}
+		// The opaque uuid stays alongside the human key.
+		if attrs["ksquad.work_item.ref"] != "9c8b7a6d-0000-4000-8000-000000000001" {
+			t.Errorf("span %s ksquad.work_item.ref = %q", name, attrs["ksquad.work_item.ref"])
+		}
+	}
+}
+
+// TestTicketKeyOmittedWhenUnresolved (ISI-6061): an empty TicketKey simply
+// omits the attribute — the key is never fabricated.
+func TestTicketKeyOmittedWhenUnresolved(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx, _ := m.RunStart(context.Background(), Labels{RunID: "r", Agent: "a"}, "r")
+	m.RunEnd(ctx, Labels{}, "r", "completed", "")
+	for _, name := range []string{SpanRunStart, SpanRunEnd} {
+		attrs := attrMap(findSpan(t, sr, name).Attributes())
+		if _, ok := attrs["ksquad.ticket.ref"]; ok {
+			t.Errorf("span %s carries a fabricated ksquad.ticket.ref = %q", name, attrs["ksquad.ticket.ref"])
+		}
+	}
+}
+
+// TestRunEndCarriesIdentity (ISI-6061): the run.end marker carries the full
+// identity set (agent/team/project/work-item/ticket), so filtering on run.end
+// alone still answers whose run ended.
+func TestRunEndCarriesIdentity(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	labels := Labels{
+		RunID: "r", Agent: "coder", Team: "team-acme", Project: "proj-acme",
+		WorkItemRef: "9c8b7a6d-0000-4000-8000-000000000001", TicketKey: "ISI-6061",
+	}
+	ctx, _ := m.RunStart(context.Background(), labels, "r")
+	m.RunEnd(ctx, labels, "r", "completed", "")
+
+	attrs := attrMap(findSpan(t, sr, SpanRunEnd).Attributes())
+	for key, want := range map[string]string{
+		"ksquad.run.id":        "r",
+		"ksquad.agent.name":    "coder",
+		"ksquad.team.name":     "team-acme",
+		"ksquad.project.name":  "proj-acme",
+		"ksquad.work_item.ref": "9c8b7a6d-0000-4000-8000-000000000001",
+		"ksquad.ticket.ref":    "ISI-6061",
+	} {
+		if attrs[key] != want {
+			t.Errorf("run.end %s = %q, want %q", key, attrs[key], want)
+		}
+	}
+}
+
 // TestRunEndWithoutStartEmitsMarker (ISI-4238): a RunEnd with no matching
 // RunStart still emits the run.end marker (core-side sink posture).
 func TestRunEndWithoutStartEmitsMarker(t *testing.T) {
 	m, sr, _ := newTestMapper(t)
-	m.RunEnd(context.Background(), "solo", "failed", "boom")
+	m.RunEnd(context.Background(), Labels{}, "solo", "failed", "boom")
 	end := findSpan(t, sr, SpanRunEnd)
 	attrs := attrMap(end.Attributes())
 	if attrs["ksquad.run.state"] != "failed" || attrs["ksquad.outcome"] != "error" {
@@ -1186,7 +1259,7 @@ func TestStepIndexMonotonicAcrossTurns(t *testing.T) {
 	m.UsageEvent(runCtx, labels, "run-1", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
 	m.ToolEvent(runCtx, labels, "run-1", a2a.ToolPayload{Name: "bash", Phase: "result", OK: boolPtr(true)})
 
-	m.RunEnd(runCtx, "run-1", "completed", "")
+	m.RunEnd(runCtx, Labels{}, "run-1", "completed", "")
 
 	llm := spansByName(sr, SpanLLMCall)
 	if len(llm) != 2 {
@@ -1219,11 +1292,11 @@ func TestStepIndexResetPerRun(t *testing.T) {
 
 	run1Ctx, _ := m.RunStart(ctx, Labels{RunID: "run-a", Agent: "dev"}, "run-a")
 	m.UsageEvent(run1Ctx, Labels{RunID: "run-a", Agent: "dev"}, "run-a", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
-	m.RunEnd(run1Ctx, "run-a", "completed", "")
+	m.RunEnd(run1Ctx, Labels{}, "run-a", "completed", "")
 
 	run2Ctx, _ := m.RunStart(ctx, Labels{RunID: "run-b", Agent: "dev"}, "run-b")
 	m.UsageEvent(run2Ctx, Labels{RunID: "run-b", Agent: "dev"}, "run-b", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
-	m.RunEnd(run2Ctx, "run-b", "completed", "")
+	m.RunEnd(run2Ctx, Labels{}, "run-b", "completed", "")
 
 	llm := spansByName(sr, SpanLLMCall)
 	if len(llm) != 2 {
@@ -1267,7 +1340,7 @@ func TestR1TraceContinuityReRootsOnRunStart(t *testing.T) {
 	m.UsageEvent(bled, labels, "run-1", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
 	m.ToolEvent(bled, labels, "run-1", a2a.ToolPayload{Name: "kubectl", Phase: "start"})
 	m.ToolEvent(bled, labels, "run-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
-	m.RunEnd(bled, "run-1", "completed", "")
+	m.RunEnd(bled, Labels{}, "run-1", "completed", "")
 
 	for _, name := range []string{SpanRunStart, SpanLLMCall, SpanToolCall, SpanRunEnd} {
 		s := findSpan(t, sr, name)
@@ -1306,7 +1379,7 @@ func TestR1RunIDStampedWhenLabelsEmpty(t *testing.T) {
 	m.UsageEvent(ctx, Labels{Agent: "dev"}, "task-x", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
 	m.ToolEvent(ctx, Labels{Agent: "dev"}, "task-x", a2a.ToolPayload{Name: "git", Phase: "start"})
 	m.ToolEvent(ctx, Labels{Agent: "dev"}, "task-x", a2a.ToolPayload{Name: "git", Phase: "result", OK: boolPtr(true)})
-	m.RunEnd(ctx, "task-x", "completed", "")
+	m.RunEnd(ctx, Labels{}, "task-x", "completed", "")
 
 	for _, name := range []string{SpanLLMCall, SpanToolCall, SpanRunEnd} {
 		s := findSpan(t, sr, name)
@@ -1346,7 +1419,7 @@ func TestSpanProjectionSuppressedEmitsNoSpans(t *testing.T) {
 	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "create_pr", Phase: "start", Server: "github-mcp"})
 	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "create_pr", Phase: "result", OK: boolPtr(true), Server: "github-mcp"})
 	m.SkillEvent(ctx, labels, a2a.SkillLoadPayload{Name: "restart-deploy", OK: boolPtr(true)})
-	m.RunEnd(ctx, "task-1", "completed", "")
+	m.RunEnd(ctx, Labels{}, "task-1", "completed", "")
 
 	if n := len(sr.Ended()); n != 0 {
 		t.Errorf("span-suppressed mapper emitted %d spans, want 0", n)

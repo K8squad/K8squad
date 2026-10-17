@@ -844,6 +844,7 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 			g.mu.Unlock()
 			g.observeRoute(ctx, RouteEvent{
 				Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+				TaskID: task.A2ATaskID, Project: task.Identity.Project,
 				EndpointID: handle.ID(), Selection: selection,
 				Duration: time.Since(arrival), Err: werr,
 			})
@@ -861,6 +862,7 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 		// reached a process and would pollute the SLO window.
 		g.observeRoute(ctx, RouteEvent{
 			Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+			TaskID: task.A2ATaskID, Project: task.Identity.Project,
 			EndpointID: handle.ID(), Selection: selection,
 			Duration: time.Since(arrival), Err: err,
 		})
@@ -868,6 +870,7 @@ func (g *Gateway) Route(ctx context.Context, target string, task a2a.Task) (Stre
 	}
 	g.observeRoute(ctx, RouteEvent{
 		Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+		TaskID: task.A2ATaskID, Project: task.Identity.Project,
 		EndpointID: handle.ID(), Selection: selection,
 		Duration: time.Since(arrival), Err: nil,
 	})
@@ -930,6 +933,7 @@ func (g *Gateway) routeSaturated(ctx context.Context, task a2a.Task, arrival tim
 		stream, rerr := g.cfg.Adapter.Route(ctx, h, task)
 		g.observeRoute(ctx, RouteEvent{
 			Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+			TaskID: task.A2ATaskID, Project: task.Identity.Project,
 			EndpointID: h.ID(), Selection: SelectionOverflow,
 			Duration: time.Since(arrival), Err: rerr,
 		})
@@ -952,6 +956,7 @@ func (g *Gateway) routeSaturated(ctx context.Context, task a2a.Task, arrival tim
 	stream, rerr := g.cfg.Adapter.Route(ctx, h, task)
 	g.observeRoute(ctx, RouteEvent{
 		Team: g.cfg.Team, Role: g.cfg.Role, Pod: g.cfg.Pod,
+		TaskID: task.A2ATaskID, Project: task.Identity.Project,
 		EndpointID: h.ID(), Selection: SelectionOverflow,
 		Duration: time.Since(arrival), Err: rerr,
 	})

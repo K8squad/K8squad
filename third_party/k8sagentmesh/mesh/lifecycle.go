@@ -177,6 +177,14 @@ type RouteEvent struct {
 	Role       string
 	Pod        string
 	EndpointID string
+	// TaskID is the routed a2a task's id (== the run's id, spec §3 V1) and
+	// Project the run's project identity from the task payload — the task
+	// identity the host observer stamps on the mesh.route span (ISI-6061),
+	// so the routing leg answers "which task/project" without joining back
+	// to the dispatch side. Empty when the caller routes without a task
+	// (never today: Route is task-shaped).
+	TaskID  string
+	Project string
 	// Selection says how the process was picked (idle|overflow|wake).
 	Selection RouteSelection
 	// Duration is arrival→ready wall-clock — the recreate SLO window when

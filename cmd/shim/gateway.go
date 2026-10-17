@@ -66,6 +66,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/mesh"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/meshobs"
+	"github.com/K8squad/K8squad/pkg/telemetry/taskspan"
 )
 
 // gatewayAddr is the gateway's own listen address — the :8080 kube contract
@@ -401,7 +402,12 @@ func handleGatewayTask(gw *mesh.Gateway) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("decode task: %v", err), http.StatusBadRequest)
 			return
 		}
-		span.SetAttributes(attribute.String("ksquad.task.a2a_id", task.A2ATaskID))
+		// ISI-6061: the routed task's identity set (a2a id, work item, human
+		// ticket key, agent/team/project, model tier/route) rides the gateway
+		// span — the shared taskspan vocabulary, so the dispatch edge answers
+		// "whose task, which ticket, which project" before the child's
+		// supervisor.handle_task even opens.
+		span.SetAttributes(taskspan.TaskAttrs(task)...)
 
 		stream, err := gw.Route(ctx, r.URL.Query().Get("target"), task)
 		if err != nil {

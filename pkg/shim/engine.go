@@ -164,6 +164,10 @@ func (e *Engine) labels(tk *task) toolusage.Labels {
 	if tk != nil {
 		l.RunID = tk.id
 		l.WorkItemRef = tk.workItem
+		// ISI-6061: the human ticket key rides the label set with the uuid
+		// so every run-trace span (run.start / llm.call / gen_ai.tool.call /
+		// mcp.call / skill.load / run.end) carries ksquad.ticket.ref.
+		l.TicketKey = tk.ticketKey
 		// ModelTier is per-task only: the operator resolves it at dispatch and
 		// there is no process-static launch equivalent, so it rides straight
 		// from the submit payload (ISI-4430 S5).
@@ -259,6 +263,7 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 	tk := &task{
 		id:        t.A2ATaskID,
 		workItem:  t.WorkItemID,
+		ticketKey: t.TicketKey,
 		agent:     t.Identity.Name,
 		team:      t.Identity.Squad,
 		project:   t.Identity.Project,
@@ -460,7 +465,7 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	// End() calls (ISI-4370). terminalState/terminalReason are computed above,
 	// so this has no data dependency on terminate.
 	if e.telemetry != nil {
-		e.telemetry.RunEnd(telCtx, tk.id, string(terminalState), terminalReason)
+		e.telemetry.RunEnd(telCtx, e.labels(tk), tk.id, string(terminalState), terminalReason)
 		e.telemetry.FinishTask(telCtx, tk.id)
 	}
 	tk.terminate(terminalState, terminalReason)

@@ -131,6 +131,13 @@ const (
 	// (the default) never do. Identity stays Planned until the P1.4 telemetry
 	// polish flips the mesh family Stable alongside the NATS entity.
 	SpanMeshWake = "mesh.wake"
+
+	// Dispatch-edge handle_task spans (ISI-6061): the two inbound HTTP edges a
+	// routed task crosses before the run trace opens. Emitted by cmd/shim
+	// (gateway.go / supervisor.go) with the shared identity set built in
+	// pkg/telemetry/taskspan; the conformance suite drives that same builder.
+	SpanGatewayHandleTask    = "gateway.handle_task"
+	SpanSupervisorHandleTask = "supervisor.handle_task"
 )
 
 // meshIdentity is the bounded routing-identity set every mesh lifecycle span
@@ -161,13 +168,15 @@ func runIdentity() []Attribute {
 			Brief: "The Run's stable id; the run trace's correlation key. High-cardinality — spans/events only, never a metric label."},
 		{Key: "ksquad.agent.name", Type: TypeString, Requirement: Required, Stability: Stable,
 			Brief: "The agent executing the run (e.g. \"coder\")."},
-		{Key: "ksquad.team.name", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "WS-A",
+		{Key: "ksquad.team.name", Type: TypeString, Requirement: Required, Stability: Stable, Workstream: "WS-A",
 			Brief: "The team/squad the run belongs to. Drill-down axis for the WS-F dashboard."},
-		{Key: "ksquad.project.name", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "WS-A",
+		{Key: "ksquad.project.name", Type: TypeString, Requirement: Required, Stability: Stable, Workstream: "WS-A",
 			Brief: "The project the run belongs to. Drill-down axis."},
-		{Key: "ksquad.work_item.ref", Type: TypeString, Requirement: Required, Stability: Planned, Workstream: "WS-A",
-			Brief: "The work item / ticket the run is servicing. Ticket→run→spans drill-down key."},
-		{Key: "ksquad.sandbox.pod", Type: TypeString, Requirement: Recommended, Stability: Planned, Workstream: "WS-A",
+		{Key: "ksquad.work_item.ref", Type: TypeString, Requirement: Required, Stability: Stable, Workstream: "WS-A",
+			Brief: "The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key."},
+		{Key: "ksquad.ticket.ref", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3)."},
+		{Key: "ksquad.sandbox.pod", Type: TypeString, Requirement: Recommended, Stability: Stable, Workstream: "WS-A",
 			Brief: "The sandbox pod hosting the run (data-plane locality)."},
 	}
 }
@@ -191,15 +200,15 @@ var SpanConventions = []SpanConvention{
 	},
 	{
 		Name:  SpanRunEnd,
-		Brief: "Terminal marker child emitted at RunEnd; the run's end instant, queryable on its own.",
-		Attributes: []Attribute{
-			{Key: "ksquad.run.state", Type: TypeString, Requirement: Required, Stability: Stable,
+		Brief: "Terminal marker child emitted at RunEnd; the run's end instant, queryable on its own. ISI-6061: it carries the full run identity set (run/agent/team/project/work-item/ticket), so filtering on run.end alone still answers whose run ended.",
+		Attributes: append(runIdentity(),
+			Attribute{Key: "ksquad.run.state", Type: TypeString, Requirement: Required, Stability: Stable,
 				Brief: "Terminal a2a task state (completed|failed|canceled|unknown)."},
-			{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
+			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
 				Brief: "Mapped outcome (success|error|unknown)."},
-			{Key: "ksquad.run.trace_id", Type: TypeString, Requirement: Recommended, Stability: Stable,
+			Attribute{Key: "ksquad.run.trace_id", Type: TypeString, Requirement: Recommended, Stability: Stable,
 				Brief: "The run root's trace id, so the marker back-references the whole trace."},
-		},
+		),
 	},
 	{
 		Name:  SpanLLMCall,
@@ -303,10 +312,14 @@ var SpanConventions = []SpanConvention{
 	// path never hibernates).
 	{
 		Name:  SpanMeshRoute,
-		Brief: "One routed A2A task arriving at a mesh pool Gateway and reaching a ready standing process — arrival→delivered, the ≤3 s recreate SLO window (chapter §6.1, D4.1). Nests under the dispatch trace so a routed run's trace is continuous from board to LLM call (§8.2).",
+		Brief: "One routed A2A task arriving at a mesh pool Gateway and reaching a ready standing process — arrival→delivered, the ≤3 s recreate SLO window (chapter §6.1, D4.1). Nests under the dispatch trace so a routed run's trace is continuous from board to LLM call (§8.2). ISI-6061: carries the routed task's id and project so the mesh leg answers \"which task/project\" without joining back to the dispatch side.",
 		Attributes: append(meshIdentity(),
 			Attribute{Key: "ksquad.mesh.selection", Type: TypeString, Requirement: Required, Stability: Stable,
 				Brief: "How the process was selected: \"idle\" (standing idle process), \"overflow\" (recreated from the envelope on demand), \"wake\" (woken from hibernation — S4 pools only, ISI-5831; never emitted by a collapsed-ladder pool)."},
+			Attribute{Key: "ksquad.task.a2a_id", Type: TypeString, Requirement: Conditional, Stability: Stable,
+				Brief: "The routed a2a task's id (== the run's id, spec §3 V1) — task identity on the routing leg (ISI-6061). Span attribute only, never a metric label."},
+			Attribute{Key: "ksquad.project.name", Type: TypeString, Requirement: Conditional, Stability: Stable,
+				Brief: "The routed run's project identity, from the task payload (ISI-6061)."},
 			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable,
 				Brief: "Arrival→ready wall-clock duration in ms — backs ksquad.mesh.a2a.ready_latency."},
 			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
@@ -343,6 +356,57 @@ var SpanConventions = []SpanConvention{
 				Brief: "Wake outcome (success|error|unknown)."},
 		},
 	},
+	// --- Dispatch-edge handle_task spans (ISI-6061) -------------------------
+	// The two HTTP edges a routed task crosses before the run trace opens:
+	// the mesh pool Gateway (gateway.handle_task, cmd/shim/gateway.go) and the
+	// sandbox Supervisor (supervisor.handle_task, cmd/shim/supervisor.go).
+	// Both decode the same a2a.Task and stamp the SAME shared identity set —
+	// built once in pkg/telemetry/taskspan so the emitters (and this registry,
+	// via the conformance fixture) cannot drift apart.
+	{
+		Name:  SpanGatewayHandleTask,
+		Brief: "The mesh pool Gateway's inbound task edge: one routed A2A task decoded and handed to a standing process (cmd/shim gateway.handle_task, SpanKindServer, on the dispatch trace since ISI-6058). Carries the shared taskspan identity set (ISI-6061) plus the routing target.",
+		Attributes: taskSpanIdentity(
+			Attribute{Key: "ksquad.task.target", Type: TypeString, Requirement: Recommended, Stability: Stable,
+				Brief: "The ?target= endpoint id the caller pinned, if any (\"\" picks an idle process)."},
+		),
+	},
+	{
+		Name:  SpanSupervisorHandleTask,
+		Brief: "The sandbox Supervisor's inbound task edge: one A2A task decoded and submitted to the runtime engine (cmd/shim supervisor.handle_task, SpanKindServer, grafted onto the run's distributed trace since ISI-6059). Carries the shared taskspan identity set (ISI-6061).",
+		Attributes: taskSpanIdentity(
+			Attribute{Key: "ksquad.task.id", Type: TypeString, Requirement: Recommended, Stability: Stable,
+				Brief: "The ?taskid= correlation param the operator's bridge passes."},
+		),
+	},
+}
+
+// taskSpanIdentity is the shared task-identity attribute set both handle_task
+// spans stamp after decoding the a2a.Task (built once by
+// pkg/telemetry/taskspan.TaskAttrs; extra carries the edge-local attributes
+// each handler adds on top — the gateway's target, the supervisor's taskid).
+func taskSpanIdentity(extra ...Attribute) []Attribute {
+	base := []Attribute{
+		{Key: "ksquad.task.a2a_id", Type: TypeString, Requirement: Required, Stability: Stable,
+			Brief: "The a2a task id (== the Run's id, spec §3 V1)."},
+		{Key: "ksquad.task.work_item_id", Type: TypeString, Requirement: Required, Stability: Stable,
+			Brief: "The work item (coord uuid) the task serves."},
+		{Key: "ksquad.ticket.ref", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The work item's HUMAN ticket key (ISI-6061), resolved by the dispatch leg and carried on the submit payload; present only when a key resolved."},
+		{Key: "ksquad.agent.name", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The per-run agent identity from the submit payload (ISI-4439); empty on the operator-spawned stdio path."},
+		{Key: "ksquad.team.name", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The per-run team identity from the submit payload (ISI-4439)."},
+		{Key: "ksquad.project.name", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The per-run project identity from the submit payload (ISI-4439)."},
+		{Key: "ksquad.model.tier", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The resolved model-origin (agent|role|default) from the submit payload (ISI-4430 S5)."},
+		{Key: "ksquad.task.model_route.endpoint", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The resolved BYO model-route endpoint from the submit payload."},
+		{Key: "ksquad.task.model_route.model", Type: TypeString, Requirement: Conditional, Stability: Stable,
+			Brief: "The resolved model from the submit payload."},
+	}
+	return append(base, extra...)
 }
 
 // EventConvention is the payload contract for one NATS domain lifecycle event.
