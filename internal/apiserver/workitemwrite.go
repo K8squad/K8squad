@@ -56,6 +56,12 @@ type createWorkItemRequest struct {
 	Priority string   `json:"priority,omitempty"`
 	WorkMode string   `json:"workMode,omitempty"`
 	Labels   []string `json:"labels,omitempty"`
+	// TicketKey (ISI-6088) is the optional HUMAN ticket key of the item — the
+	// external-board key (e.g. "ISI-6040") the creator is mirroring. Pure
+	// pass-through to coord, which stamps it as the canonical ksquad.ticket.key=
+	// label the dispatch leg resolves into ksquad.ticket.ref. Absent ⇒ key-less
+	// by design; never fabricated server-side.
+	TicketKey string `json:"ticketKey,omitempty"`
 }
 
 // updateWorkItemRequest is the PATCH body. Each field is a pointer so an absent field
@@ -137,6 +143,7 @@ func workItemCreateHandler(store WorkItemWriter, refs ProjectRefResolver) http.H
 			Priority:          req.Priority,
 			WorkMode:          req.WorkMode,
 			Labels:            req.Labels,
+			TicketKey:         req.TicketKey,
 			Principal:         auth.Principal,
 			InitiatedByUserID: "",
 		})

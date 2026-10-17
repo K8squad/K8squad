@@ -128,6 +128,34 @@ func TestWorkItemCreateForwardsAttributes(t *testing.T) {
 	}
 }
 
+// TestWorkItemCreateForwardsTicketKey — the ISI-6088 optional ticketKey (the
+// external-board key the creator is mirroring) is forwarded verbatim to the
+// store, which stamps it as the canonical ksquad.ticket.key= label; the
+// handler never fabricates or validates the key itself.
+func TestWorkItemCreateForwardsTicketKey(t *testing.T) {
+	store := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-key"}}
+	h := testWriteServer(t, uuid.New(), store)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postCreate("proj-ok", `{"title":"mirror","ticketKey":"ISI-6088"}`, devToken))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	if store.gotCreate.TicketKey != "ISI-6088" {
+		t.Fatalf("ticketKey not forwarded: %+v", store.gotCreate)
+	}
+	// Absent field ⇒ empty, never invented.
+	store2 := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-nk"}}
+	h2 := testWriteServer(t, uuid.New(), store2)
+	rec2 := httptest.NewRecorder()
+	h2.ServeHTTP(rec2, postCreate("proj-ok", `{"title":"no key"}`, devToken))
+	if rec2.Code != http.StatusCreated {
+		t.Fatalf("got %d, want 201 (body %s)", rec2.Code, rec2.Body.String())
+	}
+	if store2.gotCreate.TicketKey != "" {
+		t.Fatalf("absent ticketKey must stay empty, got %q", store2.gotCreate.TicketKey)
+	}
+}
+
 // TestWorkItemCreateSubIssue — parentId is forwarded so the store lands a child.
 func TestWorkItemCreateSubIssue(t *testing.T) {
 	store := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-child"}}

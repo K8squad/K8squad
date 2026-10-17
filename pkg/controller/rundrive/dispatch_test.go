@@ -559,10 +559,12 @@ func TestBuildTaskFailsClosedOnBadEndpoint(t *testing.T) {
 
 type captureSink struct{ evs *[]wire.Event }
 
-// TestResolveTicketKey (ISI-6061): the human ticket key resolves from the work
-// item's label conventions — ksquad.ticket.key= first (board-issued key), then
-// the Epic-2 GitHub bridge's ksquad.github.issue= — and an item with neither
-// label resolves to "" (never fabricated).
+// TestResolveTicketKey (ISI-6061, extended ISI-6088): the human ticket key
+// resolves from the work item's label conventions — ksquad.ticket.key= first
+// (board-issued key), then the Epic-2 GitHub bridge's ksquad.github.issue=,
+// then the PR-review triage anchor ksquad.github.pr= (a PR shares the repo's
+// issue number space, so it resolves exactly like the issue convention) — and
+// an item with none resolves to "" (never fabricated).
 func TestResolveTicketKey(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -571,9 +573,12 @@ func TestResolveTicketKey(t *testing.T) {
 	}{
 		{"board key wins", []string{"ksquad.github.issue=acme/r#42", "ksquad.ticket.key=ISI-6061"}, "ISI-6061"},
 		{"github issue fallback", []string{"ksquad.github.issue=acme/r#42"}, "acme/r#42"},
+		{"github pr anchor (ISI-6088)", []string{"ksquad.review=hash", "ksquad.github.pr=acme/r#77"}, "acme/r#77"},
+		{"issue beats pr anchor", []string{"ksquad.github.issue=acme/r#42", "ksquad.github.pr=acme/r#77"}, "acme/r#42"},
 		{"no key labels", []string{"bug", "needs-review"}, ""},
 		{"no labels", nil, ""},
 		{"empty value not trusted", []string{"ksquad.ticket.key="}, ""},
+		{"empty pr value not trusted", []string{"ksquad.github.pr="}, ""},
 	}
 	for _, c := range cases {
 		if got := resolveTicketKey(c.labels); got != c.want {

@@ -175,7 +175,7 @@ func runIdentity() []Attribute {
 		{Key: "ksquad.work_item.ref", Type: TypeString, Requirement: Required, Stability: Stable, Workstream: "WS-A",
 			Brief: "The work item / ticket the run is servicing, as the opaque coord uuid. Ticket→run→spans drill-down key."},
 		{Key: "ksquad.ticket.ref", Type: TypeString, Requirement: Conditional, Stability: Stable,
-			Brief: "The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, or a GitHub issue ref owner/repo#N) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue=) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3)."},
+			Brief: "The work item's HUMAN ticket key (ISI-6061) — the board-readable identifier (e.g. an external board key like ISI-6040, a GitHub issue ref owner/repo#N, or a CI ref owner/repo@sha12/check) the dispatch leg resolves from the work item's labels (ksquad.ticket.key= / ksquad.github.issue= / ksquad.github.pr=, ISI-6088) and carries on the submit payload (a2a.Task.TicketKey). Present only when a key resolved — never fabricated. Span attribute only, never a metric label (NFR-OBS3)."},
 		{Key: "ksquad.sandbox.pod", Type: TypeString, Requirement: Recommended, Stability: Stable, Workstream: "WS-A",
 			Brief: "The sandbox pod hosting the run (data-plane locality)."},
 	}

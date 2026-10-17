@@ -130,9 +130,18 @@ type CreateWorkItemInput struct {
 	// (empty ⇒ leave the column NULL); Labels are trimmed/de-duped/bounded and
 	// stored as text[] (nil/empty ⇒ '{}'). These are ATTRIBUTES of the item,
 	// orthogonal to state and custody — state stays absent from create.
-	Priority          string
-	WorkMode          string
-	Labels            []string
+	Priority string
+	WorkMode string
+	Labels   []string
+	// TicketKey (ISI-6088) is the item's HUMAN ticket key — the optional
+	// external-board key (e.g. "ISI-6040") the creator supplies so the dispatch
+	// leg can stamp ksquad.ticket.ref on the run trace (resolveTicketKey reads
+	// the TicketKeyLabel it becomes). Coord stamps it as the canonical
+	// ksquad.ticket.key= label, prepended so the label-set bound can never
+	// squeeze it out. Empty ⇒ no label, key-less by design (never fabricated);
+	// a value that duplicates a caller-passed ksquad.ticket.key= label is a
+	// clean de-dup, a CONFLICTING one is ErrInvalidWorkItem (400).
+	TicketKey         string
 	Principal         string
 	InitiatedByUserID string
 }
@@ -182,7 +191,23 @@ func (s *WorkItemWriteStore) CreateWorkItem(ctx context.Context, in CreateWorkIt
 	}
 	// Validate the create-time attributes (ISI-4409) BEFORE opening the txn so a
 	// bad enum / oversized label set fails closed as a clean 400.
-	priority, workMode, labels, err := normalizeCreateFields(in.Priority, in.WorkMode, in.Labels)
+	//
+	// ISI-6088: a TicketKey is stamped as the canonical ksquad.ticket.key= label
+	// FIRST, so it survives the maxLabels bound and de-dup (a caller that passed
+	// the SAME label is a clean de-dup; a DIFFERENT one is a conflicting double
+	// stamp — fail closed rather than silently pick a winner). The bound checks
+	// in normalizeCreateFields still apply, so an over-long key is a clean 400.
+	stampLabels := in.Labels
+	if key := strings.TrimSpace(in.TicketKey); key != "" {
+		stamped := TicketKeyLabel(key)
+		for _, l := range in.Labels {
+			if strings.HasPrefix(l, TicketKeyLabelPrefix) && l != stamped {
+				return WorkItemRecord{}, fmt.Errorf("%w: ticketKey %q conflicts with label %q", ErrInvalidWorkItem, key, l)
+			}
+		}
+		stampLabels = append([]string{stamped}, in.Labels...)
+	}
+	priority, workMode, labels, err := normalizeCreateFields(in.Priority, in.WorkMode, stampLabels)
 	if err != nil {
 		return WorkItemRecord{}, err
 	}

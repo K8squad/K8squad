@@ -100,6 +100,12 @@ type FailureRequest struct {
 	HeadSHA    string
 	Conclusion string
 	Title      string
+	// TicketKey (ISI-6088) is the HUMAN ticket key the store stamps on the
+	// triage item as the canonical coord.TicketKeyLabel — <owner>/<repo>@<sha12>/
+	// <check-name>, the ref a person uses to find the failing check run (repo +
+	// commit + check name). Empty when the repo URL has no sluggable owner/repo
+	// (the item is then honestly key-less); never fabricated otherwise.
+	TicketKey string
 }
 
 // ItemStore is the custody-wall-sensitive seam: it owns the create-if-
@@ -212,6 +218,7 @@ func (d *Dispatcher) qualify(pol *Policy, repoURL string, row scm.MirrorRow) (Fa
 		HeadSHA:    payload.HeadSHA,
 		Conclusion: payload.Conclusion,
 		Title:      failureTitle(checkName, payload.HeadSHA),
+		TicketKey:  ticketKey(repoURL, checkName, payload.HeadSHA),
 	}, true, nil
 }
 
@@ -248,6 +255,43 @@ func shortSHA(sha string) string {
 		return sha[:12]
 	}
 	return sha
+}
+
+// ticketKey builds the HUMAN ticket key of a failing check run (ISI-6088):
+// <owner>/<repo>@<sha12>/<check-name> — the repo, the commit and the check name
+// are exactly what a person needs to find the failing run in the SCM UI, so the
+// ksquad.ticket.ref the dispatch leg stamps on the triage run's trace resolves
+// to a real, human-navigable ref. "" when the repo URL has no sluggable
+// owner/repo (or the check name is empty): no ref, no key — never fabricated.
+func ticketKey(repoURL, checkName, headSHA string) string {
+	slug := repoSlug(repoURL)
+	if slug == "" || checkName == "" {
+		return ""
+	}
+	return slug + "@" + shortSHA(headSHA) + "/" + checkName
+}
+
+// repoSlug extracts the lower-cased <owner>/<repo> from a repo URL, tolerating a
+// trailing slash and a .git suffix — the same normalization as
+// reviewtrigger.repoSlug, mirrored here so the two trigger packages stay
+// independent (the shared seam is the label convention, not this helper).
+// Returns "" when two path segments cannot be found.
+func repoSlug(repoURL string) string {
+	s := strings.TrimSuffix(strings.TrimSpace(repoURL), "/")
+	s = strings.TrimSuffix(s, ".git")
+	if s == "" {
+		return ""
+	}
+	parts := strings.Split(s, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	repo := strings.ToLower(parts[len(parts)-1])
+	owner := strings.ToLower(parts[len(parts)-2])
+	if owner == "" || repo == "" {
+		return ""
+	}
+	return owner + "/" + repo
 }
 
 // failureTitle is the triage work-item title: "Analyze CI failure: <check> @ <sha>".

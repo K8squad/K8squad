@@ -56,6 +56,7 @@ func sampleReq() cifailure.FailureRequest {
 		HeadSHA:    "abc123",
 		Conclusion: "failure",
 		Title:      "Analyze CI failure: e2e @ abc123",
+		TicketKey:  "acme/widget@abc123/e2e",
 	}
 }
 
@@ -81,6 +82,22 @@ func TestFreshCreateDispatchesUnderSystemIdentity(t *testing.T) {
 	}
 	if w.got.DedupLabel != "ksquad.github.ci=deadbeef" {
 		t.Fatalf("dedup label not threaded: %q", w.got.DedupLabel)
+	}
+	// ISI-6088: the human ticket key rides ExtraLabels as the canonical
+	// ksquad.ticket.key= label, so the dispatched run's trace resolves
+	// ksquad.ticket.ref. It does NOT change the dedup key.
+	if len(w.got.ExtraLabels) != 1 || w.got.ExtraLabels[0] != coord.TicketKeyLabel("acme/widget@abc123/e2e") {
+		t.Fatalf("ticket key label not stamped: %+v", w.got.ExtraLabels)
+	}
+	// No key on the request (unsluggable repo) ⇒ no label, never fabricated.
+	reqNoKey := sampleReq()
+	reqNoKey.TicketKey = ""
+	w2 := &fakeWriter{result: coord.EnsureCIFailureWorkItemResult{Item: coord.WorkItemRecord{ID: "wi-2", State: "backlog"}, Created: true}}
+	if _, err := newStore(w2, &fakeDispatch{}).EnsureCIFailure(context.Background(), reqNoKey); err != nil {
+		t.Fatalf("no-key request: %v", err)
+	}
+	if len(w2.got.ExtraLabels) != 0 {
+		t.Fatalf("no ticket key on the request must stamp no label, got %+v", w2.got.ExtraLabels)
 	}
 	// Dispatch stamped Initiator=system, Principal=the human EnabledBy, to the agent.
 	if d.calls != 1 {

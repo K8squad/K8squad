@@ -372,6 +372,8 @@ var allowedSurface = map[string]string{
 	"WorkItemRecord":                        "§6.1 persisted work-item a create/edit returns (board projection columns, read-only)",
 	"IssueLocalRecord":                      "§13 enriched read model for the GitHub-issue treated-card join (ISI-5678): work-item id + state + assignee_agent, read-only, no handoff channel",
 	"CreateWorkItemInput":                   "§6.1 human create input (project/team/parent/title/body/priority/workMode/labels + provenance)",
+	"TicketKeyLabelPrefix":                  "ISI-6088 constant: the canonical ksquad.ticket.key= label prefix the creation paths stamp and rundrive's resolveTicketKey reads — a create-time work-item attribute (§6.1/ISI-4409 labels), span attribution only",
+	"TicketKeyLabel":                        "ISI-6088 helper: builds the canonical ticket-key label from a creator-supplied HUMAN key — create-time attribute stamp, never an agent-to-agent channel",
 	"UpdateWorkItemInput":                   "§6.1 human field-edit input (title/body/parent pointers + optimistic guard)",
 	"ErrInvalidWorkItem":                    "§6.1 guard: malformed create/edit (empty title, self/cyclic parent) (→400)",
 	"WorkItemWriteStore":                    "§6.1/§13 human work-item create+edit store bound to the prod schema",

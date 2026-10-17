@@ -80,6 +80,15 @@ func (s *SystemCIFailureItemStore) EnsureCIFailure(ctx context.Context, req cifa
 		DedupLabel: req.DedupLabel,
 		Principal:  cifailure.Initiator, // SYSTEM author — never an agent
 	}
+	// ISI-6088: stamp the triage item's HUMAN ticket key (<owner>/<repo>@<sha12>/
+	// <check>, built by the pure qualify step) as the canonical coord ticket-key
+	// label, so the dispatched run's trace carries ksquad.ticket.ref without a
+	// board lookup. Purely additive — it does NOT change the dedup key (that
+	// stays req.DedupLabel). Absent when the request carries no key (unsluggable
+	// repo URL): the item stays honestly key-less.
+	if req.TicketKey != "" {
+		in.ExtraLabels = append(in.ExtraLabels, coord.TicketKeyLabel(req.TicketKey))
+	}
 
 	res, err := s.writer.EnsureCIFailureWorkItem(ctx, in)
 	if err != nil {

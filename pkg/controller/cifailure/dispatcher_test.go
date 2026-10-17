@@ -214,6 +214,41 @@ func TestNewFailingSHARetriggers(t *testing.T) {
 	}
 }
 
+// TestQualifyBuildsTicketKey (ISI-6088): the pure qualify step derives the HUMAN
+// ticket key the store stamps as coord.TicketKeyLabel — <owner>/<repo>@<sha12>/
+// <check-name> — from the same mirrored check-run data the title/body draw on.
+// An unsluggable repo URL yields "" (the item stays honestly key-less), and a
+// long SHA is trimmed to its 12-char prefix.
+func TestQualifyBuildsTicketKey(t *testing.T) {
+	store := newFakeStore()
+	d := &Dispatcher{Policy: fakePolicy{pol: enabledPolicy()}, Store: store}
+
+	longSHA := "e7f6ce7733ba69ec80732a86cf6ded03a43638"
+	rows := []scm.MirrorRow{
+		checkRow("1", "e2e", "failure", longSHA, "", afterEnabled),
+	}
+	if err := run(t, d, rows); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(store.reqs) != 1 {
+		t.Fatalf("expected one request, got %d", len(store.reqs))
+	}
+	if want := "acme/app@e7f6ce7733ba/e2e"; store.reqs[0].TicketKey != want {
+		t.Fatalf("TicketKey = %q, want %q", store.reqs[0].TicketKey, want)
+	}
+
+	// Unsluggable repo URL: no ref, no key — never fabricated.
+	noSlugStore := newFakeStore()
+	noSlug := &Dispatcher{Policy: fakePolicy{pol: enabledPolicy()}, Store: noSlugStore}
+	err := noSlug.HandleCIFailures(context.Background(), "ns", "proj", nil, "not-a-url", rows)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(noSlugStore.reqs) != 1 || noSlugStore.reqs[0].TicketKey != "" {
+		t.Fatalf("TicketKey should be empty for an unsluggable repo URL, got %+v", noSlugStore.reqs)
+	}
+}
+
 // Forward-only (D4): a failure that COMPLETED before the EnabledAt watermark is
 // never triaged, so enabling the policy does not retroactively fire on the
 // backlog already in the mirror.
