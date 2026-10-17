@@ -374,6 +374,8 @@ var allowedSurface = map[string]string{
 	"CreateWorkItemInput":                   "§6.1 human create input (project/team/parent/title/body/priority/workMode/labels + provenance)",
 	"TicketKeyLabelPrefix":                  "ISI-6088 constant: the canonical ksquad.ticket.key= label prefix the creation paths stamp and rundrive's resolveTicketKey reads — a create-time work-item attribute (§6.1/ISI-4409 labels), span attribution only",
 	"TicketKeyLabel":                        "ISI-6088 helper: builds the canonical ticket-key label from a creator-supplied HUMAN key — create-time attribute stamp, never an agent-to-agent channel",
+	"GitHubIssueLabelPrefix":                "ISI-6124 constant: the canonical ksquad.github.issue= label prefix the Epic-2 bridge writers (apiserver githubissuedispatch, issuetrigger) stamp and rundrive's resolveTicketKey reads — create-time work-item attribute (§6.1/ISI-4409 labels), span attribution only",
+	"GitHubPRLabelPrefix":                   "ISI-6124 constant: the canonical ksquad.github.pr= PR-review anchor prefix reviewtrigger stamps and rundrive's resolveTicketKey reads — create-time work-item attribute (§6.1/ISI-4409 labels), span attribution only",
 	"UpdateWorkItemInput":                   "§6.1 human field-edit input (title/body/parent pointers + optimistic guard)",
 	"ErrInvalidWorkItem":                    "§6.1 guard: malformed create/edit (empty title, self/cyclic parent) (→400)",
 	"WorkItemWriteStore":                    "§6.1/§13 human work-item create+edit store bound to the prod schema",

@@ -320,17 +320,19 @@ func (s sqlDispatchSource) WorkItem(ctx context.Context, id string) (string, str
 }
 
 // ticketKeyLabelPrefixes are the work-item label conventions that carry a
-// HUMAN ticket key, in resolution order (ISI-6061, extended ISI-6088).
-// ksquad.ticket.key= is the board-issued key (e.g. ISI-6040 — the canonical
-// constant coord.TicketKeyLabelPrefix, the same one the creation paths stamp
-// with, so writer and reader cannot drift); ksquad.github.issue= is the Epic-2
+// HUMAN ticket key, in resolution order (ISI-6061, extended ISI-6088, shared
+// constants ISI-6124). ksquad.ticket.key= is the board-issued key (e.g.
+// ISI-6040 — coord.TicketKeyLabelPrefix); ksquad.github.issue= is the Epic-2
 // GitHub-issues board bridge's idempotency label (owner/repo#N,
-// githubissuedispatch.go); ksquad.github.pr= is the PR-review triage anchor
-// (owner/repo#N, reviewtrigger.PRAnchorLabel, ISI-4767 E5) — a PR shares the
-// repo's issue number space, so it resolves exactly like the issue convention.
-// The first matching label wins; an item with none resolves to "" and the
-// ticket attribute is simply omitted — a key is never fabricated.
-var ticketKeyLabelPrefixes = []string{coord.TicketKeyLabelPrefix, "ksquad.github.issue=", "ksquad.github.pr="}
+// coord.GitHubIssueLabelPrefix, githubissuedispatch.go); ksquad.github.pr= is
+// the PR-review triage anchor (owner/repo#N, coord.GitHubPRLabelPrefix,
+// reviewtrigger.PRAnchorLabel, ISI-4767 E5) — a PR shares the repo's issue
+// number space, so it resolves exactly like the issue convention. All three
+// prefixes are the SAME canonical coord constants the creation paths stamp
+// with, so writer and reader cannot drift. The first matching label wins; an
+// item with none resolves to "" and the ticket attribute is simply omitted —
+// a key is never fabricated.
+var ticketKeyLabelPrefixes = []string{coord.TicketKeyLabelPrefix, coord.GitHubIssueLabelPrefix, coord.GitHubPRLabelPrefix}
 
 // resolveTicketKey derives the human ticket key from a work item's label set
 // (ISI-6061). Empty when no label carries a key.

@@ -23,6 +23,24 @@ func TestTicketKeyLabel(t *testing.T) {
 	}
 }
 
+// TestGithubLabelPrefixConstants (ISI-6124) — the GitHub-issue and PR-review
+// anchor prefixes are shared through this package, so THIS is where their wire
+// values are pinned: the literal is the on-disk join contract (existing
+// work_item labels and the SQL LIKE guards in the read models), so an
+// accidental rename or re-spelling fails HERE instead of silently
+// desynchronizing rundrive's resolver from the trigger writers (which alias
+// these constants — issuetrigger.AnchorLabelPrefix, apiserver
+// githubIssueLabelPrefix, reviewtrigger.AnchorLabelPrefix, rundrive's
+// ticketKeyLabelPrefixes).
+func TestGithubLabelPrefixConstants(t *testing.T) {
+	if GitHubIssueLabelPrefix != "ksquad.github.issue=" {
+		t.Fatalf("GitHubIssueLabelPrefix = %q, want ksquad.github.issue=", GitHubIssueLabelPrefix)
+	}
+	if GitHubPRLabelPrefix != "ksquad.github.pr=" {
+		t.Fatalf("GitHubPRLabelPrefix = %q, want ksquad.github.pr=", GitHubPRLabelPrefix)
+	}
+}
+
 // TestTicketKeyLabelSurvivesNormalization — a stamped ticket-key label comes out
 // of normalizeCreateFields first, unchanged, deduped against an identical
 // caller-passed label, so it can never be squeezed out of the persisted set.

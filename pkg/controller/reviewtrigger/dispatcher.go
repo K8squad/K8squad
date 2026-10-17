@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/scm"
 )
 
@@ -259,8 +260,11 @@ func dedupLabel(trigger, repoURL, prNumber, headSHA string) string {
 // work item back to the pull request it reviews. Unlike the opaque dedup label
 // (dedupLabelPrefix), it is a stable, greppable key the console read model
 // (ISI-4767 E5) looks up to surface "reviewed" on the PR card. It mirrors the
-// ISI-4757 GitHub-issue bridge anchor form (ksquad.github.issue=<owner>/<repo>#N).
-const AnchorLabelPrefix = "ksquad.github.pr="
+// ISI-4757 GitHub-issue bridge anchor form (ksquad.github.issue=<owner>/<repo>#N)
+// and aliases the ONE canonical definition (coord.GitHubPRLabelPrefix,
+// ISI-6124) — the same constant rundrive's ticketKeyLabelPrefixes resolver
+// reads, so the trigger writer and the resolver can no longer drift apart.
+const AnchorLabelPrefix = coord.GitHubPRLabelPrefix
 
 // PRAnchorLabel builds the plaintext PR-review anchor label for (repoURL, PR
 // number): ksquad.github.pr=<owner>/<repo>#N. owner/repo is lower-cased so the

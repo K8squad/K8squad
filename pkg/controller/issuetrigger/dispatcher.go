@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/scm"
 )
 
@@ -45,8 +46,11 @@ const Initiator = "system:issue-triage"
 // issue→ticket bridge (ISI-4757: ksquad.github.issue=owner/repo#N). It is BOTH
 // the dedup/idempotency key for the triage create AND the join key the console
 // local-agent badge reads back — so auto triage and manual assignment share one
-// ticket per issue.
-const AnchorLabelPrefix = "ksquad.github.issue="
+// ticket per issue. It aliases the ONE canonical definition
+// (coord.GitHubIssueLabelPrefix, ISI-6124) — the same constant rundrive's
+// ticketKeyLabelPrefixes resolver reads, so the trigger writer and the
+// resolver can no longer drift apart.
+const AnchorLabelPrefix = coord.GitHubIssueLabelPrefix
 
 // Policy is a resolved snapshot of a Project's IssueTriageSpec plus the coord
 // scope the dispatch binds to (project id + owning team id). It is a value type

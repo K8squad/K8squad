@@ -101,8 +101,11 @@ type MirroredIssueComment struct {
 // githubIssueLabelPrefix keys the dedup/join label the whole Epic-2/Epic-4 bridge
 // agrees on (ISI-4757): `ksquad.github.issue=owner/repo#N`. It is BOTH the
 // idempotency key for the create and the join key Epic-4's local-agent badge reads
-// back via FindWorkItemByLabel (ISI-4770).
-const githubIssueLabelPrefix = "ksquad.github.issue="
+// back via FindWorkItemByLabel (ISI-4770). It aliases the ONE canonical definition
+// (coord.GitHubIssueLabelPrefix, ISI-6124) — the same constant rundrive's
+// ticketKeyLabelPrefixes resolver reads, so the bridge writer and the resolver
+// can no longer drift apart.
+const githubIssueLabelPrefix = coord.GitHubIssueLabelPrefix
 
 // ghIssueURLRe pulls `owner/repo` and the issue number out of a canonical GitHub
 // issue URL (https://github.com/owner/repo/issues/123). The console sends the

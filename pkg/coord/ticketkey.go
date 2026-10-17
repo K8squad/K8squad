@@ -44,3 +44,24 @@ const TicketKeyLabelPrefix = "ksquad.ticket.key="
 func TicketKeyLabel(key string) string {
 	return TicketKeyLabelPrefix + key
 }
+
+// GitHubIssueLabelPrefix is the canonical label prefix carrying the GitHub-issue
+// join/dedup key (ISI-4757 Epic-2/Epic-4 bridge): ksquad.github.issue=<owner>/<repo>#N.
+// It is BOTH the idempotency label the issue→ticket writers stamp (the apiserver
+// manual assign bridge, githubissuedispatch.go, and the auto issue-triage
+// trigger, issuetrigger) AND the second convention in rundrive's
+// ticketKeyLabelPrefixes resolution order. Shared here (ISI-6124, closing the
+// same writer/reader drift risk TicketKeyLabelPrefix closed for
+// ksquad.ticket.key= in ISI-6088) so a trigger renaming or re-spelling its
+// anchor can no longer silently desynchronize the resolver. Create-time
+// work-item attribute, span attribution only, never a metric label (NFR-OBS3).
+const GitHubIssueLabelPrefix = "ksquad.github.issue="
+
+// GitHubPRLabelPrefix is the canonical label prefix carrying the PR-review
+// anchor (ISI-4767 E5): ksquad.github.pr=<owner>/<repo>#N. It is the plaintext
+// join label reviewtrigger's PRAnchorLabel stamps and the third convention in
+// rundrive's ticketKeyLabelPrefixes resolution order — a PR shares the repo's
+// issue number space, so it resolves exactly like the issue convention. Shared
+// here (ISI-6124) for the same drift-proofing reason. Create-time work-item
+// attribute, span attribution only, never a metric label (NFR-OBS3).
+const GitHubPRLabelPrefix = "ksquad.github.pr="
