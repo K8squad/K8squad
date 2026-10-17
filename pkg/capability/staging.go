@@ -120,6 +120,20 @@ const (
 	// SkillsDirEnvVar names the skills root directory for the shim.
 	SkillsDirEnvVar = "KSQUAD_SKILLS_DIR"
 
+	// SkillsEnvVar carries the comma-separated GRANTED skill-ref names the
+	// shim engine lists at run start (cmd/shim configFromEnv → cfg.Skills).
+	// It is the granted *list* (every skill, inline or git), distinct from
+	// SkillsDirEnvVar's materialized inline body tree: the engine fires one
+	// skill.load span per name here (ISI-6061), so an unstamped list means
+	// zero skill.load spans in production (ISI-6123).
+	SkillsEnvVar = "KSQUAD_SKILLS"
+
+	// SkillSHAsEnvVar carries the pinned per-skill source SHAs as a
+	// comma-separated name=sha list; the engine attaches each to its
+	// skill.load span (git-sourced skills, arch §5.3.6). Inline skills
+	// carry no SHA and are simply omitted.
+	SkillSHAsEnvVar = "KSQUAD_SKILL_SHAS"
+
 	// SkillBodyFile is the body file inside a skill's dir (data, not
 	// authority — D8).
 	SkillBodyFile = "SKILL.md"
