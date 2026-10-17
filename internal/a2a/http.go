@@ -51,6 +51,13 @@ type HTTPTransport struct {
 	// event stream and stays open until the task settles; cancellation rides
 	// the Submit context.
 	Client *http.Client
+	// HeaderFunc, when set, resolves extra request headers per Submit from the
+	// submit context — the carrier seam the dispatcher uses to propagate a
+	// distributed trace context (W3C traceparent/tracestate) onto the POST so
+	// the receiving supervisor/gateway continues the dispatch trace instead
+	// of rooting a fresh one. The transport stays SDK-free: it neither knows
+	// nor cares what the keys carry (ISI-6058).
+	HeaderFunc func(ctx context.Context) map[string]string
 }
 
 // Submit POSTs the task to the supervisor and returns a Session tailing the
@@ -86,6 +93,11 @@ func (t *HTTPTransport) Submit(ctx context.Context, task wire.Task) (Session, er
 		return nil, fmt.Errorf("a2a: build POST %s: %w", url, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if t.HeaderFunc != nil {
+		for k, v := range t.HeaderFunc(reqCtx) {
+			req.Header.Set(k, v)
+		}
+	}
 	hc := t.Client
 	if hc == nil {
 		hc = &http.Client{}

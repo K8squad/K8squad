@@ -148,3 +148,45 @@ func TestHTTPRouterCloseAbortsStream(t *testing.T) {
 		t.Fatal("events channel did not close after Close")
 	}
 }
+
+// TestHTTPRouterRouteHeadersSeam proves the WithRouteHeaders carrier rides the
+// child POST as request headers — the per-route header seam a deployment-side
+// plug uses to propagate context (e.g. the W3C trace carrier) across the hop.
+// The module stays SDK-free, so the test asserts only the pass-through from the
+// route context; the semantics live in the plug.
+func TestHTTPRouterRouteHeadersSeam(t *testing.T) {
+	var gotTraceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	router := NewHTTPRouter(srv.Client(), WithRouteHeaders(func(context.Context) map[string]string {
+		return map[string]string{"traceparent": "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01"}
+	}))
+	stream, err := router.Route(context.Background(), srv.URL, a2a.Task{A2ATaskID: "run-1"})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	_ = stream.Close()
+	if gotTraceparent != "00-cccccccccccccccccccccccccccccccc-dddddddddddddddd-01" {
+		t.Errorf("traceparent header = %q, want the WithRouteHeaders carrier value", gotTraceparent)
+	}
+
+	// Without the option the wire is unchanged (default router, no headers fn).
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv2.Close()
+	router2 := NewHTTPRouter(srv2.Client())
+	stream2, err := router2.Route(context.Background(), srv2.URL, a2a.Task{A2ATaskID: "run-2"})
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	_ = stream2.Close()
+	if gotTraceparent != "" {
+		t.Errorf("traceparent = %q without WithRouteHeaders, want empty", gotTraceparent)
+	}
+}

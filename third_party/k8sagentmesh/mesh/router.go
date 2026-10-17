@@ -48,17 +48,37 @@ type Router interface {
 // on the A2A wire types, keeping roadmap-P3 extraction clean.
 type httpRouter struct {
 	client *http.Client
+	// headers is the optional per-route header carrier seam: when set, its
+	// map rides the child POST as request headers. The module stays free of
+	// any telemetry SDK — a deployment-side plug supplies the function that
+	// resolves what crosses the wire (e.g. the W3C traceparent/tracestate
+	// from the route context); here the content is opaque.
+	headers func(ctx context.Context) map[string]string
+}
+
+// RouterOption configures the HTTP task router.
+type RouterOption func(*httpRouter)
+
+// WithRouteHeaders sets the per-Route header carrier seam: fn is invoked with
+// the route context on every POST and its keys/values are stamped onto the
+// request headers.
+func WithRouteHeaders(fn func(ctx context.Context) map[string]string) RouterOption {
+	return func(r *httpRouter) { r.headers = fn }
 }
 
 // NewHTTPRouter returns the default HTTP /task router. A nil client uses a
 // default client with NO timeout: the response body is the task's live event
 // stream and stays open until the task settles, so cancellation rides the Route
 // context, not a client deadline.
-func NewHTTPRouter(client *http.Client) Router {
+func NewHTTPRouter(client *http.Client, opts ...RouterOption) Router {
 	if client == nil {
 		client = &http.Client{}
 	}
-	return &httpRouter{client: client}
+	r := &httpRouter{client: client}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Route POSTs the task and returns a Stream over the NDJSON response. Delivery
@@ -83,6 +103,11 @@ func (r *httpRouter) Route(ctx context.Context, endpoint string, task a2a.Task) 
 		return nil, fmt.Errorf("mesh: build POST %s: %w", url, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if r.headers != nil {
+		for k, v := range r.headers(reqCtx) {
+			req.Header.Set(k, v)
+		}
+	}
 	resp, err := r.client.Do(req)
 	if err != nil {
 		cancel()

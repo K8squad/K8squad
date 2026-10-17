@@ -315,6 +315,21 @@ func (s *supervisor) credential() (taskio.RunCredential, time.Time, bool) {
 	return *s.cred, s.credAt, true
 }
 
+// requestTraceCarrier lifts the W3C trace-context headers (traceparent/
+// tracestate) off an inbound POST into a string carrier — the shape
+// telemetry.Extract consumes. The mesh child leg and the operator's direct
+// HTTP leg both carry the dispatch/gateway trace here (ISI-6058, ISI-6055 P0).
+func requestTraceCarrier(h http.Header) map[string]string {
+	carrier := map[string]string{}
+	if v := h.Get("traceparent"); v != "" {
+		carrier["traceparent"] = v
+	}
+	if v := h.Get("tracestate"); v != "" {
+		carrier["tracestate"] = v
+	}
+	return carrier
+}
+
 // runTraceContext grafts the Run's distributed trace onto base so a supervisor
 // span joins it instead of rooting a fresh trace (ISI-5144). It carries only
 // the handshake-extracted run traceparent's span context onto base —
@@ -347,8 +362,15 @@ func (s *supervisor) runTraceContext(base context.Context) context.Context {
 // credential gives run #2 its own traceparent so each run roots a distinct
 // trace. It is background-rooted (never the request ctx) so the run's span
 // lifetime is not tied to HTTP stream teardown (ISI-5144). Falls back to the
-// cached handshake context, then the bare background context.
-func (s *supervisor) submitTraceContext() context.Context {
+// cached handshake context, then the request-header carrier's span context
+// (the mesh/HTTP leg's trace — ISI-6058), then the bare background context.
+//
+// ISI-6058 (ISI-6055 P0): fallback is the inbound POST's W3C carrier
+// (requestTraceCarrier) when neither the current credential nor the cached
+// handshake carries one — the mesh-routed standing process, which has no
+// per-run Bind credential. Only the SPAN context crosses, never the request's
+// cancellation, so the background rooting discipline above is preserved.
+func (s *supervisor) submitTraceContext(fallback trace.SpanContext) context.Context {
 	base := context.Background()
 	if cred, ok, err := taskio.ReadCredentialFromDir(supervisorCoordMountPath); err == nil && ok {
 		carrier := map[string]string{}
@@ -371,6 +393,9 @@ func (s *supervisor) submitTraceContext() context.Context {
 		if sc := trace.SpanContextFromContext(tctx); sc.IsValid() {
 			return trace.ContextWithSpanContext(base, sc)
 		}
+	}
+	if fallback.IsValid() {
+		return trace.ContextWithSpanContext(base, fallback)
 	}
 	return base
 }
@@ -456,7 +481,23 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	// IDs. runTraceContext keeps r.Context()'s cancellation while grafting on the
 	// run trace, and falls back to supervisor.start before the handshake lands.
 	// This same graft satisfies ISI-5143 (W1): handle_task continues the run trace.
-	ctx := s.runTraceContext(r.Context())
+	//
+	// ISI-6058 (ISI-6055 P0): the inbound POST carries the W3C carrier on its
+	// headers — injected by the operator's dispatch (HTTPTransport.HeaderFunc,
+	// the sandbox/mesh leg) or the mesh gateway's router (WithRouteHeaders, the
+	// child leg). A valid header carrier takes precedence over the credential
+	// graft: on the sandbox leg both carry the SAME run trace, and on the mesh
+	// leg only the header carrier exists (the standing process has no per-run
+	// Bind credential). Without one (a stdio-era test POST, a pre-seam caller)
+	// the credential graft and its fallbacks stand unchanged.
+	reqTraceCtx := telemetry.Extract(r.Context(), requestTraceCarrier(r.Header))
+	reqSC := trace.SpanContextFromContext(reqTraceCtx)
+	var ctx context.Context
+	if reqSC.IsValid() {
+		ctx = reqTraceCtx
+	} else {
+		ctx = s.runTraceContext(r.Context())
+	}
 
 	ctx, taskHandleSpan := telemetry.Tracer().Start(ctx, "supervisor.handle_task",
 		trace.WithAttributes(
@@ -519,8 +560,10 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	// run #1's distributed span → both run ids collapse into one trace with no
 	// fresh run.start. submitTraceContext re-reads the current credential's W3C
 	// carrier per task so each run roots its own trace; it falls back to the
-	// cached context, then the bare (background) request context.
-	submitCtx := s.submitTraceContext()
+	// cached context, then the bare (background) request context. ISI-6058:
+	// the header carrier's span context is the final fallback — the mesh leg's
+	// run.start then shares the gateway's trace id across the hop.
+	submitCtx := s.submitTraceContext(reqSC)
 
 	if _, err := engine.SubmitTask(submitCtx, task); err != nil {
 		taskHandleSpan.SetStatus(codes.Error, fmt.Sprintf("submit task: %v", err))

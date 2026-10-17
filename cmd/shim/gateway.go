@@ -222,8 +222,18 @@ func buildGateway() (*mesh.Gateway, error) {
 		}
 	}
 	host := &mesh.LocalHost{BasePort: base}
+	// ISI-6058 (ISI-6055 P0): the child POST carries the current trace context
+	// (gateway.handle_task / mesh.route) as W3C headers through the router's
+	// carrier seam, so the child supervisor continues THIS trace across the
+	// hop. pkg/mesh stays SDK-free — the injecting fn lives here, on the
+	// telemetry-aware side of the seam.
+	router := mesh.NewHTTPRouter(nil, mesh.WithRouteHeaders(func(ctx context.Context) map[string]string {
+		carrier := map[string]string{}
+		telemetry.Inject(ctx, carrier)
+		return carrier
+	}))
 	runtimeType := env("KSQUAD_RUNTIME_TYPE", "opencode")
-	adapter, err := buildRuntimeAdapter(runtimeType, host)
+	adapter, err := buildRuntimeAdapter(runtimeType, host, mesh.WithRouter(router))
 	if err != nil {
 		return nil, fmt.Errorf("shim gateway: %s adapter: %w", runtimeType, err)
 	}
@@ -278,12 +288,12 @@ func buildGateway() (*mesh.Gateway, error) {
 // ran before this seam existed; an unknown type fails closed — a
 // wrong-shaped pool must crash honestly, never silently run opencode
 // under another runtime's image.
-func buildRuntimeAdapter(runtimeType string, host mesh.PlatformHost) (mesh.RuntimeAdapter, error) {
+func buildRuntimeAdapter(runtimeType string, host mesh.PlatformHost, opts ...mesh.Option) (mesh.RuntimeAdapter, error) {
 	switch runtimeType {
 	case "opencode":
-		return mesh.NewOpenCodeAdapter(host)
+		return mesh.NewOpenCodeAdapter(host, opts...)
 	case "codex":
-		return mesh.NewCodexAdapter(host)
+		return mesh.NewCodexAdapter(host, opts...)
 	default:
 		return nil, fmt.Errorf("no RuntimeAdapter bound for runtime type %q (have: opencode, codex)", runtimeType)
 	}
@@ -385,7 +395,14 @@ func handleGatewayEndpoints(gw *mesh.Gateway) http.HandlerFunc {
 // event streams (D3.3 guard #3).
 func handleGatewayTask(gw *mesh.Gateway) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, span := telemetry.Tracer().Start(r.Context(), "gateway.handle_task",
+		// ISI-6058 (ISI-6055 P0): the operator's dispatch injects the run's
+		// W3C carrier into the POST headers (HTTPTransport.HeaderFunc);
+		// Extract it BEFORE starting gateway.handle_task so the span
+		// continues the dispatch trace instead of rooting a fresh one — the
+		// "one task, 3+ traces" fragmentation. No carrier on the wire (a
+		// bare test/local POST) leaves the request context unchanged and the
+		// span roots exactly as before.
+		ctx, span := telemetry.Tracer().Start(telemetry.Extract(r.Context(), requestTraceCarrier(r.Header)), "gateway.handle_task",
 			trace.WithAttributes(
 				attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
 				attribute.String("code.function", "handleGatewayTask"),
