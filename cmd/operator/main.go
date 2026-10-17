@@ -1074,7 +1074,7 @@ func main() {
 					return nil
 				}
 				ctrl.Log.Info("AgentMesh route-to-endpoint leg enabled", "teams", fmt.Sprintf("%v", teams))
-				return &rundrive.MeshRouteConfig{Teams: teams, Lookup: registry}
+				return &rundrive.MeshRouteConfig{Teams: teams, Lookup: rundrive.AsMeshRegistry(registry)}
 			}(),
 		})
 		if a2aErr != nil {

@@ -139,11 +139,9 @@ func runGateway(args []string) error {
 	// are observed).
 	team, role := os.Getenv("KSQUAD_MESH_TEAM"), os.Getenv("KSQUAD_MESH_ROLE")
 	if reg, err := meshobs.RegisterProcessesGauge(telemetry.Meter(), team, role, func() map[mesh.ProcState]int64 {
-		counts := map[mesh.ProcState]int64{}
-		for _, p := range gw.Processes() {
-			counts[p.State]++
-		}
-		return counts
+		// The canonical gauge-input builder lifted into the module at P3.6
+		// (mesh.SnapshotProcessStates) — one implementation, not two.
+		return mesh.SnapshotProcessStates(gw.Processes())
 	}); err == nil && reg != nil {
 		defer func() { _ = reg.Unregister() }()
 	}

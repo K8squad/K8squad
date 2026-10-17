@@ -18,11 +18,13 @@ here.
 ## Provenance
 
 - Source: https://github.com/K8sAgentMesh/K8sAgentMesh
-- Pinned commit: `29d1e027b31eb811eaaa40ea02083eec7ccdd344`
-  (pseudo-version `v0.0.0-20261016193516-29d1e027b31e`, kept in `go.mod`'s
+- Pinned commit: `03d67f56af18ed09845ff711230e4a15751f171e`
+  (pseudo-version `v0.0.0-20261016193656-03d67f56af18`, kept in `go.mod`'s
   `require` line as provenance for the pin)
-- Synced: 2026-10-16 (ISI-6038, P3.5 — adds the `mesh` package: the P3.3
-  pkg/mesh lift + the SchedulingPolicy scheduling seam)
+- Synced: 2026-10-16 (ISI-6040, P3.7 — adds the P3.4 registration +
+  supervisor seams: `mesh/registry.go`, `mesh/ingress.go`,
+  `mesh/sweeper.go`, `mesh/routeselect.go`; and the P3.6 lifecycle-event
+  contract: `mesh/events.go` + `mesh/EVENTS.md`)
 
 ## Sync
 
