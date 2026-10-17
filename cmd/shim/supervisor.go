@@ -315,10 +315,26 @@ func (s *supervisor) credential() (taskio.RunCredential, time.Time, bool) {
 	return *s.cred, s.credAt, true
 }
 
+// graftCarrier extracts carrier's W3C trace context onto base, reporting
+// whether a valid remote parent landed. An empty or invalid carrier leaves
+// base untouched so the caller can try the next source in the fallback chain.
+func graftCarrier(base context.Context, carrier map[string]string) (context.Context, bool) {
+	if len(carrier) == 0 {
+		return base, false
+	}
+	out := telemetry.Extract(base, carrier)
+	if trace.SpanContextFromContext(out).IsValid() {
+		return out, true
+	}
+	return base, false
+}
+
 // requestTraceCarrier lifts the W3C trace-context headers (traceparent/
 // tracestate) off an inbound POST into a string carrier — the shape
-// telemetry.Extract consumes. The mesh child leg and the operator's direct
-// HTTP leg both carry the dispatch/gateway trace here (ISI-6058, ISI-6055 P0).
+// telemetry.Extract consumes (ISI-6058/ISI-6059, ISI-6055 P0). The mesh child
+// leg and the operator's direct HTTP leg both carry the dispatch/gateway
+// trace here; legacy (stdio/sandbox) topologies send nothing, yielding an
+// empty carrier.
 func requestTraceCarrier(h http.Header) map[string]string {
 	carrier := map[string]string{}
 	if v := h.Get("traceparent"); v != "" {
@@ -330,14 +346,56 @@ func requestTraceCarrier(h http.Header) map[string]string {
 	return carrier
 }
 
-// runTraceContext grafts the Run's distributed trace onto base so a supervisor
-// span joins it instead of rooting a fresh trace (ISI-5144). It carries only
-// the handshake-extracted run traceparent's span context onto base —
-// preserving base's deadline/cancellation — so handle_task, runtime.init and
-// run.start share ONE run traceID. Before the handshake lands (an unbound warm
-// pod that has no run to join yet) it falls back to the process-start span,
-// then leaves base untouched.
-func (s *supervisor) runTraceContext(base context.Context) context.Context {
+// credentialCarrier re-reads the CURRENT task-io credential's W3C carrier
+// from the coord mount (ISI-6059, the ISI-5331 R1 warm-pod bleed fix):
+// awaitCredential extracts the carrier only on the FIRST handshake into
+// s.traceCtx, so a warm-pool supervisor process serving successive runs
+// would otherwise graft run #1's traceparent onto every later run's
+// supervisor.handle_task — the bluebox symptom of several handle_task spans
+// sharing one dangling never-exported parent. Re-reading per task mirrors
+// submitTraceContext. Returns nil when no carrier is available (no
+// credential yet, read error, or an untraced run).
+func (s *supervisor) credentialCarrier() map[string]string {
+	cred, ok, err := taskio.ReadCredentialFromDir(supervisorCoordMountPath)
+	if err != nil || !ok {
+		return nil
+	}
+	carrier := map[string]string{}
+	if cred.TraceParent != "" {
+		carrier["traceparent"] = cred.TraceParent
+	}
+	if cred.TraceState != "" {
+		carrier["tracestate"] = cred.TraceState
+	}
+	if len(carrier) == 0 {
+		return nil
+	}
+	return carrier
+}
+
+// runTraceContext grafts the trace context a supervisor span should parent on
+// onto base, in priority order (ISI-6055 P0 / ISI-6059):
+//  1. the inbound request's W3C carrier (reqCarrier — the traceparent header
+//     the mesh dispatcher sends, ISI-6058's wire seam), so each request
+//     continues ITS OWN trace;
+//  2. the CURRENT credential's carrier, re-read per task — the legacy
+//     (stdio/sandbox, no request context) graft with the warm-pod bleed fixed;
+//  3. the once-cached handshake context s.traceCtx (pre-credential tests);
+//  4. the process-start supervisor span;
+//  5. base untouched.
+//
+// It carries only the chosen parent's span context — preserving base's
+// deadline/cancellation — so handle_task, runtime.init and run.start share
+// ONE trace ID. The request carrier always wins over any credential graft:
+// the credential's traceparent is the operator-injected run trace, while the
+// header is the per-request continuation the mesh gateway creates.
+func (s *supervisor) runTraceContext(base context.Context, reqCarrier map[string]string) context.Context {
+	if tctx, ok := graftCarrier(base, reqCarrier); ok {
+		return tctx
+	}
+	if tctx, ok := graftCarrier(base, s.credentialCarrier()); ok {
+		return tctx
+	}
 	s.mu.RLock()
 	tctx := s.traceCtx
 	s.mu.RUnlock()
@@ -359,32 +417,19 @@ func (s *supervisor) runTraceContext(base context.Context) context.Context {
 // process that serves successive runs would otherwise parent every later run's
 // run.start on the FIRST run's distributed span, collapsing two run ids into
 // one trace (the R1 "6fa6ec8e, no run.start" symptom). Re-reading the current
-// credential gives run #2 its own traceparent so each run roots a distinct
-// trace. It is background-rooted (never the request ctx) so the run's span
-// lifetime is not tied to HTTP stream teardown (ISI-5144). Falls back to the
-// cached handshake context, then the request-header carrier's span context
-// (the mesh/HTTP leg's trace — ISI-6058), then the bare background context.
-//
-// ISI-6058 (ISI-6055 P0): fallback is the inbound POST's W3C carrier
-// (requestTraceCarrier) when neither the current credential nor the cached
-// handshake carries one — the mesh-routed standing process, which has no
-// per-run Bind credential. Only the SPAN context crosses, never the request's
-// cancellation, so the background rooting discipline above is preserved.
+// credential (credentialCarrier, ISI-6059) gives run #2 its own traceparent
+// so each run roots a distinct trace. It is background-rooted (never the
+// request ctx) so the run's span lifetime is not tied to HTTP stream teardown
+// (ISI-5144). Falls back to the cached handshake context, then the
+// request-header carrier's span context (the mesh/HTTP leg's trace —
+// ISI-6058, ISI-6055 P0: the mesh-routed standing process has no per-run
+// Bind credential), then the bare background context. Only the SPAN context
+// crosses from the request, never its cancellation, so the background
+// rooting discipline is preserved.
 func (s *supervisor) submitTraceContext(fallback trace.SpanContext) context.Context {
 	base := context.Background()
-	if cred, ok, err := taskio.ReadCredentialFromDir(supervisorCoordMountPath); err == nil && ok {
-		carrier := map[string]string{}
-		if cred.TraceParent != "" {
-			carrier["traceparent"] = cred.TraceParent
-		}
-		if cred.TraceState != "" {
-			carrier["tracestate"] = cred.TraceState
-		}
-		if len(carrier) > 0 {
-			if tctx := telemetry.Extract(base, carrier); trace.SpanContextFromContext(tctx).IsValid() {
-				return tctx
-			}
-		}
+	if tctx, ok := graftCarrier(base, s.credentialCarrier()); ok {
+		return tctx
 	}
 	s.mu.RLock()
 	tctx := s.traceCtx
@@ -490,14 +535,14 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	// leg only the header carrier exists (the standing process has no per-run
 	// Bind credential). Without one (a stdio-era test POST, a pre-seam caller)
 	// the credential graft and its fallbacks stand unchanged.
-	reqTraceCtx := telemetry.Extract(r.Context(), requestTraceCarrier(r.Header))
-	reqSC := trace.SpanContextFromContext(reqTraceCtx)
-	var ctx context.Context
-	if reqSC.IsValid() {
-		ctx = reqTraceCtx
-	} else {
-		ctx = s.runTraceContext(r.Context())
-	}
+	//
+	// ISI-6059: the credential graft survives only as the fallback for legacy
+	// (stdio/sandbox) topologies that send no request context, and it is
+	// re-read per task so each run roots its own trace there too — never the
+	// first handshake's cached s.traceCtx (the warm-pod bleed).
+	reqCarrier := requestTraceCarrier(r.Header)
+	reqSC := trace.SpanContextFromContext(telemetry.Extract(context.Background(), reqCarrier))
+	ctx := s.runTraceContext(r.Context(), reqCarrier)
 
 	ctx, taskHandleSpan := telemetry.Tracer().Start(ctx, "supervisor.handle_task",
 		trace.WithAttributes(
