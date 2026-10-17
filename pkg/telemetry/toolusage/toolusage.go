@@ -113,10 +113,20 @@ const (
 	attrTeamName    = attribute.Key("ksquad.team.name")
 	attrProjectName = attribute.Key("ksquad.project.name")
 	attrWorkItemRef = attribute.Key("ksquad.work_item.ref")
-	attrSandboxPod  = attribute.Key("ksquad.sandbox.pod")
-	attrSkillName   = attribute.Key("ksquad.skill.name")
-	attrSkillSHA    = attribute.Key("ksquad.skill.source.sha")
-	attrMCPServer   = attribute.Key("ksquad.mcp.server")
+	// attrTicketRef is the work item's HUMAN ticket key (ISI-6061) — the
+	// board-readable identifier (e.g. an external board key like ISI-6040, or
+	// a GitHub issue ref owner/repo#N) resolved by the dispatch leg from the
+	// work item's labels and carried to the pod on the submit payload
+	// (a2a.Task.TicketKey). It rides every run-trace span alongside the
+	// opaque ksquad.work_item.ref uuid so a backend can filter traces by the
+	// identifier an operator actually reads, without a uuid→ticket join.
+	// Span attribute ONLY — never a metric label (NFR-OBS3 cardinality
+	// firewall); omitted (never fabricated) when the item carries no key.
+	attrTicketRef  = attribute.Key("ksquad.ticket.ref")
+	attrSandboxPod = attribute.Key("ksquad.sandbox.pod")
+	attrSkillName  = attribute.Key("ksquad.skill.name")
+	attrSkillSHA   = attribute.Key("ksquad.skill.source.sha")
+	attrMCPServer  = attribute.Key("ksquad.mcp.server")
 	// attrToolType categorizes the tool (git|mcp|docker|npm|bash|…) so the
 	// trace answers "which KIND of tool ran" without parsing gen_ai.tool.name
 	// (ISI-4540: tools were all surfacing as bare names with no category).
@@ -273,6 +283,13 @@ type Labels struct {
 	// WorkItemRef is the ticket/work-item the Run serves
 	// (Run.Spec.WorkItemRef) — the ticket identity on the trace.
 	WorkItemRef string
+	// TicketKey is the work item's HUMAN ticket key (ISI-6061) — the
+	// board-readable identifier resolved by the dispatch leg from the work
+	// item's labels (a2a.Task.TicketKey on the submit payload). Stamped as
+	// ksquad.ticket.ref alongside the opaque WorkItemRef uuid; empty ⇒ the
+	// attribute is omitted, never fabricated. Span attribute only, never a
+	// metric label.
+	TicketKey string
 	// SandboxPod is the sandbox pod hosting the Run (Run.Status.SandboxRef /
 	// the shim's own pod name) — one run per pod.
 	SandboxPod string
@@ -316,6 +333,9 @@ func (l Labels) spanAttrs() []attribute.KeyValue {
 	}
 	if l.WorkItemRef != "" {
 		attrs = append(attrs, attrWorkItemRef.String(l.WorkItemRef))
+	}
+	if l.TicketKey != "" {
+		attrs = append(attrs, attrTicketRef.String(l.TicketKey))
 	}
 	if l.SandboxPod != "" {
 		attrs = append(attrs, attrSandboxPod.String(l.SandboxPod))
@@ -848,7 +868,14 @@ func (m *Mapper) RunStart(ctx context.Context, labels Labels, taskID string) (co
 // "run.end" marker child carrying the §3.1 state and reason (ISI-4238).
 // state is the a2a TaskState string ("completed" | "failed" |
 // "canceled" | …); it maps onto the outcome vocabulary for the status code.
-func (m *Mapper) RunEnd(ctx context.Context, taskID, state, reason string) {
+//
+// ISI-6061: the marker also carries the run's identity set (labels → run id,
+// agent, team, project, work item, ticket key, sandbox pod) so run.end is
+// queryable on its own — the same correlation set run.start stamped — instead
+// of only state/outcome/trace-id. The labels may legitimately be empty (a
+// RunEnd without a prior RunStart on the operator-side relay): the identity
+// attributes are then simply absent, as before.
+func (m *Mapper) RunEnd(ctx context.Context, labels Labels, taskID, state, reason string) {
 	if !enabled.Load() || taskID == "" {
 		return
 	}
@@ -867,6 +894,10 @@ func (m *Mapper) RunEnd(ctx context.Context, taskID, state, reason string) {
 	if rid != "" {
 		endAttrs = append(endAttrs, attrRunID.String(rid))
 	}
+	// ISI-6061: the identity set (agent/team/project/work item/ticket key/
+	// sandbox pod) rides the marker exactly as it rides every activity span,
+	// so a backend filtering run.end alone still knows whose run ended.
+	endAttrs = append(endAttrs, labels.spanAttrs()...)
 	if root != nil {
 		endAttrs = append(rootAttrs(root), endAttrs...)
 		// ISI-5331 R1: the marker is a child of this run's run.start, so it

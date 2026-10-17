@@ -50,6 +50,8 @@ import (
 	"github.com/K8squad/K8squad/pkg/teamroster"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
+
+	"github.com/lib/pq"
 )
 
 // dispatch.go — the operator-side physical A2A dispatch (ISI-3352, the last
@@ -292,6 +294,12 @@ type dispatchSource interface {
 	// WorkItem returns the work item's title and body (the §8.5 envelope's
 	// concrete work instruction).
 	WorkItem(ctx context.Context, id string) (title, body string, err error)
+	// TicketKey returns the work item's HUMAN ticket key (ISI-6061): the
+	// board-readable identifier (e.g. an external board key or a GitHub
+	// issue ref) resolved from the work item record, distinct from the
+	// opaque uuid the Run carries as WorkItemRef. Purely observational —
+	// an unresolvable item yields "" and never fails the dispatch.
+	TicketKey(ctx context.Context, id string) (string, error)
 	// FenceToken returns the work item's current claim fence (§6.2): the
 	// token every artifact write is checked against.
 	FenceToken(ctx context.Context, workItemID string) (string, error)
@@ -309,6 +317,40 @@ func (s sqlDispatchSource) WorkItem(ctx context.Context, id string) (string, str
 		return "", "", fmt.Errorf("rundrive: read work item %s: %w", id, err)
 	}
 	return title.String, body.String, nil
+}
+
+// ticketKeyLabelPrefixes are the work-item label conventions that carry a
+// HUMAN ticket key, in resolution order (ISI-6061). ksquad.ticket.key= is the
+// board-issued key (e.g. ISI-6040 when an external board bridge stamps the
+// linkage); ksquad.github.issue= is the Epic-2 GitHub-issues board bridge's
+// idempotency label (owner/repo#N, githubissuedispatch.go) — the one human-key
+// convention k8squad already had. The first matching label wins; an item with
+// neither label resolves to "" and the ticket attribute is simply omitted —
+// a key is never fabricated.
+var ticketKeyLabelPrefixes = []string{"ksquad.ticket.key=", "ksquad.github.issue="}
+
+// resolveTicketKey derives the human ticket key from a work item's label set
+// (ISI-6061). Empty when no label carries a key.
+func resolveTicketKey(labels []string) string {
+	for _, prefix := range ticketKeyLabelPrefixes {
+		for _, l := range labels {
+			if key := strings.TrimPrefix(l, prefix); key != l && key != "" {
+				return key
+			}
+		}
+	}
+	return ""
+}
+
+func (s sqlDispatchSource) TicketKey(ctx context.Context, id string) (string, error) {
+	var labels pq.StringArray
+	err := s.db.QueryRowContext(ctx,
+		`SELECT labels FROM coord.work_item WHERE id = $1::uuid`, id).
+		Scan(&labels)
+	if err != nil {
+		return "", fmt.Errorf("rundrive: read work item labels for %s: %w", id, err)
+	}
+	return resolveTicketKey(labels), nil
 }
 
 func (s sqlDispatchSource) FenceToken(ctx context.Context, workItemID string) (string, error) {
@@ -477,6 +519,17 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		return wire.Task{}, err
 	}
 
+	// ISI-6061: resolve the work item's HUMAN ticket key (the board-readable
+	// identifier, from the item's labels — see dispatchSource.TicketKey) so
+	// the pod can stamp ksquad.ticket.ref on the run trace without a lookup.
+	// Best-effort by contract: telemetry is never load-bearing, so an
+	// unresolvable item (no key label, or a transient read error) rides an
+	// empty key and the shim omits the attribute rather than fabricating one.
+	ticketKey, err := d.source.TicketKey(ctx, run.Spec.WorkItemRef)
+	if err != nil {
+		ticketKey = ""
+	}
+
 	return wire.Task{
 		A2ATaskID:  a2aTaskID,
 		WorkItemID: run.Spec.WorkItemRef,
@@ -501,6 +554,10 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		// ModelTier is the resolved model-origin (agent|role|default) the shim
 		// stamps as ksquad.model.tier on the run.start span (ISI-4430 S5).
 		ModelTier: modelTier,
+		// TicketKey is the resolved human ticket key (ISI-6061) the shim
+		// stamps as ksquad.ticket.ref on run.start / llm.call /
+		// gen_ai.tool.call / mcp.call and both handle_task spans.
+		TicketKey: ticketKey,
 	}, nil
 }
 

@@ -75,10 +75,16 @@ type fakeDispatchSource struct {
 	title string
 	body  string
 	fence string
+	// ticketKey is the resolved human ticket key (ISI-6061); "" ⇒ no key.
+	ticketKey string
 }
 
 func (f fakeDispatchSource) WorkItem(context.Context, string) (string, string, error) {
 	return f.title, f.body, nil
+}
+
+func (f fakeDispatchSource) TicketKey(context.Context, string) (string, error) {
+	return f.ticketKey, nil
 }
 
 func (f fakeDispatchSource) FenceToken(context.Context, string) (string, error) {
@@ -552,6 +558,57 @@ func TestBuildTaskFailsClosedOnBadEndpoint(t *testing.T) {
 }
 
 type captureSink struct{ evs *[]wire.Event }
+
+// TestResolveTicketKey (ISI-6061): the human ticket key resolves from the work
+// item's label conventions — ksquad.ticket.key= first (board-issued key), then
+// the Epic-2 GitHub bridge's ksquad.github.issue= — and an item with neither
+// label resolves to "" (never fabricated).
+func TestResolveTicketKey(t *testing.T) {
+	cases := []struct {
+		name   string
+		labels []string
+		want   string
+	}{
+		{"board key wins", []string{"ksquad.github.issue=acme/r#42", "ksquad.ticket.key=ISI-6061"}, "ISI-6061"},
+		{"github issue fallback", []string{"ksquad.github.issue=acme/r#42"}, "acme/r#42"},
+		{"no key labels", []string{"bug", "needs-review"}, ""},
+		{"no labels", nil, ""},
+		{"empty value not trusted", []string{"ksquad.ticket.key="}, ""},
+	}
+	for _, c := range cases {
+		if got := resolveTicketKey(c.labels); got != c.want {
+			t.Errorf("%s: resolveTicketKey(%v) = %q, want %q", c.name, c.labels, got, c.want)
+		}
+	}
+}
+
+// TestBuildTaskCarriesTicketKey (ISI-6061): the resolved human ticket key rides
+// the submit payload (wire.Task.TicketKey) so the pod can stamp
+// ksquad.ticket.ref on the run trace without a board lookup; an unresolved key
+// rides empty (the shim omits the attribute).
+func TestBuildTaskCarriesTicketKey(t *testing.T) {
+	const runUID = "eeeeeeee-1111-2222-3333-444444444444"
+	run := &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-ticket", Namespace: "team-a", UID: types.UID(runUID)},
+		Spec: api.RunSpec{
+			TeamRef:     api.ObjectRef{Name: "team-a"},
+			ProjectRef:  api.ObjectRef{Name: "proj-1"},
+			WorkItemRef: "99999999-8888-7777-6666-555555555555",
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, dispatchTeamObj()).Build()
+	d := &operatorDispatch{
+		cfg:    OperatorDispatchConfig{Client: cl},
+		source: fakeDispatchSource{title: "x", body: "y", fence: "1", ticketKey: "ISI-6061"},
+	}
+	task, err := d.buildTask(context.Background(), runUID, runUID)
+	if err != nil {
+		t.Fatalf("buildTask: %v", err)
+	}
+	if task.TicketKey != "ISI-6061" {
+		t.Errorf("Task.TicketKey = %q, want ISI-6061", task.TicketKey)
+	}
+}
 
 func (c captureSink) Event(_ context.Context, ev wire.Event) error {
 	*c.evs = append(*c.evs, ev)

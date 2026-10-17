@@ -148,6 +148,16 @@ func (o *Observer) ObserveRoute(ctx context.Context, e mesh.RouteEvent) {
 		attribute.Int("ksquad.duration.ms", durationMS(e.Duration)),
 		attribute.String("ksquad.outcome", outcome(e.Err)),
 	)
+	// ISI-6061: the routed task's identity (a2a task id == run id, project)
+	// rides the route span so the mesh leg answers "which task/project"
+	// without joining back to the dispatch side. Span attributes only —
+	// never metric labels (NFR-OBS3); empty on a taskless route.
+	if e.TaskID != "" {
+		attrs = append(attrs, attribute.String("ksquad.task.a2a_id", e.TaskID))
+	}
+	if e.Project != "" {
+		attrs = append(attrs, attribute.String("ksquad.project.name", e.Project))
+	}
 	_, span := o.tracer.Start(ctx, ksqsemconv.SpanMeshRoute, trace.WithAttributes(attrs...))
 	if e.Err != nil {
 		span.SetStatus(codes.Error, e.Err.Error())

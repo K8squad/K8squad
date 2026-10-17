@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -152,6 +153,61 @@ func newTestGateway(t *testing.T, min int) (*httptest.Server, *mesh.Gateway, *fa
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv, gw, fa
+}
+
+// TestGatewayHandleTaskSpanCarriesTaskIdentity (ISI-6061): the
+// gateway.handle_task span stamps the decoded task's identity set — the shared
+// taskspan vocabulary: a2a id, work item, human ticket key, agent/team/project
+// — so the mesh dispatch edge answers "whose task, which ticket" before the
+// child supervisor opens its own span.
+func TestGatewayHandleTaskSpanCarriesTaskIdentity(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	srv, _, _ := newTestGateway(t, 1)
+	body := `{"a2a_task_id":"t-6061","work_item_id":"9c8b7a6d-0000-4000-8000-000000000001",` +
+		`"ticket_key":"ISI-6061","identity":{"name":"coder","squad":"bravo","project":"proj-1"}}`
+	resp, err := http.Post(srv.URL+"/task", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /task = %d, want 200", resp.StatusCode)
+	}
+
+	for _, s := range exp.GetSpans() {
+		if s.Name != "gateway.handle_task" {
+			continue
+		}
+		got := map[string]string{}
+		for _, kv := range s.Attributes {
+			got[string(kv.Key)] = kv.Value.AsString()
+		}
+		for key, want := range map[string]string{
+			"ksquad.task.a2a_id":       "t-6061",
+			"ksquad.task.work_item_id": "9c8b7a6d-0000-4000-8000-000000000001",
+			"ksquad.ticket.ref":        "ISI-6061",
+			"ksquad.agent.name":        "coder",
+			"ksquad.team.name":         "bravo",
+			"ksquad.project.name":      "proj-1",
+		} {
+			if got[key] != want {
+				t.Errorf("gateway.handle_task %s = %q, want %q", key, got[key], want)
+			}
+		}
+		return
+	}
+	t.Fatalf("no gateway.handle_task span in %d spans", len(exp.GetSpans()))
 }
 
 // /ready reports the pool: ready with the process count and state buckets

@@ -832,6 +832,130 @@ func TestDrivePrefersPerTaskIdentity(t *testing.T) {
 	}
 }
 
+// TestDriveEmitsSkillLoadSpans (ISI-6061 AC1): granted skills must surface as
+// skill.load SPANS (not only as ksquad_skill_loads_total metric points) — the
+// bluebox investigation found 0 skill.load spans because the granted set was
+// empty in the fleet, but the emission path itself is proven here: one span per
+// granted skill at launch (unknown outcome — "granted" is not "loaded") plus
+// one per runtime EventSkillLoad mapped through the funnel.
+func TestDriveEmitsSkillLoadSpans(t *testing.T) {
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenClaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := true
+	e := New(rt, &fakeRunner{
+		emits: []Progress{{Kind: a2a.EventSkillLoad, SkillLoad: &a2a.SkillLoadPayload{
+			Name: "loaded-by-runtime", SHA256: "abc123", OK: &ok,
+		}}},
+		outcome: Outcome{State: a2a.TaskCompleted},
+	}, Config{Skills: []string{"granted-at-launch"}, SkillSHAs: map[string]string{"granted-at-launch": "deadbeef"}, ShimVersion: "test"})
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	e.SetTelemetry(toolusage.NewMapper(tp.Tracer("test"), nil))
+
+	if _, err := e.SubmitTask(context.Background(), a2a.Task{A2ATaskID: "t-skl"}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "t-skl", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch)
+
+	bySkill := map[string]sdktrace.ReadOnlySpan{}
+	for _, s := range sr.Ended() {
+		if s.Name() != "skill.load" {
+			continue
+		}
+		for _, kv := range s.Attributes() {
+			if string(kv.Key) == "ksquad.skill.name" {
+				bySkill[kv.Value.AsString()] = s
+			}
+		}
+	}
+	if len(bySkill) != 2 {
+		t.Fatalf("skill.load spans = %d (by skill: %v), want 2 (granted + runtime-loaded)", len(bySkill), bySkill)
+	}
+	launch := bySkill["granted-at-launch"]
+	if got := attrString(launch, "ksquad.skill.source.sha"); got != "deadbeef" {
+		t.Errorf("granted skill source sha = %q, want deadbeef", got)
+	}
+	if got := attrString(launch, "ksquad.outcome"); got != "unknown" {
+		t.Errorf("granted skill outcome = %q, want unknown (granted is not loaded)", got)
+	}
+	runtime := bySkill["loaded-by-runtime"]
+	if got := attrString(runtime, "ksquad.outcome"); got != "success" {
+		t.Errorf("runtime-loaded skill outcome = %q, want success", got)
+	}
+}
+
+func attrString(s sdktrace.ReadOnlySpan, key string) string {
+	for _, kv := range s.Attributes() {
+		if string(kv.Key) == key {
+			return kv.Value.AsString()
+		}
+	}
+	return ""
+}
+
+// TestDriveStampsTicketKey (ISI-6061): the human ticket key on the submit
+// payload (a2a.Task.TicketKey — the dispatch leg resolves it from the work
+// item's labels) rides every run-trace span as ksquad.ticket.ref, alongside
+// the opaque work-item uuid, so a trace is filterable by the identifier an
+// operator reads off the board.
+func TestDriveStampsTicketKey(t *testing.T) {
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenClaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New(rt, &fakeRunner{
+		emits:   []Progress{{Kind: a2a.EventTool, Tool: &a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolTrue()}}},
+		outcome: Outcome{State: a2a.TaskCompleted},
+	}, Config{SandboxPod: "ksquad-sbx-warm", ShimVersion: "test"})
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	e.SetTelemetry(toolusage.NewMapper(tp.Tracer("test"), nil))
+
+	if _, err := e.SubmitTask(context.Background(), a2a.Task{
+		A2ATaskID:  "run-6061",
+		WorkItemID: "9c8b7a6d-0000-4000-8000-000000000001",
+		TicketKey:  "ISI-6061",
+		Identity:   a2a.AgentIdentity{Name: "coder-7", Squad: "bravo", Project: "warmproj"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "run-6061", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch)
+
+	checked := 0
+	for _, s := range sr.Ended() {
+		switch s.Name() {
+		case "run.start", "gen_ai.tool.call", "run.end":
+			checked++
+		default:
+			continue
+		}
+		attrs := map[string]string{}
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.AsString()
+		}
+		if attrs["ksquad.ticket.ref"] != "ISI-6061" {
+			t.Errorf("span %s ksquad.ticket.ref = %q, want ISI-6061", s.Name(), attrs["ksquad.ticket.ref"])
+		}
+	}
+	if checked < 3 {
+		t.Fatalf("expected run.start + gen_ai.tool.call + run.end spans, checked %d", checked)
+	}
+}
+
 // TestDriveProviderBackfill (GH #634): usage payloads without a provider are
 // backfilled with gen_ai.system derived from the resolved ModelRoute — "ollama"
 // for an Ollama-suggesting endpoint host, the fixed BYO provider id for a
