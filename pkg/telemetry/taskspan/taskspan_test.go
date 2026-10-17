@@ -37,7 +37,7 @@ func TestTaskAttrs(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, kv := range TaskAttrs(full) {
-		got[string(kv.Key)] = kv.Value.Emit()
+		got[string(kv.Key)] = kv.Value.String()
 	}
 	for key, want := range map[string]string{
 		"ksquad.task.a2a_id":               "t-1",
@@ -58,7 +58,7 @@ func TestTaskAttrs(t *testing.T) {
 	// The minimal payload: only the always-present pair, nothing fabricated.
 	min := map[string]string{}
 	for _, kv := range TaskAttrs(a2a.Task{A2ATaskID: "t-2"}) {
-		min[string(kv.Key)] = kv.Value.Emit()
+		min[string(kv.Key)] = kv.Value.String()
 	}
 	for key := range min {
 		if key != "ksquad.task.a2a_id" && key != "ksquad.task.work_item_id" {

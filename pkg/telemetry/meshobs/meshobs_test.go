@@ -163,7 +163,7 @@ func TestMeshRouteCarriesTaskIdentity(t *testing.T) {
 	}
 	got := map[string]string{}
 	for _, kv := range route.Attributes() {
-		got[string(kv.Key)] = kv.Value.Emit()
+		got[string(kv.Key)] = kv.Value.String()
 	}
 	if got["ksquad.task.a2a_id"] != "task-1" {
 		t.Errorf("mesh.route ksquad.task.a2a_id = %q, want task-1", got["ksquad.task.a2a_id"])
