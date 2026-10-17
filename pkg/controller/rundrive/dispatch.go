@@ -803,6 +803,18 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 	} else if dir != "" {
 		env = append(env, capability.SkillsDirEnvVar+"="+dir)
 	}
+	// The granted skill-ref LIST (ISI-6123): KSQUAD_SKILLS_DIR above only
+	// materializes the inline body tree; the shim engine fires its skill.load
+	// span per granted ref read from KSQUAD_SKILLS (cfg.Skills, ISI-6061), a
+	// list that was never stamped on any operator-spawned run — so no
+	// skill.load span ever fired in production. Stamp every granted skill
+	// (inline or git) here, with git-pinned SHAs on KSQUAD_SKILL_SHAS.
+	if names, shas := grantedSkillEnv(run); names != "" {
+		env = append(env, capability.SkillsEnvVar+"="+names)
+		if shas != "" {
+			env = append(env, capability.SkillSHAsEnvVar+"="+shas)
+		}
+	}
 	// D1: the W3C trace carrier — same convention as warmpool's sandbox env.
 	carrier := map[string]string{}
 	telemetry.Inject(ctx, carrier)
@@ -1223,6 +1235,31 @@ func (d *operatorDispatch) mcpEnvelope(ctx context.Context, run *api.Run) ([]cap
 // for the task's lifetime; the pod-side topology replaces this with the
 // real volume mounts. Fail-closed: a projected skill whose ConfigMap or
 // file keys are missing aborts the dispatch, never a silent partial tree.
+// grantedSkillEnv renders the Run's granted-skill set into the KSQUAD_SKILLS
+// / KSQUAD_SKILL_SHAS values the shim engine reads for its skill.load span
+// (ISI-6123): `names` is the comma-separated ref-name list (every granted
+// skill, inline or git — cfg.Skills) and `shas` the name=sha list for
+// git-pinned skills (cfg.SkillSHAs; inline skills carry no SHA). Both empty
+// when the Run grants nothing, so a bare run stamps neither env. Mirrors the
+// pure capability.SkillListEnv, over the manifest's stored api.GrantedSkill.
+func grantedSkillEnv(run *api.Run) (names, shas string) {
+	if run.Status.CapabilityManifest == nil {
+		return "", ""
+	}
+	refs := make([]string, 0, len(run.Status.CapabilityManifest.Skills))
+	shaPairs := make([]string, 0, len(run.Status.CapabilityManifest.Skills))
+	for _, s := range run.Status.CapabilityManifest.Skills {
+		if s.Name == "" {
+			continue
+		}
+		refs = append(refs, s.Name)
+		if s.SourceType == api.SkillSourceGit && s.Git != nil && s.Git.Ref != "" {
+			shaPairs = append(shaPairs, s.Name+"="+s.Git.Ref)
+		}
+	}
+	return strings.Join(refs, ","), strings.Join(shaPairs, ",")
+}
+
 func (d *operatorDispatch) materializeSkills(ctx context.Context, run *api.Run) (string, error) {
 	if run.Status.CapabilityManifest == nil {
 		return "", nil

@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -130,6 +131,20 @@ func AssemblePod(run *api.Run, resolved []toolchain.Resolved, endpoints []Endpoi
 			Name:  SkillsDirEnvVar,
 			Value: SkillsMountPath,
 		})
+	}
+
+	// The granted skill-ref LIST (ISI-6123): KSQUAD_SKILLS names every
+	// granted skill (inline or git) so the shim engine fires one skill.load
+	// span per ref at run start (ISI-6061) — distinct from the inline body
+	// tree KSQUAD_SKILLS_DIR names above, which only exists for inline
+	// skills. Without this the list is empty and no skill.load span ever
+	// fires in production. Git-pinned source SHAs ride KSQUAD_SKILL_SHAS so
+	// each span carries its immutable revision (§5.3.6).
+	if names, shas := SkillListEnv(skills); names != "" {
+		asm.AgentEnv = append(asm.AgentEnv, corev1.EnvVar{Name: SkillsEnvVar, Value: names})
+		if shas != "" {
+			asm.AgentEnv = append(asm.AgentEnv, corev1.EnvVar{Name: SkillSHAsEnvVar, Value: shas})
+		}
 	}
 
 	// Auxiliary (non-model) tool credentials (ISI-3565): a github-token
@@ -260,6 +275,32 @@ func InlineSkills(skills []GrantedSkill) []GrantedSkill {
 		}
 	}
 	return out
+}
+
+// SkillListEnv renders the granted-skill set into the two shim env values
+// the engine's skill.load span reads (ISI-6123): `names` is the
+// comma-separated ref-name list (cfg.Skills — every granted skill, inline
+// or git), and `shas` is the comma-separated name=sha list for git-pinned
+// skills (cfg.SkillSHAs — inline skills carry no source SHA and are
+// omitted). Both are empty strings when the set grants nothing, so a caller
+// stamps neither env on a bare run. The CSV shape mirrors cmd/shim
+// configFromEnv's splitList / parseSkillSHAs parsers exactly.
+func SkillListEnv(skills []GrantedSkill) (names, shas string) {
+	if len(skills) == 0 {
+		return "", ""
+	}
+	refs := make([]string, 0, len(skills))
+	shaPairs := make([]string, 0, len(skills))
+	for _, s := range skills {
+		if s.Name == "" {
+			continue
+		}
+		refs = append(refs, s.Name)
+		if s.SourceType == api.SkillSourceGit && s.Git != nil && s.Git.Ref != "" {
+			shaPairs = append(shaPairs, s.Name+"="+s.Git.Ref)
+		}
+	}
+	return strings.Join(refs, ","), strings.Join(shaPairs, ",")
 }
 
 // SkillConfigMapFor builds ONE granted inline skill's projected ConfigMap

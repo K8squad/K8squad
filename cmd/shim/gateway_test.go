@@ -587,3 +587,30 @@ func TestGatewayHandleTaskContinuesTraceparentHeader(t *testing.T) {
 		t.Errorf("gateway.handle_task parent = %s without a carrier, want a fresh root", rootSpan.Parent.SpanID())
 	}
 }
+
+// ISI-6123: the standing supervisor's extra env always carries the mesh
+// run-path label, and — when the pool grants skills via KSQUAD_MESH_SKILLS —
+// the granted ref LIST as KSQUAD_SKILLS, so the supervisor's engine reads a
+// non-empty cfg.Skills and fires skill.load spans. Envelope.Skills alone only
+// ever reached the agent card, which left mesh traces with zero skill.load
+// spans (the ISI-6062 finding).
+func TestGatewayStandingEnvStampsSkills(t *testing.T) {
+	// Granted skills ride KSQUAD_SKILLS as a CSV next to the run-path label.
+	env := gatewayStandingEnv([]string{"paperclip", "code-review"})
+	if got := env["KSQUAD_RUN_PATH"]; got != "mesh" {
+		t.Fatalf("KSQUAD_RUN_PATH = %q, want mesh", got)
+	}
+	if got := env["KSQUAD_SKILLS"]; got != "paperclip,code-review" {
+		t.Fatalf("KSQUAD_SKILLS = %q, want paperclip,code-review", got)
+	}
+
+	// Bare pool (no skills): the label stamps, KSQUAD_SKILLS does not — so a
+	// bare mesh process keeps an empty cfg.Skills rather than a stray "".
+	bare := gatewayStandingEnv(nil)
+	if got := bare["KSQUAD_RUN_PATH"]; got != "mesh" {
+		t.Fatalf("bare KSQUAD_RUN_PATH = %q, want mesh", got)
+	}
+	if _, ok := bare["KSQUAD_SKILLS"]; ok {
+		t.Fatal("bare pool must not stamp KSQUAD_SKILLS")
+	}
+}
