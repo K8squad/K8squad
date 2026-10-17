@@ -315,14 +315,84 @@ func (s *supervisor) credential() (taskio.RunCredential, time.Time, bool) {
 	return *s.cred, s.credAt, true
 }
 
-// runTraceContext grafts the Run's distributed trace onto base so a supervisor
-// span joins it instead of rooting a fresh trace (ISI-5144). It carries only
-// the handshake-extracted run traceparent's span context onto base —
-// preserving base's deadline/cancellation — so handle_task, runtime.init and
-// run.start share ONE run traceID. Before the handshake lands (an unbound warm
-// pod that has no run to join yet) it falls back to the process-start span,
-// then leaves base untouched.
-func (s *supervisor) runTraceContext(base context.Context) context.Context {
+// graftCarrier extracts carrier's W3C trace context onto base, reporting
+// whether a valid remote parent landed. An empty or invalid carrier leaves
+// base untouched so the caller can try the next source in the fallback chain.
+func graftCarrier(base context.Context, carrier map[string]string) (context.Context, bool) {
+	if len(carrier) == 0 {
+		return base, false
+	}
+	out := telemetry.Extract(base, carrier)
+	if trace.SpanContextFromContext(out).IsValid() {
+		return out, true
+	}
+	return base, false
+}
+
+// requestCarrier lifts the inbound W3C trace-context headers off a /task
+// request (ISI-6055 P0 / ISI-6059): the mesh dispatcher sends the request's
+// own traceparent/tracestate so the supervisor continues THIS request's trace.
+// Legacy (stdio/sandbox) topologies send nothing, yielding an empty carrier.
+func requestCarrier(r *http.Request) map[string]string {
+	carrier := map[string]string{}
+	if v := r.Header.Get("traceparent"); v != "" {
+		carrier["traceparent"] = v
+	}
+	if v := r.Header.Get("tracestate"); v != "" {
+		carrier["tracestate"] = v
+	}
+	return carrier
+}
+
+// credentialCarrier re-reads the CURRENT task-io credential's W3C carrier
+// from the coord mount (ISI-6059, the ISI-5331 R1 warm-pod bleed fix):
+// awaitCredential extracts the carrier only on the FIRST handshake into
+// s.traceCtx, so a warm-pool supervisor process serving successive runs
+// would otherwise graft run #1's traceparent onto every later run's
+// supervisor.handle_task — the bluebox symptom of several handle_task spans
+// sharing one dangling never-exported parent. Re-reading per task mirrors
+// submitTraceContext. Returns nil when no carrier is available (no
+// credential yet, read error, or an untraced run).
+func (s *supervisor) credentialCarrier() map[string]string {
+	cred, ok, err := taskio.ReadCredentialFromDir(supervisorCoordMountPath)
+	if err != nil || !ok {
+		return nil
+	}
+	carrier := map[string]string{}
+	if cred.TraceParent != "" {
+		carrier["traceparent"] = cred.TraceParent
+	}
+	if cred.TraceState != "" {
+		carrier["tracestate"] = cred.TraceState
+	}
+	if len(carrier) == 0 {
+		return nil
+	}
+	return carrier
+}
+
+// runTraceContext grafts the trace context a supervisor span should parent on
+// onto base, in priority order (ISI-6055 P0 / ISI-6059):
+//  1. the inbound request's W3C carrier (reqCarrier — the traceparent header
+//     the mesh dispatcher sends), so each request continues ITS OWN trace;
+//  2. the CURRENT credential's carrier, re-read per task — the legacy
+//     (stdio/sandbox, no request context) graft with the warm-pod bleed fixed;
+//  3. the once-cached handshake context s.traceCtx (pre-credential tests);
+//  4. the process-start supervisor span;
+//  5. base untouched.
+//
+// It carries only the chosen parent's span context — preserving base's
+// deadline/cancellation — so handle_task, runtime.init and run.start share
+// ONE trace ID. The request carrier always wins over any credential graft:
+// the credential's traceparent is the operator-injected run trace, while the
+// header is the per-request continuation the mesh gateway creates.
+func (s *supervisor) runTraceContext(base context.Context, reqCarrier map[string]string) context.Context {
+	if tctx, ok := graftCarrier(base, reqCarrier); ok {
+		return tctx
+	}
+	if tctx, ok := graftCarrier(base, s.credentialCarrier()); ok {
+		return tctx
+	}
 	s.mu.RLock()
 	tctx := s.traceCtx
 	s.mu.RUnlock()
@@ -344,25 +414,14 @@ func (s *supervisor) runTraceContext(base context.Context) context.Context {
 // process that serves successive runs would otherwise parent every later run's
 // run.start on the FIRST run's distributed span, collapsing two run ids into
 // one trace (the R1 "6fa6ec8e, no run.start" symptom). Re-reading the current
-// credential gives run #2 its own traceparent so each run roots a distinct
-// trace. It is background-rooted (never the request ctx) so the run's span
-// lifetime is not tied to HTTP stream teardown (ISI-5144). Falls back to the
-// cached handshake context, then the bare background context.
+// credential (credentialCarrier) gives run #2 its own traceparent so each run
+// roots a distinct trace. It is background-rooted (never the request ctx) so
+// the run's span lifetime is not tied to HTTP stream teardown (ISI-5144).
+// Falls back to the cached handshake context, then the bare background context.
 func (s *supervisor) submitTraceContext() context.Context {
 	base := context.Background()
-	if cred, ok, err := taskio.ReadCredentialFromDir(supervisorCoordMountPath); err == nil && ok {
-		carrier := map[string]string{}
-		if cred.TraceParent != "" {
-			carrier["traceparent"] = cred.TraceParent
-		}
-		if cred.TraceState != "" {
-			carrier["tracestate"] = cred.TraceState
-		}
-		if len(carrier) > 0 {
-			if tctx := telemetry.Extract(base, carrier); trace.SpanContextFromContext(tctx).IsValid() {
-				return tctx
-			}
-		}
+	if tctx, ok := graftCarrier(base, s.credentialCarrier()); ok {
+		return tctx
 	}
 	s.mu.RLock()
 	tctx := s.traceCtx
@@ -456,7 +515,16 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	// IDs. runTraceContext keeps r.Context()'s cancellation while grafting on the
 	// run trace, and falls back to supervisor.start before the handshake lands.
 	// This same graft satisfies ISI-5143 (W1): handle_task continues the run trace.
-	ctx := s.runTraceContext(r.Context())
+	//
+	// ISI-6055 P0 (ISI-6059): prefer the request's OWN W3C carrier (the
+	// traceparent header the mesh dispatcher sends) over the credential graft —
+	// s.traceCtx is cached at the FIRST handshake, so on a warm pod reusing it
+	// would parent every later run's handle_task on run #1's dangling,
+	// never-exported span (the bluebox 8d777056ee45bc94 bleed). The credential
+	// graft survives only as the fallback for legacy (stdio/sandbox) topologies
+	// that send no request context, and it is re-read per task so each run
+	// roots its own trace there too.
+	ctx := s.runTraceContext(r.Context(), requestCarrier(r))
 
 	ctx, taskHandleSpan := telemetry.Tracer().Start(ctx, "supervisor.handle_task",
 		trace.WithAttributes(
