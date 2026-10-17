@@ -48,20 +48,26 @@ import (
 // operator secret in the Secret — only the run-scoped token, trace carrier and
 // IDs — so the minimal-env invariant carries to topology 2.
 type SecretCredentialWriter struct {
-	client   client.Client
-	minter   *taskio.Minter
-	coordURL string
+	client    client.Client
+	minter    *taskio.Minter
+	coordURL  string
+	meshTeams MeshTeamFlag
 }
 
 // NewSecretCredentialWriter builds the writer, or returns nil (credential-off)
 // when the seam is not usable: a nil client/minter or empty coordURL. Both the
 // minter and the URL are needed together, mirroring the shim path's
 // TaskIOMinter/TaskIOCoordURL pairing (fail-safe: no token beats a broken one).
-func NewSecretCredentialWriter(c client.Client, minter *taskio.Minter, coordURL string) *SecretCredentialWriter {
+// meshTeams is the SAME per-team mesh flag the dispatcher consults
+// (KSQUAD_MESH_TEAMS, D9.3): a mesh-flagged team's binds mint NO trace carrier
+// (ISI-6060, ISI-6055 P1 — see WriteRunCredential). A nil flag never retires:
+// every bind keeps the legacy graft, the pre-ISI-6060 behavior, fail-safe for
+// callers that have no mesh configuration to consult.
+func NewSecretCredentialWriter(c client.Client, minter *taskio.Minter, coordURL string, meshTeams MeshTeamFlag) *SecretCredentialWriter {
 	if c == nil || minter == nil || coordURL == "" {
 		return nil
 	}
-	return &SecretCredentialWriter{client: c, minter: minter, coordURL: coordURL}
+	return &SecretCredentialWriter{client: c, minter: minter, coordURL: coordURL, meshTeams: meshTeams}
 }
 
 // WriteRunCredential mints the run-scoped credential for the Run behind runID and
@@ -92,14 +98,28 @@ func (w *SecretCredentialWriter) WriteRunCredential(ctx context.Context, runID, 
 		WorkItemID: run.Spec.WorkItemRef,
 		RunID:      runID,
 	}
-	// W3C trace carrier — same telemetry.Inject convention as the shim env and
-	// warmpool.sandboxEnv, so the sandbox's spans continue the Run's trace. A
-	// carrier-less context stamps nothing (the keys stay empty, omitted by
-	// SecretData), honestly.
-	carrier := map[string]string{}
-	telemetry.Inject(ctx, carrier)
-	cred.TraceParent = carrier["traceparent"]
-	cred.TraceState = carrier["tracestate"]
+	// W3C trace carrier — the bind-time graft, RETIRED on the mesh leg
+	// (ISI-6060, ISI-6055 P1). telemetry.Inject(ctx, ...) stamps the RECONCILE
+	// context's span, which is never exported/sampled: a supervisor grafting
+	// it parents on a span no backend holds — the bluebox dangling parents
+	// (8d777056…/588ca000…). A mesh-flagged team's runs dispatch through the
+	// AgentMesh gateway, and since ISI-6058 every HTTP hop on that leg carries
+	// the request's own W3C carrier while ISI-6059 made the supervisor prefer
+	// it over the credential graft — so the Secret ships NO carrier there and
+	// supervisor spans join the (real, sampled, exported) request trace. This
+	// also covers a flagged team's run that falls back to the legacy sandbox
+	// leg (no registered gateway): that leg carries the request carrier on
+	// the wire too (ISI-6058's traceHeaders), so nothing needs the graft.
+	// Legacy topologies with no request context keep the graft: the same
+	// telemetry.Inject convention as the shim env and warmpool.sandboxEnv, so
+	// the sandbox's spans continue the Run's trace. A carrier-less context
+	// stamps nothing (the keys stay empty, omitted by SecretData), honestly.
+	if w.meshTeams == nil || !w.meshTeams.Enabled(run.Spec.TeamRef.Name) {
+		carrier := map[string]string{}
+		telemetry.Inject(ctx, carrier)
+		cred.TraceParent = carrier["traceparent"]
+		cred.TraceState = carrier["tracestate"]
+	}
 
 	pod, err := w.findSandboxPod(ctx, sandboxRef)
 	if err != nil {
