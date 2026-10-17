@@ -121,3 +121,55 @@ func TestHTTPTransportRequiresResolverAndID(t *testing.T) {
 		t.Fatal("expected error on empty a2a_task_id")
 	}
 }
+
+// TestHTTPTransportHeaderFuncSeam (ISI-6058): HeaderFunc's carrier rides the
+// POST as request headers so the receiving supervisor/gateway can continue
+// the dispatcher's distributed trace — the transport itself stays
+// SDK-agnostic (the test asserts only the header pass-through, not any
+// telemetry semantics). Without HeaderFunc the request carries only
+// Content-Type, byte-identical to the pre-seam wire.
+func TestHTTPTransportHeaderFuncSeam(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	tr := &HTTPTransport{
+		URL: func(context.Context, wire.Task) (string, error) { return srv.URL + "/task", nil },
+		HeaderFunc: func(context.Context) map[string]string {
+			return map[string]string{"traceparent": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01"}
+		},
+	}
+	sess, err := tr.Submit(context.Background(), wire.Task{A2ATaskID: "run-1"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if err := sess.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if v := gotHeaders.Get("traceparent"); v != "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01" {
+		t.Errorf("traceparent header = %q, want the HeaderFunc carrier value", v)
+	}
+	if v := gotHeaders.Get("Content-Type"); v != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json (seam must not displace it)", v)
+	}
+
+	// No HeaderFunc: nothing leaks, the wire is unchanged.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv2.Close()
+	tr2 := &HTTPTransport{URL: func(context.Context, wire.Task) (string, error) { return srv2.URL + "/task", nil }}
+	sess2, err := tr2.Submit(context.Background(), wire.Task{A2ATaskID: "run-2"})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	_ = sess2.Close()
+	if v := gotHeaders.Get("Traceparent"); v != "" {
+		t.Errorf("traceparent = %q without HeaderFunc, want empty", v)
+	}
+}

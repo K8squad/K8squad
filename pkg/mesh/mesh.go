@@ -80,6 +80,8 @@ type (
 	Option = a2amesh.Option
 	// Router submits a task to an endpoint over HTTP.
 	Router = a2amesh.Router
+	// RouterOption configures the HTTP task router.
+	RouterOption = a2amesh.RouterOption
 	// RuntimeSpec is the injected runtime profile a host supplies to a
 	// concrete adapter (leak L1). k8squad builds it from its own
 	// declarative runtime registry — see adapters.go.
@@ -187,8 +189,17 @@ func NewGateway(cfg GatewayConfig) (*Gateway, error) {
 }
 
 // NewHTTPRouter builds the HTTP task router.
-func NewHTTPRouter(client *http.Client) Router {
-	return a2amesh.NewHTTPRouter(client)
+func NewHTTPRouter(client *http.Client, opts ...RouterOption) Router {
+	return a2amesh.NewHTTPRouter(client, opts...)
+}
+
+// WithRouteHeaders sets the per-Route header carrier seam (module router.go):
+// fn is invoked with the route context on every child POST and its keys/values
+// are stamped onto the request headers. pkg/mesh stays telemetry-SDK-free —
+// the plug that resolves the W3C trace carrier lives deployment-side
+// (meshobs/cmd/shim, ISI-6058).
+func WithRouteHeaders(fn func(ctx context.Context) map[string]string) RouterOption {
+	return a2amesh.WithRouteHeaders(fn)
 }
 
 // WithRouter injects a Router into a child-process adapter.

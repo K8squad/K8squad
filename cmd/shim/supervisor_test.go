@@ -343,7 +343,7 @@ func TestSupervisorSubmitTraceContextReRootsPerRun(t *testing.T) {
 
 	traceA := "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaa-01"
 	writeCred(t, dir, traceA)
-	gotA := oteltrace.SpanContextFromContext(sup.submitTraceContext()).TraceID().String()
+	gotA := oteltrace.SpanContextFromContext(sup.submitTraceContext(oteltrace.SpanContext{})).TraceID().String()
 	if gotA != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Errorf("run-A submit trace = %s, want run-A carrier trace (not stale cache)", gotA)
 	}
@@ -352,7 +352,7 @@ func TestSupervisorSubmitTraceContextReRootsPerRun(t *testing.T) {
 	// with run-B's traceparent. submitTraceContext must pick up the NEW carrier.
 	traceB := "00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bbbbbbbbbbbbbbbb-01"
 	writeCred(t, dir, traceB)
-	gotB := oteltrace.SpanContextFromContext(sup.submitTraceContext()).TraceID().String()
+	gotB := oteltrace.SpanContextFromContext(sup.submitTraceContext(oteltrace.SpanContext{})).TraceID().String()
 	if gotB != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
 		t.Errorf("run-B submit trace = %s, want run-B carrier trace (R1: per-run re-root, not run-A)", gotB)
 	}
@@ -377,8 +377,91 @@ func TestSupervisorSubmitTraceContextFallsBackToCache(t *testing.T) {
 	sup := &supervisor{traceCtx: cached}
 
 	writeCred(t, dir, "") // required files present, NO traceparent
-	got := oteltrace.SpanContextFromContext(sup.submitTraceContext()).TraceID()
+	got := oteltrace.SpanContextFromContext(sup.submitTraceContext(oteltrace.SpanContext{})).TraceID()
 	if got != cTID {
 		t.Errorf("submit trace = %s, want cached %s (fallback when no per-run carrier)", got, cTID)
+	}
+}
+
+// TestSupervisorHandleTaskContinuesHeaderCarrier (ISI-6058, ISI-6055 P0):
+// an inbound POST carrying the W3C carrier on its headers (the operator's
+// dispatch leg, or the mesh gateway's child leg) makes supervisor.handle_task
+// continue THAT trace — taking precedence over the credential graft's cached
+// context, which here holds a deliberately disjoint trace so the assertion is
+// discriminating. This is the mesh-hop acceptance: the child supervisor shares
+// the gateway's trace id.
+func TestSupervisorHandleTaskContinuesHeaderCarrier(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+	})
+
+	// A run-DISJOINT cached handshake context: if the fix regressed,
+	// handle_task would inherit ITS trace instead of the header carrier's.
+	staleTID, _ := oteltrace.TraceIDFromHex("0000000000000000000000000000dead")
+	staleSID, _ := oteltrace.SpanIDFromHex("000000000000cafe")
+	staleCtx := oteltrace.ContextWithRemoteSpanContext(context.Background(),
+		oteltrace.NewSpanContext(oteltrace.SpanContextConfig{TraceID: staleTID, SpanID: staleSID, TraceFlags: oteltrace.FlagsSampled, Remote: true}))
+
+	sup := &supervisor{busy: true, traceCtx: staleCtx}
+	req := httptest.NewRequest(http.MethodPost, "/task?taskid=t1", nil)
+	req.Header.Set("traceparent", "00-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-ffffffffffffffff-01")
+	rec := httptest.NewRecorder()
+	sup.handleTask(rec, req)
+
+	var got oteltrace.TraceID
+	found := false
+	for _, s := range exp.GetSpans() {
+		if s.Name == "supervisor.handle_task" {
+			got = s.SpanContext.TraceID()
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a supervisor.handle_task span, got %d spans", len(exp.GetSpans()))
+	}
+	if got.String() != "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" {
+		t.Errorf("supervisor.handle_task traceID = %s, want the header carrier trace eeee… (must continue the mesh/dispatch trace)", got)
+	}
+	if got == staleTID {
+		t.Errorf("supervisor.handle_task inherited the stale cached trace %s instead of the header carrier", got)
+	}
+}
+
+// TestSupervisorSubmitTraceContextFallsBackToRequestCarrier (ISI-6058): with
+// no per-run credential and no cached handshake context — the mesh standing
+// process — submitTraceContext falls back to the inbound POST's carrier span
+// context, so run.start shares the gateway's trace id across the mesh hop.
+// The fallback is SPAN-context-only: the submit stays background-rooted.
+func TestSupervisorSubmitTraceContextFallsBackToRequestCarrier(t *testing.T) {
+	dir := t.TempDir()
+	prev := supervisorCoordMountPath
+	supervisorCoordMountPath = dir
+	t.Cleanup(func() { supervisorCoordMountPath = prev })
+
+	// No credential files at all: neither the per-run carrier nor the cache
+	// can fire. Only the request-header fallback remains.
+	sup := &supervisor{}
+
+	fbTID, _ := oteltrace.TraceIDFromHex("0000000000000000000000000000feed")
+	fbSID, _ := oteltrace.SpanIDFromHex("0000000000000f00")
+	fallback := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+		TraceID: fbTID, SpanID: fbSID, TraceFlags: oteltrace.FlagsSampled, Remote: true,
+	})
+	got := oteltrace.SpanContextFromContext(sup.submitTraceContext(fallback))
+	if !got.IsValid() || got.TraceID() != fbTID {
+		t.Errorf("submit trace = %v, want the request-carrier fallback %s", got.TraceID(), fbTID)
+	}
+
+	// An invalid fallback (no carrier on the wire) keeps the bare background
+	// root — the pre-seam behavior.
+	bare := oteltrace.SpanContextFromContext(sup.submitTraceContext(oteltrace.SpanContext{}))
+	if bare.IsValid() {
+		t.Errorf("submit trace = %v with no carrier, want a fresh background root", bare.TraceID())
 	}
 }

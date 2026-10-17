@@ -27,6 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/mesh"
 )
@@ -318,8 +322,35 @@ func TestGatewayHTTP_TaskRouteAndBusy409(t *testing.T) {
 		t.Fatalf("busy target POST = %d, want 409", second.StatusCode)
 	}
 
-	// Settle the held stream: the process releases and routes again.
+	// Settle the held stream: the process releases and routes again. The
+	// release is asynchronous — the handler must observe the stream end
+	// before the gateway flips the process idle — so poll for the flag
+	// instead of racing the POST against it (CI legs run loaded; the
+	// immediate POST flaked as 409 under contention).
 	fa.Release()
+	deadline = time.Now().Add(2 * time.Second)
+	released := false
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(srv.URL + "/endpoints")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct {
+			Processes []struct {
+				Busy bool `json:"Busy"`
+			} `json:"processes"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		resp.Body.Close()
+		if len(body.Processes) == 1 && !body.Processes[0].Busy {
+			released = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !released {
+		t.Fatal("process never released after the held stream settled")
+	}
 	third, err := http.Post(srv.URL+"/task", "application/json",
 		strings.NewReader(`{"a2a_task_id":"t-3"}`))
 	if err != nil {
@@ -419,5 +450,74 @@ func TestBuildGatewayBindsRuntimeTypeFromEnv(t *testing.T) {
 	t.Setenv("KSQUAD_RUNTIME_TYPE", "")
 	if _, err := buildGateway(); err != nil {
 		t.Fatalf("untyped pod must keep the opencode default: %v", err)
+	}
+}
+
+// TestGatewayHandleTaskContinuesTraceparentHeader (ISI-6058, ISI-6055 P0):
+// the dispatch POST's W3C carrier (traceparent header) makes
+// gateway.handle_task CONTINUE the upstream trace — trace and parent span id
+// equal the carrier's — instead of rooting a fresh one. Without a carrier the
+// span roots exactly as before (a pre-seam caller keeps its behavior).
+func TestGatewayHandleTaskContinuesTraceparentHeader(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+	})
+
+	srv, _, _ := newTestGateway(t, 1)
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/task", strings.NewReader(`{"a2a_task_id":"t-1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("traceparent", "00-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-ffffffffffffffff-01")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("gateway POST = %d, want 200", resp.StatusCode)
+	}
+
+	// The handler ends its span on return, which can trail the client's
+	// response close — poll the exporter instead of asserting instantly.
+	waitForSpan := func(filter func(tracetest.SpanStub) bool) tracetest.SpanStub {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			for _, s := range exp.GetSpans() {
+				if s.Name == "gateway.handle_task" && filter(s) {
+					return s
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("gateway.handle_task span never appeared, got %d spans", len(exp.GetSpans()))
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+
+	handleSpan := waitForSpan(func(s tracetest.SpanStub) bool {
+		return s.SpanContext.TraceID().String() == "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	})
+	if handleSpan.Parent.SpanID().String() != "ffffffffffffffff" {
+		t.Errorf("gateway.handle_task parent = %s, want the carrier span ffff…", handleSpan.Parent.SpanID())
+	}
+
+	// No carrier on the wire: the span roots a fresh trace (pre-seam shape).
+	resp2, err := http.Post(srv.URL+"/task", "application/json", strings.NewReader(`{"a2a_task_id":"t-2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	rootSpan := waitForSpan(func(s tracetest.SpanStub) bool {
+		return s.SpanContext.TraceID().String() != "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	})
+	if rootSpan.Parent.IsValid() {
+		t.Errorf("gateway.handle_task parent = %s without a carrier, want a fresh root", rootSpan.Parent.SpanID())
 	}
 }

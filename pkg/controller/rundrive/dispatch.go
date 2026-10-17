@@ -586,6 +586,9 @@ func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session
 			// Same bounded-header client as the sandbox leg: the gateway
 			// answers 200 only after it routed to a standing process.
 			Client: st.d.httpClient,
+			// ISI-6058 (ISI-6055 P0): carry the dispatch trace on the wire
+			// so gateway.handle_task continues it instead of rooting.
+			HeaderFunc: traceHeaders,
 		}
 		sess, serr := ht.Submit(ctx, t)
 		if serr != nil {
@@ -613,11 +616,28 @@ func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session
 			// ISI-5524: bound the supervisor response-header wait so a Run over a
 			// stalled model endpoint cannot hold the reconcile worker for minutes.
 			Client: st.d.httpClient,
+			// ISI-6058 (ISI-6055 P0): carry the dispatch trace on the wire so
+			// supervisor.handle_task continues it instead of rooting (the
+			// credential carrier stays the submit-context authority).
+			HeaderFunc: traceHeaders,
 		}
 		return ht.Submit(ctx, t)
 	}
 	std := &a2a.StdioTransport{Command: st.d.shimCommand, Stderr: st.d.cfg.Stderr}
 	return std.Submit(ctx, t)
+}
+
+// traceHeaders is the HTTPTransport.HeaderFunc carrier seam for both sandbox
+// legs (ISI-6058, ISI-6055 P0): it writes the current span context as the W3C
+// trace-carrier headers (traceparent/tracestate) so the receiving
+// supervisor/gateway Extracts them and continues the dispatch trace over the
+// HTTP hop — the same convention the shim env (D1) and the task-io credential
+// carriers already use, carried on the wire. internal/a2a stays SDK-free: it
+// only passes the map through as request headers.
+func traceHeaders(ctx context.Context) map[string]string {
+	carrier := map[string]string{}
+	telemetry.Inject(ctx, carrier)
+	return carrier
 }
 
 // supervisorURL resolves the bound sandbox pod's supervisor task endpoint
