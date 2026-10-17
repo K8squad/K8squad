@@ -200,7 +200,11 @@ func (s *WorkItemWriteStore) CreateWorkItem(ctx context.Context, in CreateWorkIt
 	stampLabels := in.Labels
 	if key := strings.TrimSpace(in.TicketKey); key != "" {
 		stamped := TicketKeyLabel(key)
+		// The guard reads each label TRIMMED (CR ISI-6061/ISI-6121): a padded
+		// caller label (" ksquad.ticket.key=…") must hit the same conflict
+		// check the normalizer would see post-trim, never slip past it.
 		for _, l := range in.Labels {
+			l = strings.TrimSpace(l)
 			if strings.HasPrefix(l, TicketKeyLabelPrefix) && l != stamped {
 				return WorkItemRecord{}, fmt.Errorf("%w: ticketKey %q conflicts with label %q", ErrInvalidWorkItem, key, l)
 			}

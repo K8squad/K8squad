@@ -57,6 +57,15 @@ func TestCreateWorkItemTicketKeyGuards(t *testing.T) {
 		t.Fatalf("conflicting double stamp: want ErrInvalidWorkItem, got %v", err)
 	}
 
+	// Padded conflict (CR ISI-6121): the guard reads labels TRIMMED, so a
+	// whitespace-padded key label hits the same 400, never slips past the guard
+	// to persist as a stray second key label.
+	padded := base
+	padded.Labels = []string{" ksquad.ticket.key=ISI-9999 "}
+	if _, err := s.CreateWorkItem(context.Background(), padded); !errors.Is(err, ErrInvalidWorkItem) {
+		t.Fatalf("padded conflicting double stamp: want ErrInvalidWorkItem, got %v", err)
+	}
+
 	overlong := base
 	overlong.TicketKey = strings.Repeat("k", maxLabelLen) // stamped label > maxLabelLen
 	if _, err := s.CreateWorkItem(context.Background(), overlong); !errors.Is(err, ErrInvalidWorkItem) {
