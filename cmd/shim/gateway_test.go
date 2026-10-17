@@ -185,29 +185,39 @@ func TestGatewayHandleTaskSpanCarriesTaskIdentity(t *testing.T) {
 		t.Fatalf("POST /task = %d, want 200", resp.StatusCode)
 	}
 
-	for _, s := range exp.GetSpans() {
-		if s.Name != "gateway.handle_task" {
-			continue
-		}
-		got := map[string]string{}
-		for _, kv := range s.Attributes {
-			got[string(kv.Key)] = kv.Value.AsString()
-		}
-		for key, want := range map[string]string{
-			"ksquad.task.a2a_id":       "t-6061",
-			"ksquad.task.work_item_id": "9c8b7a6d-0000-4000-8000-000000000001",
-			"ksquad.ticket.ref":        "ISI-6061",
-			"ksquad.agent.name":        "coder",
-			"ksquad.team.name":         "bravo",
-			"ksquad.project.name":      "proj-1",
-		} {
-			if got[key] != want {
-				t.Errorf("gateway.handle_task %s = %q, want %q", key, got[key], want)
+	// The handler ends its span on return, which can trail the client's
+	// response close — poll the exporter like the ISI-6058 sibling test
+	// (TestGatewayHandleTaskContinuesTraceparentHeader) instead of asserting
+	// instantly.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, s := range exp.GetSpans() {
+			if s.Name != "gateway.handle_task" {
+				continue
 			}
+			got := map[string]string{}
+			for _, kv := range s.Attributes {
+				got[string(kv.Key)] = kv.Value.AsString()
+			}
+			for key, want := range map[string]string{
+				"ksquad.task.a2a_id":       "t-6061",
+				"ksquad.task.work_item_id": "9c8b7a6d-0000-4000-8000-000000000001",
+				"ksquad.ticket.ref":        "ISI-6061",
+				"ksquad.agent.name":        "coder",
+				"ksquad.team.name":         "bravo",
+				"ksquad.project.name":      "proj-1",
+			} {
+				if got[key] != want {
+					t.Errorf("gateway.handle_task %s = %q, want %q", key, got[key], want)
+				}
+			}
+			return
 		}
-		return
+		if time.Now().After(deadline) {
+			t.Fatalf("no gateway.handle_task span in %d spans", len(exp.GetSpans()))
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("no gateway.handle_task span in %d spans", len(exp.GetSpans()))
 }
 
 // /ready reports the pool: ready with the process count and state buckets
