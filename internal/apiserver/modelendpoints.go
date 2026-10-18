@@ -121,6 +121,11 @@ type providerSpec struct {
 	// AllowKey marks a url-mode provider that may ALSO carry an optional key (the
 	// generic OpenAI-compatible provider behind an auth proxy).
 	AllowKey bool `json:"allowKey,omitempty"`
+	// AllowURL marks an apiKey-mode provider that may ALSO carry an optional
+	// base-URL override (mistral/vibe: the hosted api.mistral.ai base by default,
+	// a BYO/Ollama-lane base when the admin types one). Mirrors the console's
+	// allowUrl seam (console/lib/compose.ts, PR #936).
+	AllowURL bool `json:"allowUrl,omitempty"`
 }
 
 // defaultProviders is the built-in registry (ISI-5005 scope). Each request-time
@@ -135,6 +140,12 @@ func defaultProviders() map[string]providerSpec {
 			BaseURL: "https://api.deepseek.com"},
 		"kimi-moonshot": {ID: "kimi-moonshot", Label: "Kimi (Moonshot)", Mode: modeAPIKey, Wire: wireOpenAI,
 			BaseURL: "https://api.moonshot.cn/v1"},
+		// Mistral hosts the vibe runtime (ISI-6158/ISI-6207): apiKey-mode on the
+		// OpenAI wire against the hosted base; AllowURL admits the optional BYO
+		// base-URL override (Ollama lane). The console sends url only when the
+		// admin types one.
+		"mistral": {ID: "mistral", Label: "Mistral (vibe)", Mode: modeAPIKey, Wire: wireOpenAI,
+			BaseURL: "https://api.mistral.ai/v1", AllowURL: true},
 		"openai-compatible": {ID: "openai-compatible", Label: "OpenAI-compatible (custom)", Mode: modeURL, Wire: wireOpenAI, AllowKey: true},
 		// Curated-only: the console renders claude/codex from a curated list; this
 		// surface never dials or stores them.
@@ -304,6 +315,20 @@ func (s *ModelEndpointService) resolveTarget(provider, rawURL, apiKey string) (r
 		}
 	case modeAPIKey:
 		out.base = spec.BaseURL
+		// An apiKey-mode provider may override the hosted base ONLY when
+		// AllowURL (mistral BYO/Ollama lane); a url supplied for any other
+		// apiKey-mode provider is rejected — mirroring the AllowKey guard on
+		// url-mode rows and keeping list-models and the endpoint write on the
+		// shared resolveTarget seam.
+		if raw := strings.TrimSpace(rawURL); raw != "" {
+			if !spec.AllowURL {
+				errs = append(errs, fieldError{Field: "url", Message: "this provider does not take a custom base URL"})
+			} else if base, err := validateEndpointURL(raw); err != nil {
+				errs = append(errs, fieldError{Field: "url", Message: err.Error()})
+			} else {
+				out.base = base
+			}
+		}
 		key := strings.TrimSpace(apiKey)
 		switch {
 		case key == "":

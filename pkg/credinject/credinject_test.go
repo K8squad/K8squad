@@ -60,6 +60,14 @@ func TestInject_RuntimeNativeMapping(t *testing.T) {
 			wantKey: "apiKey",
 		},
 		{
+			name:    "vibe service account -> Mistral key env",
+			runtime: api.RuntimeTypeVibe,
+			class:   ClassServiceAccount,
+			ref:     api.SecretRef{Name: "carol-mistral"},
+			wantEnv: "MISTRAL_API_KEY",
+			wantKey: "apiKey",
+		},
+		{
 			name:    "opencode service account -> OpenAI-compatible env",
 			runtime: api.RuntimeTypeOpenCode,
 			class:   ClassServiceAccount,
@@ -254,5 +262,13 @@ func TestDefaultSecretKeyIsTheReadKey(t *testing.T) {
 	// Empty class resolves to the default, exactly like Inject.
 	if got, ok := DefaultSecretKey(api.RuntimeTypeClaudeCode, ""); !ok || got != "apiKey" {
 		t.Errorf("empty class ⇒ default key: want apiKey/true, got %q/%v", got, ok)
+	}
+}
+
+// TestInject_VibeHumanSeatFailsClosed — vibe is service-account-only in v1
+// (ISI-6158): a human-seat class must fail CLOSED until a story adds the row.
+func TestInject_VibeHumanSeatFailsClosed(t *testing.T) {
+	if _, err := Inject(api.RuntimeTypeVibe, ClassHumanSeat, api.SecretRef{Name: "vibe-seat"}); err == nil {
+		t.Fatalf("vibe human-seat: want fails-closed error, got nil")
 	}
 }

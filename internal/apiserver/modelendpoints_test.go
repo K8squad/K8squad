@@ -158,6 +158,52 @@ func TestListModelsOpenAIWire(t *testing.T) {
 	}
 }
 
+// TestDefaultProvidersMistralVibeRow locks the registry row that lights up the
+// console vibe entry (ISI-6207): apiKey-mode against the hosted Mistral base on
+// the OpenAI wire, with the AllowURL override seam for the BYO/Ollama lane.
+func TestDefaultProvidersMistralVibeRow(t *testing.T) {
+	got := defaultProviders()["mistral"]
+	if got.ID != "mistral" || got.Label != "Mistral (vibe)" ||
+		got.Mode != modeAPIKey || got.Wire != wireOpenAI ||
+		got.BaseURL != "https://api.mistral.ai/v1" || !got.AllowURL {
+		t.Fatalf("defaultProviders mistral row = %+v, want hosted apiKey/openai row with AllowURL", got)
+	}
+}
+
+// TestListModelsMistralBYOBaseURL — an AllowURL apiKey-mode provider dials the
+// admin-supplied base instead of the hosted one (the Ollama lane); the key
+// still rides the bearer header and is never echoed.
+func TestListModelsMistralBYOBaseURL(t *testing.T) {
+	var gotAuth string
+	up := openAIFake(t, &gotAuth)
+	defer up.Close()
+	svc, _ := newModelEndpointService(t)
+	// Hosted base points at a dead loopback port; only the override can answer.
+	svc.providers["mistral"] = providerSpec{ID: "mistral", Label: "Mistral (vibe)", Mode: modeAPIKey, Wire: wireOpenAI,
+		BaseURL: "http://127.0.0.1:1/v1", AllowURL: true}
+	h := testModelEndpointServer(t, svc)
+
+	const key = "sk-mistral-SECRET"
+	rec := mePost(t, h, "/api/modelendpoints/list-models", meAdminToken,
+		`{"provider":"mistral","apiKey":"`+key+`","url":"`+up.URL+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list-models: got %d want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if gotAuth != "Bearer "+key {
+		t.Fatalf("upstream Authorization = %q, want bearer with the key", gotAuth)
+	}
+	if strings.Contains(rec.Body.String(), key) {
+		t.Fatalf("key echoed in list-models response: %s", rec.Body.String())
+	}
+	var out listModelsResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Models) != 2 || out.Models[0].ID != "deepseek-chat" {
+		t.Fatalf("models = %+v, want the fake's list (the BYO base was dialed)", out.Models)
+	}
+}
+
 // TestListModelsValidation — the 422 field-validation surface.
 func TestListModelsValidation(t *testing.T) {
 	svc, _ := newModelEndpointService(t)
@@ -172,6 +218,7 @@ func TestListModelsValidation(t *testing.T) {
 		{"garbage url", `{"provider":"ollama","url":"::::not a url"}`},
 		{"non-http scheme", `{"provider":"ollama","url":"ftp://host/x"}`},
 		{"apiKey-mode missing key", `{"provider":"deepseek"}`},
+		{"apiKey-mode custom url rejected", `{"provider":"deepseek","apiKey":"sk-x","url":"http://10.0.0.1/v1"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
