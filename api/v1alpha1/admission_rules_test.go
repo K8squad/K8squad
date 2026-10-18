@@ -52,7 +52,7 @@ func squashed(s string) string {
 // ONLY behind experimental=true. Both halves of the ticket in one rule.
 func TestCRDHasFRD3RuntimeRule(t *testing.T) {
 	yaml := squashed(loadCRD(t, "../../config/crd/bases/ksquad.io_agentruntimes.yaml"))
-	assert.Contains(t, yaml, squashed("self.type in ['openclaw','claude-code','opencode','hermes','codex','goose'] || self.experimental"),
+	assert.Contains(t, yaml, squashed("self.type in ['openclaw','claude-code','opencode','hermes','codex','goose','vibe'] || self.experimental"),
 		"FR-D3 CEL rule must be compiled into the AgentRuntime CRD")
 	// ISI-3654 AC2: codex is a conformant runtime, so type:codex is admitted by
 	// CEL WITHOUT spec.experimental=true — it sits inside the conformant set.
@@ -62,6 +62,10 @@ func TestCRDHasFRD3RuntimeRule(t *testing.T) {
 	// registry entry landed with the ISI-6128 Phase B shim half).
 	assert.Contains(t, yaml, "'goose'",
 		"goose must be a conformant runtime in the FR-D3 CEL set (admitted without experimental)")
+	// ISI-6158: vibe (Mistral) joins the conformant set the same way (shim
+	// engine + registry entry landed with the vibe engine half).
+	assert.Contains(t, yaml, "'vibe'",
+		"vibe must be a conformant runtime in the FR-D3 CEL set (admitted without experimental)")
 	assert.Contains(t, yaml, "spec.experimental=true to admit",
 		"FR-D3 denial must carry the fix message")
 	assert.NotContains(t, yaml, "type: enum:",
