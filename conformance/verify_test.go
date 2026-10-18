@@ -24,13 +24,17 @@ import (
 )
 
 // v1ShimSet is the runtime set story 5.6 certifies: OpenClaw + Hermes (5.5),
-// opencode (5.8), and codex (epic ISI-3647, S8/ISI-3660 — the final integration
-// gate). Every one MUST pass every check on the default lane.
+// opencode (5.8), codex (epic ISI-3647, S8/ISI-3660 — the final integration
+// gate) and goose (ISI-6128 Phase B / ISI-6200 — the evidence-driven engine:
+// the wire vocabulary, isolation knobs and config coupling were live-probed on
+// the pinned v1.55.0 binary). Every one MUST pass every check on the default
+// lane.
 var v1ShimSet = []string{
 	"openclaw",
 	"hermes",
 	"opencode",
 	"codex",
+	"goose",
 }
 
 // TestConformance_V1ShimSet_DefaultLane is the gate-blocking assertion: the
@@ -259,4 +263,33 @@ func mustGet(t *testing.T, name string) runtimes.Runtime {
 		t.Fatalf("runtime %q not registered: %v", name, err)
 	}
 	return rt
+}
+
+// TestConformance_Goose_A2ALifecycle is the ISI-6200 integration gate,
+// mirroring the codex one: the goose adapter passes every A2A
+// capability/lifecycle check on BOTH the default lane and the $0 Ollama lane
+// (whose OPENAI_* placeholder-key wire the engine stamps via modelRouteEnv —
+// mesh- and conformance-consistent).
+func TestConformance_Goose_A2ALifecycle(t *testing.T) {
+	rt, err := runtimes.Get("goose")
+	if err != nil {
+		t.Fatalf("goose not registered: %v", err)
+	}
+	for _, lane := range []Lane{LaneDefault, LaneOllama} {
+		lane := lane
+		t.Run(string(lane), func(t *testing.T) {
+			rep := VerifyRuntime(rt, Options{Lane: lane})
+			if len(rep.Results) != len(AllChecks()) {
+				t.Fatalf("report has %d results, want %d (a dimension was skipped)", len(rep.Results), len(AllChecks()))
+			}
+			for _, res := range rep.Results {
+				if !res.Pass {
+					t.Errorf("[goose lane=%s] %s FAILED: %s", lane, res.Check, res.Detail)
+				}
+			}
+			if !rep.OK() {
+				t.Errorf("goose is NOT conformant on the %s lane\n%s", lane, rep)
+			}
+		})
+	}
 }

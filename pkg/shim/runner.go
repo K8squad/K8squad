@@ -707,26 +707,56 @@ func warmEndpoint(ctx context.Context, w runtimes.Warmup, window time.Duration) 
 }
 
 // materializeWorkDirFiles writes the adapter-rendered config files into the
-// workdir. Path-traversal safe: file names are adapter constants, never Run
-// input; the guard keeps that invariant fail-closed against future adapters
-// (hidden files like .mcp.json are legal; separators and traversal are not).
+// workdir. Names may be plain files ("config.toml", hidden files like
+// ".mcp.json") or relative subpaths (".config/goose/config.yaml" — runtimes
+// whose CLI nests its config under an XDG root it derives from the workdir,
+// goose ISI-6200). Path-traversal safe either way: file names are adapter
+// constants, never Run input; the guard keeps that invariant fail-closed
+// against future adapters — empty names, backslashes, absolute paths and
+// ".." segments are rejected, and legal subpaths get their parent dirs
+// created (0o750) before the 0o600 write.
 func materializeWorkDirFiles(workDir string, files []runtimes.WorkDirFile) error {
 	for _, f := range files {
-		if f.Name == "" || strings.ContainsAny(f.Name, "/\\") || strings.Contains(f.Name, "..") {
-			return fmt.Errorf("shim: refusing workdir file %q: adapter file names must be plain names", f.Name)
+		if err := validateWorkDirFileName(f.Name); err != nil {
+			return err
 		}
 		if workDir != "" {
 			if err := os.MkdirAll(workDir, 0o750); err != nil {
 				return fmt.Errorf("shim: mkdir workdir: %w", err)
 			}
-			if err := os.WriteFile(filepath.Join(workDir, f.Name), f.Content, 0o600); err != nil {
-				return fmt.Errorf("shim: write %s: %w", f.Name, err)
+			if err := writeWorkDirFile(filepath.Join(workDir, f.Name), f.Content); err != nil {
+				return err
 			}
 			continue
 		}
-		if err := os.WriteFile(f.Name, f.Content, 0o600); err != nil {
-			return fmt.Errorf("shim: write %s: %w", f.Name, err)
+		if err := writeWorkDirFile(f.Name, f.Content); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// validateWorkDirFileName enforces the adapter-file-name contract above: a
+// non-empty, relative, traversal-free slash path ("config.yaml" or
+// ".config/goose/config.yaml"), never absolute, never a Windows separator,
+// never a ".." segment.
+func validateWorkDirFileName(name string) error {
+	if name == "" || filepath.IsAbs(name) || strings.Contains(name, "\\") || strings.Contains(name, "..") {
+		return fmt.Errorf("shim: refusing workdir file %q: adapter file names must be relative, traversal-free paths", name)
+	}
+	return nil
+}
+
+// writeWorkDirFile writes one rendered file, creating its parent directories
+// when the adapter name is a subpath.
+func writeWorkDirFile(path string, content []byte) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return fmt.Errorf("shim: mkdir %s: %w", dir, err)
+		}
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("shim: write %s: %w", path, err)
 	}
 	return nil
 }

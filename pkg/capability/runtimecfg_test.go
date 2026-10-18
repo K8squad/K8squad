@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	yaml "sigs.k8s.io/yaml"
 
 	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
@@ -363,10 +364,90 @@ func TestRenderersRejectUnknownTransport(t *testing.T) {
 		{"opencode", RenderOpenCode},
 		{"openclaw", RenderOpenClaw},
 		{"codex", RenderCodex},
+		{"goose", RenderGooseConfig},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.fn(bad)
 			require.Error(t, err)
 		})
 	}
+}
+
+// --- goose (ISI-6128 Phase B, ISI-6200) ---
+// The rendered entry shape was verified live against the pinned v1.55.0
+// binary: entries need `enabled: true`, stdio `envs` values interpolate
+// ${ENV_NAME} references at server spawn, streamable_http addresses `uri`
+// (NOT `url`), and header values are sent VERBATIM (no interpolation) — so
+// credentials may only ride stdio envs, never headers.
+
+func TestRenderGooseConfigStdioEnvReferences(t *testing.T) {
+	endpoints := []Endpoint{{
+		Name:      "github-mcp",
+		Transport: "stdio",
+		Command:   "npx",
+		Args:      []string{"-y", "@modelcontextprotocol/server-github"},
+		EnvNames:  []string{"KSQUAD_MCP_GITHUB_MCP_TOKEN"},
+	}}
+	raw, err := RenderGooseConfig(endpoints)
+	require.NoError(t, err)
+
+	var doc struct {
+		Extensions map[string]struct {
+			Enabled bool              `json:"enabled"`
+			Type    string            `json:"type"`
+			Cmd     string            `json:"cmd"`
+			Args    []string          `json:"args"`
+			Envs    map[string]string `json:"envs"`
+		} `json:"extensions"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+	entry, ok := doc.Extensions["github-mcp"]
+	require.True(t, ok, "github-mcp present:\n%s", raw)
+	assert.True(t, entry.Enabled, "entries must carry enabled: true")
+	assert.Equal(t, "stdio", entry.Type)
+	assert.Equal(t, "npx", entry.Cmd)
+	assert.Equal(t, "${KSQUAD_MCP_GITHUB_MCP_TOKEN}", entry.Envs["KSQUAD_MCP_GITHUB_MCP_TOKEN"],
+		"credential rides an env NAME reference — never literal (ADR-045 D5)")
+	assert.NotContains(t, string(raw), "bearer", "no bearer fields on stdio entries")
+}
+
+func TestRenderGooseConfigStreamableHTTP(t *testing.T) {
+	endpoints := []Endpoint{{
+		Name:      "remote-mcp",
+		Transport: "streamable-http",
+		URL:       "https://mcp.example/endpoint",
+		Headers:   map[string]string{"X-Team": "ksquad"},
+	}}
+	raw, err := RenderGooseConfig(endpoints)
+	require.NoError(t, err)
+
+	var doc struct {
+		Extensions map[string]struct {
+			Enabled bool              `json:"enabled"`
+			Type    string            `json:"type"`
+			URI     string            `json:"uri"`
+			Headers map[string]string `json:"headers"`
+		} `json:"extensions"`
+	}
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+	entry, ok := doc.Extensions["remote-mcp"]
+	require.True(t, ok, "remote-mcp present:\n%s", raw)
+	assert.True(t, entry.Enabled)
+	assert.Equal(t, "streamable_http", entry.Type)
+	assert.Equal(t, "https://mcp.example/endpoint", entry.URI, "upstream field is uri (url entries are silently skipped)")
+	assert.Equal(t, "ksquad", entry.Headers["X-Team"])
+}
+
+func TestRenderGooseConfigStreamableHTTPCredentialFailsClosed(t *testing.T) {
+	endpoints := []Endpoint{{
+		Name:      "auth-mcp",
+		Transport: "streamable-http",
+		URL:       "https://mcp.example/locked",
+		EnvNames:  []string{"KSQUAD_MCP_AUTH_MCP_TOKEN"},
+	}}
+	_, err := RenderGooseConfig(endpoints)
+	require.Error(t, err,
+		"a credentialed streamable-http server would silently 401: headers do not interpolate on v1.55.0")
+	assert.Contains(t, err.Error(), "auth-mcp")
+	assert.Contains(t, err.Error(), "pin")
 }
