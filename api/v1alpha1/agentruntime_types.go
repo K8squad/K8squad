@@ -44,13 +44,16 @@ const (
 	// ISI-6128 Phase B): one-shot `goose run` stream-json engine in the shim
 	// plus NewGooseAdapter on the mesh side.
 	RuntimeTypeGoose = "goose"
+
+	// RuntimeTypeVibe is the Mistral vibe coding-agent flavor (ISI-6158).
+	RuntimeTypeVibe = "vibe"
 )
 
 // AgentRuntimeSpec defines the desired state of AgentRuntime (arch §5.3,
 // story 1.3 Task 0 — minimal authoring so Agent.spec.runtimeRef has a
 // target; the richer runtime policy surface lands with the sandbox stories).
 //
-// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes codex goose], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes','codex','goose'] || self.experimental"
+// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes codex goose vibe], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes','codex','goose','vibe'] || self.experimental"
 type AgentRuntimeSpec struct {
 	// Type is the coding-agent flavor this runtime serves (arch §5.3):
 	// openclaw, claude-code, opencode, hermes, codex or goose out of the box. The

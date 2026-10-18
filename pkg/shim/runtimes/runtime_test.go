@@ -24,8 +24,8 @@ import (
 	"github.com/K8squad/K8squad/pkg/a2a"
 )
 
-// TestV1ShimSetRegistered asserts the v1 shim set (stories 5.5 + 5.8) is
-// registered and keyed on the conformant RuntimeType constants (FR-D3).
+// TestV1ShimSetRegistered asserts the shim set (stories 5.5 + 5.8 + ISI-6158)
+// is registered and keyed on the conformant RuntimeType constants (FR-D3).
 func TestV1ShimSetRegistered(t *testing.T) {
 	want := []string{
 		apiv1alpha1.RuntimeTypeCodex,
@@ -33,6 +33,7 @@ func TestV1ShimSetRegistered(t *testing.T) {
 		apiv1alpha1.RuntimeTypeHermes,
 		apiv1alpha1.RuntimeTypeOpenClaw,
 		apiv1alpha1.RuntimeTypeOpenCode,
+		apiv1alpha1.RuntimeTypeVibe,
 	}
 	got := Registered()
 	if len(got) != len(want) {
