@@ -53,6 +53,8 @@ export function tokenTypeLabel(row: AgentCredentialRow): string {
       return "OAuth";
     case "api_key":
       return "API key";
+    case "mistral_api_key":
+      return "API key · Mistral";
     case "byo_endpoint":
       return "BYO endpoint";
     case "human-seat":
@@ -67,7 +69,11 @@ export function tokenTypeLabel(row: AgentCredentialRow): string {
 /** Expiry cell text: known horizon formatted compactly; unknown renders the em dash (never a
  *  fabricated number). Static keys ("API key") surface as "— (static)" only when the class says so. */
 export function expiryLabel(row: AgentCredentialRow, now: Date = new Date()): string {
-  if (row.credentialClass === "api_key" || row.credentialClass === "byo_endpoint") {
+  if (
+    row.credentialClass === "api_key" ||
+    row.credentialClass === "byo_endpoint" ||
+    row.credentialClass === "mistral_api_key"
+  ) {
     return "— (static)";
   }
   if (!row.expiresKnown || !row.expiresAt) {
@@ -178,11 +184,57 @@ export interface CreateRuntimeOption {
   label: string;
 }
 
-/** The service-account runtimes the injection table maps for a pasted key. */
+// ── Runtime credential entries (console mirror of pkg/credinject) ─────────────
+//
+// What a credential for each runtime INJECTS into the sandbox — env-var names verbatim
+// from the reviewed injection table (pkg/credinject). The LLM settings surface reads this to
+// describe the vibe entry honestly (P4.1, ISI-6158 C2): the per-user Mistral key maps onto
+// MISTRAL_API_KEY and the BYO lane adds MISTRAL_BASE_URL (the unauthenticated Ollama-lane
+// placeholder rides the same pair) — mirroring the claude-code/codex rows.
+
+/** One runtime credential entry: the env a credential injects (+ the BYO base-URL env, if any). */
+export interface RuntimeCredentialEntry {
+  /** Runtime id — the exact api.RuntimeType* string POST /api/credentials validates. */
+  runtime: string;
+  /** The credential type surfaced on the runtime card ("mistral_api_key" for vibe). */
+  credentialType?: string;
+  /** The env var the injected credential materialises as in the sandbox. */
+  injects: string;
+  /** BYO lane: the optional base-URL env var riding the same entry. */
+  byoInjects?: string;
+}
+
+/** The injection-contract mirror: claude-code/codex/opencode rows per pkg/credinject; vibe per P4.1 (ISI-6158). */
+export const RUNTIME_CREDENTIAL_ENTRIES: readonly RuntimeCredentialEntry[] = [
+  { runtime: "claude-code", injects: "ANTHROPIC_API_KEY" },
+  { runtime: "codex", injects: "OPENAI_API_KEY" },
+  { runtime: "openclaw", injects: "ANTHROPIC_API_KEY" },
+  { runtime: "hermes", injects: "ANTHROPIC_API_KEY" },
+  { runtime: "opencode", injects: "OPENAI_API_KEY" },
+  {
+    runtime: "vibe",
+    credentialType: "mistral_api_key",
+    injects: "MISTRAL_API_KEY",
+    byoInjects: "MISTRAL_BASE_URL",
+  },
+];
+
+/** Look up an entry by runtime id (undefined for a runtime outside the mirror). */
+export function runtimeCredentialEntry(runtime: string): RuntimeCredentialEntry | undefined {
+  return RUNTIME_CREDENTIAL_ENTRIES.find((e) => e.runtime === runtime);
+}
+
+/**
+ * The service-account runtimes the injection table maps for a pasted key. vibe joins with the
+ * P4.1 shim engine (ISI-6158): the pasted key injects as MISTRAL_API_KEY — the apiserver admits
+ * the runtime once the host lane lands (ISI-6201); until then a paste surfaces the form's honest
+ * server-error state.
+ */
 export const CREATE_RUNTIME_OPTIONS: CreateRuntimeOption[] = [
   { value: "claude-code", label: "Claude Code" },
   { value: "openclaw", label: "OpenClaw" },
   { value: "hermes", label: "Hermes" },
+  { value: "vibe", label: "Vibe (Mistral)" },
 ];
 
 /** The only class the paste form writes: a long-lived service-account key (never human-seat). */

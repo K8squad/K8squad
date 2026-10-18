@@ -743,6 +743,12 @@ export type LlmProviderOption = {
   mode: LlmProviderMode;
   /** url-mode provider that may ALSO carry an optional key (auth-proxied OpenAI-compatible). */
   allowKey?: boolean;
+  /**
+   * apiKey-mode provider that may ALSO carry an optional base URL — the vibe/Mistral BYO lane
+   * (an OpenAI-compatible endpoint rides MISTRAL_BASE_URL instead of the Mistral API; P4.1,
+   * ISI-6158 C2). The key stays required; the URL is optional.
+   */
+  allowUrl?: boolean;
   /** Default base URL prefilled for a url-mode provider. */
   defaultUrl?: string;
 };
@@ -751,13 +757,21 @@ export type LlmProviderOption = {
  * The backends the ProviderModelPicker offers. The claude/codex paths stay on
  * the curated-list + token flow (ChatGPT/Anthropic-backed) and are NOT listed
  * here — this picker is the opencode/BYO surface only. Provider ids are the exact
- * strings the apiserver validates (kimi is `kimi-moonshot`).
+ * strings the apiserver validates (kimi is `kimi-moonshot`). mistral is the vibe
+ * runtime's lane (P4.1, ISI-6158 C2); its apiserver provider row lands with the
+ * host lane — until then its list/save calls surface the honest server error state.
  */
 export const LLM_PROVIDER_OPTIONS: readonly LlmProviderOption[] = [
   { id: "ollama", label: "Ollama (local)", mode: "url", defaultUrl: "http://localhost:11434" },
   { id: "zai", label: "Z.ai", mode: "apiKey" },
   { id: "deepseek", label: "DeepSeek", mode: "apiKey" },
   { id: "kimi-moonshot", label: "Kimi (Moonshot)", mode: "apiKey" },
+  {
+    id: "mistral",
+    label: "Mistral (vibe)",
+    mode: "apiKey",
+    allowUrl: true,
+  },
   {
     id: "openai-compatible",
     label: "OpenAI-compatible (custom base URL)",

@@ -4,7 +4,7 @@
 // (Story B, ISI-3555 / feature ISI-3544; design ISI-3546 / Winston).
 //
 // Replaces the old unlabeled free-text Model input with three vendor-neutral paths (ADR-026):
-//   1. curated Claude ids from useModelHints() — one click (AC1),
+//   1. curated model ids from useModelHints() — one click (AC1),
 //   2. "Custom model…" free-text escape hatch — any id, verbatim (AC2, AC7),
 //   3. "Bring your own endpoint" toggle — reference an EXISTING endpoint Secret, setting
 //      modelEndpointRef via the unchanged compose apply (AC3). No Secret is written here: the
@@ -173,8 +173,8 @@ export function ModelSelector({
           customMode
             ? shapeHint ?? "Any model id — written verbatim."
             : blankMeansInherit
-              ? "Pick a curated Claude model, or “Custom model…”. Leave blank to inherit the org default."
-              : "Pick a curated Claude model, or choose “Custom model…” for any other id."
+              ? "Pick a curated model, or “Custom model…”. Leave blank to inherit the org default."
+              : "Pick a curated model, or choose “Custom model…” for any other id."
         }
         error={errors["model"]}
       >

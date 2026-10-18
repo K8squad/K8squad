@@ -227,3 +227,97 @@ describe("<ProviderModelPicker> — ISI-5006 backend-driven model picker", () =>
     expect(onChangeSpy).toHaveBeenCalledWith({ model: "custom/model:1" });
   });
 });
+
+// ── ISI-6202 (ISI-6158 C2): the Mistral (vibe) BYO entry ────────────────────────────────────
+
+describe("<ProviderModelPicker> — Mistral (vibe) provider", () => {
+  it("offers Mistral (vibe): masked key + an OPTIONAL base-URL field (BYO lane)", () => {
+    stubEndpoints({});
+    render(<Harness />);
+    fireEvent.change(screen.getByTestId("primary-provider"), { target: { value: "mistral" } });
+    // Masked key…
+    const key = screen.getByTestId("primary-key") as HTMLInputElement;
+    expect(key.type).toBe("password");
+    // …plus the optional base-URL field, empty by default.
+    const url = screen.getByTestId("primary-url") as HTMLInputElement;
+    expect(url.value).toBe("");
+    // List stays key-gated: a URL alone is not a credential for an apiKey-mode provider.
+    expect((screen.getByTestId("primary-list") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(key, { target: { value: "mist-key" } });
+    expect((screen.getByTestId("primary-list") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("mistral list-models sends the key alone when no BYO URL is set, and the URL when typed", async () => {
+    const bodies: string[] = [];
+    // A FRESH Response per call — a Response body can only be read once, and this test lists twice.
+    const listResponse = () => jsonResponse(200, { models: [{ id: "mistral-large-latest" }] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes("/api/modelendpoints/list-models")) {
+          bodies.push(String(init?.body));
+          return Promise.resolve(listResponse());
+        }
+        return Promise.resolve(jsonResponse(404, {}));
+      }),
+    );
+    render(<Harness />);
+    fireEvent.change(screen.getByTestId("primary-provider"), { target: { value: "mistral" } });
+    fireEvent.change(screen.getByTestId("primary-key"), { target: { value: "mist-key" } });
+
+    // No BYO URL typed ⇒ the request carries provider+apiKey only (the Mistral API lane).
+    fireEvent.click(screen.getByTestId("primary-list"));
+    await waitFor(() => screen.getByTestId("primary-list-ok"));
+    expect(JSON.parse(bodies[0])).toEqual({ provider: "mistral", apiKey: "mist-key" });
+
+    // BYO URL typed ⇒ it rides the same request (the MISTRAL_BASE_URL lane).
+    fireEvent.change(screen.getByTestId("primary-url"), { target: { value: "http://ollama.lan:11434/v1" } });
+    fireEvent.click(screen.getByTestId("primary-list"));
+    await waitFor(() => screen.getByTestId("primary-list-ok"));
+    expect(JSON.parse(bodies[1])).toEqual({
+      provider: "mistral",
+      apiKey: "mist-key",
+      url: "http://ollama.lan:11434/v1",
+    });
+  });
+
+  it("mistral Save endpoint posts key + optional URL and binds the Secret", async () => {
+    let createBody = "";
+    stubEndpoints({
+      list: jsonResponse(200, { models: [{ id: "mistral-large-latest" }] }),
+      create: jsonResponse(201, { name: "mistral", provider: "mistral", operation: "created" }),
+      onCreate: (b) => (createBody = b),
+    });
+    const onChangeSpy = vi.fn();
+    render(<Harness onChangeSpy={onChangeSpy} />);
+    fireEvent.change(screen.getByTestId("primary-provider"), { target: { value: "mistral" } });
+    fireEvent.change(screen.getByTestId("primary-key"), { target: { value: "mist-key" } });
+    fireEvent.change(screen.getByTestId("primary-url"), { target: { value: "http://ollama.lan:11434/v1" } });
+    fireEvent.click(screen.getByTestId("primary-list"));
+    await waitFor(() => screen.getByTestId("primary-model"));
+    fireEvent.change(screen.getByTestId("primary-model"), { target: { value: "mistral-large-latest" } });
+    fireEvent.click(screen.getByTestId("primary-save-endpoint"));
+    await waitFor(() => screen.getByTestId("primary-save-ok"));
+    expect(JSON.parse(createBody)).toEqual({
+      provider: "mistral",
+      apiKey: "mist-key",
+      url: "http://ollama.lan:11434/v1",
+    });
+    expect(onChangeSpy).toHaveBeenCalledWith({ modelEndpointRef: "mistral" });
+  });
+
+  it("seeds a saved mistral BYO endpoint (provider + URL) from the bound ref — key never echoed", () => {
+    stubEndpoints({});
+    render(
+      <Harness
+        existingEndpoints={[{ name: "my-mistral", provider: "mistral", url: "http://ollama.lan:11434/v1", hasToken: true }]}
+        initialModel="mistral-large-latest"
+        initialRef="my-mistral"
+      />,
+    );
+    expect((screen.getByTestId("primary-provider") as HTMLSelectElement).value).toBe("mistral");
+    expect((screen.getByTestId("primary-url") as HTMLInputElement).value).toBe("http://ollama.lan:11434/v1");
+    expect((screen.getByTestId("primary-key") as HTMLInputElement).value).toBe("");
+    expect((screen.getByTestId("primary-model") as HTMLSelectElement).value).toBe("mistral-large-latest");
+  });
+});

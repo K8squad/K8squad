@@ -8,10 +8,12 @@
 // SELECTED BACKEND, and Save creates the right endpoint Secret automatically — no more
 // hand-referencing a pre-existing Secret.
 //
-//   1. Backend dropdown — Ollama · Z.ai · DeepSeek · Kimi · OpenAI-compatible (LLM_PROVIDER_OPTIONS,
-//      ids validated by the apiserver registry).
+//   1. Backend dropdown — Ollama · Z.ai · DeepSeek · Kimi · Mistral (vibe) · OpenAI-compatible
+//      (LLM_PROVIDER_OPTIONS, ids validated by the apiserver registry).
 //   2. Conditional credential field — ollama → URL (default http://localhost:11434); zai/deepseek/
-//      kimi → masked API key; openai-compatible → base URL + optional key.
+//      kimi → masked API key; mistral (vibe) → masked API key + an OPTIONAL base URL (the BYO
+//      lane — an OpenAI-compatible endpoint rides MISTRAL_BASE_URL); openai-compatible →
+//      base URL + optional key.
 //   3. "List models" → POST /api/modelendpoints/list-models → populate the model dropdown, with
 //      HONEST empty/error states (unreachable URL, bad key/401, no models). The apiserver — never
 //      the browser — dials the provider, so the key stays server-side and a LAN Ollama is reachable.
@@ -152,7 +154,7 @@ export function ProviderModelPicker({
     setModels([]);
     const req: ListModelsRequest = {
       provider,
-      ...(spec.mode === "url" ? { url: url.trim() } : {}),
+      ...(spec.mode === "url" || (spec.allowUrl && url.trim() !== "") ? { url: url.trim() } : {}),
       ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
     };
     try {
@@ -194,7 +196,7 @@ export function ProviderModelPicker({
     const req: CreateEndpointRequest = {
       provider,
       ...(name.trim() ? { name: name.trim() } : {}),
-      ...(spec.mode === "url" ? { url: url.trim() } : {}),
+      ...(spec.mode === "url" || (spec.allowUrl && url.trim() !== "") ? { url: url.trim() } : {}),
       ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
     };
     try {
@@ -245,9 +247,7 @@ export function ProviderModelPicker({
     onChange({ model: next });
   }
 
-  const credField = spec?.mode === "url"
-    ? `${idPrefix}-url`
-    : `${idPrefix}-key`;
+  const credField = `${idPrefix}-url`;
 
   return (
     <div className="provider-picker" data-testid={`provider-picker-${idPrefix}`}>
@@ -270,11 +270,20 @@ export function ProviderModelPicker({
       </Field>
 
       {/* Conditional credential. url-mode → URL (openai-compatible also takes an optional key);
-          apiKey-mode → masked key. */}
-      {spec?.mode === "url" && (
+          apiKey-mode → masked key; an allowUrl provider (mistral/vibe) ALSO gets an optional
+          base-URL field — the BYO lane over an OpenAI-compatible endpoint. */}
+      {(spec?.mode === "url" || spec?.allowUrl) && (
         <Field
-          label={provider === "ollama" ? "Ollama URL" : "Base URL"}
-          hint={provider === "ollama" ? "e.g. http://localhost:11434 (LAN URLs are dialed from the cluster)." : "The provider’s OpenAI-compatible base URL."}
+          label={
+            spec?.mode === "url" ? (provider === "ollama" ? "Ollama URL" : "Base URL") : "Base URL (optional)"
+          }
+          hint={
+            spec?.mode === "url"
+              ? provider === "ollama"
+                ? "e.g. http://localhost:11434 (LAN URLs are dialed from the cluster)."
+                : "The provider’s OpenAI-compatible base URL."
+              : "BYO lane — an OpenAI-compatible base URL (e.g. an Ollama endpoint) instead of the vendor API. Optional."
+          }
           error={errors[credField]}
         >
           <input
@@ -282,7 +291,7 @@ export function ProviderModelPicker({
             onChange={(e) => setUrl(e.target.value)}
             aria-label={`${label} endpoint URL`}
             data-testid={`${idPrefix}-url`}
-            placeholder="http://localhost:11434"
+            placeholder={spec?.mode === "url" ? "http://localhost:11434" : "http://my-ollama:11434/v1"}
             inputMode="url"
           />
         </Field>
