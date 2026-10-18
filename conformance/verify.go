@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/shim"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
@@ -466,11 +467,19 @@ func (h *harness) checkCredentialMetadata(c *checker, card a2a.AgentCard, log []
 			problems = append(problems, "no ExecSpec captured for the Ollama lane")
 		} else {
 			env := envMap(spec.Env)
-			if env["OPENAI_BASE_URL"] != h.opts.ollamaEndpoint() {
-				problems = append(problems, fmt.Sprintf("OPENAI_BASE_URL=%q want the BYO Ollama endpoint %q", env["OPENAI_BASE_URL"], h.opts.ollamaEndpoint()))
+			// BYO model-wire env names are runtime-specific (ISI-6158): the v1
+			// set honors the generic OpenAI-compatible pair, while vibe speaks
+			// the Mistral wire natively and honors MISTRAL_BASE_URL /
+			// MISTRAL_API_KEY (mesh PR #2 contract, BYOModelEndpoint capability).
+			baseEnv, keyEnv := "OPENAI_BASE_URL", "OPENAI_API_KEY"
+			if card.Runtime.Type == string(v1alpha1.RuntimeTypeVibe) {
+				baseEnv, keyEnv = "MISTRAL_BASE_URL", "MISTRAL_API_KEY"
 			}
-			if env["OPENAI_API_KEY"] != ollamaPlaceholderKey {
-				problems = append(problems, fmt.Sprintf("OPENAI_API_KEY=%q want the zero-cost placeholder %q (no paid credential)", env["OPENAI_API_KEY"], ollamaPlaceholderKey))
+			if env[baseEnv] != h.opts.ollamaEndpoint() {
+				problems = append(problems, fmt.Sprintf("%s=%q want the BYO Ollama endpoint %q", baseEnv, env[baseEnv], h.opts.ollamaEndpoint()))
+			}
+			if env[keyEnv] != ollamaPlaceholderKey {
+				problems = append(problems, fmt.Sprintf("%s=%q want the zero-cost placeholder %q (no paid credential)", keyEnv, env[keyEnv], ollamaPlaceholderKey))
 			}
 			// No env var may carry the sentinel paid credential on this lane.
 			for k, v := range env {
