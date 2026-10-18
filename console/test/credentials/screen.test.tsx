@@ -181,9 +181,9 @@ describe("<CredentialsScreen> — BYO create form (ISI-3983)", () => {
     );
     await waitFor(() => screen.getByTestId("creds-create-form"));
 
-    // Runtime options mirror the injection table (claude-code/openclaw/hermes).
+    // Runtime options mirror the injection table (claude-code/openclaw/hermes/vibe).
     const runtime = screen.getByTestId("creds-runtime") as HTMLSelectElement;
-    expect([...runtime.options].map((o) => o.value)).toEqual(["claude-code", "openclaw", "hermes"]);
+    expect([...runtime.options].map((o) => o.value)).toEqual(["claude-code", "openclaw", "hermes", "vibe"]);
 
     fireEvent.change(screen.getByTestId("creds-name"), { target: { value: "team-anthropic" } });
     fireEvent.change(screen.getByTestId("creds-value"), { target: { value: "sk-secret-key" } });
