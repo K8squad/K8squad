@@ -81,7 +81,11 @@ type LaunchContext struct {
 
 // WorkDirFile is a file the runner materializes in ExecSpec.WorkDir before
 // launching the CLI — the delivery mechanism for rendered native MCP
-// configs (files, because the runtimes read config from their workdir).
+// configs (files, because the runtimes read config from their workdir). Name
+// is a plain file name ("config.toml", ".mcp.json") or a relative subpath
+// (".config/goose/config.yaml" — runtimes whose CLI nests its config under
+// an XDG root derived from the workdir, goose ISI-6200); parent directories
+// are created as needed and traversal is rejected fail-closed.
 type WorkDirFile struct {
 	Name    string
 	Content []byte

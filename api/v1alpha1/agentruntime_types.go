@@ -39,17 +39,22 @@ const (
 
 	// RuntimeTypeCodex is the ChatGPT Codex coding-agent flavor (ISI-3647).
 	RuntimeTypeCodex = "codex"
+
+	// RuntimeTypeGoose is the goose coding-agent flavor (aaif-goose/goose,
+	// ISI-6128 Phase B): one-shot `goose run` stream-json engine in the shim
+	// plus NewGooseAdapter on the mesh side.
+	RuntimeTypeGoose = "goose"
 )
 
 // AgentRuntimeSpec defines the desired state of AgentRuntime (arch §5.3,
 // story 1.3 Task 0 — minimal authoring so Agent.spec.runtimeRef has a
 // target; the richer runtime policy surface lands with the sandbox stories).
 //
-// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes codex], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes','codex'] || self.experimental"
+// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes codex goose], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes','codex','goose'] || self.experimental"
 type AgentRuntimeSpec struct {
 	// Type is the coding-agent flavor this runtime serves (arch §5.3):
-	// openclaw, claude-code, opencode, hermes or codex out of the box. The field is
-	// intentionally a free string rather than a closed enum: shim vendors
+	// openclaw, claude-code, opencode, hermes, codex or goose out of the box. The
+	// field is intentionally a free string rather than a closed enum: shim vendors
 	// register additional flavors behind spec.experimental=true with zero
 	// CRD schema change (FR-D3). A non-conformant type without the
 	// experimental flag fails admission with the FR-D3 message.

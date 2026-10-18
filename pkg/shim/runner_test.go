@@ -795,3 +795,52 @@ func TestOSRunnerNoProxyEnvWhenUnset(t *testing.T) {
 		t.Fatalf("unset proxy must leave child HTTPS_PROXY empty; got %q", got)
 	}
 }
+
+// TestMaterializeWorkDirFilesSubpathAndPlainNames covers the ISI-6200
+// extension: adapters may materialize files at relative SUBPATHS of the
+// workdir (goose reads its config from .config/goose/config.yaml under the
+// XDG root the engine stamps), with parent dirs auto-created; plain names
+// and hidden files keep working unchanged.
+func TestMaterializeWorkDirFilesSubpathAndPlainNames(t *testing.T) {
+	dir := t.TempDir()
+	files := []runtimes.WorkDirFile{
+		{Name: "config.toml", Content: []byte("root-level")},
+		{Name: ".mcp.json", Content: []byte("hidden")},
+		{Name: ".config/goose/config.yaml", Content: []byte("nested")},
+	}
+	if err := materializeWorkDirFiles(dir, files); err != nil {
+		t.Fatalf("materializeWorkDirFiles: %v", err)
+	}
+	for name, want := range map[string]string{
+		"config.toml":               "root-level",
+		".mcp.json":                 "hidden",
+		".config/goose/config.yaml": "nested",
+	} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(b) != want {
+			t.Errorf("%s = %q, want %q", name, b, want)
+		}
+	}
+}
+
+// TestMaterializeWorkDirFilesRejectsTraversal keeps the adapter-file-name
+// guard fail-closed now that separators are legal: empty names, absolute
+// paths, Windows separators and ".." segments are refused, and nothing is
+// ever written outside the workdir.
+func TestMaterializeWorkDirFilesRejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"", "../escape.txt", "a/../../escape.txt", "/absolute/path", `back\slash`} {
+		if err := materializeWorkDirFiles(dir, []runtimes.WorkDirFile{{Name: name, Content: []byte("x")}}); err == nil {
+			t.Errorf("name %q must be rejected", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a")); !os.IsNotExist(err) {
+		t.Errorf("rejected names must not leave partial writes behind")
+	}
+	if _, err := os.Stat(filepath.Dir(dir) + "/escape.txt"); err == nil {
+		t.Errorf("traversal escaped the workdir")
+	}
+}
