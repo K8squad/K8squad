@@ -190,6 +190,14 @@ func TestAssemblePodSkillsVolumesEnvAndBare(t *testing.T) {
 	}, mountPaths)
 	assert.Equal(t, SkillsMountPath, envValue(t, asm.AgentEnv, SkillsDirEnvVar))
 
+	// ISI-6123: the granted skill-ref LIST rides KSQUAD_SKILLS — every
+	// granted skill (inline AND git), not just the inline body tree above —
+	// so the shim engine fires one skill.load span per ref. Git skills carry
+	// their pinned Ref as a KSQUAD_SKILL_SHAS name=sha pair; inline skills do
+	// not.
+	assert.Equal(t, "task-io,k8s-debug,pinned-git", envValue(t, asm.AgentEnv, SkillsEnvVar))
+	assert.Equal(t, "pinned-git=1234567890abcdef", envValue(t, asm.AgentEnv, SkillSHAsEnvVar))
+
 	// Volume names are DNS_LABEL-safe even for dot-bearing skill names.
 	volName := SkillsVolumeName("acme.corp.some-very-long-skill-name-exceeding-the-63-character-dns-label-limit-for-sure")
 	assert.LessOrEqual(t, len(volName), 63)
@@ -201,5 +209,37 @@ func TestAssemblePodSkillsVolumesEnvAndBare(t *testing.T) {
 	assert.Empty(t, bare.AgentMounts)
 	for _, e := range bare.AgentEnv {
 		assert.NotEqual(t, SkillsDirEnvVar, e.Name)
+		assert.NotEqual(t, SkillsEnvVar, e.Name)
+		assert.NotEqual(t, SkillSHAsEnvVar, e.Name)
 	}
+}
+
+// ISI-6123: SkillListEnv renders the granted-skill set into the KSQUAD_SKILLS
+// ref-list and KSQUAD_SKILL_SHAS name=sha list the shim engine's skill.load
+// span reads — git-only-sourced runs still get a ref list (the gap that left
+// production traces with zero skill.load spans), and a run that grants
+// nothing stamps neither value.
+func TestSkillListEnv(t *testing.T) {
+	// Mixed inline + git: every ref lists; only the git skill carries a SHA.
+	names, shas := SkillListEnv([]GrantedSkill{
+		inlineSkill("task-io", nil),
+		gitSkill("pinned-git"),
+	})
+	assert.Equal(t, "task-io,pinned-git", names)
+	assert.Equal(t, "pinned-git=1234567890abcdef", shas)
+
+	// Git-only grant still produces a ref list — the mesh/sandbox gap.
+	names, shas = SkillListEnv([]GrantedSkill{gitSkill("only-git")})
+	assert.Equal(t, "only-git", names)
+	assert.Equal(t, "only-git=1234567890abcdef", shas)
+
+	// Inline-only grant: refs list, no SHAs.
+	names, shas = SkillListEnv([]GrantedSkill{inlineSkill("a", nil), inlineSkill("b", nil)})
+	assert.Equal(t, "a,b", names)
+	assert.Equal(t, "", shas)
+
+	// No skills → both empty, so a bare run stamps neither env.
+	names, shas = SkillListEnv(nil)
+	assert.Equal(t, "", names)
+	assert.Equal(t, "", shas)
 }

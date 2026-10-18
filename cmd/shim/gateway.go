@@ -247,17 +247,15 @@ func buildGateway() (*mesh.Gateway, error) {
 	// The lifecycle observer rides the OTLP spine the gateway process already
 	// exports through (telemetry.Tracer/Meter are safe pre-Setup: no-ops).
 	observer := meshobs.New(telemetry.Tracer(), telemetry.Meter(), meshobs.Labels{Team: team, Role: role, Pod: pod})
+	meshSkills := splitList(os.Getenv("KSQUAD_MESH_SKILLS"))
 	return mesh.NewGateway(mesh.GatewayConfig{
 		Adapter: adapter,
 		Envelope: mesh.Envelope{
 			RuntimeType: runtimeType,
 			Model:       os.Getenv("KSQUAD_MESH_MODEL"),
-			Skills:      splitList(os.Getenv("KSQUAD_MESH_SKILLS")),
+			Skills:      meshSkills,
 			Identity:    identity,
-			// Stamp the S0/S3 dispatch-path label at the source (ISI-5833 I6
-			// + ISI-5822): a mesh standing process only ever executes
-			// mesh-routed runs, so its run.start roots carry run.path=mesh.
-			Env: map[string]string{"KSQUAD_RUN_PATH": "mesh"},
+			Env:         gatewayStandingEnv(meshSkills),
 		},
 		Min:              gatewayMin(),
 		Max:              gatewayMax(),
@@ -298,6 +296,27 @@ func buildRuntimeAdapter(runtimeType string, host mesh.PlatformHost, opts ...mes
 	default:
 		return nil, fmt.Errorf("no RuntimeAdapter bound for runtime type %q (have: opencode, codex)", runtimeType)
 	}
+}
+
+// gatewayStandingEnv builds the extra process env every mesh standing
+// supervisor launches with (openCodeLaunch/codex forward Envelope.Env into
+// the child; mesh LocalHost appends it onto os.Environ — so these win).
+//
+//   - KSQUAD_RUN_PATH=mesh stamps the S0/S3 dispatch-path label at the source
+//     (ISI-5833 I6 + ISI-5822): a mesh standing process only ever executes
+//     mesh-routed runs, so its run.start roots carry run.path=mesh.
+//   - KSQUAD_SKILLS carries the granted skill-ref LIST so the supervisor's
+//     engine fires its skill.load span per ref (ISI-6123): the engine reads
+//     cfg.Skills from this *process env* (ISI-6061), and only Envelope.Env —
+//     never Envelope.Skills, which reaches the card alone — is forwarded to
+//     the child. An empty list stamps nothing (bare posture), matching the
+//     operator-side sandbox/dispatch stamps' CSV shape.
+func gatewayStandingEnv(skills []string) map[string]string {
+	env := map[string]string{"KSQUAD_RUN_PATH": "mesh"}
+	if len(skills) > 0 {
+		env["KSQUAD_SKILLS"] = strings.Join(skills, ",")
+	}
+	return env
 }
 
 // gatewayLifecycleFromEnv reads the per-pool lifecycle knobs (chapter §6.2

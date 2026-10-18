@@ -132,6 +132,13 @@ func TestShimEnvMaterializesSkillsTree(t *testing.T) {
 	// The git-sourced skill got no inline tree entry (S-D owns it).
 	_, err = os.Stat(filepath.Join(dir, "pinned-git"))
 	assert.True(t, os.IsNotExist(err))
+
+	// ISI-6123: the granted skill-ref LIST rides KSQUAD_SKILLS — every
+	// granted skill (inline AND git), the refs the engine's skill.load span
+	// enumerates — so the span fires in production. The git skill's pinned
+	// Ref rides KSQUAD_SKILL_SHAS as a name=sha pair; the inline skill omits.
+	assert.Equal(t, "task-io,pinned-git", em[capability.SkillsEnvVar])
+	assert.Equal(t, "pinned-git=1234567890abcdef", em[capability.SkillSHAsEnvVar])
 }
 
 // AC5 tail: a Run with no granted skills sets no KSQUAD_SKILLS_DIR.
@@ -139,7 +146,14 @@ func TestShimEnvNoSkillsNoDir(t *testing.T) {
 	d := skillsDispatchFor(t, &api.CapabilityManifest{})
 	cmd, err := d.shimCommand(context.Background(), wire.Task{A2ATaskID: taskIORunUID})
 	require.NoError(t, err)
-	_, present := envMap(t, cmd.Env)[capability.SkillsDirEnvVar]
+	em := envMap(t, cmd.Env)
+	_, present := em[capability.SkillsDirEnvVar]
+	assert.False(t, present)
+	// ISI-6123: no granted skills → no KSQUAD_SKILLS / KSQUAD_SKILL_SHAS
+	// either (bare posture), so a skill-less run never stamps an empty list.
+	_, present = em[capability.SkillsEnvVar]
+	assert.False(t, present)
+	_, present = em[capability.SkillSHAsEnvVar]
 	assert.False(t, present)
 }
 
