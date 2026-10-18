@@ -158,6 +158,13 @@ var table = map[string]map[CredentialClass]binding{
 	api.RuntimeTypeCodex: {
 		ClassServiceAccount: {envVar: "OPENAI_API_KEY", defaultKey: "apiKey"},
 	},
+	// Vibe (Mistral coding agent, ISI-6158) is service-account-only in v1: the
+	// Mistral key rides MISTRAL_API_KEY (pkg/shim/runtimes/vibe.go contract).
+	// The BYO/Ollama-lane base URL rides the model-endpoint seam
+	// (MISTRAL_BASE_URL), not this table; a human-seat class fails CLOSED.
+	api.RuntimeTypeVibe: {
+		ClassServiceAccount: {envVar: "MISTRAL_API_KEY", defaultKey: "apiKey"},
+	},
 }
 
 // DefaultSecretKey returns the Secret data key the injection contract reads
