@@ -77,3 +77,26 @@ describe("modelShapeHint — soft guidance, never a hard block (AC5/AC7)", () =>
     expect(modelShapeHint("has space")).toBeDefined();
   });
 });
+
+describe("vibe default (ISI-6158 C2) — curated first, never a constraint", () => {
+  it("leads the curated list with the vibe runtime default (mistral-large-latest)", () => {
+    const hints = useModelHints();
+    expect(hints[0].id).toBe("mistral-large-latest");
+    expect(hints[0].label).toMatch(/vibe/i);
+    // The Claude family stays curated right behind it (nothing was displaced, only led).
+    expect(hints.map((h) => h.id)).toContain("claude-opus-4-8");
+  });
+
+  it("recognises the vibe default as curated — and keeps other Mistral ids on the Custom path (ADR-026)", () => {
+    expect(isCuratedModel("mistral-large-latest")).toBe(true);
+    // Convenience, never constraint: any other mistral id stays reachable via “Custom model…”.
+    expect(isCuratedModel("mistral-medium-latest")).toBe(false);
+    expect(modelShapeHint("mistral-medium-latest")).toBeUndefined(); // conventional shape — no nudge
+  });
+
+  it("resolves the mistral provider token for the same-provider fallback warning", () => {
+    expect(modelProvider("mistral-large-latest")).toBe("mistral");
+    expect(sameProvider("mistral-large-latest", "mistral-medium-latest")).toBe(true);
+    expect(sameProvider("mistral-large-latest", "claude-opus-4-8")).toBe(false);
+  });
+});

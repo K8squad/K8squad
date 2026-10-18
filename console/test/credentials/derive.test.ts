@@ -166,8 +166,8 @@ describe("credentialCreateBody — the BYO write body (ISI-3983)", () => {
     expect(credentialCreateBody({ name: "k", runtime: "hermes", value: "v", teamId: "" }).teamId).toBeUndefined();
     expect(credentialCreateBody({ name: "k", runtime: "hermes", value: "v", teamId: "t-1" }).teamId).toBe("t-1");
   });
-  it("offers exactly the credinject service-account runtimes (claude-code/openclaw/hermes)", () => {
-    expect(CREATE_RUNTIME_OPTIONS.map((o) => o.value)).toEqual(["claude-code", "openclaw", "hermes"]);
+  it("offers exactly the credinject service-account runtimes (claude-code/openclaw/hermes/vibe)", () => {
+    expect(CREATE_RUNTIME_OPTIONS.map((o) => o.value)).toEqual(["claude-code", "openclaw", "hermes", "vibe"]);
   });
 });
 

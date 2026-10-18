@@ -1,6 +1,6 @@
 // lib/modelHints.ts — the curated model-hints seam (Story B, ISI-3555 / feature ISI-3544).
 //
-// The single source the Agent model selector reads its curated Claude ids from, behind one hook
+// The single source the Agent model selector reads its curated model ids from, behind one hook
 // `useModelHints()`. For the MVP this is a STATIC list baked into the console (ISI-3546 / Winston
 // decision, 2026-09-02): there is intentionally NO `GET /api/models/hints` endpoint — that is
 // Story C / Phase 2. The seam exists so Phase 2 can swap the source (static → fetch) with zero
@@ -20,13 +20,17 @@ export interface ModelHint {
 }
 
 /**
- * The static curated Claude family (Opus / Sonnet / Haiku). MVP source of `useModelHints()`.
+ * The static curated list. MVP source of `useModelHints()`.
+ *
+ * Leads with the vibe runtime's default (mistral-large-latest — P4.1 / ISI-6158 C2: the k8squad
+ * shim engine pins it as DefaultModel), then the Claude family (Opus / Sonnet / Haiku).
  *
  * These are convenience defaults only; a user needing any other id reaches it through
- * "Custom model…" (AC2/AC7). Ordered most-capable → fastest so the common first pick is on top.
- * Frozen so a consumer cannot mutate the shared list.
+ * "Custom model…" (AC2/AC7) — ADR-026: convenience, never constraint. Ordered most-capable →
+ * fastest so the common first pick is on top. Frozen so a consumer cannot mutate the shared list.
  */
 export const CURATED_MODELS: readonly ModelHint[] = Object.freeze([
+  { id: "mistral-large-latest", label: "Mistral Large (vibe) — default" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8 — most capable" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced" },
   { id: "claude-opus-5", label: "Claude Opus 5" },
