@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	yaml "sigs.k8s.io/yaml"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
@@ -479,6 +480,100 @@ func RenderCodexConfig(endpoints []Endpoint, modelEndpoint string) ([]byte, erro
 // document (env-name references included; the shim resolves them).
 func RenderHermes(endpoints []Endpoint) ([]byte, error) {
 	return RenderMCPConfigData(endpoints)
+}
+
+// gooseConfig is goose's config.yaml document (CLI pin v1.55.0, ISI-6128
+// Phase B shim half): the `extensions` section carries the Run's MCP
+// servers — MCP is native to goose. The entry shape below was verified live
+// against the pinned binary AND cross-checked against upstream
+// aaif-goose/goose config/extensions.rs: entries carry `enabled: true`
+// (tolerated on v1.55.0, required on newer releases), stdio servers load
+// from cmd/args with `envs` values that DO interpolate ${ENV_NAME}
+// references (live-proven: the extension process received the resolved
+// value), and streamable_http servers address `uri` — NOT `url` — with
+// static `headers` only (live-proven: header values are sent VERBATIM, no
+// ${} substitution, so credentials can never ride headers on this pin).
+type gooseConfig struct {
+	Extensions map[string]gooseExtension `json:"extensions"`
+}
+
+// gooseExtension is one goose MCP extension entry.
+type gooseExtension struct {
+	// Enabled is serialized explicitly: v1.55.0 tolerates it and newer
+	// upstream releases require it (ExtensionEntry.enabled).
+	Enabled bool `json:"enabled"`
+	// Type is "stdio" or "streamable_http" (goose's native type names).
+	Type string `json:"type"`
+	// Cmd/Args are the stdio server command line.
+	Cmd  string   `json:"cmd,omitempty"`
+	Args []string `json:"args,omitempty"`
+	// Envs carries stdio server environment. Values are ${ENV_NAME}
+	// references — goose resolves them from the process env when spawning
+	// the server (live-proven on v1.55.0), so secret material stays in env
+	// (ADR-045 D5).
+	Envs map[string]string `json:"envs,omitempty"`
+	// URI is the streamable_http endpoint (upstream field name: uri).
+	URI string `json:"uri,omitempty"`
+	// Headers are the static NON-SECRET HTTP headers (streamable_http).
+	// Values are sent verbatim — no ${} interpolation on v1.55.0 — so this
+	// map must never carry credentials.
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// RenderGooseConfig renders the Run's MCP IR into goose's config.yaml
+// extensions document (ISI-6128 Phase B; the shim materializes it at
+// .config/goose/config.yaml inside the per-Run XDG_CONFIG_HOME root — see
+// goose.go). stdio servers map to cmd/args/envs entries; streamable-http
+// servers map to url (+headers) entries with the credential referenced by
+// env name. goose has no native per-extension tool allow/deny scoping, so
+// AllowTools/DenyTools are not rendered — the egress gate
+// (pkg/capability/gate.go) owns tool scoping for goose Runs, exactly like
+// the claude-code renderer. Map key ordering is deterministic, so the
+// rendered bytes are stable. Errors name the offending server.
+func RenderGooseConfig(endpoints []Endpoint) ([]byte, error) {
+	if len(endpoints) == 0 {
+		return nil, fmt.Errorf("goose renderer: no endpoints to render")
+	}
+	cfg := gooseConfig{Extensions: make(map[string]gooseExtension, len(endpoints))}
+	for _, ep := range endpoints {
+		ext := gooseExtension{Enabled: true}
+		switch ep.Transport {
+		case string(api.MCPTransportStdio):
+			ext.Type = "stdio"
+			ext.Cmd = ep.Command
+			ext.Args = ep.Args
+			for _, name := range ep.EnvNames {
+				if ext.Envs == nil {
+					ext.Envs = map[string]string{}
+				}
+				ext.Envs[name] = "${" + name + "}"
+			}
+		case string(api.MCPTransportStreamableHTTP):
+			ext.Type = "streamable_http"
+			ext.URI = ep.URL
+			if len(ep.Headers) > 0 {
+				ext.Headers = ep.Headers
+			}
+			if len(ep.EnvNames) > 0 {
+				// Fail closed, never silent-401: v1.55.0 sends header values
+				// VERBATIM (no ${} interpolation — live-proven) and has no
+				// env_keys/bearer-token-env field (upstream landed env_keys
+				// after this pin). A credentialed streamable-http server
+				// cannot be served on this pin; name the fix paths.
+				return nil, fmt.Errorf("goose renderer: server %q carries a credential, but goose v1.55.0 cannot inject one into a streamable_http extension (headers do not interpolate; env_keys is newer than the pin) — front the server with a stdio credential proxy or bump the CLI pin", ep.Name)
+			}
+		default:
+			return nil, fmt.Errorf("goose renderer: unknown transport %q for server %q", ep.Transport, ep.Name)
+		}
+		cfg.Extensions[ep.Name] = ext
+	}
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("goose renderer: encode config.yaml: %w", err)
+	}
+	header := "# Rendered by K8squad shim (ISI-6128 Phase B). Credentials are env-name\n" +
+		"# references only — never literal secret material (ADR-045 D5).\n"
+	return append([]byte(header), out...), nil
 }
 
 // SortedAllowTools returns the endpoint's allow set sorted — a stable

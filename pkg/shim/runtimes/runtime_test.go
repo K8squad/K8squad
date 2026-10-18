@@ -29,6 +29,7 @@ import (
 func TestV1ShimSetRegistered(t *testing.T) {
 	want := []string{
 		apiv1alpha1.RuntimeTypeCodex,
+		apiv1alpha1.RuntimeTypeGoose,
 		apiv1alpha1.RuntimeTypeHermes,
 		apiv1alpha1.RuntimeTypeOpenClaw,
 		apiv1alpha1.RuntimeTypeOpenCode,
