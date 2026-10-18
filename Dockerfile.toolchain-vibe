@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# vibe toolchain image (ISI-6158, P4.1). Installs Mistral's Python coding agent
+# (`vibe`) via uv on top of the official Python 3.12 alpine base. The uv runtime
+# is the fastest cross-platform Python package manager and the natural fit for a
+# K8squad sandbox that already carries the uv toolchain; pinning the `vibe`
+# package version here satisfies ADR-017 reproducibility for the shim engine.
+# This image is the sandbox-layer requirement noted in the pkg/mesh adapters.go
+# comment: the host declarative registry advertises PackageInstall=true because
+# vibe itself installs agent dependencies into its own uv sandbox.
+ARG PYTHON_IMAGE=python:3.12-alpine
+ARG UV_VERSION=0.5.31
+ARG VIBE_VERSION=0.3.0
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM ${PYTHON_IMAGE}
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: vibe"
+
+# Apply security upgrades (mirrors Dockerfile.toolchain-python, ISI-3444 / ISI-3923).
+RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux && \
+    apk add --no-cache ca-certificates git
+
+# Stage uv binaries from the upstream scratch-based image.
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# Install the pinned `vibe` CLI via uv so the binary lands on PATH in the sandbox.
+# --system installs into the system Python, making `vibe` available as a plain
+# executable without activating a virtual environment.
+RUN uv pip install --system "vibe==${VIBE_VERSION}"
+
+ENTRYPOINT ["/usr/local/bin/vibe"]

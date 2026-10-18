@@ -96,3 +96,24 @@ func NewCodexAdapter(host PlatformHost, opts ...Option) (RuntimeAdapter, error) 
 	}
 	return a2amesh.NewCodexAdapter(host, ksquadRuntimeSpec(rt), opts...)
 }
+
+// NewVibeAdapter builds adapter #3 (chapter §9.3 P4.1, ISI-6158): Mistral vibe
+// behind the same 7-op RuntimeAdapter seam. It lands as a NEW ADAPTER ONLY —
+// zero control-plane line changes: the gateway, router, lifecycle and supervisor
+// keep speaking RuntimeAdapter and never see "vibe". Like adapters #1/#2, vibe
+// runs as a standing child process (`shim supervisor` with
+// KSQUAD_RUNTIME_TYPE=vibe) on the shared ChildProcessAdapter base; the
+// per-task one-shot invocation (`vibe -p --output streaming …`) is built by the
+// shim engine (pkg/shim/runtimes/vibe.go) behind the supervisor — the module
+// never sees it. The sandbox image (Dockerfile.toolchain-vibe) supplies the
+// uv/Python toolchain vibe requires.
+func NewVibeAdapter(host PlatformHost, opts ...Option) (RuntimeAdapter, error) {
+	if host == nil {
+		return nil, fmt.Errorf("mesh: NewVibeAdapter requires a PlatformHost")
+	}
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeVibe)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: vibe runtime not registered: %w", err)
+	}
+	return a2amesh.NewVibeAdapter(host, ksquadRuntimeSpec(rt), opts...)
+}
