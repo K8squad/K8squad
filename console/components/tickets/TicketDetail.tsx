@@ -1188,6 +1188,13 @@ function Composer({
     setText("");
     setRefs([]);
     setStatus({ kind: "idle" });
+    // ISI-6290: an explicit dropdown selection is the user's deliberate pick and
+    // overrides any @-mention in the body. Body @-mentions only drive dispatch when
+    // no agent has been selected in the dropdown (assignee === "").
+    if (assignee !== "") {
+      await dispatchAfterComment(assignee, comment);
+      return;
+    }
     // ISI-5281: assignment is from what was TYPED. A body carrying exactly ONE
     // resolvable @name dispatches that agent directly via the SAME machinery as
     // Comment-&-assign — no dropdown pick, no separate button. The @-popover is now

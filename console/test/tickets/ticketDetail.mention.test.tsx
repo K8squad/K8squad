@@ -300,4 +300,29 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
     await waitFor(() => expect(dispatchCall()).toBeTruthy());
     expect(dispatchCall()?.[1]?.body).toBe(JSON.stringify({ agentId: "reviewer" }));
   });
+
+  it("ISI-6290: dropdown pick wins over body @-mention on plain Comment — dispatches dropdown agent not mention", async () => {
+    // Repro: user types @builder in the body (body @-mention path) but explicitly
+    // selects "reviewer" in the dropdown, then clicks "Comment" (not "Comment & assign").
+    // Before the fix, submit() ignored the dropdown and dispatched "builder".
+    // After the fix, the explicit dropdown selection overrides the body mention.
+    routeFetch();
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await readyComposer();
+
+    // Body has @builder mention — WITHOUT the fix this would dispatch builder.
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "hey @builder can you take a look" },
+    });
+    // Explicitly select reviewer in the dropdown.
+    fireEvent.change(screen.getByTestId("detail-composer-assignee"), {
+      target: { value: "reviewer" },
+    });
+    // Click the plain "Comment" button (NOT "Comment & assign").
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    await waitFor(() => expect(dispatchCall()).toBeTruthy());
+    // The dropdown selection (reviewer) must win over the body @mention (builder).
+    expect(dispatchCall()?.[1]?.body).toBe(JSON.stringify({ agentId: "reviewer" }));
+  });
 });
