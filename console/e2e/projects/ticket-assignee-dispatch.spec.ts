@@ -119,13 +119,18 @@ test.describe("ISI-6290 - dropdown pick == dispatched agentId", () => {
     expect(dispatchBodies, "exactly one dispatch POST").toHaveLength(1);
     expect(dispatchBodies[0]!.agentId).toBe(picked);
 
-    // The thread re-syncs to the picked agent (requested-agent stamp visible).
-    await expect(page.getByTestId("detail-requested")).toContainText(picked, {
-      timeout: 30_000,
-    });
+    // The thread re-syncs to the picked agent: the reconciling GET shows the
+    // requested-agent STAMP. Read the thread API rather than a DOM testid -
+    // Intake claims the item within seconds (lane leaves todo), so the rail's
+    // "dispatch pending" hint may already be gone by the time we look.
+    const itemId = dispatchBodies[0]!.url.match(/work-items\/([^/]+)\/dispatch/)?.[1];
+    expect(itemId, "work item id from the dispatch URL").toBeTruthy();
+    const thread = await page.request.get("/api/work-items/" + itemId);
+    expect(thread.ok(), "thread re-fetch after dispatch").toBeTruthy();
+    const threadBody = (await thread.json()) as { RequestedAgent?: string };
+    expect(threadBody.RequestedAgent, "the requested-agent stamp is the PICK").toBe(picked);
 
     // Cleanup: kill the probe ticket so Intake never mints a live Run.
-    const itemId = dispatchBodies[0]!.url.match(/work-items\/([^/]+)\/dispatch/)?.[1];
     if (itemId) {
       await page.request.post("/api/work-items/" + itemId + "/kill").catch(() => {});
     }
