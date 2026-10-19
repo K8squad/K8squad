@@ -1181,6 +1181,20 @@ function Composer({
   async function submit() {
     const value = text.trim();
     if (value === "" || assigningBusy) return;
+    // ISI-6290: an ARMED dropdown pick is the user's EXPLICIT agent choice — it
+    // wins over every heuristic below. Before this guard the primary Comment
+    // submit ignored the armed pick entirely, so the comment alone decided the
+    // agent: a typed @name mention hijacked the dispatch, and on a parked
+    // ticket the comment nudge (AppendHumanComment re-trigger, ISI-4495)
+    // re-minted a Run for the STALE requested agent while the pick sat armed —
+    // "picked john in the dropdown, tess started working" (board repro). The
+    // guard routes through submitAssign so the ISI-4567 contract holds: the
+    // comment lands first (kept no matter what the assign half does), then the
+    // dispatch POST carries the PICKED agentId.
+    if (assignee !== "" && !assignUnavailable) {
+      await submitAssign();
+      return;
+    }
     const comment = await postComment(value);
     if (!comment) return;
     // Comment landed — keep it before any dispatch half fires.
@@ -1188,10 +1202,12 @@ function Composer({
     setText("");
     setRefs([]);
     setStatus({ kind: "idle" });
-    // ISI-5281: assignment is from what was TYPED. A body carrying exactly ONE
-    // resolvable @name dispatches that agent directly via the SAME machinery as
-    // Comment-&-assign — no dropdown pick, no separate button. The @-popover is now
-    // pure autocomplete; dispatch is driven by the resolved body tokens.
+    // ISI-5281: assignment is from what was TYPED — but only when NO explicit
+    // dropdown pick is armed (the guard above, ISI-6290: an explicit select
+    // always beats prose). A body carrying exactly ONE resolvable @name
+    // dispatches that agent directly via the SAME machinery as Comment-&-assign
+    // — no dropdown pick, no separate button. The @-popover is now pure
+    // autocomplete; dispatch is driven by the resolved body tokens.
     const mentioned = resolveBodyMentions(value, agents);
     if (mentioned.length === 1) {
       await dispatchAfterComment(mentioned[0], comment);
@@ -1405,8 +1421,10 @@ function Composer({
           {posting ? "Posting…" : "Comment"}
         </button>
         {/* ISI-4567 §2.3: the assign pair beside Comment — same roster the rail
-            loads; the pick only arms the secondary submit, never dispatches on
-            its own (a comment always precedes the assign). */}
+            loads. The armed pick drives BOTH submits: submit delegates to the
+            assign flow when a pick is armed (ISI-6290 — an explicit pick never
+            loses to a typed mention or the comment re-trigger), and a comment
+            always precedes the assign. */}
         <select
           data-testid="detail-composer-assignee"
           aria-label="Assign to agent"

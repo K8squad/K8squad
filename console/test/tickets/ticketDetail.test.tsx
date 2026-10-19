@@ -533,6 +533,104 @@ describe("TicketDetail", () => {
     );
   });
 
+  // ---- ISI-6290: the explicit dropdown pick drives the dispatch ----
+
+  it("an armed pick + the PRIMARY Comment submit dispatches the picked agent (ISI-6290 repro)", async () => {
+    // The board repro: a parked ticket whose stale requested agent is "tess".
+    // The human comments, picks "john" in the dropdown, hits the primary
+    // Comment submit — before ISI-6290 the pick was silently ignored and the
+    // comment nudge alone re-ran the STALE agent (no dispatch POST at all; the
+    // operator minted tess's Run). The pick must reach /dispatch as agentId.
+    routeFetch({
+      role: "contributor",
+      thread: { ...IN_PROGRESS_UNHELD, RequestedAgent: "tess" },
+      squad: [
+        { id: "ag-1", name: "tess" },
+        { id: "ag-2", name: "john", role: "Product Manager" },
+      ],
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    // Both selects (composer + rail) list the roster — wait for the load.
+    await waitFor(() =>
+      expect(screen.getAllByRole("option", { name: "tess" })).toHaveLength(2),
+    );
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "john please take this one" }, // plain body — no @mention
+    });
+    fireEvent.change(screen.getByTestId("detail-composer-assignee"), {
+      target: { value: "john" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    // The comment landed (3 total after the reconciling re-fetch)…
+    await waitFor(() =>
+      expect(screen.getAllByTestId("activity-comment")).toHaveLength(3),
+    );
+    // …then the dispatch POST fired with the PICKED name, comment first.
+    const seq = fetchMock.mock.calls.map(([u, init]) => ({
+      u: String(u),
+      method: (init?.method ?? "GET").toUpperCase(),
+    }));
+    const commentIdx = seq.findIndex(
+      (c) => c.u.includes("/comments") && c.method === "POST",
+    );
+    const dispatchIdx = seq.findIndex(
+      (c) => c.u.includes("/dispatch") && c.method === "POST",
+    );
+    expect(commentIdx).toBeGreaterThanOrEqual(0);
+    expect(dispatchIdx).toBeGreaterThan(commentIdx);
+    expect(fetchMock.mock.calls[dispatchIdx][1]?.body).toBe(
+      JSON.stringify({ agentId: "john" }),
+    );
+  });
+
+  it("an armed pick beats a typed @mention — the explicit select wins (ISI-6290)", async () => {
+    // ISI-5281 made the typed body drive dispatch; ISI-6290 ranks the gestures:
+    // an explicit dropdown pick outranks prose. A body resolving exactly one
+    // @tess mention must NOT hijack a john pick armed in the select.
+    routeFetch({
+      role: "contributor",
+      thread: BACKLOG_THREAD,
+      squad: [
+        { id: "ag-1", name: "tess" },
+        { id: "ag-2", name: "john", role: "Product Manager" },
+      ],
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getAllByRole("option", { name: "tess" })).toHaveLength(2),
+    );
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "@tess can you hand this over to john" },
+    });
+    fireEvent.change(screen.getByTestId("detail-composer-assignee"), {
+      target: { value: "john" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([u, init]) =>
+            String(u).includes("/dispatch") &&
+            (init?.method ?? "GET").toUpperCase() === "POST",
+        ),
+      ),
+    );
+    const dispatches = fetchMock.mock.calls.filter(
+      ([u, init]) =>
+        String(u).includes("/dispatch") &&
+        (init?.method ?? "GET").toUpperCase() === "POST",
+    );
+    // Exactly one dispatch — to the PICK, never the mentioned agent.
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]?.[1]?.body).toBe(JSON.stringify({ agentId: "john" }));
+  });
+
   it("labels the composer assign dropdown role — name, matching the rail (ISI-4807)", async () => {
     // Give one roster agent a role: the composer <option> must read "role — name"
     // (agentOptionLabel), not the bare name PR #581 left behind on this dropdown.
