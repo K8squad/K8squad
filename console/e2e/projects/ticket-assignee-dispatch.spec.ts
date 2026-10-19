@@ -89,7 +89,11 @@ test.describe("ISI-6290 - dropdown pick == dispatched agentId", () => {
     const composerSelect = page.getByTestId("detail-composer-assignee");
     await expect(composerSelect).toBeVisible({ timeout: 30_000 });
     const options = composerSelect.locator("option:not([value=''])");
-    await expect(options.first()).toBeVisible({ timeout: 30_000 });
+    // <option> elements inside a closed <select> are never "visible" — poll the
+    // COUNT instead: the roster GET landing means real agent options exist.
+    await expect
+      .poll(async () => await options.count(), { timeout: 30_000 })
+      .toBeGreaterThan(1);
 
     // TWO distinct roster agents: the mention bait (first) and the pick (second).
     // Values are the canonical agent NAMES (the wire identity dispatch uses).
