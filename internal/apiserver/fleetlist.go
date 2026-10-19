@@ -888,13 +888,35 @@ func (r *ClientFleetListReader) RoleDetail(ctx context.Context, teamUID, name, t
 }
 
 // ProjectDetail projects a single Project's authoring spec by name (ADR-0016).
+//
+// An unbound fleet admin (admin, no ?team=) resolves the project FLEET-WIDE by
+// name through the shared resolveProjectFleetWide spine (ISI-6267) — the same
+// resolution the sibling GET /api/projects/{id}/settings route uses
+// (projectsettings.go). The two routes are documented to resolve identically
+// (projectresolve.go) but had diverged: detailNamespace returned ErrTeamNotFound
+// for the admin-no-team case, so the console's fetchProjectDetail (which never
+// sends ?team=) got a 404 → null detail, breaking the Credentials Vault
+// save/test. Fleet-wide resolution is UID-first and returns ErrProjectAmbiguous
+// (409) on a bare-name collision — never first-match-wins across squads. The
+// existing ?team= path still targets a single admin-selected squad; non-admin
+// callers stay team-fenced.
 func (r *ClientFleetListReader) ProjectDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (ProjectDetail, error) {
 	if name == "" {
 		return ProjectDetail{}, ErrTeamNotFound
 	}
-	ns, err := r.detailNamespace(ctx, teamUID, targetTeamUID, admin)
-	if err != nil {
-		return ProjectDetail{}, err
+	var ns string
+	if admin && targetTeamUID == "" {
+		resolvedNS, resolvedName, rerr := resolveProjectFleetWide(ctx, r.reader, name)
+		if rerr != nil {
+			return ProjectDetail{}, rerr
+		}
+		ns, name = resolvedNS, resolvedName
+	} else {
+		dns, err := r.detailNamespace(ctx, teamUID, targetTeamUID, admin)
+		if err != nil {
+			return ProjectDetail{}, err
+		}
+		ns = dns
 	}
 	var projects ksquadv1.ProjectList
 	if err := r.reader.List(ctx, &projects, client.InNamespace(ns)); err != nil {
@@ -1235,15 +1257,19 @@ func (s *Server) squadProjectDetail(reader FleetListReader) http.HandlerFunc {
 			return
 		}
 		detail, err := reader.ProjectDetail(r.Context(), auth, muxVar(r, "name"), r.URL.Query().Get("team"), admin)
-		if errors.Is(err, ErrTeamNotFound) {
+		switch {
+		case err == nil:
+			writeJSON(w, http.StatusOK, detail)
+		case errors.Is(err, ErrTeamNotFound), errors.Is(err, ErrProjectNotFound):
+			// Both are existence-hiding 404s: a missing team scope and a project
+			// absent fleet-wide are indistinguishable to the caller (NFR-SEC5).
 			writeJSONError(w, http.StatusNotFound, "no such project")
-			return
-		}
-		if err != nil {
+		case errors.Is(err, ErrProjectAmbiguous):
+			// Admin bare-name collision across squads (ISI-6267) — address by uid.
+			writeJSONError(w, http.StatusConflict, "project name ambiguous across squads; address by uid")
+		default:
 			writeJSONError(w, http.StatusBadGateway, "project read model unavailable")
-			return
 		}
-		writeJSON(w, http.StatusOK, detail)
 	}
 }
 
