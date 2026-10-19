@@ -690,7 +690,13 @@ func TestRoleDetailScoping(t *testing.T) {
 }
 
 func TestProjectDetailScoping(t *testing.T) {
-	r := newFleetReader(t, detailFixture()...)
+	// "solo" lives only in squad-a — a fleet-unique name, so an unbound fleet
+	// admin resolves it fleet-wide (ISI-6267), unlike "widget" which collides.
+	soloProj := &ksquadv1.Project{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "squad-a", Name: "solo", UID: "proj-solo"},
+		Spec:       ksquadv1.ProjectSpec{Repo: ksquadv1.RepoSpec{URL: "https://github.com/acme/solo"}},
+	}
+	r := newFleetReader(t, append(detailFixture(), soloProj)...)
 	ctx := context.Background()
 
 	d, err := r.ProjectDetail(ctx, fleetUIDA, "widget", "", false)
@@ -730,9 +736,29 @@ func TestProjectDetailScoping(t *testing.T) {
 	if dB.TeamID != fleetUIDB {
 		t.Fatalf("admin+team teamId: got %q, want %q", dB.TeamID, fleetUIDB)
 	}
-	if _, err := r.ProjectDetail(ctx, "", "widget", "", true); !errors.Is(err, ErrTeamNotFound) {
-		t.Fatalf("admin missing team: want ErrTeamNotFound, got %v", err)
+	// admin, no ?team=, name UNIQUE fleet-wide ⇒ resolves (ISI-6267, parity with
+	// the GET /api/projects/{id}/settings admin path). This is the fix: it used
+	// to be ErrTeamNotFound, which broke the Credentials Vault save/test for an
+	// unbound fleet admin (the console never sends ?team=).
+	dSolo, err := r.ProjectDetail(ctx, "", "solo", "", true)
+	if err != nil || dSolo.Repo.URL != "https://github.com/acme/solo" {
+		t.Fatalf("admin no team, unique name: %+v err=%v", dSolo, err)
 	}
+	// The resolved namespace stamps the routing hint so the fleet-admin credential
+	// store/test targets the owning team without a manual pick.
+	if dSolo.TeamID != fleetUIDA {
+		t.Fatalf("admin fleet-wide teamId: got %q, want %q", dSolo.TeamID, fleetUIDA)
+	}
+	// admin, no ?team=, name COLLIDES across squads ⇒ 409, never first-match-wins
+	// ("widget" lives in both squad-a and squad-b).
+	if _, err := r.ProjectDetail(ctx, "", "widget", "", true); !errors.Is(err, ErrProjectAmbiguous) {
+		t.Fatalf("admin no team, colliding name: want ErrProjectAmbiguous, got %v", err)
+	}
+	// admin, no ?team=, name ABSENT fleet-wide ⇒ 404 (existence-hiding).
+	if _, err := r.ProjectDetail(ctx, "", "ghost", "", true); !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("admin no team, absent name: want ErrProjectNotFound, got %v", err)
+	}
+	// non-admin tenant miss unchanged (existence-hiding 404).
 	if _, err := r.ProjectDetail(ctx, fleetUIDA, "ghost", "", false); !errors.Is(err, ErrTeamNotFound) {
 		t.Fatalf("tenant miss: want ErrTeamNotFound, got %v", err)
 	}
