@@ -359,16 +359,21 @@ func TestListProposalsEdgeThreadsAndPrivileges(t *testing.T) {
 		t.Fatalf("list on proposal-less thread: want non-nil empty slice, got %#v", empty)
 	}
 
-	// (2) Privilege + ownership parity — the 42501 drift class (ISI-6371).
-	var has bool
+	// (2) Privilege + ownership parity — the 42501 drift class (ISI-6371). has_table_privilege
+	// with a comma list is ANY-of, not ALL-of (a SELECT-only role passes it), so the four DML
+	// privileges are probed individually and ANDed (ISI-6371 review).
+	var sel, ins, upd, del bool
 	if err := store.db.QueryRowContext(ctx,
-		"SELECT has_table_privilege(current_user, 'discussion.proposal', 'SELECT, INSERT, UPDATE, DELETE')",
-	).Scan(&has); err != nil {
+		"SELECT has_table_privilege(current_user, 'discussion.proposal', 'SELECT'),"+
+			"has_table_privilege(current_user, 'discussion.proposal', 'INSERT'),"+
+			"has_table_privilege(current_user, 'discussion.proposal', 'UPDATE'),"+
+			"has_table_privilege(current_user, 'discussion.proposal', 'DELETE')",
+	).Scan(&sel, &ins, &upd, &del); err != nil {
 		t.Fatalf("privilege probe: %v", err)
 	}
-	if !has {
-		t.Fatal("current_user lacks DML on discussion.proposal — the ISI-6371 drift class " +
-			"(the runtime role cannot read/write the table; every proposals endpoint 500s with SQLSTATE 42501)")
+	if !sel || !ins || !upd || !del {
+		t.Fatalf("current_user lacks DML on discussion.proposal (select=%v insert=%v update=%v delete=%v) — the ISI-6371 drift class "+
+			"(the runtime role cannot read/write the table; every proposals endpoint 500s with SQLSTATE 42501)", sel, ins, upd, del)
 	}
 	var peerOwner, proposalOwner string
 	if err := store.db.QueryRowContext(ctx,

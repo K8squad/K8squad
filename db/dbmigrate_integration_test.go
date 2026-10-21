@@ -90,12 +90,23 @@ func TestApplyFreshThenIdempotent(t *testing.T) {
 		t.Fatalf("ledger changed on idempotent re-run: %d != %d", got, len(names))
 	}
 
-	// 3. Drift shape: delete HEAD from the ledger AND drop its object, then Apply catches it back up.
-	// HEAD is 0028_comment_payload.sql — its object is coord.comment.payload (ISI-5214). The dropped
-	// object MUST be the one the HEAD migration creates, so re-running HEAD alone heals the drift
-	// (this section was stale at 0025's discussion.proposal and broke every time HEAD advanced).
-	head := path.Base(names[len(names)-1]) // 0028_comment_payload.sql
-	if _, err := db.Exec(`DELETE FROM public.schema_migrations WHERE version=$1`, head); err != nil {
+	// 3. Drift shape: delete a mid-chain migration from the ledger AND drop its object, then
+	// Apply catches it back up. The drift target is PINNED to 0028_comment_payload.sql / its
+	// object coord.comment.payload (ISI-5214) — deliberately NOT the current HEAD: forward-only
+	// re-apply must heal a gap anywhere in the chain, and a HEAD that creates no objects (the
+	// 0041 reconcile is a pure DO block) must not break this section every time HEAD advances
+	// (this section was stale at 0025 and again at 0028 for exactly that reason).
+	const driftTarget = "0028_comment_payload.sql"
+	found := false
+	for _, n := range names {
+		if path.Base(n) == driftTarget {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("drift target %s no longer exists — repin this section to a migration with a concrete object", driftTarget)
+	}
+	if _, err := db.Exec(`DELETE FROM public.schema_migrations WHERE version=$1`, driftTarget); err != nil {
 		t.Fatalf("simulate drift (delete ledger row): %v", err)
 	}
 	if _, err := db.Exec(`ALTER TABLE coord.comment DROP COLUMN IF EXISTS payload`); err != nil {

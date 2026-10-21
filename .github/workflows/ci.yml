@@ -270,6 +270,29 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$t"
           done
 
+      # ISI-6371: the review proved the drift class had NO automated coverage — the lane connects
+      # as POSTGRES_USER (the container superuser), so ownership parity and has_table_privilege
+      # were tautologies, and a mutant with the repair gutted stayed green. The db_integration
+      # lane below (previously tagged into NO workflow) drives the REAL dbmigrate.Apply +
+      # dbmigrate.Verify + the shipped 0041 through a live drift matrix on a scratch database:
+      # inverted drift (peer drifted, table healthy — must NOT move the healthy table), the
+      # incident shape (proposal alone drifted), and both-sides-drifted (parity-blind spot).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Ownership-drift regression lane (ISI-6371)
+        if: steps.guard.outputs.present == 'true'
+        env:
+          DATABASE_URL: postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/ksquad_test
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE isi6371_drift'
+          DRIFT_URL="postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/isi6371_drift"
+          DATABASE_URL="$DRIFT_URL" go test -tags=db_integration ./db/... -count=1
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'DROP DATABASE isi6371_drift WITH (FORCE)'
+
   shim:
     name: shim / ${{ matrix.runtime }}
     needs: components
