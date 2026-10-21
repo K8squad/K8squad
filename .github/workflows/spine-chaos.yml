@@ -238,7 +238,13 @@ jobs:
             exit 1
           fi
           echo "chaos targets: ${targets[*]}"
-          go test -race -tags=chaos -run 'TestSpine' "${targets[@]}" -v
+          # TestProdReconcile carries the durable prod-drive chaos cases (R1..R6c),
+          # including the ISI-6368 regression that pins the relay outbox rows to the
+          # live run.reconcile span carrier rather than the trace-id prefix. It uses
+          # the same real-Postgres harness as TestSpine* but is a distinct top-level
+          # func, so it must be named here or the gate silently skips it (cursor
+          # review, PR #944).
+          go test -race -tags=chaos -run 'TestSpine|TestProdReconcile' "${targets[@]}" -v
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'

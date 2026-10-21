@@ -32,6 +32,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
@@ -80,6 +81,16 @@ func migrationFile(t *testing.T, name string) string {
 // 0017 assignee attribution), inserts one work_item (its
 // trigger auto-provisions the claim row at step 'pending', fence 0) and returns
 // a Store bound to it plus its uuid.
+// deref returns the pointed-to string, or "" for a SQL NULL (nil) column — used
+// to pass an optional jsonb field (e.g. trace_carrier->>'tracestate') to assertions
+// that compare against a plain string.
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func seedItem(t *testing.T, ctx context.Context, dsn string) (*coord.ProdReconcileStore, string) {
 	t.Helper()
 	db := openDB(t, dsn)
@@ -352,9 +363,27 @@ func TestProdReconcile(t *testing.T) {
 		otel.SetTracerProvider(tp)
 		t.Cleanup(func() { _ = tp.Shutdown(context.Background()); otel.SetTracerProvider(prevTP) })
 
+		// Start run.reconcile under a REMOTE parent that carries a tracestate, so the
+		// child span inherits it. tracestate carries vendor sampling decisions; if the
+		// carrier silently dropped it, a traceparent-only assertion would not notice.
+		// This pins that telemetry.Inject's W3C propagator round-trips tracestate too.
+		const wantTraceState = "ksq=6368"
+		ts, err := oteltrace.ParseTraceState(wantTraceState)
+		if err != nil {
+			t.Fatalf("parse tracestate: %v", err)
+		}
+		remoteParent := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+			TraceID:    oteltrace.TraceID{0x3a, 0x1e, 0x74, 0x96, 0x6a, 0xf5, 0x78, 0x17, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88},
+			SpanID:     oteltrace.SpanID{0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02},
+			TraceFlags: oteltrace.FlagsSampled,
+			TraceState: ts,
+			Remote:     true,
+		})
+		parentCtx := oteltrace.ContextWithRemoteSpanContext(ctx, remoteParent)
+
 		// Open the run.reconcile span and bind the store to ITS context — exactly as
 		// the driver does (driver.go starts run.reconcile, then Store(ctx) binds here).
-		spanCtx, span := telemetry.Tracer().Start(ctx, "run.reconcile")
+		spanCtx, span := telemetry.Tracer().Start(parentCtx, "run.reconcile")
 		defer span.End()
 		wantTrace := span.SpanContext().TraceID().String()
 		wantParent := span.SpanContext().SpanID().String()
@@ -375,8 +404,9 @@ func TestProdReconcile(t *testing.T) {
 		}
 
 		// assertCarrier parses the stored traceparent and asserts it names the live
-		// span as parent — NOT the trace-id prefix the old fallback would synthesize.
-		assertCarrier := func(label, traceparent string) {
+		// span as parent — NOT the trace-id prefix the old fallback would synthesize —
+		// and that tracestate round-trips (vendor sampling decisions are not dropped).
+		assertCarrier := func(label, traceparent, tracestate string) {
 			if traceparent == "" {
 				t.Fatalf("%s: trace_carrier has no traceparent (row would fall back to the trace-id-prefix synthetic parent)", label)
 			}
@@ -391,39 +421,78 @@ func TestProdReconcile(t *testing.T) {
 			if f[2] != wantParent {
 				t.Fatalf("%s: carrier parent span id = %s, want the live run.reconcile span %s", label, f[2], wantParent)
 			}
-			// The regression guard: the parent must NOT be the trace-id prefix.
+			// Documentation of the bug shape, not an independent guard: the check
+			// above already fatals unless f[2] == wantParent, and wantParent is a real
+			// 16-hex span id that cannot equal wantTrace[:16] except by a 1-in-2^64
+			// collision — so by here f[2] is known to be the live span id. It stays to
+			// name the exact ISI-6368 failure mode the row would otherwise regress to.
 			if f[2] == wantTrace[:16] {
 				t.Fatalf("%s: carrier parent span id is the trace-id PREFIX %s — the dangling-parent bug (ISI-6368)", label, f[2])
+			}
+			if tracestate != wantTraceState {
+				t.Fatalf("%s: carrier tracestate = %q, want %q (vendor sampling decision dropped)", label, tracestate, wantTraceState)
 			}
 		}
 
 		// The coarse reconcile_advanced projection (the first bug span).
-		var raCarrier *string
+		var raParent, raState *string
 		if err := db.QueryRowContext(ctx, `
-			SELECT trace_carrier->>'traceparent'
+			SELECT trace_carrier->>'traceparent', trace_carrier->>'tracestate'
 			  FROM coord.outbox
 			 WHERE run_id=$1::uuid AND event_type='reconcile_advanced'
-			 ORDER BY id LIMIT 1`, run).Scan(&raCarrier); err != nil {
+			 ORDER BY id LIMIT 1`, run).Scan(&raParent, &raState); err != nil {
 			t.Fatalf("query reconcile_advanced carrier: %v", err)
 		}
-		if raCarrier == nil {
+		if raParent == nil {
 			t.Fatalf("reconcile_advanced row has NULL trace_carrier (want the live-span carrier)")
 		}
-		assertCarrier("reconcile_advanced", *raCarrier)
+		assertCarrier("reconcile_advanced", *raParent, deref(raState))
 
 		// The run.ended lifecycle milestone (the second bug span).
-		var endedCarrier *string
+		var endedParent, endedState *string
 		if err := db.QueryRowContext(ctx, `
-			SELECT trace_carrier->>'traceparent'
+			SELECT trace_carrier->>'traceparent', trace_carrier->>'tracestate'
 			  FROM coord.outbox
 			 WHERE run_id=$1::uuid AND entity='run' AND event_type='ended'
-			 ORDER BY id LIMIT 1`, run).Scan(&endedCarrier); err != nil {
+			 ORDER BY id LIMIT 1`, run).Scan(&endedParent, &endedState); err != nil {
 			t.Fatalf("query run.ended carrier: %v", err)
 		}
-		if endedCarrier == nil {
+		if endedParent == nil {
 			t.Fatalf("run.ended row has NULL trace_carrier (want the live-span carrier)")
 		}
-		assertCarrier("run.ended", *endedCarrier)
+		assertCarrier("run.ended", *endedParent, deref(endedState))
+	})
+
+	// R6d: the documented NULL contract — a transition captured OFF the trace (no
+	// active span in ctx, e.g. pre-dispatch) stores SQL NULL in trace_carrier, so
+	// the relay falls back to the trace-id path exactly as before the fix. This
+	// pins the fallback half of traceCarrierArg's promise, which the relay depends
+	// on and which the carrier-present cases above cannot exercise (ISI-6368).
+	t.Run("R6d_no_span_stores_null_carrier", func(t *testing.T) {
+		// A plain context.Background() carries no span — telemetry.Inject writes
+		// nothing, so traceCarrierArg must return SQL NULL, not "{}". seedItem drops
+		// and reseeds the schema, so the fixed run id is isolated from R6c above.
+		const run = "22222222-2222-2222-2222-222222222222"
+		s, _ := seedItem(t, context.Background(), dsn)
+		db := openDB(t, dsn)
+		fence := s.Fence()
+		if err := reconcile.Reconcile(&recordingEffects{}, s, reconcile.Options{Durable: true, Fence: fence}); err != nil {
+			t.Fatalf("durable drive: %v", err)
+		}
+		if s.Err() != nil {
+			t.Fatalf("store error during drive: %v", s.Err())
+		}
+		var carrier *string
+		if err := db.QueryRowContext(ctx, `
+			SELECT trace_carrier
+			  FROM coord.outbox
+			 WHERE run_id=$1::uuid AND event_type='reconcile_advanced'
+			 ORDER BY id LIMIT 1`, run).Scan(&carrier); err != nil {
+			t.Fatalf("query reconcile_advanced carrier: %v", err)
+		}
+		if carrier != nil {
+			t.Fatalf("span-less advance stored trace_carrier=%q, want SQL NULL (relay must fall back to trace_id)", *carrier)
+		}
 	})
 
 	// R5: fence-first reclaim is monotonic and stamps reclaim_fenced_at (§6.3).

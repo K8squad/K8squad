@@ -124,6 +124,15 @@ func (s *ProdReconcileStore) WithTraceID(traceID string) *ProdReconcileStore {
 // before. Best-effort by construction: a marshal error (never expected for a
 // small string map) also yields NULL rather than failing the outbox write,
 // because an outbox INSERT must NEVER depend on the tracer.
+//
+// Sampling: the carrier records run.reconcile's real sampling flag, so under a
+// head sampler that drops this trace (probabilistic sampling, traceparent `-00`)
+// the relay's producer span is dropped IN LOCKSTEP with its parent instead of
+// being force-exported as an orphan. That is deliberate and strictly more correct
+// than the pre-ISI-6368 fallback, which hardcoded FlagsSampled (pkg/events/trace.go)
+// and always exported the publish span — the very parentless hop this fix removes.
+// A sampled-in trace (the only case that reaches a backend) carries `-01` and
+// nests normally under run.reconcile's real span id.
 func (s *ProdReconcileStore) traceCarrierArg() any {
 	carrier := map[string]string{}
 	telemetry.Inject(s.ctx, carrier)
@@ -310,6 +319,11 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 	//     nests under run.reconcile) and only falls back to the trace-id — whose
 	//     prefix it would otherwise mis-use as a parent, dangling the span — when
 	//     no span is active here (pre-dispatch). Co-committed in this same txn.
+	//
+	//     Computed ONCE here and reused for the WS-D lifecycle rows below (both
+	//     read the same s.ctx, so the values agree), so the "computed once per
+	//     advance" invariant the lifecycle block relies on is literally true.
+	carrierArg := s.traceCarrierArg()
 	if _, err := tx.ExecContext(s.ctx, `
 		INSERT INTO coord.outbox
 		       (entity, project_id, squad, event_type, work_item_id, run_id, payload, trace_carrier)
@@ -323,7 +337,7 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 		  FROM coord.work_item wi
 		 WHERE wi.id = $1::uuid`,
 		s.workItemID, s.runID, string(expected), string(next), fenceAfter, s.traceID,
-		s.traceCarrierArg()); err != nil {
+		carrierArg); err != nil {
 		s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: outbox: %w", err))
 		return false
 	}
@@ -342,10 +356,9 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 	//     milestones a transition publishes is the machine's decision (reconcile.
 	//     LifecycleEventsFor), keeping the vocabulary next to the happy path it maps.
 	//     ISI-6368: every lifecycle row carries the same live-span trace_carrier as
-	//     the reconcile_advanced projection above (computed once per advance), so a
-	//     `run.ended` / `run.started` publish span nests under run.reconcile instead
-	//     of dangling off a trace-id-prefix synthetic parent.
-	carrierArg := s.traceCarrierArg()
+	//     the reconcile_advanced projection above (carrierArg, computed once per
+	//     advance), so a `run.ended` / `run.started` publish span nests under
+	//     run.reconcile instead of dangling off a trace-id-prefix synthetic parent.
 	for _, ev := range reconcile.LifecycleEventsFor(expected, next) {
 		if _, err := tx.ExecContext(s.ctx, `
 			INSERT INTO coord.outbox
