@@ -713,7 +713,7 @@ export type ComposeResult = {
 // persisted (the resolved model id is provider-agnostic).
 
 /** The runtime-adapter credential branch (Frame-4, board LOCK OQ5). */
-export const RUNTIME_ADAPTERS = ["claude", "codex", "opencode"] as const;
+export const RUNTIME_ADAPTERS = ["claude", "codex", "opencode", "vibe", "goose"] as const;
 export type RuntimeAdapter = (typeof RUNTIME_ADAPTERS)[number];
 
 /** Human labels for the adapter selector. */
@@ -721,6 +721,8 @@ export const RUNTIME_ADAPTER_LABELS: Record<RuntimeAdapter, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  vibe: "Vibe",
+  goose: "Goose",
 };
 
 // ── Backend-driven model picker (ISI-5006 S3, child of ISI-4989) ──────────────

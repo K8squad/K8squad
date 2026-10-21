@@ -33,6 +33,8 @@ const ADAPTER_TINT: Record<RuntimeAdapter, string> = {
   claude: "var(--accent)",
   codex: "var(--status-paused)",
   opencode: "var(--status-running)",
+  vibe: "#7c3aed",
+  goose: "var(--status-idle, #6b7280)",
 };
 
 export function RuntimeAdapterStep({
@@ -103,6 +105,30 @@ export function RuntimeAdapterStep({
               list is coming soon; until then, manual entry always works.
             </p>
           ))}
+        {adapter === "vibe" && (
+          <p className="muted" data-testid="vibe-cred-note">
+            Vibe uses your Mistral API key (<code>MISTRAL_API_KEY</code>). Optionally supply a custom
+            base URL (<code>MISTRAL_BASE_URL</code>) to route through an OpenAI-compatible endpoint
+            instead of the Mistral API — the key stays required; the URL is optional.
+          </p>
+        )}
+        {adapter === "goose" && (
+          <>
+            <button
+              type="button"
+              className="btn"
+              disabled
+              aria-disabled="true"
+              data-testid="goose-preview-cta"
+            >
+              Goose runtime <span className="chip chip--soon">preview — coming soon</span>
+            </button>
+            <p className="muted">
+              Goose adapter support is in preview and not yet available in this release. Check back
+              in a future update.
+            </p>
+          </>
+        )}
       </div>
 
       {children}
