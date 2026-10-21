@@ -141,7 +141,11 @@ SELECT latest.wid::text,
 // per labelled work item, ONLY its most-recent SUCCEEDED terminal run that
 // carried source changes (payload->>'source_branch' non-empty, stamped by the
 // runtime when it pushed its per-process branch) and carries no
-// `github_pr_writeback` marker yet. It also reads the payload's optional
+// `github_pr_writeback` marker yet. team_id is cast ::text before the COALESCE because
+// the column is uuid, so a bare empty-string coalesce literal makes Postgres evaluate
+// the cast of the empty string to uuid (SQLSTATE 22P02) whenever a matching row's
+// team_id is NULL (ISI-6409).
+// It also reads the payload's optional
 // base_branch override and the work item's team_id (the escalation event's
 // squad component; NULL when unset). Same DISTINCT ON latest-only shape, same
 // label guard, same NOT EXISTS dedup — an operator restart re-derives the exact
@@ -173,7 +177,7 @@ SELECT latest.wid::text,
        latest.base_branch,
        COALESCE(c.assignee_agent, ''),
        wi.title,
-       COALESCE(wi.team_id, ''),
+       COALESCE(wi.team_id::text, ''),
        (SELECT l FROM unnest(wi.labels) l
          WHERE l LIKE 'ksquad.github.issue=%' LIMIT 1)
   FROM latest
