@@ -26,7 +26,9 @@
 //     it — only a non-empty primary enables Save.
 //   - Frame-4 (AC5): RuntimeAdapterStep fronts ModelSelector, branching the
 //     credential path per adapter (claude token-only + coming-soon OAuth CTA / codex
-//     token / opencode BYO endpoint → manual entry, the fail-open state).
+//     token / opencode BYO endpoint → manual entry, the fail-open state / vibe
+//     Mistral endpoint via a mistral-pinned ProviderModelPicker / goose preview-disabled
+//     CTA — ISI-6380).
 //   - Same-provider advisory (AC7): reused verbatim from ModelSelector.
 
 import { useEffect, useState } from "react";
@@ -40,6 +42,7 @@ import {
   modelConfigToWire,
   validateModelConfig,
   type FieldErrors,
+  type LlmProviderId,
   type ModelConfigForm,
   type ModelEndpointRow,
   type RuntimeAdapter,
@@ -142,6 +145,70 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
   // 422 field errors on top (they always show).
   const shownErrors: FieldErrors = attempted ? { ...validateModelConfig(form), ...serverErrors } : serverErrors;
 
+  // The BYO picker block, shared by the opencode and vibe tabs (ISI-6380): opencode
+  // keeps the free backend dropdown; vibe pins it to mistral — the backend-complete
+  // lane (masked API key + optional base URL + live model list + Secret save).
+  const byoPicker = (adapter: "opencode" | "vibe", fixed?: LlmProviderId) => (
+    <div
+      className="settings-modelpriority__opencode"
+      data-testid={`modelpriority-${adapter}`}
+    >
+      <p className="muted">
+        {adapter === "vibe"
+          ? "Paste your Mistral API key, list its live models, and Save — K8squad creates the endpoint Secret automatically. An optional base URL overrides the hosted Mistral API (the BYO lane)."
+          : "Pick a backend, list its live models, and Save — K8squad creates the endpoint Secret automatically. No pre-existing Secret required."}
+      </p>
+      <ProviderModelPicker
+        label="Model"
+        idPrefix="primary"
+        fixedProvider={fixed}
+        model={form.model}
+        modelEndpointRef={form.modelEndpointRef}
+        existingEndpoints={endpoints}
+        errors={shownErrors}
+        onChange={(next) =>
+          patch({
+            ...(next.model !== undefined ? { model: next.model } : {}),
+            ...(next.modelEndpointRef !== undefined
+              ? { modelEndpointRef: next.modelEndpointRef, byoEnabled: next.modelEndpointRef.trim() !== "" }
+              : {}),
+          })
+        }
+      />
+
+      <div className="settings-modelpriority__fallback">
+        {!fallbackOpen && form.fallbackModel.trim() === "" ? (
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={() => setFallbackOpen(true)}
+            data-testid="modelpriority-add-fallback"
+          >
+            Add a fallback model
+          </button>
+        ) : (
+          <ProviderModelPicker
+            label="Fallback model"
+            idPrefix="fallback"
+            fixedProvider={fixed}
+            model={form.fallbackModel}
+            modelEndpointRef={form.fallbackModelEndpointRef}
+            existingEndpoints={endpoints}
+            errors={shownErrors}
+            onChange={(next) =>
+              patch({
+                ...(next.model !== undefined ? { fallbackModel: next.model } : {}),
+                ...(next.modelEndpointRef !== undefined
+                  ? { fallbackModelEndpointRef: next.modelEndpointRef }
+                  : {}),
+              })
+            }
+          />
+        )}
+      </div>
+    </div>
+  );
+
   async function onSave() {
     setAttempted(true);
     if (!valid) return;
@@ -202,64 +269,10 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
           <RuntimeAdapterStep
             adapter={form.adapter}
             onAdapterChange={onAdapterChange}
-            opencodeSlot={
-              form.adapter === "opencode" ? (
-                <div className="settings-modelpriority__opencode" data-testid="modelpriority-opencode">
-                  <p className="muted">
-                    Pick a backend, list its live models, and Save — K8squad creates the endpoint Secret
-                    automatically. No pre-existing Secret required.
-                  </p>
-                  <ProviderModelPicker
-                    label="Model"
-                    idPrefix="primary"
-                    model={form.model}
-                    modelEndpointRef={form.modelEndpointRef}
-                    existingEndpoints={endpoints}
-                    errors={shownErrors}
-                    onChange={(next) =>
-                      patch({
-                        ...(next.model !== undefined ? { model: next.model } : {}),
-                        ...(next.modelEndpointRef !== undefined
-                          ? { modelEndpointRef: next.modelEndpointRef, byoEnabled: next.modelEndpointRef.trim() !== "" }
-                          : {}),
-                      })
-                    }
-                  />
-
-                  <div className="settings-modelpriority__fallback">
-                    {!fallbackOpen && form.fallbackModel.trim() === "" ? (
-                      <button
-                        type="button"
-                        className="btn btn--ghost"
-                        onClick={() => setFallbackOpen(true)}
-                        data-testid="modelpriority-add-fallback"
-                      >
-                        Add a fallback model
-                      </button>
-                    ) : (
-                      <ProviderModelPicker
-                        label="Fallback model"
-                        idPrefix="fallback"
-                        model={form.fallbackModel}
-                        modelEndpointRef={form.fallbackModelEndpointRef}
-                        existingEndpoints={endpoints}
-                        errors={shownErrors}
-                        onChange={(next) =>
-                          patch({
-                            ...(next.model !== undefined ? { fallbackModel: next.model } : {}),
-                            ...(next.modelEndpointRef !== undefined
-                              ? { fallbackModelEndpointRef: next.modelEndpointRef }
-                              : {}),
-                          })
-                        }
-                      />
-                    )}
-                  </div>
-                </div>
-              ) : undefined
-            }
+            opencodeSlot={form.adapter === "opencode" ? byoPicker("opencode") : undefined}
+            vibeSlot={form.adapter === "vibe" ? byoPicker("vibe", "mistral") : undefined}
           >
-            {form.adapter === "opencode" ? (
+            {form.adapter === "opencode" || form.adapter === "vibe" ? (
               <></>
             ) : (
               <ModelSelector

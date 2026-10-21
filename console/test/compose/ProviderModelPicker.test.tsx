@@ -7,7 +7,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { useState } from "react";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { ProviderModelPicker } from "@/components/compose/ProviderModelPicker";
-import type { FieldErrors, ModelEndpointRow } from "@/lib/compose";
+import type { FieldErrors, LlmProviderId, ModelEndpointRow } from "@/lib/compose";
 
 afterEach(() => {
   cleanup();
@@ -49,18 +49,21 @@ function Harness({
   onChangeSpy,
   initialModel = "",
   initialRef = "",
+  fixedProvider,
 }: {
   existingEndpoints?: ModelEndpointRow[];
   errors?: FieldErrors;
   onChangeSpy?: (n: { model?: string; modelEndpointRef?: string }) => void;
   initialModel?: string;
   initialRef?: string;
+  fixedProvider?: LlmProviderId;
 }) {
   const [f, setF] = useState({ model: initialModel, modelEndpointRef: initialRef });
   return (
     <ProviderModelPicker
       label="Model"
       idPrefix="primary"
+      fixedProvider={fixedProvider}
       model={f.model}
       modelEndpointRef={f.modelEndpointRef}
       existingEndpoints={existingEndpoints}
@@ -319,5 +322,39 @@ describe("<ProviderModelPicker> — Mistral (vibe) provider", () => {
     expect((screen.getByTestId("primary-url") as HTMLInputElement).value).toBe("http://ollama.lan:11434/v1");
     expect((screen.getByTestId("primary-key") as HTMLInputElement).value).toBe("");
     expect((screen.getByTestId("primary-model") as HTMLSelectElement).value).toBe("mistral-large-latest");
+  });
+
+  it("pinned vibe picker keeps the saved BYO base URL (ISI-5302 holds under the pin)", () => {
+    stubEndpoints({});
+    render(
+      <Harness
+        fixedProvider="mistral"
+        existingEndpoints={[{ name: "my-mistral", provider: "mistral", url: "http://ollama.lan:11434/v1", hasToken: true }]}
+        initialModel="mistral-large-latest"
+        initialRef="my-mistral"
+      />,
+    );
+    expect((screen.getByTestId("primary-url") as HTMLInputElement).value).toBe("http://ollama.lan:11434/v1");
+  });
+
+  it("pinned vibe picker's escape hatch only lists mistral endpoints, not ollama (ISI-6380)", () => {
+    stubEndpoints({});
+    render(
+      <Harness
+        fixedProvider="mistral"
+        existingEndpoints={[
+          { name: "my-mistral", provider: "mistral", url: "http://ollama.lan:11434/v1", hasToken: true },
+          { name: "lan-ollama", provider: "ollama", url: "http://10.0.0.5:11434", hasToken: false },
+        ]}
+        initialModel=""
+        initialRef=""
+      />,
+    );
+    const existing = screen.queryByTestId("primary-existing") as HTMLSelectElement | null;
+    // only mistral endpoint is offered — lan-ollama must not appear
+    expect(existing).not.toBeNull();
+    const options = Array.from(existing!.options).map((o) => o.value);
+    expect(options).toContain("my-mistral");
+    expect(options).not.toContain("lan-ollama");
   });
 });

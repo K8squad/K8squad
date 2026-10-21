@@ -16,6 +16,10 @@
    * a Run deep-link chip never collapses onto the azure accent in either theme.
    * Aligned to the visual-system sheet (#A78BFA) per the ISI-3545 gap report. */
   --ksq-run: #a78bfa;
+  /* Goose runtime-adapter accent (ISI-6380, mock decision ISI-6366): a distinct
+   * theme-invariant cyan — separated from every status hue so the preview tab's
+   * disabled affordance never reads as a run-state. */
+  --accent-goose: #22d3ee;
 
   /* Per-agent comment hue (ISI-4706). The hue itself is emitted per-bubble as
    * an inline `--ksq-author-hue`; saturation is theme-invariant, but LIGHTNESS
@@ -58,6 +62,8 @@
   --text-2: var(--muted);
   /* Light ink on the dark canvas (ISI-4706 per-agent hue, AA-safe band). */
   --ksq-author-l: 70%;
+  /* Goose accent on dark: cyan (same as :root, passes parity check). */
+  --accent-goose: #22d3ee;
 }
 
 /* Light: the SAME token roles, luminance-inverted. The dark canvas navy #0B1220 returns here in
@@ -75,6 +81,8 @@
   --text-2: var(--muted);
   /* Dark ink on the light canvas (ISI-4706 per-agent hue, AA-safe band). */
   --ksq-author-l: 28%;
+  /* Goose accent on light: dark teal for WCAG AA text contrast (4.66:1 on --surface). */
+  --accent-goose: #0e7490;
 }
 
 * {
@@ -5226,7 +5234,8 @@ a:hover {
 
 /* RuntimeAdapterStep (Frame-4) — adapter selector + per-adapter credential branch fronting
    ModelSelector. --adapter-accent is set inline per adapter (claude=--accent, codex=--status-paused,
-   opencode=--status-running). Shared with S2 (ISI-4891). */
+   opencode=--status-running, vibe=--ksq-run, goose=--accent-goose — ISI-6380). Shared with S2
+   (ISI-4891). */
 .runtime-adapter {
   display: flex;
   flex-direction: column;

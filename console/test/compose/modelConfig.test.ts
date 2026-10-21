@@ -15,9 +15,22 @@ import {
   inferModelConfigAdapter,
   modelConfigFromWire,
   modelConfigToWire,
+  RUNTIME_ADAPTERS,
+  RUNTIME_ADAPTER_LABELS,
   type ModelConfigForm,
   type ModelEndpointRow,
+  type RuntimeAdapter,
 } from "@/lib/compose";
+
+describe("RUNTIME_ADAPTERS — ISI-6380 five-tab contract", () => {
+  it("exposes five tabs in order, each with a label", () => {
+    expect([...RUNTIME_ADAPTERS]).toEqual(["claude", "codex", "opencode", "vibe", "goose"]);
+    const unlabeled = (RUNTIME_ADAPTERS as readonly string[]).filter(
+      (a) => !RUNTIME_ADAPTER_LABELS[a as RuntimeAdapter],
+    );
+    expect(unlabeled).toEqual([]);
+  });
+});
 
 const OLLAMA: ModelEndpointRow = { name: "lan-ollama", provider: "ollama", url: "http://10.0.0.5:11434", hasToken: false };
 const DEEPSEEK: ModelEndpointRow = { name: "my-deepseek", provider: "deepseek", url: "", hasToken: true };
@@ -45,6 +58,14 @@ describe("inferModelConfigAdapter — ISI-5302 adapter recovery", () => {
   it("fails safe to claude when the ref can't be resolved (endpoints missing)", () => {
     expect(inferModelConfigAdapter("lan-ollama", [])).toBe("claude");
     expect(inferModelConfigAdapter("ghost", [OLLAMA])).toBe("claude");
+  });
+
+  it("rehydrates a mistral-bound default onto vibe, not opencode (ISI-6380)", () => {
+    const MISTRAL: ModelEndpointRow = { name: "my-mistral", provider: "mistral", url: "http://ollama.lan:11434/v1", hasToken: true };
+    expect(inferModelConfigAdapter("my-mistral", [MISTRAL, OLLAMA])).toBe("vibe");
+    expect(inferModelConfigAdapter("my-mistral/token", [MISTRAL])).toBe("vibe");
+    // other BYO backends must stay on opencode
+    expect(inferModelConfigAdapter("lan-ollama", [MISTRAL, OLLAMA])).toBe("opencode");
   });
 });
 

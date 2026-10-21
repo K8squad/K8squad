@@ -5,9 +5,10 @@
 //
 // Model configuration BRANCHES by runtime adapter (Henrik, 2026-09-23): the model
 // id is provider-agnostic, but HOW credentials reach the provider differs. This
-// step renders an adapter selector (claude / codex / opencode), tinted per adapter
-// with the LOCKED status hues (no new tokens: claude → --accent, codex →
-// --status-paused, opencode → --status-running), plus the adapter's credential
+// step renders an adapter selector (claude / codex / opencode / vibe / goose), tinted
+// per adapter (claude → --accent, codex → --status-paused, opencode →
+// --status-running, vibe → --ksq-run, goose → --accent-goose — ISI-6380; goose adds
+// the one new token), plus the adapter's credential
 // affordance, then renders `children` (the unchanged ModelSelector, so the persisted
 // shape is always the same model triple).
 //
@@ -20,6 +21,13 @@
 //               fail-open state); the live fetch-then-pick (ProviderModelPicker +
 //               GET/POST /api/modelendpoints/models) slots into `opencodeSlot` in a
 //               fast-follow (AC6). `adapter` is UI-only — never persisted.
+//   - vibe:     the Mistral runtime lane (ISI-6380, backend-complete): a mistral-pinned
+//               ProviderModelPicker (masked API key + optional base URL + live model
+//               list + Secret save) slots into `vibeSlot`; without a slot it degrades
+//               to a pointer note — the flow is never blocked.
+//   - goose:    preview/disabled (ISI-6380): mirrors the claude "coming soon" OAuth CTA.
+//               No mesh adapter exists yet (ISI-6382), so the tab never advertises a
+//               working credential path.
 //
 // SHARED WITH S2 (ISI-4891): the API is deliberately minimal — { adapter,
 // onAdapterChange, children, opencodeSlot? } — so the Role-tier surface imports it
@@ -28,11 +36,17 @@
 import type { CSSProperties, ReactNode } from "react";
 import { RUNTIME_ADAPTERS, RUNTIME_ADAPTER_LABELS, type RuntimeAdapter } from "@/lib/compose";
 
-/** Locked status hues per adapter (zero new tokens). */
+/**
+ * Accent hue per adapter. The original three reuse the LOCKED status hues (zero new
+ * tokens); vibe reuses the run-provenance violet --ksq-run, and goose adds the single
+ * new cyan accent --accent-goose (ISI-6366 mock decision: distinct from every status hue).
+ */
 const ADAPTER_TINT: Record<RuntimeAdapter, string> = {
   claude: "var(--accent)",
   codex: "var(--status-paused)",
   opencode: "var(--status-running)",
+  vibe: "var(--ksq-run)",
+  goose: "var(--accent-goose)",
 };
 
 export function RuntimeAdapterStep({
@@ -40,6 +54,7 @@ export function RuntimeAdapterStep({
   onAdapterChange,
   children,
   opencodeSlot,
+  vibeSlot,
 }: {
   adapter: RuntimeAdapter;
   onAdapterChange: (a: RuntimeAdapter) => void;
@@ -51,6 +66,11 @@ export function RuntimeAdapterStep({
    * — the fail-open state, so the flow is never blocked.
    */
   opencodeSlot?: ReactNode;
+  /**
+   * Optional live picker for the vibe branch (ProviderModelPicker pinned to mistral,
+   * ISI-6380). Absent ⇒ vibe degrades to a pointer note — the flow is never blocked.
+   */
+  vibeSlot?: ReactNode;
 }) {
   const tint = ADAPTER_TINT[adapter];
   return (
@@ -103,6 +123,30 @@ export function RuntimeAdapterStep({
               list is coming soon; until then, manual entry always works.
             </p>
           ))}
+        {adapter === "vibe" &&
+          (vibeSlot ?? (
+            <p className="muted" data-testid="vibe-manual-note">
+              Vibe runs on a Mistral API key with an optional custom base URL. Configure the Mistral
+              endpoint under Settings → LLM (Vibe tab), then pick a model below.
+            </p>
+          ))}
+        {adapter === "goose" && (
+          <>
+            <button
+              type="button"
+              className="btn"
+              disabled
+              aria-disabled="true"
+              data-testid="goose-preview-cta"
+            >
+              Configure Goose runtime <span className="chip chip--soon">coming soon</span>
+            </button>
+            <p className="muted" data-testid="goose-preview-note">
+              Goose is in preview — its mesh adapter isn&apos;t wired up yet. It will reuse your
+              Mistral credentials once enabled (ISI-6382); pick a model below in the meantime.
+            </p>
+          </>
+        )}
       </div>
 
       {children}
