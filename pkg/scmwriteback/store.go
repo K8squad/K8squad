@@ -50,6 +50,15 @@ func NewSQLStore(db *sql.DB) (*SQLStore, error) {
 // therefore at most one pending row per work item, and only when the latest run
 // has not been written back — so an operator restart re-derives the exact same
 // set and older historical terminals are never back-posted.
+//
+// latest.to_state is coalesced to the empty string because coord.audit_log.to_state
+// is nullable (0001_coord_schema.sql) and the scan target p.TerminalStep is a
+// plain string: a NULL would fail the whole leg with "converting NULL to string
+// is unsupported", the same whole-leg wedge class as ISI-6409's uuid cast one leg
+// over (pendingPRQuery). No prodeffects writer emits a NULL to_state today, but
+// coord.audit_log is append-only (0001 rejects UPDATE/DELETE/TRUNCATE) so a stray
+// row could never be repaired — coalesce defensively. pendingInitialQuery already
+// does the same for its nullable latest.body.
 const pendingQuery = `
 WITH latest AS (
     SELECT DISTINCT ON (t.work_item_id)
@@ -70,7 +79,7 @@ WITH latest AS (
 )
 SELECT latest.wid::text,
        latest.run_id::text,
-       latest.to_state,
+       COALESCE(latest.to_state, ''),
        COALESCE(c.assignee_agent, ''),
        wi.title,
        (SELECT l FROM unnest(wi.labels) l
