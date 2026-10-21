@@ -102,6 +102,7 @@ export function ProviderModelPicker({
   errors,
   onChange,
   idPrefix = "opencode",
+  fixedProvider,
 }: {
   /** Field label (e.g. "Model" for primary, "Fallback model" for the fallback row). */
   label?: string;
@@ -117,13 +118,32 @@ export function ProviderModelPicker({
   onChange: (next: { model?: string; modelEndpointRef?: string }) => void;
   /** Namespaces DOM ids so primary + fallback instances don't collide. */
   idPrefix?: string;
+  /**
+   * Pin the picker to ONE provider id (e.g. "mistral" for the vibe tab, ISI-6380):
+   * the backend dropdown renders disabled with the single pinned choice, and the
+   * seed ignores any differently-provisioned bound endpoint. Unset ⇒ free choice.
+   */
+  fixedProvider?: string;
 }) {
   // Seed provider/URL from the bound endpoint so a saved opencode selection survives
   // refresh (ISI-5302). useState initializers run once; the parent only mounts this
   // picker after the form is hydrated, so the props are stable at first render.
-  const seed = useMemo(() => seedFromProps(modelEndpointRef, existingEndpoints), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const seed = useMemo(
+    // A pinned picker (fixedProvider, ISI-6380) seeds from the pinned provider itself.
+    () =>
+      fixedProvider
+        ? { provider: fixedProvider, url: llmProviderById(fixedProvider)?.defaultUrl ?? "" }
+        : seedFromProps(modelEndpointRef, existingEndpoints),
+    // Intentionally mount-time-only: the props are stable at first render (see above).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
   const [provider, setProvider] = useState<string>(seed.provider);
   const spec = useMemo(() => llmProviderById(provider), [provider]);
+  // A pinned picker offers exactly its pinned backend (ISI-6380); otherwise every BYO lane.
+  const providerOptions = fixedProvider
+    ? LLM_PROVIDER_OPTIONS.filter((p) => p.id === fixedProvider)
+    : LLM_PROVIDER_OPTIONS;
   const [url, setUrl] = useState<string>(seed.url);
   const [apiKey, setApiKey] = useState<string>("");
   const [name, setName] = useState<string>("");
@@ -253,15 +273,21 @@ export function ProviderModelPicker({
     <div className="provider-picker" data-testid={`provider-picker-${idPrefix}`}>
       <Field
         label="Backend"
-        hint="Pick the model backend — the model list and Secret are created from your choice."
+        hint={
+          fixedProvider
+            ? "Pinned to this runtime's provider — the model list and Secret are created from it."
+            : "Pick the model backend — the model list and Secret are created from your choice."
+        }
       >
         <select
           value={provider}
           onChange={(e) => onProviderChange(e.target.value)}
+          disabled={Boolean(fixedProvider)}
+          aria-disabled={Boolean(fixedProvider) || undefined}
           aria-label={`${label} backend`}
           data-testid={`${idPrefix}-provider`}
         >
-          {LLM_PROVIDER_OPTIONS.map((p) => (
+          {providerOptions.map((p) => (
             <option key={p.id} value={p.id}>
               {p.label}
             </option>

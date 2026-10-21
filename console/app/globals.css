@@ -16,6 +16,10 @@
    * a Run deep-link chip never collapses onto the azure accent in either theme.
    * Aligned to the visual-system sheet (#A78BFA) per the ISI-3545 gap report. */
   --ksq-run: #a78bfa;
+  /* Goose runtime-adapter accent (ISI-6380, mock decision ISI-6366): a distinct
+   * theme-invariant cyan — separated from every status hue so the preview tab's
+   * disabled affordance never reads as a run-state. */
+  --accent-goose: #22d3ee;
 
   /* Per-agent comment hue (ISI-4706). The hue itself is emitted per-bubble as
    * an inline `--ksq-author-hue`; saturation is theme-invariant, but LIGHTNESS
@@ -5226,7 +5230,8 @@ a:hover {
 
 /* RuntimeAdapterStep (Frame-4) — adapter selector + per-adapter credential branch fronting
    ModelSelector. --adapter-accent is set inline per adapter (claude=--accent, codex=--status-paused,
-   opencode=--status-running). Shared with S2 (ISI-4891). */
+   opencode=--status-running, vibe=--ksq-run, goose=--accent-goose — ISI-6380). Shared with S2
+   (ISI-4891). */
 .runtime-adapter {
   display: flex;
   flex-direction: column;

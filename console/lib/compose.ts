@@ -712,8 +712,8 @@ export type ComposeResult = {
 // UI-only credential-path branch (Frame-4 RuntimeAdapterStep) that is NOT
 // persisted (the resolved model id is provider-agnostic).
 
-/** The runtime-adapter credential branch (Frame-4, board LOCK OQ5). */
-export const RUNTIME_ADAPTERS = ["claude", "codex", "opencode"] as const;
+/** The runtime-adapter credential branch (Frame-4, board LOCK OQ5; vibe/goose ISI-6380). */
+export const RUNTIME_ADAPTERS = ["claude", "codex", "opencode", "vibe", "goose"] as const;
 export type RuntimeAdapter = (typeof RUNTIME_ADAPTERS)[number];
 
 /** Human labels for the adapter selector. */
@@ -721,6 +721,8 @@ export const RUNTIME_ADAPTER_LABELS: Record<RuntimeAdapter, string> = {
   claude: "Claude",
   codex: "Codex",
   opencode: "OpenCode",
+  vibe: "Vibe",
+  goose: "Goose",
 };
 
 // ── Backend-driven model picker (ISI-5006 S3, child of ISI-4989) ──────────────
@@ -860,7 +862,8 @@ interface ModelConfigWire {
  * (adapter-agnostic) spec on load (ISI-5302). The adapter itself never rides the wire
  * — the ModelConfig stores only the resolved model triple — so we infer it from the
  * primary `modelEndpointRef`: if that ref names a saved endpoint whose provider is one
- * of the opencode BYO backends (LLM_PROVIDER_OPTIONS), the admin configured opencode;
+ * of the opencode BYO backends (LLM_PROVIDER_OPTIONS), the admin configured opencode —
+ * except mistral, the vibe runtime's lane (ISI-6380), which rehydrates onto vibe;
  * otherwise we default to claude (the curated token path). Claude/codex BYO endpoints
  * are not in that provider set, so they correctly stay on the claude branch. Without
  * the endpoints list (GET /api/modelendpoints not yet loaded, or failed) we can't
@@ -874,7 +877,11 @@ export function inferModelConfigAdapter(
   const name = parseSecretRef(modelEndpointRef).name;
   if (!name) return "claude";
   const ep = endpoints.find((e) => e.name === name);
-  return ep && LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider) ? "opencode" : "claude";
+  if (!ep) return "claude";
+  // mistral is the vibe runtime's lane (ISI-6380): a mistral-bound org default
+  // rehydrates onto the vibe tab, not the opencode BYO tab.
+  if (ep.provider === "mistral") return "vibe";
+  return LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider) ? "opencode" : "claude";
 }
 
 /**

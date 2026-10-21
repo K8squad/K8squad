@@ -23,7 +23,9 @@ export interface ModelHint {
  * The static curated list. MVP source of `useModelHints()`.
  *
  * Leads with the vibe runtime's default (mistral-large-latest — P4.1 / ISI-6158 C2: the k8squad
- * shim engine pins it as DefaultModel), then the Claude family (Opus / Sonnet / Haiku).
+ * shim engine pins it as DefaultModel), then the goose preview hint (mistral-small-latest —
+ * ISI-6380; a placeholder until the mesh adapter lands, ISI-6382), then the Claude family
+ * (Opus / Sonnet / Haiku).
  *
  * These are convenience defaults only; a user needing any other id reaches it through
  * "Custom model…" (AC2/AC7) — ADR-026: convenience, never constraint. Ordered most-capable →
@@ -31,6 +33,7 @@ export interface ModelHint {
  */
 export const CURATED_MODELS: readonly ModelHint[] = Object.freeze([
   { id: "mistral-large-latest", label: "Mistral Large (vibe) — default" },
+  { id: "mistral-small-latest", label: "Mistral Small (goose) — preview" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8 — most capable" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced" },
   { id: "claude-opus-5", label: "Claude Opus 5" },
