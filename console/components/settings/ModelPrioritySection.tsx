@@ -42,6 +42,7 @@ import {
   modelConfigToWire,
   validateModelConfig,
   type FieldErrors,
+  type LlmProviderId,
   type ModelConfigForm,
   type ModelEndpointRow,
   type RuntimeAdapter,
@@ -147,13 +148,13 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
   // The BYO picker block, shared by the opencode and vibe tabs (ISI-6380): opencode
   // keeps the free backend dropdown; vibe pins it to mistral — the backend-complete
   // lane (masked API key + optional base URL + live model list + Secret save).
-  const byoPicker = (fixed?: string) => (
+  const byoPicker = (adapter: "opencode" | "vibe", fixed?: LlmProviderId) => (
     <div
       className="settings-modelpriority__opencode"
-      data-testid={fixed === "mistral" ? "modelpriority-vibe" : "modelpriority-opencode"}
+      data-testid={`modelpriority-${adapter}`}
     >
       <p className="muted">
-        {fixed === "mistral"
+        {adapter === "vibe"
           ? "Paste your Mistral API key, list its live models, and Save — K8squad creates the endpoint Secret automatically. An optional base URL overrides the hosted Mistral API (the BYO lane)."
           : "Pick a backend, list its live models, and Save — K8squad creates the endpoint Secret automatically. No pre-existing Secret required."}
       </p>
@@ -268,8 +269,8 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
           <RuntimeAdapterStep
             adapter={form.adapter}
             onAdapterChange={onAdapterChange}
-            opencodeSlot={form.adapter === "opencode" ? byoPicker() : undefined}
-            vibeSlot={form.adapter === "vibe" ? byoPicker("mistral") : undefined}
+            opencodeSlot={form.adapter === "opencode" ? byoPicker("opencode") : undefined}
+            vibeSlot={form.adapter === "vibe" ? byoPicker("vibe", "mistral") : undefined}
           >
             {form.adapter === "opencode" || form.adapter === "vibe" ? (
               <></>

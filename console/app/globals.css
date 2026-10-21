@@ -79,6 +79,8 @@
   --text-2: var(--muted);
   /* Dark ink on the light canvas (ISI-4706 per-agent hue, AA-safe band). */
   --ksq-author-l: 28%;
+  /* Goose accent on light: dark teal for WCAG AA text contrast (4.66:1 on --surface). */
+  --accent-goose: #0e7490;
 }
 
 * {

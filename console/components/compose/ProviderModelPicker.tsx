@@ -40,6 +40,7 @@ import {
   type FieldErrors,
   type ListedModel,
   type ListModelsRequest,
+  type LlmProviderId,
   type ModelEndpointRow,
 } from "@/lib/compose";
 
@@ -120,20 +121,22 @@ export function ProviderModelPicker({
   idPrefix?: string;
   /**
    * Pin the picker to ONE provider id (e.g. "mistral" for the vibe tab, ISI-6380):
-   * the backend dropdown renders disabled with the single pinned choice, and the
-   * seed ignores any differently-provisioned bound endpoint. Unset ⇒ free choice.
+   * the backend dropdown renders disabled with the single pinned choice. Unset ⇒ free choice.
    */
-  fixedProvider?: string;
+  fixedProvider?: LlmProviderId;
 }) {
   // Seed provider/URL from the bound endpoint so a saved opencode selection survives
   // refresh (ISI-5302). useState initializers run once; the parent only mounts this
   // picker after the form is hydrated, so the props are stable at first render.
   const seed = useMemo(
-    // A pinned picker (fixedProvider, ISI-6380) seeds from the pinned provider itself.
-    () =>
-      fixedProvider
-        ? { provider: fixedProvider, url: llmProviderById(fixedProvider)?.defaultUrl ?? "" }
-        : seedFromProps(modelEndpointRef, existingEndpoints),
+    () => {
+      const s = seedFromProps(modelEndpointRef, existingEndpoints);
+      if (!fixedProvider) return s;
+      // Keep the bound endpoint's BYO URL (ISI-5302); only force the provider.
+      return s.provider === fixedProvider
+        ? { ...s, provider: fixedProvider }
+        : { provider: fixedProvider, url: llmProviderById(fixedProvider)?.defaultUrl ?? "" };
+    },
     // Intentionally mount-time-only: the props are stable at first render (see above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
@@ -144,6 +147,10 @@ export function ProviderModelPicker({
   const providerOptions = fixedProvider
     ? LLM_PROVIDER_OPTIONS.filter((p) => p.id === fixedProvider)
     : LLM_PROVIDER_OPTIONS;
+  // Keep the escape hatch honest: only show endpoints that match the pinned provider.
+  const selectableEndpoints = fixedProvider
+    ? existingEndpoints.filter((e) => e.provider === fixedProvider)
+    : existingEndpoints;
   const [url, setUrl] = useState<string>(seed.url);
   const [apiKey, setApiKey] = useState<string>("");
   const [name, setName] = useState<string>("");
@@ -457,18 +464,18 @@ export function ProviderModelPicker({
 
       {/* Advanced escape hatch: reference a previously-created endpoint (was free text; now a
           dropdown fed by GET /api/modelendpoints). The model id is typed in this mode. */}
-      {existingEndpoints.length > 0 && (
+      {selectableEndpoints.length > 0 && (
         <details className="provider-picker__advanced">
           <summary>Use an existing endpoint instead</summary>
           <Field label="Existing endpoint" hint="Bind a Secret you already created.">
             <select
-              value={existingEndpoints.some((e) => e.name === modelEndpointRef.trim()) ? modelEndpointRef.trim() : ""}
+              value={selectableEndpoints.some((e) => e.name === modelEndpointRef.trim()) ? modelEndpointRef.trim() : ""}
               onChange={(e) => onChange({ modelEndpointRef: e.target.value })}
               aria-label={`${label} existing endpoint`}
               data-testid={`${idPrefix}-existing`}
             >
               <option value="">— Select an endpoint —</option>
-              {existingEndpoints.map((ep) => (
+              {selectableEndpoints.map((ep) => (
                 <option key={ep.name} value={ep.name}>
                   {ep.name} ({ep.provider}
                   {ep.hasToken ? ", key" : ""})

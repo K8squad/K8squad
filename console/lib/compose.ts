@@ -783,6 +783,9 @@ export const LLM_PROVIDER_OPTIONS: readonly LlmProviderOption[] = [
   },
 ] as const;
 
+/** Derived union of valid LLM provider ids (use instead of `string` for fixedProvider). */
+export type LlmProviderId = (typeof LLM_PROVIDER_OPTIONS)[number]["id"];
+
 /** Look up a provider option by id (undefined for an unknown/curated id). */
 export function llmProviderById(id: string): LlmProviderOption | undefined {
   return LLM_PROVIDER_OPTIONS.find((p) => p.id === id);
