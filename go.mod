@@ -2,7 +2,7 @@ module github.com/K8squad/K8squad
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 // K8s library versions are pinned here (OQ12, story 1.1). Bump these together —
 // api/apimachinery/client-go share a release train; controller-runtime v0.19.x

@@ -38,10 +38,12 @@ package coord
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/K8squad/K8squad/pkg/reconcile"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // ProdReconcileStore implements reconcile.Store against the production coord
@@ -104,6 +106,44 @@ func NewProdReconcileStore(ctx context.Context, db *sql.DB, workItemID, runID, p
 func (s *ProdReconcileStore) WithTraceID(traceID string) *ProdReconcileStore {
 	s.traceID = traceID
 	return s
+}
+
+// traceCarrierArg serializes the active span context in s.ctx — the operator's
+// live run.reconcile span (driver.go starts it before Store(ctx) binds this
+// store) — as a W3C carrier map ({"traceparent":…,"tracestate":…}) for the
+// coord.outbox.trace_carrier column (ISI-6368). Stamping the FULL carrier here,
+// not just the trace_id in the payload, gives the relay a real parent span id:
+// its runTraceContext (pkg/events/trace.go) takes the trace_carrier path and
+// nests the `nats publish …` producer span directly under run.reconcile. The
+// payload-trace_id fallback it would otherwise hit synthesizes a parent span id
+// from the trace-id PREFIX, producing a dangling parent (ISI-6368 root cause).
+//
+// It returns a SQL NULL — not "{}" — when s.ctx has no active span (Inject
+// writes nothing), so a transition captured off the trace (pre-dispatch, before
+// run.reconcile opens) stays cleanly NULL and the relay falls back exactly as
+// before. Best-effort by construction: a marshal error (never expected for a
+// small string map) also yields NULL rather than failing the outbox write,
+// because an outbox INSERT must NEVER depend on the tracer.
+//
+// Sampling: the carrier records run.reconcile's real sampling flag, so under a
+// head sampler that drops this trace (probabilistic sampling, traceparent `-00`)
+// the relay's producer span is dropped IN LOCKSTEP with its parent instead of
+// being force-exported as an orphan. That is deliberate and strictly more correct
+// than the pre-ISI-6368 fallback, which hardcoded FlagsSampled (pkg/events/trace.go)
+// and always exported the publish span — the very parentless hop this fix removes.
+// A sampled-in trace (the only case that reaches a backend) carries `-01` and
+// nests normally under run.reconcile's real span id.
+func (s *ProdReconcileStore) traceCarrierArg() any {
+	carrier := map[string]string{}
+	telemetry.Inject(s.ctx, carrier)
+	if len(carrier) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(carrier)
+	if err != nil {
+		return nil
+	}
+	return string(b)
 }
 
 // WithA2AFollowGate enables (or disables) the ISI-4435 follow-settlement gate on
@@ -272,18 +312,32 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 	//     to the run trace, unlike the WS-D lifecycle events below which already
 	//     stamp trace_id. NULLIF keeps an untraced run (empty traceID) cleanly NULL,
 	//     so the relay falls back to a fresh trace exactly as before.
+	//
+	//     ISI-6368: the trace_carrier column stamps the FULL W3C carrier of the
+	//     live run.reconcile span (traceCarrierArg) alongside the payload trace_id.
+	//     The relay prefers the carrier (real parent span id ⇒ the producer span
+	//     nests under run.reconcile) and only falls back to the trace-id — whose
+	//     prefix it would otherwise mis-use as a parent, dangling the span — when
+	//     no span is active here (pre-dispatch). Co-committed in this same txn.
+	//
+	//     Computed ONCE here and reused for the WS-D lifecycle rows below (both
+	//     read the same s.ctx, so the values agree), so the "computed once per
+	//     advance" invariant the lifecycle block relies on is literally true.
+	carrierArg := s.traceCarrierArg()
 	if _, err := tx.ExecContext(s.ctx, `
 		INSERT INTO coord.outbox
-		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload, trace_carrier)
 		SELECT 'run', wi.project_id, wi.team_id::text, 'reconcile_advanced',
 		       wi.id, $2::uuid,
 		       jsonb_build_object('from_step', $3::text, 'to_step', $4::text,
 		                          'fence_token', $5::bigint,
 		                          'run_id', $2::text,
-		                          'trace_id', NULLIF($6::text, ''))
+		                          'trace_id', NULLIF($6::text, '')),
+		       $7::jsonb
 		  FROM coord.work_item wi
 		 WHERE wi.id = $1::uuid`,
-		s.workItemID, s.runID, string(expected), string(next), fenceAfter, s.traceID); err != nil {
+		s.workItemID, s.runID, string(expected), string(next), fenceAfter, s.traceID,
+		carrierArg); err != nil {
 		s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: outbox: %w", err))
 		return false
 	}
@@ -301,10 +355,14 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 	//     trace spine without threading those fields through the Store seam. Which
 	//     milestones a transition publishes is the machine's decision (reconcile.
 	//     LifecycleEventsFor), keeping the vocabulary next to the happy path it maps.
+	//     ISI-6368: every lifecycle row carries the same live-span trace_carrier as
+	//     the reconcile_advanced projection above (carrierArg, computed once per
+	//     advance), so a `run.ended` / `run.started` publish span nests under
+	//     run.reconcile instead of dangling off a trace-id-prefix synthetic parent.
 	for _, ev := range reconcile.LifecycleEventsFor(expected, next) {
 		if _, err := tx.ExecContext(s.ctx, `
 			INSERT INTO coord.outbox
-			       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+			       (entity, project_id, squad, event_type, work_item_id, run_id, payload, trace_carrier)
 			SELECT $6, wi.project_id, wi.team_id::text, $7, wi.id, $2::uuid,
 			       jsonb_build_object(
 			         'schema',       'ksquad.lifecycle.v1',
@@ -319,13 +377,14 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 			         'team',         wi.team_id::text,
 			         'agent',        c.assignee_agent,
 			         'sandbox',      NULLIF(sb.sandbox_ref, ''),
-			         'trace_id',     NULLIF($8::text, ''))
+			         'trace_id',     NULLIF($8::text, '')),
+			       $9::jsonb
 			  FROM coord.work_item wi
 			  JOIN coord.claim c ON c.work_item_id = wi.id
 			  LEFT JOIN coord.sandbox_bind sb ON sb.run_id = $2::uuid
 			 WHERE wi.id = $1::uuid`,
 			s.workItemID, s.runID, string(expected), string(next), fenceAfter,
-			ev.Entity, ev.EventType, s.traceID); err != nil {
+			ev.Entity, ev.EventType, s.traceID, carrierArg); err != nil {
 			s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: lifecycle %s.%s: %w",
 				ev.Entity, ev.EventType, err))
 			return false
