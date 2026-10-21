@@ -25,11 +25,11 @@ import (
 func applyProposalMigrations(t *testing.T, db *sql.DB) {
 	t.Helper()
 	// applyMigration drops the schema and applies 0004 + 0024; only the proposal
-	// side table (0025) remains to be applied on top of that shared chain.
+	// side table (0025) plus the 0041 reconcile (a no-op on this fresh lane, exercised for ISI-6371) apply on top.
 	applyMigration(t, db)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, name := range []string{"0025_discussion_proposal.sql"} {
+	for _, name := range []string{"0025_discussion_proposal.sql", "0041_discussion_proposal_privileges_reconcile.sql"} {
 		var sqlBytes []byte
 		var err error
 		candidates := []string{
@@ -321,5 +321,69 @@ func TestProposalKindCheckConstraint(t *testing.T) {
 	}
 	if msg.CreatedAt.IsZero() || time.Since(msg.CreatedAt) > time.Minute {
 		t.Fatalf("created_at not server-stamped: %+v", msg)
+	}
+}
+
+// TestListProposalsEdgeThreadsAndPrivileges — ISI-6371 regression lane. The production incident:
+// on the long-lived k8squad-test databases, migration 0025 had been applied by hand as the
+// postgres superuser before the dbmigrate runner shipped (the ISI-5051 ledger seeding), so
+// discussion.proposal stayed owned by postgres while the apiserver connects as the runtime role —
+// every GET/POST .../proposals then failed with SQLSTATE 42501, which writeStoreErr surfaces as a
+// hard 500 (the ISI-6370 console repro). Two guards here:
+//
+//  1. the LIST degrade path: an unknown/edge thread id must answer a clean EMPTY list — a
+//     non-nil slice that renders "[]" with 200, never 500 and never null;
+//  2. the drift class itself: the principal running this lane (the same one that applied the
+//     shipped migrations — the runner's posture) must hold full DML on discussion.proposal, and
+//     the table's owner must match its sibling discussion.message.
+func TestListProposalsEdgeThreadsAndPrivileges(t *testing.T) {
+	store, projectID, teamID, threadID, _, _ := proposalFixtures(t)
+	ctx := context.Background()
+
+	// (1) Unknown thread id: clean empty, non-nil (the handler writes 200 []).
+	unknown, err := store.ListProposals(ctx, projectID, teamID, uuid.New())
+	if err != nil {
+		t.Fatalf("list on unknown thread id: %v", err)
+	}
+	if unknown == nil || len(unknown) != 0 {
+		t.Fatalf("list on unknown thread id: want non-nil empty slice, got %#v", unknown)
+	}
+
+	// (1b) A real thread with zero proposals must also list empty, not error (fresh fixtures
+	// thread: nothing has been proposed on it yet).
+	empty, err := store.ListProposals(ctx, projectID, teamID, threadID)
+	if err != nil {
+		t.Fatalf("list on proposal-less thread: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("list on proposal-less thread: want non-nil empty slice, got %#v", empty)
+	}
+
+	// (2) Privilege + ownership parity — the 42501 drift class (ISI-6371). has_table_privilege
+	// with a comma list is ANY-of, not ALL-of (a SELECT-only role passes it), so the four DML
+	// privileges are probed individually and ANDed (ISI-6371 review).
+	var sel, ins, upd, del bool
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT has_table_privilege(current_user, 'discussion.proposal', 'SELECT'),"+
+			"has_table_privilege(current_user, 'discussion.proposal', 'INSERT'),"+
+			"has_table_privilege(current_user, 'discussion.proposal', 'UPDATE'),"+
+			"has_table_privilege(current_user, 'discussion.proposal', 'DELETE')",
+	).Scan(&sel, &ins, &upd, &del); err != nil {
+		t.Fatalf("privilege probe: %v", err)
+	}
+	if !sel || !ins || !upd || !del {
+		t.Fatalf("current_user lacks DML on discussion.proposal (select=%v insert=%v update=%v delete=%v) — the ISI-6371 drift class "+
+			"(the runtime role cannot read/write the table; every proposals endpoint 500s with SQLSTATE 42501)", sel, ins, upd, del)
+	}
+	var peerOwner, proposalOwner string
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT (SELECT tableowner FROM pg_tables WHERE schemaname='discussion' AND tablename='message'),"+
+			"(SELECT tableowner FROM pg_tables WHERE schemaname='discussion' AND tablename='proposal')",
+	).Scan(&peerOwner, &proposalOwner); err != nil {
+		t.Fatalf("ownership probe: %v", err)
+	}
+	if proposalOwner != peerOwner {
+		t.Fatalf("discussion.proposal owner %q != discussion.message owner %q (ISI-6371 drift)",
+			proposalOwner, peerOwner)
 	}
 }

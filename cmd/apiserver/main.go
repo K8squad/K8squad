@@ -33,7 +33,9 @@ import (
 
 	"flag"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 
 	"github.com/go-logr/logr"
 	"github.com/google/uuid"
@@ -124,11 +126,19 @@ func main() {
 	// this host, rather than a divergent zap stream (cmd/operator, cmd/webhook use zap.New here).
 	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
-	// Fail closed at start: connect + ping the store of record before serving.
-	db, err := sql.Open("pgx", cfg.DatabaseURL)
+	// Fail closed at start: connect + ping the store of record before serving. The pool is
+	// built from an explicit pgx config so server NOTICEs (the WARNINGs dbmigrate migrations
+	// RAISE, e.g. the 0041 ownership-reconcile runbook pointer) reach the apiserver log — the
+	// default sql.Open("pgx") path silently drops them (pgconn only delivers notices when an
+	// OnNotice handler is set; ISI-6371 review issue 3).
+	pgxCfg, err := pgx.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("ksquad-apiserver: open database: %v", err)
+		log.Fatalf("ksquad-apiserver: parse database URL: %v", err)
 	}
+	pgxCfg.OnNotice = func(_ *pgconn.PgConn, n *pgconn.Notice) {
+		log.Printf("postgres %s: %s", n.Severity, n.Message)
+	}
+	db := stdlib.OpenDB(*pgxCfg)
 	defer db.Close()
 	startCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	if err := db.PingContext(startCtx); err != nil {
@@ -148,6 +158,12 @@ func main() {
 		migCancel()
 		log.Fatalf("ksquad-apiserver: refusing to start, schema migration failed: %v", err)
 	}
+	// Standing ownership invariant (ISI-6371): the migration ledger makes every file one-shot,
+	// so drift that lands AFTER a reconcile applied is invisible to Apply. Verify runs on every
+	// boot regardless of ledger state and logs drift loudly (with the 0041 runbook pointer);
+	// advisory by design — Apply stays the fail-closed path, a drifted-but-serviceable store
+	// still boots.
+	dbmigrate.VerifyAndLog(migCtx, db)
 	migCancel()
 
 	// §13 identity resolver. Production resolves the forwarded ksquad_session cookie through the
