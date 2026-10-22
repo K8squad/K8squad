@@ -50,6 +50,15 @@ func NewSQLStore(db *sql.DB) (*SQLStore, error) {
 // therefore at most one pending row per work item, and only when the latest run
 // has not been written back — so an operator restart re-derives the exact same
 // set and older historical terminals are never back-posted.
+//
+// latest.to_state is coalesced to the empty string because coord.audit_log.to_state
+// is nullable (0001_coord_schema.sql) and the scan target p.TerminalStep is a
+// plain string: a NULL would fail the whole leg with "converting NULL to string
+// is unsupported", the same whole-leg wedge class as ISI-6409's uuid cast one leg
+// over (pendingPRQuery). No prodeffects writer emits a NULL to_state today, but
+// coord.audit_log is append-only (0001 rejects UPDATE/DELETE/TRUNCATE) so a stray
+// row could never be repaired — coalesce defensively. pendingInitialQuery already
+// does the same for its nullable latest.body.
 const pendingQuery = `
 WITH latest AS (
     SELECT DISTINCT ON (t.work_item_id)
@@ -70,7 +79,7 @@ WITH latest AS (
 )
 SELECT latest.wid::text,
        latest.run_id::text,
-       latest.to_state,
+       COALESCE(latest.to_state, ''),
        COALESCE(c.assignee_agent, ''),
        wi.title,
        (SELECT l FROM unnest(wi.labels) l
@@ -141,7 +150,11 @@ SELECT latest.wid::text,
 // per labelled work item, ONLY its most-recent SUCCEEDED terminal run that
 // carried source changes (payload->>'source_branch' non-empty, stamped by the
 // runtime when it pushed its per-process branch) and carries no
-// `github_pr_writeback` marker yet. It also reads the payload's optional
+// `github_pr_writeback` marker yet. team_id is cast ::text before the COALESCE because
+// the column is uuid, so a bare empty-string coalesce literal makes Postgres evaluate
+// the cast of the empty string to uuid (SQLSTATE 22P02) whenever a matching row's
+// team_id is NULL (ISI-6409).
+// It also reads the payload's optional
 // base_branch override and the work item's team_id (the escalation event's
 // squad component; NULL when unset). Same DISTINCT ON latest-only shape, same
 // label guard, same NOT EXISTS dedup — an operator restart re-derives the exact
@@ -173,7 +186,7 @@ SELECT latest.wid::text,
        latest.base_branch,
        COALESCE(c.assignee_agent, ''),
        wi.title,
-       COALESCE(wi.team_id, ''),
+       COALESCE(wi.team_id::text, ''),
        (SELECT l FROM unnest(wi.labels) l
          WHERE l LIKE 'ksquad.github.issue=%' LIMIT 1)
   FROM latest
