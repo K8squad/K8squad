@@ -293,8 +293,19 @@ func buildRuntimeAdapter(runtimeType string, host mesh.PlatformHost, opts ...mes
 		return mesh.NewOpenCodeAdapter(host, opts...)
 	case "codex":
 		return mesh.NewCodexAdapter(host, opts...)
+	case "crewai":
+		// The crewaiRouter must carry the same AUTH_TOKEN the crew's A2A server
+		// reads (SimpleTokenAuth) as its Bearer token (ISI-6547 wire contract).
+		// The standing child inherits AUTH_TOKEN from the pod env the same way
+		// every mesh child env stamp wins (LocalHost appends onto os.Environ).
+		// The pool runs always-on: the operator stamps
+		// KSQUAD_MESH_LIFECYCLE_ALWAYS_UP=true with Hibernate off (crews hold
+		// open SSE connections; the module adapter's Hibernate/Wake are no-ops).
+		return mesh.NewCrewAIAdapter(host, append([]mesh.Option{
+			mesh.WithRouter(mesh.NewCrewaiRouter(nil, os.Getenv("AUTH_TOKEN"))),
+		}, opts...)...)
 	default:
-		return nil, fmt.Errorf("no RuntimeAdapter bound for runtime type %q (have: opencode, codex)", runtimeType)
+		return nil, fmt.Errorf("no RuntimeAdapter bound for runtime type %q (have: opencode, codex, crewai)", runtimeType)
 	}
 }
 
