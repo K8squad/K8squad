@@ -58,7 +58,10 @@ function DecisionChip({ type }: { type: string }) {
   const hue = decisionChipHue(type);
   const label = decisionLabel(type);
   return (
-    <span className={`inbox__chip inbox__chip--${hue}`} aria-label={`Decision type: ${label}`}>
+    <span
+      className={`inbox__chip inbox__chip--${hue}`}
+      aria-label={`Decision type: ${label}`}
+    >
       {label}
     </span>
   );
@@ -78,7 +81,10 @@ interface RowHandlers {
 
 /** inline answer is offered in the row only for approve + choose_one (mock 04). */
 function offersInlineAnswer(item: InboxItem): boolean {
-  return item.decision != null && (item.decisionType === "approve" || item.decisionType === "choose_one");
+  return (
+    item.decision != null &&
+    (item.decisionType === "approve" || item.decisionType === "choose_one")
+  );
 }
 
 function InboxRow({
@@ -120,15 +126,22 @@ function InboxRow({
           onClick={() => handlers.onOpen(item)}
         >
           <span className="inbox__row-title">
-            {item.unread && <span className="inbox__unread-dot" aria-label="Unread" />}
+            {item.unread && (
+              <span className="inbox__unread-dot" aria-label="Unread" />
+            )}
             {item.title}
             {item.live && (
-              <span className="inbox__live-badge rail__livebadge" aria-label="Live run" />
+              <span
+                className="inbox__live-badge rail__livebadge"
+                aria-label="Live run"
+              />
             )}
           </span>
           <span className="inbox__row-meta">
             <DecisionChip type={item.decisionType} />
-            {item.raisedByAgent && <span className="inbox__raised-by">· {item.raisedByAgent}</span>}
+            {item.raisedByAgent && (
+              <span className="inbox__raised-by">· {item.raisedByAgent}</span>
+            )}
             {timeLabel && <span className="inbox__time">{timeLabel}</span>}
           </span>
         </button>
@@ -177,7 +190,8 @@ function InboxRow({
               key={o.id}
               type="button"
               className={
-                "inbox__btn inbox__opt" + (o.recommended ? " inbox__opt--recommended" : "")
+                "inbox__btn inbox__opt" +
+                (o.recommended ? " inbox__opt--recommended" : "")
               }
               data-testid="inline-option"
               disabled={busy}
@@ -240,7 +254,9 @@ export interface InboxListProps {
 
 export function InboxList({ client }: InboxListProps = {}) {
   const router = useRouter();
-  const [api] = useState<DiscussionClient>(() => client ?? createDiscussionClient());
+  const [api] = useState<DiscussionClient>(
+    () => client ?? createDiscussionClient(),
+  );
 
   const [data, setData] = useState<InboxResponse | null>(null);
   const [error, setError] = useState(false);
@@ -253,10 +269,14 @@ export function InboxList({ client }: InboxListProps = {}) {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   // Keys answered/rejected inline this session — filtered out immediately so the row leaves the list
   // without waiting for the next 5s poll (the backend drops them from the open arm on resolve anyway).
-  const [resolvedKeys, setResolvedKeys] = useState<Set<string>>(() => new Set());
+  const [resolvedKeys, setResolvedKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
   // Optimistic read/unread overrides from the U toggle; persisted to the backend, so a later poll
   // re-derives the same value — the override just removes the 5s lag.
-  const [unreadOverride, setUnreadOverride] = useState<Record<string, boolean>>({});
+  const [unreadOverride, setUnreadOverride] = useState<Record<string, boolean>>(
+    {},
+  );
 
   // Mark-seen fires ONCE per mount (ADR-0026 §6) — opening the Inbox clears the unread dots + nav
   // badge for whatever is unread at that moment; a run that re-surfaces an item while the page is
@@ -279,7 +299,9 @@ export function InboxList({ client }: InboxListProps = {}) {
           setError(false);
           if (!markedSeen.current) {
             markedSeen.current = true;
-            const unreadKeys = d.items.filter((i) => i.unread).map((i) => i.key);
+            const unreadKeys = d.items
+              .filter((i) => i.unread)
+              .map((i) => i.key);
             void inboxMarkSeen(unreadKeys);
           }
         })
@@ -303,7 +325,9 @@ export function InboxList({ client }: InboxListProps = {}) {
       .filter((it) => typeFilter === "all" || it.decisionType === typeFilter)
       .filter((it) => projectFilter === "all" || it.projectId === projectFilter)
       .map((it) =>
-        it.key in unreadOverride ? { ...it, unread: unreadOverride[it.key] } : it,
+        it.key in unreadOverride
+          ? { ...it, unread: unreadOverride[it.key] }
+          : it,
       );
   }, [data, resolvedKeys, typeFilter, projectFilter, unreadOverride]);
 
@@ -317,12 +341,17 @@ export function InboxList({ client }: InboxListProps = {}) {
       types.add(it.decisionType);
       if (it.projectId) projects.add(it.projectId);
     }
-    return { typeOptions: [...types].sort(), projectOptions: [...projects].sort() };
+    return {
+      typeOptions: [...types].sort(),
+      projectOptions: [...projects].sort(),
+    };
   }, [data, resolvedKeys]);
 
   // Keep focusedIndex in range as the filtered list changes.
   useEffect(() => {
-    setFocusedIndex((i) => Math.max(0, Math.min(i, Math.max(0, items.length - 1))));
+    setFocusedIndex((i) =>
+      Math.max(0, Math.min(i, Math.max(0, items.length - 1))),
+    );
   }, [items.length]);
 
   const setRowError = useCallback((key: string, msg: string) => {
@@ -347,12 +376,19 @@ export function InboxList({ client }: InboxListProps = {}) {
   // Answer / reject (ADR-0026 §4.4). On success the card leaves the open arm → drop it locally so the
   // row disappears immediately; on failure surface a note and keep the row (never a silent no-op).
   const submitAnswer = useCallback(
-    async (item: InboxItem, body: { selectedOptionIds?: string[]; freeText?: string }) => {
+    async (
+      item: InboxItem,
+      body: { selectedOptionIds?: string[]; freeText?: string },
+    ) => {
       if (!item.decision || !item.projectId) return;
       setBusyKey(item.key);
       clearRowError(item.key);
       try {
-        await api.answerDecisionRequest(item.projectId, item.decision.messageId, body);
+        await api.answerDecisionRequest(
+          item.projectId,
+          item.decision.messageId,
+          body,
+        );
         setResolvedKeys((cur) => new Set(cur).add(item.key));
       } catch (e) {
         setRowError(item.key, answerErrorMessage(e));
@@ -374,7 +410,10 @@ export function InboxList({ client }: InboxListProps = {}) {
       setBusyKey(item.key);
       clearRowError(item.key);
       try {
-        await api.rejectDecisionRequest(item.projectId, item.decision.messageId);
+        await api.rejectDecisionRequest(
+          item.projectId,
+          item.decision.messageId,
+        );
         setResolvedKeys((cur) => new Set(cur).add(item.key));
       } catch (e) {
         setRowError(item.key, answerErrorMessage(e));
@@ -385,9 +424,13 @@ export function InboxList({ client }: InboxListProps = {}) {
     [api, clearRowError, setRowError, open],
   );
 
-  const approve = useCallback((item: InboxItem) => void submitAnswer(item, {}), [submitAnswer]);
+  const approve = useCallback(
+    (item: InboxItem) => void submitAnswer(item, {}),
+    [submitAnswer],
+  );
   const choose = useCallback(
-    (item: InboxItem, optionId: string) => void submitAnswer(item, { selectedOptionIds: [optionId] }),
+    (item: InboxItem, optionId: string) =>
+      void submitAnswer(item, { selectedOptionIds: [optionId] }),
     [submitAnswer],
   );
 
@@ -429,13 +472,26 @@ export function InboxList({ client }: InboxListProps = {}) {
       } else if (key === "u" || key === "U") {
         toggleRead(item);
         e.preventDefault();
-      } else if ((key === "a" || key === "A") && item.decisionType === "approve" && offersInlineAnswer(item)) {
+      } else if (
+        (key === "a" || key === "A") &&
+        item.decisionType === "approve" &&
+        offersInlineAnswer(item)
+      ) {
         approve(item);
         e.preventDefault();
-      } else if ((key === "r" || key === "R") && item.decisionType === "approve" && item.decision?.allowReject) {
+      } else if (
+        (key === "r" || key === "R") &&
+        item.decisionType === "approve" &&
+        item.decision?.allowReject
+      ) {
         submitReject(item);
         e.preventDefault();
-      } else if (key >= "1" && key <= "9" && item.decisionType === "choose_one" && item.decision) {
+      } else if (
+        key >= "1" &&
+        key <= "9" &&
+        item.decisionType === "choose_one" &&
+        item.decision
+      ) {
         const n = Number(key);
         const opt = (item.decision.options ?? [])[n - 1];
         if (opt) {
@@ -469,7 +525,9 @@ export function InboxList({ client }: InboxListProps = {}) {
         {showMineToggle && (
           <button
             type="button"
-            className={"inbox__filter-chip" + (mine ? " inbox__filter-chip--on" : "")}
+            className={
+              "inbox__filter-chip" + (mine ? " inbox__filter-chip--on" : "")
+            }
             aria-pressed={mine}
             data-testid="filter-mine"
             onClick={() => setMine((m) => !m)}
@@ -534,7 +592,9 @@ export function InboxList({ client }: InboxListProps = {}) {
       )}
 
       {data.fleet && !mine && (
-        <p className="inbox__scope-note">Showing decisions across all teams (admin). Use “Mine” to narrow.</p>
+        <p className="inbox__scope-note">
+          Showing decisions across all teams (admin). Use “Mine” to narrow.
+        </p>
       )}
     </div>
   );

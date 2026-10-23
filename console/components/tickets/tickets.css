@@ -66,7 +66,9 @@
   font: inherit;
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms ease, color 120ms ease;
+  transition:
+    background 120ms ease,
+    color 120ms ease;
 }
 
 .ksq-viewtoggle button:hover:not(.is-active) {
@@ -129,8 +131,16 @@
   align-items: center;
   gap: 6px;
   color: var(--text-1);
-  border-color: color-mix(in srgb, var(--phase-hue, var(--border)) 45%, transparent);
-  background: color-mix(in srgb, var(--phase-hue, var(--border)) 14%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--phase-hue, var(--border)) 45%,
+    transparent
+  );
+  background: color-mix(
+    in srgb,
+    var(--phase-hue, var(--border)) 14%,
+    transparent
+  );
 }
 
 .ksq-phase-dot {
@@ -345,7 +355,10 @@
   min-height: 200px;
   display: flex;
   flex-direction: column;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, width 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease,
+    width 0.12s ease;
 }
 
 /* A quiet (empty) column collapses to a slim rail so the busy phases stay wide. */
@@ -368,13 +381,15 @@
 /* Allowed drop target: hue glow + accent ring. */
 .ksq-kanban-column--over {
   border-color: var(--phase-hue, var(--accent));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--phase-hue, var(--accent)) 45%, transparent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--phase-hue, var(--accent)) 45%, transparent);
 }
 
 /* Disallowed drop (fail-closed): rose "no-drop" cue, never accepts the drop. */
 .ksq-kanban-column--nodrop {
   border-color: var(--status-blocked);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-blocked) 40%, transparent);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--status-blocked) 40%, transparent);
   cursor: not-allowed;
 }
 
@@ -467,7 +482,8 @@
   height: 3px;
   border-radius: 999px;
   background: var(--phase-hue, var(--accent));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--phase-hue, var(--accent)) 30%, transparent);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--phase-hue, var(--accent)) 30%, transparent);
 }
 
 .ksq-kanban-card {
@@ -477,7 +493,10 @@
   border-radius: var(--radius);
   padding: 10px 12px;
   min-height: 44px;
-  transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease;
+  transition:
+    transform 0.1s ease,
+    opacity 0.1s ease,
+    box-shadow 0.1s ease;
 }
 
 .ksq-kanban-card[data-tree-depth="0"] {
@@ -626,8 +645,8 @@
  * shared column template so the sort header aligns over the row cells: lead
  * (caret+id) · title(1fr) · status · priority · assignee · labels · updated. */
 .ksq-list {
-  --ksq-list-cols: minmax(120px, auto) minmax(180px, 1fr) 132px 96px minmax(120px, 168px)
-    minmax(90px, 160px) 128px;
+  --ksq-list-cols: minmax(120px, auto) minmax(180px, 1fr) 132px 96px
+    minmax(120px, 168px) minmax(90px, 160px) 128px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-card, var(--radius));
@@ -697,7 +716,11 @@
 }
 
 .ksq-listrow:hover {
-  background: color-mix(in srgb, var(--phase-hue, var(--accent)) 7%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--phase-hue, var(--accent)) 7%,
+    transparent
+  );
 }
 
 .ksq-listrow__spine {
@@ -1281,8 +1304,12 @@
    classify) it degrades to hue 258 — the shared Run hue — keeping the old look.
    Humans keep the accent. */
 .ksq-chip[data-role="agent"] {
-  border-color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
-  color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
+  border-color: hsl(
+    var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l)
+  );
+  color: hsl(
+    var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l)
+  );
 }
 .ksq-chip[data-role="user"] {
   border-color: var(--accent);
@@ -1343,8 +1370,12 @@
 /* An agent's avatar ring picks up the reserved Run hue so a run reads as a run;
    a human's picks up the accent hue — the two never share a colour (ISI-4567). */
 .ksq-runcomment__avatar[data-kind="agent"] {
-  border-color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
-  color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
+  border-color: hsl(
+    var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l)
+  );
+  color: hsl(
+    var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l)
+  );
 }
 .ksq-runcomment__avatar[data-kind="user"] {
   border-color: var(--accent);
@@ -1364,7 +1395,9 @@
    (ISI-4567 "distinguish each comment"): agents wear the Run hue, humans the
    accent hue. The tint is subtle on the fill and firm on the left spine edge. */
 .ksq-runcomment[data-role="agent"] .ksq-runcomment__bubble {
-  border-left-color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
+  border-left-color: hsl(
+    var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l)
+  );
   background: color-mix(
     in srgb,
     hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l)) 7%,
@@ -2215,7 +2248,8 @@
   padding: 6px 10px;
   font-size: 0.85em;
   color: var(--status-failed, #d64);
-  border: 1px solid color-mix(in srgb, var(--status-failed, #d64) 45%, transparent);
+  border: 1px solid
+    color-mix(in srgb, var(--status-failed, #d64) 45%, transparent);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--status-failed, #d64) 8%, var(--surface));
 }

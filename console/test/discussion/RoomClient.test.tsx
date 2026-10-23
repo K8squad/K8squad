@@ -115,10 +115,9 @@ describe("<DiscussionRoomClient> — ISI-5673 routing", () => {
     const { rerender } = renderClient(stubClient());
     await waitFor(() => screen.getByTestId("discussions-row-older"));
     fireEvent.click(screen.getByTestId("discussions-row-older"));
-    expect(push).toHaveBeenCalledWith(
-      "/projects/p1/discussion?thread=older",
-      { scroll: false },
-    );
+    expect(push).toHaveBeenCalledWith("/projects/p1/discussion?thread=older", {
+      scroll: false,
+    });
     // The push updated the URL; the next render shows the selected thread.
     rerender(
       <DiscussionRoomClient

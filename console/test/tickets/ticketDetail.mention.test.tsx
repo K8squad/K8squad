@@ -10,7 +10,13 @@
 // and the SSE transport are stubbed.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -103,7 +109,9 @@ function routeFetch(posted = { body: POSTED_COMMENT }) {
 
 /** Wait for the composer to be live (roster loaded → assign options present). */
 async function readyComposer() {
-  await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+  await waitFor(() =>
+    expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+  );
   await waitFor(() =>
     expect(
       screen.getAllByRole("option", { name: "reviewer" }).length,
@@ -132,7 +140,9 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "please look @" },
     });
-    await waitFor(() => expect(screen.getByTestId("mention-popover")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("mention-popover")).toBeTruthy(),
+    );
     expect(screen.getAllByTestId("mention-option")).toHaveLength(2);
     // …and every row is an agent (glyph `@`, not `#`).
     for (const opt of screen.getAllByTestId("mention-option")) {
@@ -148,7 +158,9 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "hey @zzz" },
     });
-    await waitFor(() => expect(screen.getByTestId("mention-empty")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("mention-empty")).toBeTruthy(),
+    );
   });
 
   it("selecting an agent inserts the token but does NOT arm the explicit assign select (pure autocomplete)", async () => {
@@ -169,13 +181,17 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
     );
 
     // Token inserted into the draft…
-    const input = screen.getByTestId("detail-composer-input") as HTMLTextAreaElement;
+    const input = screen.getByTestId(
+      "detail-composer-input",
+    ) as HTMLTextAreaElement;
     expect(input.value).toContain("@reviewer ");
     // …popover dismissed…
     expect(screen.queryByTestId("mention-popover")).toBeNull();
     // …and the explicit assign select stays UNARMED — ISI-5281 drops the dropdown
     // gate; dispatch now rides the typed body, not an armed select.
-    const assign = screen.getByTestId("detail-composer-assignee") as HTMLSelectElement;
+    const assign = screen.getByTestId(
+      "detail-composer-assignee",
+    ) as HTMLSelectElement;
     expect(assign.value).toBe("");
   });
 
@@ -196,7 +212,9 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
     );
     // …and the dispatch POST carried the resolved agent NAME.
     await waitFor(() => expect(dispatchCall()).toBeTruthy());
-    expect(dispatchCall()?.[1]?.body).toBe(JSON.stringify({ agentId: "reviewer" }));
+    expect(dispatchCall()?.[1]?.body).toBe(
+      JSON.stringify({ agentId: "reviewer" }),
+    );
   });
 
   it("a body with zero resolvable mentions posts a plain comment and does NOT dispatch", async () => {
@@ -237,9 +255,14 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
         return Promise.resolve(jsonResponse(POSTED_COMMENT, 201));
       if (u.includes("/dispatch") && method === "POST")
         return Promise.resolve(
-          jsonResponse({ workItemId: "wi-1", fromState: "backlog", toState: "todo" }),
+          jsonResponse({
+            workItemId: "wi-1",
+            fromState: "backlog",
+            toState: "todo",
+          }),
         );
-      if (u.includes("/api/work-items/")) return Promise.resolve(jsonResponse(THREAD));
+      if (u.includes("/api/work-items/"))
+        return Promise.resolve(jsonResponse(THREAD));
       return Promise.resolve(jsonResponse([]));
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
@@ -298,6 +321,8 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
     fireEvent.click(screen.getByTestId("detail-composer-submit-assign"));
 
     await waitFor(() => expect(dispatchCall()).toBeTruthy());
-    expect(dispatchCall()?.[1]?.body).toBe(JSON.stringify({ agentId: "reviewer" }));
+    expect(dispatchCall()?.[1]?.body).toBe(
+      JSON.stringify({ agentId: "reviewer" }),
+    );
   });
 });

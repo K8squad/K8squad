@@ -4,7 +4,13 @@
 // Workspace (identity + honest PVC "—"), per-panel isolation, and read-only (GET-only).
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import {
   ProjectLanding,
   selectProject,
@@ -33,8 +39,17 @@ const overview: SquadOverviewData = {
       namespace: "squad-alpha",
       repoUrl: "https://git.example/webapp",
       runs: [
-        { name: "run-old", workItem: "wi-1", phase: "Succeeded", claimedAt: "2026-08-20T10:00:00Z" },
-        { name: "run-new", phase: "Running", claimedAt: "2026-08-22T10:00:00Z" },
+        {
+          name: "run-old",
+          workItem: "wi-1",
+          phase: "Succeeded",
+          claimedAt: "2026-08-20T10:00:00Z",
+        },
+        {
+          name: "run-new",
+          phase: "Running",
+          claimedAt: "2026-08-22T10:00:00Z",
+        },
       ],
       phaseCounts: { Running: 1, Succeeded: 1 },
     },
@@ -43,16 +58,64 @@ const overview: SquadOverviewData = {
 };
 
 const workItems: WorkItem[] = [
-  { id: "t1", projectId: "webapp", parentId: null, title: "Fix login", state: "in_progress", blockedReason: null, updatedAt: "2026-08-21T09:00:00Z" },
-  { id: "t2", projectId: "webapp", parentId: null, title: "Ship docs", state: "done", blockedReason: null, updatedAt: "2026-08-23T09:00:00Z" },
-  { id: "t3", projectId: "webapp", parentId: null, title: "Add metrics", state: "in_review", blockedReason: null, updatedAt: "2026-08-19T09:00:00Z" },
+  {
+    id: "t1",
+    projectId: "webapp",
+    parentId: null,
+    title: "Fix login",
+    state: "in_progress",
+    blockedReason: null,
+    updatedAt: "2026-08-21T09:00:00Z",
+  },
+  {
+    id: "t2",
+    projectId: "webapp",
+    parentId: null,
+    title: "Ship docs",
+    state: "done",
+    blockedReason: null,
+    updatedAt: "2026-08-23T09:00:00Z",
+  },
+  {
+    id: "t3",
+    projectId: "webapp",
+    parentId: null,
+    title: "Add metrics",
+    state: "in_review",
+    blockedReason: null,
+    updatedAt: "2026-08-19T09:00:00Z",
+  },
 ];
 
 const agents: SquadAgentEntry[] = [
-  { id: "a1", name: "cade", namespace: "squad-alpha", role: "developer", skillCount: 3 },
-  { id: "a2", name: "archie", namespace: "squad-alpha", role: "architect", skillCount: 5 },
-  { id: "a3", name: "devy", namespace: "squad-alpha", role: "developer", skillCount: 2 },
-  { id: "a4", name: "stray", namespace: "squad-beta", role: "developer", skillCount: 1 }, // other squad — filtered out
+  {
+    id: "a1",
+    name: "cade",
+    namespace: "squad-alpha",
+    role: "developer",
+    skillCount: 3,
+  },
+  {
+    id: "a2",
+    name: "archie",
+    namespace: "squad-alpha",
+    role: "architect",
+    skillCount: 5,
+  },
+  {
+    id: "a3",
+    name: "devy",
+    namespace: "squad-alpha",
+    role: "developer",
+    skillCount: 2,
+  },
+  {
+    id: "a4",
+    name: "stray",
+    namespace: "squad-beta",
+    role: "developer",
+    skillCount: 1,
+  }, // other squad — filtered out
 ];
 
 /** Route-aware fetch stub: overview + work-items + agents each get their own status/body. */
@@ -101,29 +164,39 @@ describe("ProjectLanding — pure projections", () => {
   });
 
   it("recentTickets sorts updatedAt desc; ticketStats splits open/in_review/done", () => {
-    expect(recentTickets(workItems, 6).map((t) => t.id)).toEqual(["t2", "t1", "t3"]);
+    expect(recentTickets(workItems, 6).map((t) => t.id)).toEqual([
+      "t2",
+      "t1",
+      "t3",
+    ]);
     expect(ticketStats(workItems)).toEqual({ open: 1, inReview: 1, done: 1 });
     expect(ticketStats([])).toEqual({ open: 0, inReview: 0, done: 0 });
   });
 
   it("selectProjectAgents filters by namespace; passes through when unknown", () => {
-    expect(selectProjectAgents(agents, "squad-alpha").map((a) => a.name)).toEqual(["cade", "archie", "devy"]);
+    expect(
+      selectProjectAgents(agents, "squad-alpha").map((a) => a.name),
+    ).toEqual(["cade", "archie", "devy"]);
     expect(selectProjectAgents(agents, undefined)).toHaveLength(4);
     expect(selectProjectAgents(agents, "squad-gamma")).toEqual([]);
   });
 
   it("agentRoleBreakdown counts by role desc; role-less ⇒ unassigned", () => {
-    expect(agentRoleBreakdown(selectProjectAgents(agents, "squad-alpha"))).toEqual([
+    expect(
+      agentRoleBreakdown(selectProjectAgents(agents, "squad-alpha")),
+    ).toEqual([
       { role: "developer", count: 2 },
       { role: "architect", count: 1 },
     ]);
-    expect(agentRoleBreakdown([{ id: "x", name: "n", namespace: "n" }])).toEqual([
-      { role: "unassigned", count: 1 },
-    ]);
+    expect(
+      agentRoleBreakdown([{ id: "x", name: "n", namespace: "n" }]),
+    ).toEqual([{ role: "unassigned", count: 1 }]);
   });
 
   it("lastActivity is the max across runs + tickets; null when nothing known", () => {
-    expect(lastActivity(selectProject(overview, "webapp"), workItems)).toBe("2026-08-23T09:00:00.000Z");
+    expect(lastActivity(selectProject(overview, "webapp"), workItems)).toBe(
+      "2026-08-23T09:00:00.000Z",
+    );
     expect(lastActivity(null, [])).toBeNull();
   });
 });
@@ -137,10 +210,15 @@ describe("ProjectLanding — populated panels", () => {
     });
     render(<ProjectLanding projectId="webapp" />);
 
-    await waitFor(() => expect(screen.getAllByTestId("landing-run-row").length).toBe(2));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("landing-run-row").length).toBe(2),
+    );
     // Runs: newest run first, deep-linked to /runs/{id} with ?wi threading.
     const firstRow = screen.getAllByTestId("landing-run-row")[0];
-    expect(within(firstRow).getByRole("link")).toHaveAttribute("href", "/runs/run-new");
+    expect(within(firstRow).getByRole("link")).toHaveAttribute(
+      "href",
+      "/runs/run-new",
+    );
 
     // Stats: phase chips + authoritative three-bucket counts.
     expect(screen.getAllByTestId("landing-stats-phase-count").length).toBe(2);
@@ -150,39 +228,68 @@ describe("ProjectLanding — populated panels", () => {
 
     // Latest tickets newest-first, view-all → Issues tab.
     expect(screen.getAllByTestId("landing-ticket-row").length).toBe(3);
-    expect(screen.getByTestId("landing-tickets-viewall")).toHaveAttribute("href", "/projects/webapp/issues");
+    expect(screen.getByTestId("landing-tickets-viewall")).toHaveAttribute(
+      "href",
+      "/projects/webapp/issues",
+    );
 
     // Team Composition: roster scoped to squad-alpha (stray squad-beta agent filtered out) + role breakdown.
-    await waitFor(() => expect(screen.getByTestId("landing-team-count").textContent).toContain("3"));
-    const roles = screen.getAllByTestId("landing-team-role").map((el) => el.textContent);
+    await waitFor(() =>
+      expect(screen.getByTestId("landing-team-count").textContent).toContain(
+        "3",
+      ),
+    );
+    const roles = screen
+      .getAllByTestId("landing-team-role")
+      .map((el) => el.textContent);
     expect(roles).toEqual(["developer · 2", "architect · 1"]);
 
     // Workspace: project identity from the overview; PVC honestly not reported (ISI-4127).
-    expect(within(screen.getByTestId("landing-workspace-repo")).getByRole("link")).toHaveAttribute(
-      "href",
-      "https://git.example/webapp",
+    expect(
+      within(screen.getByTestId("landing-workspace-repo")).getByRole("link"),
+    ).toHaveAttribute("href", "https://git.example/webapp");
+    expect(
+      screen.getByTestId("landing-workspace-namespace").textContent,
+    ).toContain("squad-alpha");
+    expect(screen.getByTestId("landing-workspace-pvc").textContent).toContain(
+      "not reported",
     );
-    expect(screen.getByTestId("landing-workspace-namespace").textContent).toContain("squad-alpha");
-    expect(screen.getByTestId("landing-workspace-pvc").textContent).toContain("not reported");
   });
 });
 
 describe("ProjectLanding — empty states", () => {
   it("shows neutral empty states, never fabricated rows", async () => {
     stubRoutes({
-      overview: { status: 200, body: { team: overview.team, projects: [{ name: "webapp", namespace: "squad-alpha", runs: null, phaseCounts: {} }] } },
+      overview: {
+        status: 200,
+        body: {
+          team: overview.team,
+          projects: [
+            {
+              name: "webapp",
+              namespace: "squad-alpha",
+              runs: null,
+              phaseCounts: {},
+            },
+          ],
+        },
+      },
       workItems: { status: 200, body: { items: [] } },
       agents: { status: 200, body: { agents: [] } },
     });
     render(<ProjectLanding projectId="webapp" />);
-    await waitFor(() => expect(screen.getByTestId("landing-runs-empty")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("landing-runs-empty")).toBeTruthy(),
+    );
     expect(screen.getByTestId("landing-tickets-empty")).toBeTruthy();
     // Zero runs known → "No runs." (authoritative); counts authoritative 0.
     expect(screen.getByTestId("landing-stats-phase-empty")).toBeTruthy();
     expect(screen.getByTestId("landing-stats-open").textContent).toBe("0");
     expect(screen.getByTestId("landing-stats-inreview").textContent).toBe("0");
     expect(screen.getByTestId("landing-stats-done").textContent).toBe("0");
-    await waitFor(() => expect(screen.getByTestId("landing-team-empty")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("landing-team-empty")).toBeTruthy(),
+    );
   });
 });
 
@@ -196,7 +303,9 @@ describe("ProjectLanding — per-panel isolation + '—' vs 0", () => {
     render(<ProjectLanding projectId="webapp" />);
 
     // Runs + phase stats stay populated despite the failing work-items read.
-    await waitFor(() => expect(screen.getAllByTestId("landing-run-row").length).toBe(2));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("landing-run-row").length).toBe(2),
+    );
     expect(screen.getAllByTestId("landing-stats-phase-count").length).toBe(2);
 
     // Latest Tickets renders its OWN honest not-available state.
@@ -208,8 +317,14 @@ describe("ProjectLanding — per-panel isolation + '—' vs 0", () => {
     expect(screen.getByTestId("landing-stats-done").textContent).toBe("—");
 
     // Team + Workspace unaffected by the work-items failure.
-    await waitFor(() => expect(screen.getByTestId("landing-team-count").textContent).toContain("3"));
-    expect(screen.getByTestId("landing-workspace-namespace").textContent).toContain("squad-alpha");
+    await waitFor(() =>
+      expect(screen.getByTestId("landing-team-count").textContent).toContain(
+        "3",
+      ),
+    );
+    expect(
+      screen.getByTestId("landing-workspace-namespace").textContent,
+    ).toContain("squad-alpha");
   });
 
   it("overview 501 + work-items 200: tickets populate, overview panels show honest problem/—", async () => {
@@ -219,14 +334,18 @@ describe("ProjectLanding — per-panel isolation + '—' vs 0", () => {
       agents: { status: 501, body: null },
     });
     render(<ProjectLanding projectId="webapp" />);
-    await waitFor(() => expect(screen.getAllByTestId("landing-ticket-row").length).toBe(3));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("landing-ticket-row").length).toBe(3),
+    );
     expect(screen.getByTestId("landing-runs-problem")).toBeTruthy();
     expect(screen.getByTestId("landing-stats-phase-unavailable")).toBeTruthy();
     expect(screen.getByTestId("landing-workspace-problem")).toBeTruthy();
     // counts still authoritative from the good work-items read.
     expect(screen.getByTestId("landing-stats-open").textContent).toBe("1");
     // Team read model unavailable ⇒ its own honest state.
-    await waitFor(() => expect(screen.getByTestId("landing-team-unavailable")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("landing-team-unavailable")).toBeTruthy(),
+    );
   });
 });
 
@@ -238,8 +357,12 @@ describe("ProjectLanding — read-only", () => {
       agents: { status: 200, body: { agents } },
     });
     render(<ProjectLanding projectId="webapp" />);
-    await waitFor(() => expect(screen.getByTestId("project-landing")).toBeTruthy());
-    await waitFor(() => expect(screen.getAllByTestId("landing-ticket-row").length).toBe(3));
+    await waitFor(() =>
+      expect(screen.getByTestId("project-landing")).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByTestId("landing-ticket-row").length).toBe(3),
+    );
     for (const call of spy.mock.calls) {
       const init = call[1] as RequestInit | undefined;
       const method = (init?.method ?? "GET").toUpperCase();
@@ -247,7 +370,9 @@ describe("ProjectLanding — read-only", () => {
     }
     const urls = spy.mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.includes("/api/squad/overview"))).toBe(true);
-    expect(urls.some((u) => u.includes("/api/projects/webapp/work-items"))).toBe(true);
+    expect(
+      urls.some((u) => u.includes("/api/projects/webapp/work-items")),
+    ).toBe(true);
     expect(urls.some((u) => u.includes("/api/squad/agents"))).toBe(true);
   });
 });

@@ -17,7 +17,10 @@
 // proves. When no dispatch is in flight the chip renders the caller's static fallback unchanged.
 
 import type React from "react";
-import type { DispatchState, DispatchWatch } from "@/lib/tickets/useDispatchWatch";
+import type {
+  DispatchState,
+  DispatchWatch,
+} from "@/lib/tickets/useDispatchWatch";
 
 /** The chip view derived from the ladder: the localRunBadge-grammar label + a verbatim status hue. */
 export interface AssigneeChipView {

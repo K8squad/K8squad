@@ -62,7 +62,9 @@ type SaveState =
 /** Parse the apiserver 422 body `{ fields: [{field, message}] }` into keyed errors. */
 function fieldsFrom(body: unknown): FieldErrors {
   const errs: FieldErrors = {};
-  const fields = (body as { fields?: Array<{ field?: string; message?: string }> } | null)?.fields;
+  const fields = (
+    body as { fields?: Array<{ field?: string; message?: string }> } | null
+  )?.fields;
   if (Array.isArray(fields)) {
     for (const f of fields) {
       if (f?.field) errs[f.field] = f.message ?? "invalid";
@@ -72,8 +74,12 @@ function fieldsFrom(body: unknown): FieldErrors {
 }
 
 export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
-  const [load, setLoad] = useState<LoadState>({ kind: isAdmin ? "loading" : "ready" });
-  const [form, setForm] = useState<ModelConfigForm>(() => emptyModelConfigForm());
+  const [load, setLoad] = useState<LoadState>({
+    kind: isAdmin ? "loading" : "ready",
+  });
+  const [form, setForm] = useState<ModelConfigForm>(() =>
+    emptyModelConfigForm(),
+  );
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   // Field errors surface only after a Save attempt (or a server 422), so an empty
   // create form doesn't shout "is required" before the admin has touched anything.
@@ -143,7 +149,9 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
   const valid = isModelConfigValid(form);
   // Show validation errors only once the admin has tried to save; merge any server
   // 422 field errors on top (they always show).
-  const shownErrors: FieldErrors = attempted ? { ...validateModelConfig(form), ...serverErrors } : serverErrors;
+  const shownErrors: FieldErrors = attempted
+    ? { ...validateModelConfig(form), ...serverErrors }
+    : serverErrors;
 
   // The BYO picker block, shared by the opencode and vibe tabs (ISI-6380): opencode
   // keeps the free backend dropdown; vibe pins it to mistral — the backend-complete
@@ -170,7 +178,10 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
           patch({
             ...(next.model !== undefined ? { model: next.model } : {}),
             ...(next.modelEndpointRef !== undefined
-              ? { modelEndpointRef: next.modelEndpointRef, byoEnabled: next.modelEndpointRef.trim() !== "" }
+              ? {
+                  modelEndpointRef: next.modelEndpointRef,
+                  byoEnabled: next.modelEndpointRef.trim() !== "",
+                }
               : {}),
           })
         }
@@ -197,7 +208,9 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
             errors={shownErrors}
             onChange={(next) =>
               patch({
-                ...(next.model !== undefined ? { fallbackModel: next.model } : {}),
+                ...(next.model !== undefined
+                  ? { fallbackModel: next.model }
+                  : {}),
                 ...(next.modelEndpointRef !== undefined
                   ? { fallbackModelEndpointRef: next.modelEndpointRef }
                   : {}),
@@ -230,7 +243,8 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
         setServerErrors(fieldsFrom(body));
         message = "Some fields need attention.";
       } else if (res.status === 401 || res.status === 403) {
-        message = "You don’t have permission to change the org default (admin only).";
+        message =
+          "You don’t have permission to change the org default (admin only).";
       } else if (res.status === 409) {
         message = "The org default changed elsewhere — reload and try again.";
       } else if (res.status === 501) {
@@ -238,17 +252,24 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
       }
       setSave({ kind: "error", status: res.status, message });
     } catch {
-      setSave({ kind: "error", status: 0, message: "Network error — try again." });
+      setSave({
+        kind: "error",
+        status: 0,
+        message: "Network error — try again.",
+      });
     }
   }
 
   return (
-    <section className="settings-modelpriority" aria-labelledby="modelpriority-heading">
+    <section
+      className="settings-modelpriority"
+      aria-labelledby="modelpriority-heading"
+    >
       <h2 id="modelpriority-heading">Model Priority</h2>
       <p className="muted">
-        The org-wide <strong>default</strong> model — the floor every Agent and Role falls back to when
-        it doesn’t name its own. This can never be empty: without it, the platform can’t resolve a model
-        at all.
+        The org-wide <strong>default</strong> model — the floor every Agent and
+        Role falls back to when it doesn’t name its own. This can never be
+        empty: without it, the platform can’t resolve a model at all.
       </p>
 
       {!isAdmin && (
@@ -259,18 +280,30 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
 
       {isAdmin && load.kind === "loading" && <p className="muted">Loading…</p>}
       {isAdmin && load.kind === "error" && (
-        <p className="state state--error" role="alert" data-testid="modelpriority-load-error">
-          Could not read the org default model (status {load.status || "network"}).
+        <p
+          className="state state--error"
+          role="alert"
+          data-testid="modelpriority-load-error"
+        >
+          Could not read the org default model (status{" "}
+          {load.status || "network"}).
         </p>
       )}
 
       {isAdmin && load.kind === "ready" && (
-        <div className="card settings-modelpriority__form" data-testid="modelpriority-form">
+        <div
+          className="card settings-modelpriority__form"
+          data-testid="modelpriority-form"
+        >
           <RuntimeAdapterStep
             adapter={form.adapter}
             onAdapterChange={onAdapterChange}
-            opencodeSlot={form.adapter === "opencode" ? byoPicker("opencode") : undefined}
-            vibeSlot={form.adapter === "vibe" ? byoPicker("vibe", "mistral") : undefined}
+            opencodeSlot={
+              form.adapter === "opencode" ? byoPicker("opencode") : undefined
+            }
+            vibeSlot={
+              form.adapter === "vibe" ? byoPicker("vibe", "mistral") : undefined
+            }
           >
             {form.adapter === "opencode" || form.adapter === "vibe" ? (
               <></>
@@ -305,18 +338,31 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
             </button>
 
             {!valid && (
-              <p className="muted settings-modelpriority__guardrail" role="note" data-testid="modelpriority-guardrail">
-                🔒 Choose a default model to enable Save — the org default can never be empty, so the
-                platform can always resolve a model (ISI-4430 fail-closed).
+              <p
+                className="muted settings-modelpriority__guardrail"
+                role="note"
+                data-testid="modelpriority-guardrail"
+              >
+                🔒 Choose a default model to enable Save — the org default can
+                never be empty, so the platform can always resolve a model
+                (ISI-4430 fail-closed).
               </p>
             )}
             {save.kind === "ok" && (
-              <span className="state state--ok" role="status" data-testid="modelpriority-saved">
+              <span
+                className="state state--ok"
+                role="status"
+                data-testid="modelpriority-saved"
+              >
                 Saved.
               </span>
             )}
             {save.kind === "error" && (
-              <span className="state state--error" role="alert" data-testid="modelpriority-save-error">
+              <span
+                className="state state--error"
+                role="alert"
+                data-testid="modelpriority-save-error"
+              >
                 {save.message}
               </span>
             )}

@@ -31,7 +31,9 @@ import { ApiError, listWorkItems } from "@/lib/tickets/api";
 import { STATE_LABELS, type WorkItem } from "@/lib/tickets/types";
 
 /** One project entry from the team-scoped overview projection. */
-export type OverviewProject = NonNullable<SquadOverviewData["projects"]>[number];
+export type OverviewProject = NonNullable<
+  SquadOverviewData["projects"]
+>[number];
 type OverviewRun = NonNullable<OverviewProject["runs"]>[number];
 
 export type OverviewState =
@@ -101,17 +103,26 @@ export function selectProject(
 }
 
 /** Most-recent runs first (claimedAt desc; unclaimed sort last), capped at `limit`. */
-export function recentRuns(project: OverviewProject | null, limit: number): OverviewRun[] {
+export function recentRuns(
+  project: OverviewProject | null,
+  limit: number,
+): OverviewRun[] {
   const runs = project?.runs ?? [];
   return [...runs]
-    .sort((a, b) => (Date.parse(b.claimedAt ?? "") || 0) - (Date.parse(a.claimedAt ?? "") || 0))
+    .sort(
+      (a, b) =>
+        (Date.parse(b.claimedAt ?? "") || 0) -
+        (Date.parse(a.claimedAt ?? "") || 0),
+    )
     .slice(0, limit);
 }
 
 /** Most-recently-updated work items first, capped at `limit`. */
 export function recentTickets(items: WorkItem[], limit: number): WorkItem[] {
   return [...items]
-    .sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0))
+    .sort(
+      (a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0),
+    )
     .slice(0, limit);
 }
 
@@ -122,7 +133,11 @@ export function recentTickets(items: WorkItem[], limit: number): WorkItem[] {
  * five-value `state` enum is the authority (§13 derivation), so the split is a
  * pure fold over it — no separate stored counter to drift.
  */
-export function ticketStats(items: WorkItem[]): { open: number; inReview: number; done: number } {
+export function ticketStats(items: WorkItem[]): {
+  open: number;
+  inReview: number;
+  done: number;
+} {
   let inReview = 0;
   let done = 0;
   for (const it of items) {
@@ -149,7 +164,9 @@ export function selectProjectAgents(
 }
 
 /** Role → count rollup for the composition summary; a role-less agent counts as "unassigned". */
-export function agentRoleBreakdown(agents: SquadAgentEntry[]): { role: string; count: number }[] {
+export function agentRoleBreakdown(
+  agents: SquadAgentEntry[],
+): { role: string; count: number }[] {
   const counts = new Map<string, number>();
   for (const a of agents) {
     const role = a.role && a.role.trim() ? a.role : "unassigned";
@@ -267,14 +284,30 @@ function useSquadAgents(): AgentsState {
 // Presentational panels.
 // ---------------------------------------------------------------------------
 
-function OverviewProblem({ state }: { state: Exclude<OverviewState, { kind: "ready" | "loading" }> }) {
+function OverviewProblem({
+  state,
+}: {
+  state: Exclude<OverviewState, { kind: "ready" | "loading" }>;
+}) {
   switch (state.kind) {
     case "unauthenticated":
-      return <p className="muted" style={{ margin: 0 }}>Sign in to view this project.</p>;
+      return (
+        <p className="muted" style={{ margin: 0 }}>
+          Sign in to view this project.
+        </p>
+      );
     case "no-team":
-      return <p className="muted" style={{ margin: 0 }}>No projection for your Team yet.</p>;
+      return (
+        <p className="muted" style={{ margin: 0 }}>
+          No projection for your Team yet.
+        </p>
+      );
     case "not-wired":
-      return <p className="muted" style={{ margin: 0 }}>Overview read model not wired on this deployment.</p>;
+      return (
+        <p className="muted" style={{ margin: 0 }}>
+          Overview read model not wired on this deployment.
+        </p>
+      );
     default:
       return (
         <p className="muted" style={{ margin: 0 }}>
@@ -284,12 +317,22 @@ function OverviewProblem({ state }: { state: Exclude<OverviewState, { kind: "rea
   }
 }
 
-export function RunsPanel({ state, limit = DEFAULT_RUNS_LIMIT }: { state: OverviewState; limit?: number }) {
+export function RunsPanel({
+  state,
+  limit = DEFAULT_RUNS_LIMIT,
+}: {
+  state: OverviewState;
+  limit?: number;
+}) {
   return (
     <section className="card" data-testid="landing-runs">
       <h2 style={{ margin: "0 0 10px" }}>Runs</h2>
       {state.kind === "loading" ? (
-        <p className="muted" data-testid="landing-runs-loading" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-runs-loading"
+          style={{ margin: 0 }}
+        >
           Loading runs…
         </p>
       ) : state.kind !== "ready" ? (
@@ -297,7 +340,11 @@ export function RunsPanel({ state, limit = DEFAULT_RUNS_LIMIT }: { state: Overvi
           <OverviewProblem state={state} />
         </div>
       ) : recentRuns(state.project, limit).length === 0 ? (
-        <p className="muted" data-testid="landing-runs-empty" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-runs-empty"
+          style={{ margin: 0 }}
+        >
           No runs yet.
         </p>
       ) : (
@@ -323,7 +370,11 @@ export function RunsPanel({ state, limit = DEFAULT_RUNS_LIMIT }: { state: Overvi
                   </a>
                 </td>
                 <td style={{ padding: "4px 8px 4px 0" }}>
-                  {r.workItem ? <code>{r.workItem}</code> : <span className="muted">—</span>}
+                  {r.workItem ? (
+                    <code>{r.workItem}</code>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
                 </td>
                 <td style={{ padding: "4px 8px 4px 0" }}>
                   <span className="phase-chip" data-tone={phaseTone(r.phase)}>
@@ -361,20 +412,29 @@ export function StatsPanel({
   // "—" ⇒ source unavailable/unknown; a real number (incl. 0) ⇒ authoritative (FR-I3).
   const dash = <span className="muted">—</span>;
   const loading = workItems.kind === "loading";
-  const cell = (value: number | undefined) => (loading ? "…" : stats ? value : dash);
+  const cell = (value: number | undefined) =>
+    loading ? "…" : stats ? value : dash;
 
   return (
     <section className="card" data-testid="landing-stats">
       <h2 style={{ margin: "0 0 10px" }}>Stats</h2>
 
       <div style={{ marginBottom: 10 }}>
-        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>Runs by phase</div>
+        <div className="muted" style={{ fontSize: 12, marginBottom: 4 }}>
+          Runs by phase
+        </div>
         {overview.kind === "loading" ? (
-          <span className="muted" data-testid="landing-stats-phase-loading">Loading…</span>
+          <span className="muted" data-testid="landing-stats-phase-loading">
+            Loading…
+          </span>
         ) : overview.kind !== "ready" ? (
-          <span className="muted" data-testid="landing-stats-phase-unavailable">—</span>
+          <span className="muted" data-testid="landing-stats-phase-unavailable">
+            —
+          </span>
         ) : phaseEntries.length === 0 ? (
-          <span className="muted" data-testid="landing-stats-phase-empty">No runs.</span>
+          <span className="muted" data-testid="landing-stats-phase-empty">
+            No runs.
+          </span>
         ) : (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {phaseEntries.map(([phase, n]) => (
@@ -391,7 +451,14 @@ export function StatsPanel({
         )}
       </div>
 
-      <dl style={{ display: "grid", gridTemplateColumns: "auto auto", gap: "4px 16px", margin: 0 }}>
+      <dl
+        style={{
+          display: "grid",
+          gridTemplateColumns: "auto auto",
+          gap: "4px 16px",
+          margin: 0,
+        }}
+      >
         <dt className="muted">Open</dt>
         <dd style={{ margin: 0 }} data-testid="landing-stats-open">
           {cell(stats?.open)}
@@ -421,36 +488,61 @@ export function TeamCompositionPanel({
   /** The project's squad namespace (from the overview projection) — the roster filter key. */
   namespace: string | null | undefined;
 }) {
-  const roster = agents.kind === "ready" ? selectProjectAgents(agents.agents, namespace) : [];
+  const roster =
+    agents.kind === "ready"
+      ? selectProjectAgents(agents.agents, namespace)
+      : [];
   const breakdown = agentRoleBreakdown(roster);
   return (
     <section className="card" data-testid="landing-team">
       <h2 style={{ margin: "0 0 10px" }}>Team Composition</h2>
       {agents.kind === "loading" ? (
-        <p className="muted" data-testid="landing-team-loading" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-team-loading"
+          style={{ margin: 0 }}
+        >
           Loading team…
         </p>
       ) : agents.kind === "not-available" ? (
-        <p className="muted" data-testid="landing-team-unavailable" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-team-unavailable"
+          style={{ margin: 0 }}
+        >
           Agent roster not available yet on this deployment.
         </p>
       ) : agents.kind === "error" ? (
-        <p className="muted" data-testid="landing-team-error" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-team-error"
+          style={{ margin: 0 }}
+        >
           Team unavailable (HTTP {agents.status || "network error"}).
         </p>
       ) : roster.length === 0 ? (
-        <p className="muted" data-testid="landing-team-empty" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-team-empty"
+          style={{ margin: 0 }}
+        >
           No agents in this squad yet.
         </p>
       ) : (
         <>
           <div data-testid="landing-team-count" style={{ marginBottom: 8 }}>
             <strong>{roster.length}</strong>{" "}
-            <span className="muted">{roster.length === 1 ? "agent" : "agents"}</span>
+            <span className="muted">
+              {roster.length === 1 ? "agent" : "agents"}
+            </span>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {breakdown.map((b) => (
-              <span key={b.role} className="phase-chip" data-testid="landing-team-role">
+              <span
+                key={b.role}
+                className="phase-chip"
+                data-testid="landing-team-role"
+              >
                 {b.role} · {b.count}
               </span>
             ))}
@@ -469,7 +561,11 @@ export function WorkspacePanel({ overview }: { overview: OverviewState }) {
     <section className="card" data-testid="landing-workspace">
       <h2 style={{ margin: "0 0 10px" }}>Workspace</h2>
       {overview.kind === "loading" ? (
-        <p className="muted" data-testid="landing-workspace-loading" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-workspace-loading"
+          style={{ margin: 0 }}
+        >
           Loading workspace…
         </p>
       ) : overview.kind !== "ready" ? (
@@ -477,13 +573,23 @@ export function WorkspacePanel({ overview }: { overview: OverviewState }) {
           <OverviewProblem state={overview} />
         </div>
       ) : (
-        <dl style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 16px", margin: 0 }}>
+        <dl
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr",
+            gap: "4px 16px",
+            margin: 0,
+          }}
+        >
           <dt className="muted">Namespace</dt>
           <dd style={{ margin: 0 }} data-testid="landing-workspace-namespace">
             {project?.namespace ? <code>{project.namespace}</code> : dash}
           </dd>
           <dt className="muted">Repository</dt>
-          <dd style={{ margin: 0, overflowWrap: "anywhere" }} data-testid="landing-workspace-repo">
+          <dd
+            style={{ margin: 0, overflowWrap: "anywhere" }}
+            data-testid="landing-workspace-repo"
+          >
             {repoUrl ? (
               <a href={repoUrl} target="_blank" rel="noreferrer noopener">
                 {repoUrl}
@@ -495,7 +601,10 @@ export function WorkspacePanel({ overview }: { overview: OverviewState }) {
           <dt className="muted">Storage (PVC)</dt>
           {/* PVC status has no read model yet (ISI-4127) — degrade honestly, never fabricate. */}
           <dd style={{ margin: 0 }} data-testid="landing-workspace-pvc">
-            <span className="muted" title="Project-PVC read model not yet available (ISI-4127)">
+            <span
+              className="muted"
+              title="Project-PVC read model not yet available (ISI-4127)"
+            >
               — not reported
             </span>
           </dd>
@@ -517,26 +626,52 @@ export function LatestTicketsPanel({
   const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
   return (
     <section className="card" data-testid="landing-tickets">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "baseline",
+        }}
+      >
         <h2 style={{ margin: "0 0 10px" }}>Latest Tickets</h2>
-        <a href={issuesHref} data-testid="landing-tickets-viewall" style={{ fontSize: 13 }}>
+        <a
+          href={issuesHref}
+          data-testid="landing-tickets-viewall"
+          style={{ fontSize: 13 }}
+        >
           View all → Issues
         </a>
       </div>
       {state.kind === "loading" ? (
-        <p className="muted" data-testid="landing-tickets-loading" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-tickets-loading"
+          style={{ margin: 0 }}
+        >
           Loading tickets…
         </p>
       ) : state.kind === "not-available" ? (
-        <p className="muted" data-testid="landing-tickets-unavailable" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-tickets-unavailable"
+          style={{ margin: 0 }}
+        >
           Ticket read model not available yet on this deployment.
         </p>
       ) : state.kind === "error" ? (
-        <p className="muted" data-testid="landing-tickets-error" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-tickets-error"
+          style={{ margin: 0 }}
+        >
           Tickets unavailable (HTTP {state.status || "network error"}).
         </p>
       ) : recentTickets(state.items, limit).length === 0 ? (
-        <p className="muted" data-testid="landing-tickets-empty" style={{ margin: 0 }}>
+        <p
+          className="muted"
+          data-testid="landing-tickets-empty"
+          style={{ margin: 0 }}
+        >
           No tickets yet.
         </p>
       ) : (
@@ -545,10 +680,20 @@ export function LatestTicketsPanel({
             <li
               key={t.id}
               data-testid="landing-ticket-row"
-              style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0" }}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 8,
+                padding: "4px 0",
+              }}
             >
-              <a href={`${issuesHref}/${encodeURIComponent(t.id)}`}>{t.title}</a>
-              <span className="phase-chip" data-tone={t.state === "done" ? "idle" : "running"}>
+              <a href={`${issuesHref}/${encodeURIComponent(t.id)}`}>
+                {t.title}
+              </a>
+              <span
+                className="phase-chip"
+                data-tone={t.state === "done" ? "idle" : "running"}
+              >
                 {STATE_LABELS[t.state]}
               </span>
             </li>
@@ -570,21 +715,37 @@ export interface ProjectLandingProps {
   ticketsLimit?: number;
 }
 
-export function ProjectLanding({ projectId, runsLimit, ticketsLimit }: ProjectLandingProps) {
+export function ProjectLanding({
+  projectId,
+  runsLimit,
+  ticketsLimit,
+}: ProjectLandingProps) {
   const overview = useOverviewProject(projectId);
   const workItems = useProjectWorkItems(projectId);
   const agents = useSquadAgents();
-  const projectNamespace = overview.kind === "ready" ? overview.project?.namespace : undefined;
+  const projectNamespace =
+    overview.kind === "ready" ? overview.project?.namespace : undefined;
   // Memo the props objects so a re-render of one panel's data doesn't churn the others.
-  const runsProps = useMemo(() => ({ state: overview, limit: runsLimit }), [overview, runsLimit]);
+  const runsProps = useMemo(
+    () => ({ state: overview, limit: runsLimit }),
+    [overview, runsLimit],
+  );
   return (
     <div
       data-testid="project-landing"
-      style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}
+      style={{
+        display: "grid",
+        gap: 16,
+        gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+      }}
     >
       <RunsPanel {...runsProps} />
       <StatsPanel overview={overview} workItems={workItems} />
-      <LatestTicketsPanel state={workItems} projectId={projectId} limit={ticketsLimit} />
+      <LatestTicketsPanel
+        state={workItems}
+        projectId={projectId}
+        limit={ticketsLimit}
+      />
       <TeamCompositionPanel agents={agents} namespace={projectNamespace} />
       <WorkspacePanel overview={overview} />
     </div>

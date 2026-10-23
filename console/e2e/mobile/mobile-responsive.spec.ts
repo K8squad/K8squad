@@ -26,7 +26,8 @@ const SKIP_REASON =
   "console to activate. Runs under the mobile-pixel / mobile-iphone Playwright projects.";
 
 // A namespace-qualified Project id (the "ns/name" shape the whole workspace reads, ISI-3982).
-const PROJECT_ID = process.env.KSQUAD_E2E_PROJECT_ID ?? "bmad-squad/bmad-demo-project";
+const PROJECT_ID =
+  process.env.KSQUAD_E2E_PROJECT_ID ?? "bmad-squad/bmad-demo-project";
 const encoded = encodeURIComponent(PROJECT_ID);
 
 // The top-level surfaces the rail offers (lib/nav.ts navTree + the SETTINGS section children).
@@ -69,11 +70,17 @@ const TEAM_ROLES_SURFACES: ReadonlyArray<{ label: string; path: string }> = [
  */
 async function expectMobileChrome(page: Page) {
   // Bottom nav exists on mobile only (aria-label "Primary mobile", ConsoleShell.tsx).
-  await expect(page.getByRole("navigation", { name: "Primary mobile" })).toBeVisible();
+  await expect(
+    page.getByRole("navigation", { name: "Primary mobile" }),
+  ).toBeVisible();
   // The top bar's drawer-opener (mobile-only control) is reachable.
-  await expect(page.getByRole("button", { name: "Open navigation" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Open navigation" }),
+  ).toBeVisible();
   // The desktop rail is display:none at this breakpoint — present in DOM but not visible.
-  await expect(page.getByRole("navigation", { name: "Primary", exact: true })).toBeHidden();
+  await expect(
+    page.getByRole("navigation", { name: "Primary", exact: true }),
+  ).toBeHidden();
 }
 
 /** Fails if any surface spilled horizontally past the viewport — the core mobile breakage. */
@@ -83,12 +90,17 @@ async function expectNoHorizontalOverflow(page: Page) {
     // A few px of sub-pixel rounding is tolerated; a real spill is tens-to-hundreds of px.
     return el.scrollWidth - el.clientWidth;
   });
-  expect(overflow, "page must not scroll horizontally at a phone viewport").toBeLessThanOrEqual(2);
+  expect(
+    overflow,
+    "page must not scroll horizontally at a phone viewport",
+  ).toBeLessThanOrEqual(2);
 }
 
 /** A surface loaded honestly when no error/404 banner is on screen. */
 async function expectNoErrorState(page: Page) {
-  await expect(page.getByText(/error|failed to load|404|something went wrong/i)).toHaveCount(0);
+  await expect(
+    page.getByText(/error|failed to load|404|something went wrong/i),
+  ).toHaveCount(0);
 }
 
 test.describe("ISI-5713 · mobile-responsive smoke (phone viewports)", () => {
@@ -105,7 +117,9 @@ test.describe("ISI-5713 · mobile-responsive smoke (phone viewports)", () => {
     });
   }
 
-  test("mobile drawer opens the overflow navigation and closes again", async ({ page }) => {
+  test("mobile drawer opens the overflow navigation and closes again", async ({
+    page,
+  }) => {
     await page.goto("/overview");
 
     await page.getByRole("button", { name: "Open navigation" }).click();
@@ -119,7 +133,9 @@ test.describe("ISI-5713 · mobile-responsive smoke (phone viewports)", () => {
   });
 
   test.describe("flagged flow · open project → sections", () => {
-    test("Projects → first project row lands on the workspace (mobile)", async ({ page }) => {
+    test("Projects → first project row lands on the workspace (mobile)", async ({
+      page,
+    }) => {
       await page.goto("/projects");
       await expectMobileChrome(page);
 
@@ -134,7 +150,9 @@ test.describe("ISI-5713 · mobile-responsive smoke (phone viewports)", () => {
     });
 
     for (const section of PROJECT_SECTIONS) {
-      test(`project section loads at phone width: ${section.label}`, async ({ page }) => {
+      test(`project section loads at phone width: ${section.label}`, async ({
+        page,
+      }) => {
         await page.goto(section.path);
         await expectMobileChrome(page);
         await expectNoErrorState(page);
@@ -145,7 +163,9 @@ test.describe("ISI-5713 · mobile-responsive smoke (phone viewports)", () => {
 
   test.describe("flagged flow · team / roles surfaces", () => {
     for (const surface of TEAM_ROLES_SURFACES) {
-      test(`team/roles surface loads at phone width: ${surface.label}`, async ({ page }) => {
+      test(`team/roles surface loads at phone width: ${surface.label}`, async ({
+        page,
+      }) => {
         await page.goto(surface.path);
         // /teams redirects to the unified surface (ISI-5432); either way, mobile chrome + no spill.
         await expect(page).toHaveURL(/\/(agents-team|users)/);
@@ -169,10 +189,13 @@ test.describe("ISI-5713 · mobile-responsive smoke (phone viewports)", () => {
         await page.goto(surface.path);
         await expectMobileChrome(page);
         // Per-project snapshot name keyed by the Playwright project (Pixel vs iPhone) automatically.
-        await expect(page).toHaveScreenshot(`${surface.label.replace(/\W+/g, "-")}.png`, {
-          fullPage: true,
-          maxDiffPixelRatio: 0.02,
-        });
+        await expect(page).toHaveScreenshot(
+          `${surface.label.replace(/\W+/g, "-")}.png`,
+          {
+            fullPage: true,
+            maxDiffPixelRatio: 0.02,
+          },
+        );
       });
     }
   });

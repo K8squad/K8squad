@@ -50,15 +50,27 @@ describe("auditQueryString", () => {
   it("converts datetime-local values to UTC RFC3339 (the server parses strict RFC3339)", () => {
     // The naive local input must arrive as its UTC instant — not a naive pass-through. Expected
     // values derive from Date.parse of the same input, so the test is TZ-independent.
-    const qs = auditQueryString({ ...emptyAuditFilters, from: "2026-08-21T12:00", to: "2026-08-21T18:30" });
+    const qs = auditQueryString({
+      ...emptyAuditFilters,
+      from: "2026-08-21T12:00",
+      to: "2026-08-21T18:30",
+    });
     const params = new URLSearchParams(qs);
-    expect(params.get("from")).toBe(new Date(Date.parse("2026-08-21T12:00")).toISOString());
-    expect(params.get("to")).toBe(new Date(Date.parse("2026-08-21T18:30")).toISOString());
-    expect(params.get("from")).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+    expect(params.get("from")).toBe(
+      new Date(Date.parse("2026-08-21T12:00")).toISOString(),
+    );
+    expect(params.get("to")).toBe(
+      new Date(Date.parse("2026-08-21T18:30")).toISOString(),
+    );
+    expect(params.get("from")).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/,
+    );
   });
 
   it("carries the cursor as `before` for older pages", () => {
-    const params = new URLSearchParams(auditQueryString(emptyAuditFilters, 7, 25));
+    const params = new URLSearchParams(
+      auditQueryString(emptyAuditFilters, 7, 25),
+    );
     expect(params.get("before")).toBe("7");
     expect(params.get("limit")).toBe("25");
   });
@@ -83,7 +95,9 @@ describe("classifyAuditStatus", () => {
 
 describe("cell derivations", () => {
   it("eventBadge maps known types and passes unknown types through verbatim (never fabricated)", () => {
-    expect(eventBadge(event({ eventType: "claim_acquired" })).label).toBe("Checkout");
+    expect(eventBadge(event({ eventType: "claim_acquired" })).label).toBe(
+      "Checkout",
+    );
     expect(eventBadge(event({ eventType: "run_terminal" })).tone).toBe("ok");
     const unknown = eventBadge(event({ eventType: "something_new" }));
     expect(unknown.label).toBe("something_new");
@@ -91,8 +105,12 @@ describe("cell derivations", () => {
   });
 
   it("resultLabel prefers the from→to transition, then the first useful payload scalar, else the em dash", () => {
-    expect(resultLabel(event({ fromState: "in_progress", toState: "in_review" }))).toBe("in_progress → in_review");
-    expect(resultLabel(event({ payload: { detail: "fence 3" } }))).toBe("fence 3");
+    expect(
+      resultLabel(event({ fromState: "in_progress", toState: "in_review" })),
+    ).toBe("in_progress → in_review");
+    expect(resultLabel(event({ payload: { detail: "fence 3" } }))).toBe(
+      "fence 3",
+    );
     expect(resultLabel(event({ payload: { nested: { x: 1 } } }))).toBe("—");
     expect(resultLabel(event())).toBe("—");
   });

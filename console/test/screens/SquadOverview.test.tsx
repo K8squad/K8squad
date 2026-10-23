@@ -1,6 +1,16 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
-import { SquadOverview, classifyOverviewStatus, phaseTone } from "@/components/SquadOverview";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
+import {
+  SquadOverview,
+  classifyOverviewStatus,
+  phaseTone,
+} from "@/components/SquadOverview";
 
 afterEach(() => {
   cleanup();
@@ -19,7 +29,12 @@ const overviewPayload = {
       namespace: "squad-alpha",
       repoUrl: "https://git.example/webapp",
       runs: [
-        { name: "run-1", workItem: "ticket-9", phase: "Running", claimedAt: "2026-08-20T10:00:00Z" },
+        {
+          name: "run-1",
+          workItem: "ticket-9",
+          phase: "Running",
+          claimedAt: "2026-08-20T10:00:00Z",
+        },
         { name: "run-2", phase: "Succeeded" },
       ],
       phaseCounts: { Running: 1, Succeeded: 1 },
@@ -45,14 +60,18 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
   it("fetches /api/squad/overview and renders Team, Projects, Run rows", async () => {
     stubFetch(200, overviewPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     expect(screen.getByTestId("overview-team").textContent).toBe("alpha");
     expect(screen.getAllByTestId("overview-project").length).toBe(2);
     expect(screen.getAllByTestId("overview-run-row").length).toBe(2);
     // Run rows deep-link to Run detail; when the run carries a workItem the link
     // also threads it as `?wi=` (ISI-2884 / PR #138 kill-run wiring), so match on
     // the /runs/<name> prefix rather than an exact bare href.
-    const link = document.querySelector('a[href^="/runs/run-1"]') as HTMLAnchorElement | null;
+    const link = document.querySelector(
+      'a[href^="/runs/run-1"]',
+    ) as HTMLAnchorElement | null;
     expect(link).toBeTruthy();
     expect(link?.getAttribute("href")).toBe("/runs/run-1?wi=ticket-9");
   });
@@ -60,7 +79,9 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
   it("links each project card title into its S1 workspace /projects/{name} (ISI-3960 AC1)", async () => {
     stubFetch(200, overviewPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     const links = screen.getAllByTestId("overview-project-link");
     expect(links.length).toBe(2);
     // Real, keyboard-focusable anchor (not an onClick div) with the encoded deep-link.
@@ -68,14 +89,18 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
     expect(links[0].getAttribute("href")).toBe("/projects/webapp");
     expect(links[0].textContent).toBe("webapp");
     // Run-row /runs/{id} links inside the same card stay intact (no nested-anchor breakage).
-    const runLink = document.querySelector('a[href^="/runs/run-1"]') as HTMLAnchorElement | null;
+    const runLink = document.querySelector(
+      'a[href^="/runs/run-1"]',
+    ) as HTMLAnchorElement | null;
     expect(runLink?.getAttribute("href")).toBe("/runs/run-1?wi=ticket-9");
   });
 
   it("renders run rows deep-linked to Run detail and phase chips toned by phase", async () => {
     stubFetch(200, overviewPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     const chips = screen.getAllByTestId("overview-phase-count");
     expect(chips.length).toBe(2);
     expect(chips[0].getAttribute("data-tone")).toBe("running");
@@ -85,20 +110,30 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
     stubFetch(200, { team: overviewPayload.team, projects: null });
     const originalLocation = window.location;
     const fakeLocation = { href: "" };
-    Object.defineProperty(window, "location", { value: fakeLocation, configurable: true });
+    Object.defineProperty(window, "location", {
+      value: fakeLocation,
+      configurable: true,
+    });
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-empty")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-empty")).toBeTruthy(),
+    );
     // ISI-3686: never a dead-end — the empty card carries a one-click fix into the E0
     // shared create form (Compose deep-link contract, parseComposeParams).
     fireEvent.click(screen.getByRole("button", { name: "Create a project" }));
     expect(fakeLocation.href).toBe("/compose?kind=project");
-    Object.defineProperty(window, "location", { value: originalLocation, configurable: true });
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      configurable: true,
+    });
   });
 
   it("renders a Project's no-Runs row without crashing when the wire sends runs: null", async () => {
     stubFetch(200, overviewPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     // The "infra" project arrives with runs: null — it must render its card with the
     // "No Runs." row, not crash the console root (cursor review: nil-slice → null).
     const projects = screen.getAllByTestId("overview-project");
@@ -110,25 +145,33 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
   it("renders the no-team card on 404 (session Team has no projection)", async () => {
     stubFetch(404);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-no-team")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-no-team")).toBeTruthy(),
+    );
   });
 
   it("renders the unauthenticated card on 401", async () => {
     stubFetch(401);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-unauthenticated")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-unauthenticated")).toBeTruthy(),
+    );
   });
 
   it("renders the not-wired card on the documented 501", async () => {
     stubFetch(501);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-not-wired")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-not-wired")).toBeTruthy(),
+    );
   });
 
   it("renders the retryable error card on 5xx", async () => {
     stubFetch(502);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-error")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-error")).toBeTruthy(),
+    );
   });
 });
 
@@ -162,9 +205,13 @@ describe("<SquadOverview> — fleet-wide admin render (ISI-3965 / ISI-3950 S1)",
   it("AC1: renders a fleet header, never leaking '*' or an empty namespace as a Team name", async () => {
     stubFetch(200, fleetPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     // Fleet header present; single-Team header absent.
-    expect(screen.getByTestId("overview-fleet").textContent).toContain("Fleet overview");
+    expect(screen.getByTestId("overview-fleet").textContent).toContain(
+      "Fleet overview",
+    );
     expect(screen.queryByTestId("overview-team")).toBeNull();
     // The synthetic "*" marker never surfaces as a heading.
     expect(screen.getByTestId("overview-fleet").textContent).not.toContain("*");
@@ -173,8 +220,12 @@ describe("<SquadOverview> — fleet-wide admin render (ISI-3965 / ISI-3950 S1)",
   it("AC2: attributes each project to its squad (namespace) group", async () => {
     stubFetch(200, fleetPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
-    const labels = screen.getAllByTestId("overview-squad-label").map((el) => el.textContent);
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
+    const labels = screen
+      .getAllByTestId("overview-squad-label")
+      .map((el) => el.textContent);
     // Two squads, sorted by namespace.
     expect(labels.length).toBe(2);
     expect(labels[0]).toContain("squad-alpha");
@@ -184,25 +235,37 @@ describe("<SquadOverview> — fleet-wide admin render (ISI-3965 / ISI-3950 S1)",
   it("AC3: two same-named projects in different squads both render (no key collision)", async () => {
     stubFetch(200, fleetPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     // Three projects total: webapp@alpha, webapp@beta, infra@beta — none dropped/merged.
     expect(screen.getAllByTestId("overview-project").length).toBe(3);
   });
 
   it("AC5: an empty fleet renders the fleet empty state, not the tenant CTA, without crashing on null projects", async () => {
-    stubFetch(200, { fleet: true, team: { name: "*", namespace: "", uid: "" }, projects: null });
+    stubFetch(200, {
+      fleet: true,
+      team: { name: "*", namespace: "", uid: "" },
+      projects: null,
+    });
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     expect(screen.getByTestId("overview-fleet-empty")).toBeTruthy();
     // Never the tenant "Create a project" CTA (it assumes a single home namespace).
     expect(screen.queryByTestId("overview-empty")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Create a project" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Create a project" }),
+    ).toBeNull();
   });
 
   it("AC4: a tenant response (fleet absent) renders the exact single-Team path unchanged", async () => {
     stubFetch(200, overviewPayload);
     render(<SquadOverview />);
-    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("overview-ready")).toBeTruthy(),
+    );
     // Single-Team header present, fleet header absent — byte-for-byte tenant path.
     expect(screen.getByTestId("overview-team").textContent).toBe("alpha");
     expect(screen.queryByTestId("overview-fleet")).toBeNull();

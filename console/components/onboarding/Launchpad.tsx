@@ -60,7 +60,10 @@ type SubmitState =
 
 /** Parse the apiserver error body into a message + field errors — the same verbatim-honesty
  * contract ComposeScreen uses (NFR-5): server truth (401/403/404/409/422/501), never masked. */
-function parseError(status: number, body: string): { message: string; fields: FieldErrors } {
+function parseError(
+  status: number,
+  body: string,
+): { message: string; fields: FieldErrors } {
   const fields: FieldErrors = {};
   let message = `Apply failed (status ${status}).`;
   try {
@@ -69,15 +72,20 @@ function parseError(status: number, body: string): { message: string; fields: Fi
       fields?: Array<{ field: string; message: string }>;
     };
     if (j.error) message = j.error;
-    if (Array.isArray(j.fields)) for (const f of j.fields) fields[f.field] = f.message;
+    if (Array.isArray(j.fields))
+      for (const f of j.fields) fields[f.field] = f.message;
   } catch {
     /* non-JSON — keep the status message */
   }
   if (status === 401) message = "You must sign in to compose.";
-  else if (status === 403) message = message || "You don't have write access here.";
-  else if (status === 404) message = "No such project / team scope for this caller.";
-  else if (status === 409) message = message || "That name already exists in this team.";
-  else if (status === 501) message = "Compose is not available on this deployment yet.";
+  else if (status === 403)
+    message = message || "You don't have write access here.";
+  else if (status === 404)
+    message = "No such project / team scope for this caller.";
+  else if (status === 409)
+    message = message || "That name already exists in this team.";
+  else if (status === 501)
+    message = "Compose is not available on this deployment yet.";
   return { message, fields };
 }
 
@@ -105,7 +113,9 @@ export function Launchpad({
 
   async function refreshProgress(): Promise<OnboardingProgress | null> {
     try {
-      const res = await fetch("/api/onboarding/progress", { cache: "no-store" });
+      const res = await fetch("/api/onboarding/progress", {
+        cache: "no-store",
+      });
       if (!res.ok) return null;
       const p: unknown = await res.json();
       return isOnboardingProgress(p) ? p : null;
@@ -171,7 +181,8 @@ export function Launchpad({
     return <ReadyState progress={progress} onYield={onYield} />;
   }
 
-  const nextMilestone = ONBOARDING_MILESTONES.find((m) => m.id === next) ?? null;
+  const nextMilestone =
+    ONBOARDING_MILESTONES.find((m) => m.id === next) ?? null;
 
   return (
     <section className="launchpad" aria-labelledby="launchpad-title">
@@ -258,16 +269,24 @@ export function Launchpad({
                   className="launchpad__onramp launchpad__onramp--primary"
                   onClick={() => startFlow("template")}
                 >
-                  <span className="launchpad__onramp-title">⚡ Start from a starter squad</span>
-                  <span className="launchpad__onramp-sub">Default · recommended</span>
+                  <span className="launchpad__onramp-title">
+                    ⚡ Start from a starter squad
+                  </span>
+                  <span className="launchpad__onramp-sub">
+                    Default · recommended
+                  </span>
                 </button>
                 <button
                   type="button"
                   className="launchpad__onramp"
                   onClick={() => startFlow("manual")}
                 >
-                  <span className="launchpad__onramp-title">🧭 Build it step by step</span>
-                  <span className="launchpad__onramp-sub">Author each object yourself</span>
+                  <span className="launchpad__onramp-title">
+                    🧭 Build it step by step
+                  </span>
+                  <span className="launchpad__onramp-sub">
+                    Author each object yourself
+                  </span>
                 </button>
               </div>
               <p className="muted launchpad__reassure">
@@ -284,7 +303,8 @@ export function Launchpad({
                 {resumeLabel(progress)} →
               </button>
               <p className="muted launchpad__reassure">
-                Progress saved server-side · step {progress.step} of {progress.total}
+                Progress saved server-side · step {progress.step} of{" "}
+                {progress.total}
               </p>
             </>
           )}
@@ -294,7 +314,10 @@ export function Launchpad({
       {openStep && nextMilestone && (
         <StepPanel
           key={`${openStep}-${lastCreated ?? "fresh"}`}
-          milestone={ONBOARDING_MILESTONES.find((m) => m.id === openStep) ?? nextMilestone}
+          milestone={
+            ONBOARDING_MILESTONES.find((m) => m.id === openStep) ??
+            nextMilestone
+          }
           ramp={ramp}
           createdNote={lastCreated}
           onClose={() => setOpenStep(null)}
@@ -334,7 +357,9 @@ function MilestoneCard({
         <span className="launchpad-card__num" aria-hidden="true">
           {state === "done" ? "✓" : milestone.step}
         </span>
-        <span className={`launchpad-card__state launchpad-card__state--${state}`}>
+        <span
+          className={`launchpad-card__state launchpad-card__state--${state}`}
+        >
           {STATE_LABEL[state]}
         </span>
       </div>
@@ -354,7 +379,11 @@ function MilestoneCard({
         )}
         {state === "locked" && (
           <span className="muted">
-            Locked<span className="sr-only"> — finish the previous milestone first</span>
+            Locked
+            <span className="sr-only">
+              {" "}
+              — finish the previous milestone first
+            </span>
           </span>
         )}
       </div>
@@ -366,11 +395,12 @@ function MilestoneCard({
 
 type CreateKind = "teams" | "agents" | "projects";
 
-const MILESTONE_FORM_KIND: Partial<Record<OnboardingMilestoneId, CreateKind>> = {
-  team: "teams",
-  agents: "agents",
-  project: "projects",
-};
+const MILESTONE_FORM_KIND: Partial<Record<OnboardingMilestoneId, CreateKind>> =
+  {
+    team: "teams",
+    agents: "agents",
+    project: "projects",
+  };
 
 function StepPanel({
   milestone,
@@ -437,8 +467,9 @@ function StepPanel({
       {milestone.id === "models" && (
         <div className="launchpad-step__models">
           <p>
-            Models &amp; credentials are set per agent: a primary model, a fallback, and the
-            credential Secret the agent runs with (shared squad credential by default).
+            Models &amp; credentials are set per agent: a primary model, a
+            fallback, and the credential Secret the agent runs with (shared
+            squad credential by default).
           </p>
           <div className="launchpad-step__models-cta">
             <Link className="btn btn--primary" href="/credentials">
@@ -453,13 +484,16 @@ function StepPanel({
 
       {milestone.id === "project" && (
         <p className="muted">
-          The milestone completes once the project&apos;s repo carries a GitHub credential
-          (<code>repo.auth</code>) — the credential-capture fields land with the project-connect
-          story; a project created here counts as soon as its repo auth is set.
+          The milestone completes once the project&apos;s repo carries a GitHub
+          credential (<code>repo.auth</code>) — the credential-capture fields
+          land with the project-connect story; a project created here counts as
+          soon as its repo auth is set.
         </p>
       )}
 
-      {kind && !showGallery && <ComposeCreatePanel kind={kind} onCreated={onCreated} />}
+      {kind && !showGallery && (
+        <ComposeCreatePanel kind={kind} onCreated={onCreated} />
+      )}
     </section>
   );
 }
@@ -482,7 +516,10 @@ function ComposeCreatePanel({
   const valid = isValid(cf);
 
   function patch(p: Record<string, unknown>) {
-    setCf((prev) => ({ kind: prev.kind, form: { ...prev.form, ...p } }) as ComposeForm);
+    setCf(
+      (prev) =>
+        ({ kind: prev.kind, form: { ...prev.form, ...p } }) as ComposeForm,
+    );
     setSubmit({ kind: "idle" });
   }
 
@@ -509,9 +546,15 @@ function ComposeCreatePanel({
         if (valid && submit.kind !== "saving") void apply();
       }}
     >
-      {cf.kind === "teams" && <TeamForm cf={cf} errors={errors} patch={patch} />}
-      {cf.kind === "agents" && <AgentForm cf={cf} errors={errors} patch={patch} />}
-      {cf.kind === "projects" && <ProjectForm cf={cf} errors={errors} patch={patch} />}
+      {cf.kind === "teams" && (
+        <TeamForm cf={cf} errors={errors} patch={patch} />
+      )}
+      {cf.kind === "agents" && (
+        <AgentForm cf={cf} errors={errors} patch={patch} />
+      )}
+      {cf.kind === "projects" && (
+        <ProjectForm cf={cf} errors={errors} patch={patch} />
+      )}
 
       <div className="compose__actions">
         <button
@@ -552,7 +595,8 @@ function ReadyState({
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
-        const teamName = typeof data.team?.name === "string" ? data.team.name : undefined;
+        const teamName =
+          typeof data.team?.name === "string" ? data.team.name : undefined;
         const first = Array.isArray(data.projects) ? data.projects[0] : null;
         const projectName =
           first && typeof first.name === "string" ? first.name : undefined;
@@ -573,7 +617,10 @@ function ReadyState({
   };
 
   return (
-    <section className="launchpad launchpad--ready" aria-labelledby="launchpad-title">
+    <section
+      className="launchpad launchpad--ready"
+      aria-labelledby="launchpad-title"
+    >
       <header className="launchpad__header">
         <div>
           <h1 id="launchpad-title">{hero.title}</h1>
@@ -603,7 +650,9 @@ function ReadyState({
             onClick={onYield}
           >
             <span className="launchpad__onramp-title">Go to Overview</span>
-            <span className="launchpad__onramp-sub">Your squad at a glance</span>
+            <span className="launchpad__onramp-sub">
+              Your squad at a glance
+            </span>
           </button>
           <Link className="launchpad__onramp" href="/compose">
             <span className="launchpad__onramp-title">Open Compose →</span>
@@ -611,7 +660,8 @@ function ReadyState({
           </Link>
         </div>
         <p className="muted launchpad__reassure">
-          Tip: start your first Run from the Boss agent, or compose more objects.
+          Tip: start your first Run from the Boss agent, or compose more
+          objects.
         </p>
       </div>
     </section>

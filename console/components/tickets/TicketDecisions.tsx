@@ -19,8 +19,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useState } from "react";
-import { DecisionCard, type DecisionAnswerInput } from "@/components/inbox/DecisionCard";
-import { createDiscussionClient, type DiscussionClient } from "@/lib/discussion/api";
+import {
+  DecisionCard,
+  type DecisionAnswerInput,
+} from "@/components/inbox/DecisionCard";
+import {
+  createDiscussionClient,
+  type DiscussionClient,
+} from "@/lib/discussion/api";
 import type { DecisionRequest } from "@/lib/discussion/types";
 
 export interface TicketDecisionsProps {
@@ -68,10 +74,16 @@ export function TicketDecisions({
   onDecided,
   client,
 }: TicketDecisionsProps) {
-  const [api] = useState<DiscussionClient>(() => client ?? createDiscussionClient());
-  const [decisions, setDecisions] = useState<Record<string, DecisionRequest>>({});
+  const [api] = useState<DiscussionClient>(
+    () => client ?? createDiscussionClient(),
+  );
+  const [decisions, setDecisions] = useState<Record<string, DecisionRequest>>(
+    {},
+  );
   const [busyMessageId, setBusyMessageId] = useState<string | undefined>();
-  const [errorByMessageId, setErrorByMessageId] = useState<Record<string, string>>({});
+  const [errorByMessageId, setErrorByMessageId] = useState<
+    Record<string, string>
+  >({});
 
   useEffect(() => {
     if (!threadId) {
@@ -114,7 +126,11 @@ export function TicketDecisions({
       setBusyMessageId(messageId);
       clearError(messageId);
       try {
-        const res = await api.answerDecisionRequest(projectId, messageId, answer);
+        const res = await api.answerDecisionRequest(
+          projectId,
+          messageId,
+          answer,
+        );
         setDecisions((cur) => {
           const existing = cur[messageId];
           if (!existing) return cur;
@@ -124,7 +140,10 @@ export function TicketDecisions({
       } catch (e) {
         // A 4xx/409 must surface, never leave a silently stuck card: keep the card `open`
         // (no phase advance, no onDecided) and show why the answer didn't land.
-        setErrorByMessageId((cur) => ({ ...cur, [messageId]: decisionErrorMessage(e) }));
+        setErrorByMessageId((cur) => ({
+          ...cur,
+          [messageId]: decisionErrorMessage(e),
+        }));
       } finally {
         setBusyMessageId(undefined);
       }
@@ -139,7 +158,11 @@ export function TicketDecisions({
       setBusyMessageId(messageId);
       clearError(messageId);
       try {
-        const res = await api.rejectDecisionRequest(projectId, messageId, reason);
+        const res = await api.rejectDecisionRequest(
+          projectId,
+          messageId,
+          reason,
+        );
         setDecisions((cur) => {
           const existing = cur[messageId];
           if (!existing) return cur;
@@ -147,7 +170,10 @@ export function TicketDecisions({
         });
         onDecided?.();
       } catch (e) {
-        setErrorByMessageId((cur) => ({ ...cur, [messageId]: decisionErrorMessage(e) }));
+        setErrorByMessageId((cur) => ({
+          ...cur,
+          [messageId]: decisionErrorMessage(e),
+        }));
       } finally {
         setBusyMessageId(undefined);
       }
@@ -165,9 +191,15 @@ export function TicketDecisions({
   }
 
   return (
-    <section className="card ksq-ticket-decisions" data-testid="detail-decisions">
+    <section
+      className="card ksq-ticket-decisions"
+      data-testid="detail-decisions"
+    >
       <h2>Decisions</h2>
-      <ul className="ksq-ticket-decisions__list" data-testid="detail-decisions-list">
+      <ul
+        className="ksq-ticket-decisions__list"
+        data-testid="detail-decisions-list"
+      >
         {cards.map((d) => (
           <li key={d.Message.id}>
             <DecisionCard

@@ -93,7 +93,11 @@ export function AgentRunCard({
       <div className="ov-agentcard__head">
         <span
           className={`ov-agentcard__avatar${isEmpty ? " ov-agentcard__avatar--empty" : ""}`}
-          style={isEmpty ? undefined : { background: avatarColor(a.agentId || a.name) }}
+          style={
+            isEmpty
+              ? undefined
+              : { background: avatarColor(a.agentId || a.name) }
+          }
           aria-hidden="true"
         >
           {isEmpty ? "" : agentInitials(a.name)}
@@ -101,7 +105,11 @@ export function AgentRunCard({
         <div className="ov-agentcard__id">
           <span className="ov-agentcard__name">{a.name}</span>
           {a.role ? (
-            <span className="ov-agentcard__role" data-testid="agent-role" title={a.role}>
+            <span
+              className="ov-agentcard__role"
+              data-testid="agent-role"
+              title={a.role}
+            >
               <svg
                 className="ov-agentcard__role-glyph"
                 viewBox="0 0 16 16"
@@ -120,7 +128,10 @@ export function AgentRunCard({
           ) : null}
         </div>
         {!isEmpty && (
-          <span className={`ov-agentcard__chip ${toneClass(tone)}`} data-testid="agent-phase-chip">
+          <span
+            className={`ov-agentcard__chip ${toneClass(tone)}`}
+            data-testid="agent-phase-chip"
+          >
             <span className="ov-agentcard__chip-dot" aria-hidden="true" />
             {state}
           </span>
@@ -135,7 +146,10 @@ export function AgentRunCard({
         <>
           <div className="ov-agentcard__think" data-testid="agent-thinking">
             <span className="ov-agentcard__think-label">Last thinking</span>
-            <p className="ov-agentcard__think-text" title={thinkingLine(state, run)}>
+            <p
+              className="ov-agentcard__think-text"
+              title={thinkingLine(state, run)}
+            >
               {thinkingLine(state, run)}
             </p>
           </div>
@@ -150,7 +164,9 @@ export function AgentRunCard({
                 {link.label} <span aria-hidden="true">↗</span>
               </a>
             ) : (
-              <span className="ov-agentcard__workchip ov-agentcard__workchip--none">—</span>
+              <span className="ov-agentcard__workchip ov-agentcard__workchip--none">
+                —
+              </span>
             )}
             <time className="ov-agentcard__time" data-testid="agent-time">
               {relTime}

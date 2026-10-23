@@ -4,9 +4,25 @@
 // degraded banner over the snapshot, AC5 empty + 501, and 404 existence-hiding.
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent, within, act } from "@testing-library/react";
-import { FileExplorerTab, FileExplorerErrorBoundary } from "@/components/FileExplorerTab";
-import { normalizeListing, normalizeContent, cacheListing, __resetListingCache } from "@/lib/project-files";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+  within,
+  act,
+} from "@testing-library/react";
+import {
+  FileExplorerTab,
+  FileExplorerErrorBoundary,
+} from "@/components/FileExplorerTab";
+import {
+  normalizeListing,
+  normalizeContent,
+  cacheListing,
+  __resetListingCache,
+} from "@/lib/project-files";
 import { reportClientError } from "@/lib/client-errors";
 import type {
   FileContent,
@@ -32,7 +48,10 @@ const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
 /** A 503 retryable-degraded Response (ADR-0025 D2 taxonomy body), with the
  * clone() seam isRetryableDegraded reads. */
 const retryable503 = (): Response => {
-  const body = { error: "workspace reader timed out; retry shortly", code: "retryable_degraded" };
+  const body = {
+    error: "workspace reader timed out; retry shortly",
+    code: "retryable_degraded",
+  };
   return {
     ok: false,
     status: 503,
@@ -80,16 +99,36 @@ describe("FileExplorerTab", () => {
   it("renders the tree, lazily expands a directory, and previews a text file read-only (AC1)", async () => {
     routeFetch({
       listings: {
-        "": { path: "", entries: [{ name: "src", path: "src", type: "dir" }, { name: "README.md", path: "README.md", type: "file", size: 12 }] },
-        src: { path: "src", entries: [{ name: "main.ts", path: "src/main.ts", type: "file", size: 20 }] },
+        "": {
+          path: "",
+          entries: [
+            { name: "src", path: "src", type: "dir" },
+            { name: "README.md", path: "README.md", type: "file", size: 12 },
+          ],
+        },
+        src: {
+          path: "src",
+          entries: [
+            { name: "main.ts", path: "src/main.ts", type: "file", size: 20 },
+          ],
+        },
       },
       contents: {
-        "src/main.ts": { path: "src/main.ts", size: 20, contentType: "text", data: b64("export const x=1"), offset: 0, length: 20 },
+        "src/main.ts": {
+          path: "src/main.ts",
+          size: 20,
+          contentType: "text",
+          data: b64("export const x=1"),
+          offset: 0,
+          length: 20,
+        },
       },
     });
     render(<FileExplorerTab projectId="web" />);
 
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     // Root shows the dir + file; the nested file is NOT in the DOM until expand (lazy).
     expect(screen.getByText("src")).toBeTruthy();
     expect(screen.queryByText("main.ts")).toBeNull();
@@ -101,40 +140,86 @@ describe("FileExplorerTab", () => {
     // ISI-4648: a .ts file previews as highlighted code — the source text is
     // preserved verbatim inside the token spans.
     await waitFor(() => expect(screen.getByTestId("files-code")).toBeTruthy());
-    expect(screen.getByTestId("files-code").textContent).toBe("export const x=1");
+    expect(screen.getByTestId("files-code").textContent).toBe(
+      "export const x=1",
+    );
 
     // Read-only (§D3): no edit/save/delete/rename/run affordance anywhere.
     const root = screen.getByTestId("file-explorer");
-    for (const forbidden of [/save/i, /delete/i, /rename/i, /\brun\b/i, /edit/i]) {
+    for (const forbidden of [
+      /save/i,
+      /delete/i,
+      /rename/i,
+      /\brun\b/i,
+      /edit/i,
+    ]) {
       expect(within(root).queryByText(forbidden)).toBeNull();
     }
   });
 
   it("renders a markdown file as formatted content, not raw source (ISI-4648)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "README.md", path: "README.md", type: "file", size: 30 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "README.md", path: "README.md", type: "file", size: 30 },
+          ],
+        },
+      },
       contents: {
-        "README.md": { path: "README.md", size: 30, contentType: "text", data: b64("# Hello\n\nsome **bold** text"), offset: 0, length: 30 },
+        "README.md": {
+          path: "README.md",
+          size: 30,
+          contentType: "text",
+          data: b64("# Hello\n\nsome **bold** text"),
+          offset: 0,
+          length: 30,
+        },
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("README.md"));
-    await waitFor(() => expect(screen.getByTestId("files-markdown")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-markdown")).toBeTruthy(),
+    );
     const md = screen.getByTestId("files-markdown");
     // Rendered: an <h1> and a <strong>, not the raw "# Hello" / "**bold**" source.
-    expect(within(md).getByRole("heading", { level: 1 }).textContent).toBe("Hello");
+    expect(within(md).getByRole("heading", { level: 1 }).textContent).toBe(
+      "Hello",
+    );
     expect(md.querySelector("strong")?.textContent).toBe("bold");
     expect(screen.queryByTestId("files-text")).toBeNull();
   });
 
   it("renders a png as an image even when the wire hint is binary (ISI-4648)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "logo.png", path: "logo.png", type: "file", size: 2048 }] } },
-      contents: { "logo.png": { path: "logo.png", size: 2048, contentType: "binary", data: b64("\x89PNG\r\n"), offset: 0, length: 2048 } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "logo.png", path: "logo.png", type: "file", size: 2048 },
+          ],
+        },
+      },
+      contents: {
+        "logo.png": {
+          path: "logo.png",
+          size: 2048,
+          contentType: "binary",
+          data: b64("\x89PNG\r\n"),
+          offset: 0,
+          length: 2048,
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("logo.png"));
     await waitFor(() => expect(screen.getByTestId("files-image")).toBeTruthy());
     const img = screen.getByTestId("files-image").querySelector("img");
@@ -146,11 +231,29 @@ describe("FileExplorerTab", () => {
 
   it("renders an svg as an image with the svg mime (ISI-4648)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "icon.svg", path: "icon.svg", type: "file", size: 40 }] } },
-      contents: { "icon.svg": { path: "icon.svg", size: 40, contentType: "text", data: b64("<svg xmlns='x'></svg>"), offset: 0, length: 40 } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "icon.svg", path: "icon.svg", type: "file", size: 40 },
+          ],
+        },
+      },
+      contents: {
+        "icon.svg": {
+          path: "icon.svg",
+          size: 40,
+          contentType: "text",
+          data: b64("<svg xmlns='x'></svg>"),
+          offset: 0,
+          length: 40,
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("icon.svg"));
     await waitFor(() => expect(screen.getByTestId("files-image")).toBeTruthy());
     const img = screen.getByTestId("files-image").querySelector("img");
@@ -159,11 +262,29 @@ describe("FileExplorerTab", () => {
 
   it("renders a go file with syntax-highlight token spans (ISI-4648)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "main.go", path: "main.go", type: "file", size: 30 }] } },
-      contents: { "main.go": { path: "main.go", size: 30, contentType: "text", data: b64('package main\n// hi\nvar s = "x"'), offset: 0, length: 30 } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "main.go", path: "main.go", type: "file", size: 30 },
+          ],
+        },
+      },
+      contents: {
+        "main.go": {
+          path: "main.go",
+          size: 30,
+          contentType: "text",
+          data: b64('package main\n// hi\nvar s = "x"'),
+          offset: 0,
+          length: 30,
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("main.go"));
     await waitFor(() => expect(screen.getByTestId("files-code")).toBeTruthy());
     const code = screen.getByTestId("files-code");
@@ -174,11 +295,29 @@ describe("FileExplorerTab", () => {
 
   it("still shows plain text for an unknown text extension (ISI-4648)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
-      contents: { "notes.txt": { path: "notes.txt", size: 5, contentType: "text", data: b64("hello"), offset: 0, length: 5 } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "notes.txt", path: "notes.txt", type: "file", size: 5 },
+          ],
+        },
+      },
+      contents: {
+        "notes.txt": {
+          path: "notes.txt",
+          size: 5,
+          contentType: "text",
+          data: b64("hello"),
+          offset: 0,
+          length: 5,
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("notes.txt"));
     await waitFor(() => expect(screen.getByTestId("files-text")).toBeTruthy());
     expect(screen.getByTestId("files-text").textContent).toBe("hello");
@@ -186,27 +325,63 @@ describe("FileExplorerTab", () => {
 
   it("shows a binary placeholder with byte count, never garbled text (AC2)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "blob.so", path: "blob.so", type: "file", size: 2048 }] } },
-      contents: { "blob.so": { path: "blob.so", size: 2048, contentType: "binary", data: b64("\x7fELF\x00"), offset: 0, length: 2048 } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "blob.so", path: "blob.so", type: "file", size: 2048 },
+          ],
+        },
+      },
+      contents: {
+        "blob.so": {
+          path: "blob.so",
+          size: 2048,
+          contentType: "binary",
+          data: b64("\x7fELF\x00"),
+          offset: 0,
+          length: 2048,
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("blob.so"));
-    await waitFor(() => expect(screen.getByTestId("files-binary")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-binary")).toBeTruthy(),
+    );
     const binary = screen.getByTestId("files-binary");
     expect(within(binary).getByText(/Binary file/)).toBeTruthy();
     expect(within(binary).getByText(/2\.0 KB/)).toBeTruthy();
     // Never rendered as a text <pre>.
     expect(screen.queryByTestId("files-text")).toBeNull();
     // Read-only download of raw bytes is a data: URL (no write path into the volume).
-    expect(screen.getByTestId("files-binary-download").getAttribute("href")).toMatch(/^data:application\/octet-stream;base64,/);
+    expect(
+      screen.getByTestId("files-binary-download").getAttribute("href"),
+    ).toMatch(/^data:application\/octet-stream;base64,/);
   });
 
   it("shows the details pane with size, modified, and git last change (ISI-4651)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "main.go", path: "main.go", type: "file", size: 30 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "main.go", path: "main.go", type: "file", size: 30 },
+          ],
+        },
+      },
       contents: {
-        "main.go": { path: "main.go", size: 30, contentType: "text", data: b64("package main"), offset: 0, length: 30 },
+        "main.go": {
+          path: "main.go",
+          size: 30,
+          contentType: "text",
+          data: b64("package main"),
+          offset: 0,
+          length: 30,
+        },
       },
       stats: {
         "main.go": {
@@ -224,21 +399,37 @@ describe("FileExplorerTab", () => {
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
 
     // No selection yet — the pane prompts instead of fabricating metadata.
     expect(screen.getByText(/Select a file to see its details/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("main.go"));
-    await waitFor(() => expect(screen.getByTestId("files-details-change")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-details-change")).toBeTruthy(),
+    );
     const details = screen.getByTestId("files-details");
-    expect(within(details).getByTestId("files-details-name").textContent).toBe("main.go");
-    expect(within(details).getByTestId("files-details-path").textContent).toBe("main.go");
-    expect(within(details).getByTestId("files-details-size").textContent).toBe("30 B");
+    expect(within(details).getByTestId("files-details-name").textContent).toBe(
+      "main.go",
+    );
+    expect(within(details).getByTestId("files-details-path").textContent).toBe(
+      "main.go",
+    );
+    expect(within(details).getByTestId("files-details-size").textContent).toBe(
+      "30 B",
+    );
     expect(within(details).getByText("Modified")).toBeTruthy();
-    expect(within(details).getByTestId("files-details-author").textContent).toBe("Agent Amelia");
-    expect(within(details).getByTestId("files-details-message").textContent).toBe("wire the reader pod");
-    expect(within(details).getByTestId("files-details-hash").textContent).toBe("abcdef12");
+    expect(
+      within(details).getByTestId("files-details-author").textContent,
+    ).toBe("Agent Amelia");
+    expect(
+      within(details).getByTestId("files-details-message").textContent,
+    ).toBe("wire the reader pod");
+    expect(within(details).getByTestId("files-details-hash").textContent).toBe(
+      "abcdef12",
+    );
     // Read-only (§D3): the details pane carries no action affordances.
     for (const forbidden of [/save/i, /delete/i, /rename/i, /edit/i]) {
       expect(within(details).queryByText(forbidden)).toBeNull();
@@ -247,18 +438,41 @@ describe("FileExplorerTab", () => {
 
   it("shows an honest no-git note when the workspace has no git history (ISI-4651)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "notes.txt", path: "notes.txt", type: "file", size: 5 },
+          ],
+        },
+      },
       contents: {
-        "notes.txt": { path: "notes.txt", size: 5, contentType: "text", data: b64("hello"), offset: 0, length: 5 },
+        "notes.txt": {
+          path: "notes.txt",
+          size: 5,
+          contentType: "text",
+          data: b64("hello"),
+          offset: 0,
+          length: 5,
+        },
       },
       stats: {
-        "notes.txt": { name: "notes.txt", type: "file", size: 5, modTime: "2026-09-17T10:00:00Z" },
+        "notes.txt": {
+          name: "notes.txt",
+          type: "file",
+          size: 5,
+          modTime: "2026-09-17T10:00:00Z",
+        },
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("notes.txt"));
-    await waitFor(() => expect(screen.getByTestId("files-details-nogit")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-details-nogit")).toBeTruthy(),
+    );
     expect(screen.getByText(/No git history available/)).toBeTruthy();
     // The base metadata still renders — no-git is a fallback, not an error.
     expect(screen.getByTestId("files-details-size").textContent).toBe("5 B");
@@ -266,16 +480,34 @@ describe("FileExplorerTab", () => {
 
   it("keeps the preview working when the stat fetch fails (ISI-4651)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "notes.txt", path: "notes.txt", type: "file", size: 5 },
+          ],
+        },
+      },
       contents: {
-        "notes.txt": { path: "notes.txt", size: 5, contentType: "text", data: b64("hello"), offset: 0, length: 5 },
+        "notes.txt": {
+          path: "notes.txt",
+          size: 5,
+          contentType: "text",
+          data: b64("hello"),
+          offset: 0,
+          length: 5,
+        },
       },
       stats: { "notes.txt": 500 },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("notes.txt"));
-    await waitFor(() => expect(screen.getByTestId("files-details-unavailable")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-details-unavailable")).toBeTruthy(),
+    );
     // Preview is unaffected by the stat failure.
     await waitFor(() => expect(screen.getByTestId("files-text")).toBeTruthy());
     expect(screen.getByTestId("files-text").textContent).toBe("hello");
@@ -283,42 +515,81 @@ describe("FileExplorerTab", () => {
 
   it("offers a per-file download on the row and in the preview head (ISI-4652)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "README.md", path: "README.md", type: "file", size: 30 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "README.md", path: "README.md", type: "file", size: 30 },
+          ],
+        },
+      },
       contents: {
-        "README.md": { path: "README.md", size: 30, contentType: "text", data: b64("# Hello"), offset: 0, length: 30 },
+        "README.md": {
+          path: "README.md",
+          size: 30,
+          contentType: "text",
+          data: b64("# Hello"),
+          offset: 0,
+          length: 30,
+        },
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
 
     // Per-row file download: a plain <a download> against the BFF download route.
     const rowDownload = screen.getByTestId("files-download-file");
-    expect(rowDownload.getAttribute("href")).toBe("/api/projects/web/files/download?path=README.md");
+    expect(rowDownload.getAttribute("href")).toBe(
+      "/api/projects/web/files/download?path=README.md",
+    );
     expect(rowDownload.getAttribute("download")).not.toBeNull();
     expect(rowDownload.getAttribute("aria-label")).toBe("Download README.md");
 
     // The preview head carries the same server-side download for the selected file.
     fireEvent.click(screen.getByText("README.md"));
-    await waitFor(() => expect(screen.getByTestId("files-markdown")).toBeTruthy());
-    expect(screen.getByTestId("files-preview-download").getAttribute("href")).toBe(
-      "/api/projects/web/files/download?path=README.md",
+    await waitFor(() =>
+      expect(screen.getByTestId("files-markdown")).toBeTruthy(),
     );
+    expect(
+      screen.getByTestId("files-preview-download").getAttribute("href"),
+    ).toBe("/api/projects/web/files/download?path=README.md");
   });
 
   it("offers a per-folder archive download with an encoded path (ISI-4652)", async () => {
     routeFetch({
       listings: {
-        "": { path: "", entries: [{ name: "my dir", path: "my dir", type: "dir" }] },
-        "my dir": { path: "my dir", entries: [{ name: "a file.txt", path: "my dir/a file.txt", type: "file", size: 5 }] },
+        "": {
+          path: "",
+          entries: [{ name: "my dir", path: "my dir", type: "dir" }],
+        },
+        "my dir": {
+          path: "my dir",
+          entries: [
+            {
+              name: "a file.txt",
+              path: "my dir/a file.txt",
+              type: "file",
+              size: 5,
+            },
+          ],
+        },
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
 
     // Folder archive download on the dir row, paths URL-encoded.
     const dirDownload = screen.getByTestId("files-download-dir");
-    expect(dirDownload.getAttribute("href")).toBe("/api/projects/web/files/download?path=my%20dir");
-    expect(dirDownload.getAttribute("aria-label")).toBe("Download my dir as archive");
+    expect(dirDownload.getAttribute("href")).toBe(
+      "/api/projects/web/files/download?path=my%20dir",
+    );
+    expect(dirDownload.getAttribute("aria-label")).toBe(
+      "Download my dir as archive",
+    );
 
     // Nested rows get the same affordance after lazy expand.
     fireEvent.click(screen.getByText("my dir"));
@@ -330,17 +601,31 @@ describe("FileExplorerTab", () => {
 
   it("never downloads through the JSON fetchers — the download anchor is a plain href (ISI-4652)", async () => {
     const spy = routeFetch({
-      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "notes.txt", path: "notes.txt", type: "file", size: 5 },
+          ],
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     // The download route is only ever referenced as an href, never fetched as JSON.
-    expect(spy.mock.calls.some(([url]) => String(url).includes("/files/download"))).toBe(false);
+    expect(
+      spy.mock.calls.some(([url]) => String(url).includes("/files/download")),
+    ).toBe(false);
   });
 
   it("renders a loading state while the root tree is fetching (AC3)", async () => {
     // A fetch that never resolves keeps the tab in its loading state.
-    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})) as unknown as typeof fetch);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})) as unknown as typeof fetch,
+    );
     render(<FileExplorerTab projectId="web" />);
     expect(screen.getByTestId("files-loading")).toBeTruthy();
   });
@@ -348,14 +633,19 @@ describe("FileExplorerTab", () => {
   // ISI-5339 Frame 01: loading is PROGRESSIVE — the shell paints instantly with
   // skeleton rows, never a full-tab blank spinner.
   it("paints the tab shell with skeleton rows instead of a blank loading panel (ISI-5339 F01)", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})) as unknown as typeof fetch);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})) as unknown as typeof fetch,
+    );
     render(<FileExplorerTab projectId="web" />);
     const tab = screen.getByTestId("files-loading");
     expect(screen.getAllByText("File Explorer").length).toBeGreaterThan(0);
     // Skeleton bars render, are aria-hidden, and the region is aria-busy.
     const skel = screen.getAllByTestId("files-skeleton");
     expect(skel.length).toBeGreaterThanOrEqual(3);
-    expect(screen.getByRole("region", { name: "Loading files…" }) as HTMLElement).toBeTruthy();
+    expect(
+      screen.getByRole("region", { name: "Loading files…" }) as HTMLElement,
+    ).toBeTruthy();
     expect(tab.getAttribute("aria-busy")).toBe("true");
   });
 
@@ -373,7 +663,11 @@ describe("FileExplorerTab", () => {
           return Promise.resolve({
             ok: true,
             status: 202,
-            json: () => Promise.resolve({ error: "reader pod is warming up; retry shortly", code: "preparing" }),
+            json: () =>
+              Promise.resolve({
+                error: "reader pod is warming up; retry shortly",
+                code: "preparing",
+              }),
           } as unknown as Response);
         }
         return Promise.resolve({
@@ -382,18 +676,31 @@ describe("FileExplorerTab", () => {
           json: () =>
             Promise.resolve({
               path: "",
-              entries: [{ name: "README.md", path: "README.md", type: "file", size: 12 }],
+              entries: [
+                {
+                  name: "README.md",
+                  path: "README.md",
+                  type: "file",
+                  size: 12,
+                },
+              ],
             }),
         } as unknown as Response);
       }) as unknown as typeof fetch,
     );
     render(<FileExplorerTab projectId="web" />);
 
-    await waitFor(() => expect(screen.getByTestId("files-preparing")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-preparing")).toBeTruthy(),
+    );
     expect(screen.getByText("Spinning up the file reader…")).toBeTruthy();
     expect(screen.getByText(/This usually takes a few seconds/)).toBeTruthy();
     // The determinate-feeling progress bar advances with the bounded budget.
-    expect(screen.getByTestId("files-preparing").querySelector(".file-explorer__progress-fill")).toBeTruthy();
+    expect(
+      screen
+        .getByTestId("files-preparing")
+        .querySelector(".file-explorer__progress-fill"),
+    ).toBeTruthy();
     // NOT an empty listing, NOT an empty state — the strip holds the shell.
     expect(screen.queryByTestId("files-empty")).toBeNull();
     expect(screen.queryByTestId("files-no-run")).toBeNull();
@@ -413,28 +720,45 @@ describe("FileExplorerTab", () => {
       // Mirror the server contract (files.go): a workspace-busy snapshot answers
       // degraded=true WITH reason="workspace_busy" — the banner keys on the reason,
       // not degraded alone (ISI-5140).
-      listings: { "": { path: "", degraded: true, reason: "workspace_busy", entries: [{ name: "app.go", path: "app.go", type: "file", size: 8 }] } },
+      listings: {
+        "": {
+          path: "",
+          degraded: true,
+          reason: "workspace_busy",
+          entries: [{ name: "app.go", path: "app.go", type: "file", size: 8 }],
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("files-busy-banner")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-busy-banner")).toBeTruthy(),
+    );
     // ISI-5339 F02 busy_snapshot copy: human, not engine-speak.
     expect(screen.getByText(/Showing a snapshot from/)).toBeTruthy();
     expect(screen.getByText(/point-in-time snapshot/)).toBeTruthy();
     // The snapshot rows still render — busy is informational, never a blank error.
     expect(screen.getByText("app.go")).toBeTruthy();
     // Frame 03: the amber Snapshot pill is present with the banner.
-    expect(screen.getByTestId("files-pill-snapshot").textContent).toMatch(/Snapshot · /);
+    expect(screen.getByTestId("files-pill-snapshot").textContent).toMatch(
+      /Snapshot · /,
+    );
   });
 
   // ISI-5339 F02 snapshot_unavailable — the F1 closer: busy with NO servable
   // snapshot is a distinct LIVE PAUSED state, NEVER an empty file panel.
   it("renders LIVE PAUSED (lock) for busy-with-no-snapshot — never an empty listing (ISI-5339 F02)", async () => {
     routeFetch({
-      listings: { "": { path: "", degraded: true, reason: "workspace_busy", entries: [] } },
+      listings: {
+        "": { path: "", degraded: true, reason: "workspace_busy", entries: [] },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("files-snapshot-unavailable")).toBeTruthy());
-    expect(screen.getByText("Live view paused while the agent works")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("files-snapshot-unavailable")).toBeTruthy(),
+    );
+    expect(
+      screen.getByText("Live view paused while the agent works"),
+    ).toBeTruthy();
     expect(screen.getByText(/returns when the agent releases it/)).toBeTruthy();
     expect(screen.getByText("LIVE PAUSED")).toBeTruthy();
     // The critical distinction: it is NOT the empty state and NOT the snapshot banner.
@@ -448,7 +772,9 @@ describe("FileExplorerTab", () => {
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("files-empty")).toBeTruthy());
     expect(screen.getByText("This workspace is empty")).toBeTruthy();
-    expect(screen.getByText(/No files have been created here yet/)).toBeTruthy();
+    expect(
+      screen.getByText(/No files have been created here yet/),
+    ).toBeTruthy();
   });
 
   // ISI-5339 F02 no-run: distinct from genuinely-empty (different badge + copy).
@@ -457,7 +783,9 @@ describe("FileExplorerTab", () => {
       listings: { "": { path: "", entries: [], reason: "no_browse_target" } },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("files-no-run")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-no-run")).toBeTruthy(),
+    );
     expect(screen.getByText("No files to show yet")).toBeTruthy();
     expect(screen.getByText(/hasn't produced a workspace yet/)).toBeTruthy();
     expect(screen.getByText("NO RUN YET")).toBeTruthy();
@@ -467,14 +795,31 @@ describe("FileExplorerTab", () => {
   // ISI-5339 F03·A: the Live pill with green dot + relative freshness.
   it("shows the Live freshness pill on a live listing (ISI-5339 F03)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "README.md", path: "README.md", type: "file", size: 12 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "README.md", path: "README.md", type: "file", size: 12 },
+          ],
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("files-pill-live")).toBeTruthy());
-    expect(screen.getByTestId("files-pill-live").textContent).toMatch(/Live · just now/);
-    expect(screen.getByTestId("files-pill-live").querySelector(".file-explorer__pill-dot")).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("files-pill-live")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("files-pill-live").textContent).toMatch(
+      /Live · just now/,
+    );
+    expect(
+      screen
+        .getByTestId("files-pill-live")
+        .querySelector(".file-explorer__pill-dot"),
+    ).toBeTruthy();
     // Tooltip carries the accessible absolute timestamp.
-    expect(screen.getByTestId("files-pill-live").getAttribute("title")).toMatch(/Live workspace — refreshed /);
+    expect(screen.getByTestId("files-pill-live").getAttribute("title")).toMatch(
+      /Live workspace — refreshed /,
+    );
   });
 
   // ISI-5339 F01: lazy expand is an inline per-row spinner + skeleton children;
@@ -500,7 +845,9 @@ describe("FileExplorerTab", () => {
       }) as unknown as typeof fetch,
     );
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
 
     fireEvent.click(screen.getByText("src"));
     // Inline per-row spinner: the src row's caret spins.
@@ -516,14 +863,20 @@ describe("FileExplorerTab", () => {
   it("renders honest 'not available yet' on 501 (AC5)", async () => {
     routeFetch({ listings: { "": 501 } });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("files-honest")).toBeTruthy());
-    expect(screen.getByText(/isn't available in this deployment yet/)).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("files-honest")).toBeTruthy(),
+    );
+    expect(
+      screen.getByText(/isn't available in this deployment yet/),
+    ).toBeTruthy();
   });
 
   it("renders an existence-hiding not-found on 404 (no leak)", async () => {
     routeFetch({ listings: { "": 404 } });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("files-honest")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-honest")).toBeTruthy(),
+    );
     expect(screen.getByText(/No files/)).toBeTruthy();
     // Never leaks a distinguishing "forbidden" vs "missing" — 404 is uniform.
     expect(screen.queryByText(/forbidden|403|permission/i)).toBeNull();
@@ -536,8 +889,12 @@ describe("FileExplorerTab", () => {
     vi.stubGlobal("fetch", spy as unknown as typeof fetch);
     render(<FileExplorerTab projectId="web" />);
 
-    await waitFor(() => expect(screen.getByTestId("files-retrying")).toBeTruthy());
-    expect(screen.getByText(/This is taking longer than usual — retrying/)).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.getByTestId("files-retrying")).toBeTruthy(),
+    );
+    expect(
+      screen.getByText(/This is taking longer than usual — retrying/),
+    ).toBeTruthy();
     expect(screen.getByText(/attempt 1 of 3/i)).toBeTruthy();
     expect(screen.getByText(/your place in the tree is kept/i)).toBeTruthy();
     // Human copy, never a bare 503.
@@ -551,7 +908,9 @@ describe("FileExplorerTab", () => {
     fireEvent.click(screen.getByTestId("files-retry-now"));
     await waitFor(() => expect(spy.mock.calls.length).toBeGreaterThan(before));
     // Still retrying (server is still down) — the budget restarts, no terminal yet.
-    await waitFor(() => expect(screen.getByTestId("files-retrying")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-retrying")).toBeTruthy(),
+    );
   });
 
   it("gives up after the 3-attempt budget into a role=alert terminal with [Try again] (ISI-5339 F03)", async () => {
@@ -560,16 +919,28 @@ describe("FileExplorerTab", () => {
     vi.stubGlobal("fetch", spy as unknown as typeof fetch);
     render(<FileExplorerTab projectId="web" />);
 
-    await waitFor(() => expect(screen.getByTestId("files-retrying")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-retrying")).toBeTruthy(),
+    );
     expect(screen.getByText(/attempt 1 of 3/i)).toBeTruthy();
 
-    await act(async () => { vi.advanceTimersByTime(2_100); });
-    await waitFor(() => expect(screen.getByText(/attempt 2 of 3/i)).toBeTruthy());
+    await act(async () => {
+      vi.advanceTimersByTime(2_100);
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/attempt 2 of 3/i)).toBeTruthy(),
+    );
 
-    await act(async () => { vi.advanceTimersByTime(4_100); });
-    await waitFor(() => expect(screen.getByText(/attempt 3 of 3/i)).toBeTruthy());
+    await act(async () => {
+      vi.advanceTimersByTime(4_100);
+    });
+    await waitFor(() =>
+      expect(screen.getByText(/attempt 3 of 3/i)).toBeTruthy(),
+    );
 
-    await act(async () => { vi.advanceTimersByTime(8_100); });
+    await act(async () => {
+      vi.advanceTimersByTime(8_100);
+    });
     // Terminal: role=alert, human copy, manual Try again — never a bare 504/500.
     await waitFor(() => expect(screen.getByTestId("files-error")).toBeTruthy());
     expect(screen.getByRole("alert")).toBeTruthy();
@@ -592,18 +963,40 @@ describe("FileExplorerTab", () => {
         if (u.searchParams.get("path") === "src") {
           srcCalls += 1;
           if (srcCalls === 1) return Promise.resolve(retryable503());
-          const json = () => Promise.resolve({ path: "src", entries: [{ name: "main.ts", path: "src/main.ts", type: "file", size: 2 }] });
-          return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+          const json = () =>
+            Promise.resolve({
+              path: "src",
+              entries: [
+                { name: "main.ts", path: "src/main.ts", type: "file", size: 2 },
+              ],
+            });
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json,
+            clone: () => ({ json }),
+          } as unknown as Response);
         }
-        const json = () => Promise.resolve({ path: "", entries: [{ name: "src", path: "src", type: "dir" }] });
-        return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+        const json = () =>
+          Promise.resolve({
+            path: "",
+            entries: [{ name: "src", path: "src", type: "dir" }],
+          });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json,
+          clone: () => ({ json }),
+        } as unknown as Response);
       }) as unknown as typeof fetch,
     );
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("files-tree")).toBeTruthy());
     fireEvent.click(screen.getByText("src"));
     // Transient 503 → the inline amber retry row names the budget…
-    await waitFor(() => expect(screen.getByTestId("files-dir-retrying")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-dir-retrying")).toBeTruthy(),
+    );
     expect(screen.getByText(/retrying/i)).toBeTruthy();
     expect(screen.getByText(/attempt 1 of 3/i)).toBeTruthy();
     // …never the terminal "couldn't load" copy for a transient failure.
@@ -626,19 +1019,45 @@ describe("FileExplorerTab", () => {
         if (u.searchParams.get("path") === "src") {
           srcCalls += 1;
           if (srcCalls === 1) {
-            return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) } as unknown as Response);
+            return Promise.resolve({
+              ok: false,
+              status: 404,
+              json: () => Promise.resolve(null),
+            } as unknown as Response);
           }
-          const json = () => Promise.resolve({ path: "src", entries: [{ name: "main.ts", path: "src/main.ts", type: "file", size: 2 }] });
-          return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+          const json = () =>
+            Promise.resolve({
+              path: "src",
+              entries: [
+                { name: "main.ts", path: "src/main.ts", type: "file", size: 2 },
+              ],
+            });
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json,
+            clone: () => ({ json }),
+          } as unknown as Response);
         }
-        const json = () => Promise.resolve({ path: "", entries: [{ name: "src", path: "src", type: "dir" }] });
-        return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+        const json = () =>
+          Promise.resolve({
+            path: "",
+            entries: [{ name: "src", path: "src", type: "dir" }],
+          });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json,
+          clone: () => ({ json }),
+        } as unknown as Response);
       }) as unknown as typeof fetch,
     );
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("files-tree")).toBeTruthy());
     fireEvent.click(screen.getByText("src"));
-    await waitFor(() => expect(screen.getByTestId("files-dir-error")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-dir-error")).toBeTruthy(),
+    );
     expect(screen.getByText(/Couldn't load this folder/i)).toBeTruthy();
     fireEvent.click(screen.getByTestId("files-dir-retry"));
     await waitFor(() => expect(screen.getByText("main.ts")).toBeTruthy());
@@ -654,17 +1073,23 @@ describe("FileExplorerTab", () => {
     // Note the entries carry NO `path` field, exactly like the live payload.
     routeFetch({
       listings: {
-        "": { path: "", entries: [
-          { name: "todo-app", type: "dir", size: 0 },
-          { name: "README.md", type: "file", size: 5 },
-        ] },
-        "todo-app": { path: "todo-app", entries: [
-          { name: "docs", type: "dir", size: 0 },
-        ] },
+        "": {
+          path: "",
+          entries: [
+            { name: "todo-app", type: "dir", size: 0 },
+            { name: "README.md", type: "file", size: 5 },
+          ],
+        },
+        "todo-app": {
+          path: "todo-app",
+          entries: [{ name: "docs", type: "dir", size: 0 }],
+        },
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
 
     // Expanding todo-app must load todo-app's OWN children (docs), and must NOT
     // re-render the root listing under it (README.md stays a single root row).
@@ -683,7 +1108,10 @@ describe("FileExplorerTab", () => {
         { name: "main.go", type: "file", size: 3 },
       ],
     });
-    expect(derived.entries?.map((e) => e.path)).toEqual(["todo-app/docs", "todo-app/main.go"]);
+    expect(derived.entries?.map((e) => e.path)).toEqual([
+      "todo-app/docs",
+      "todo-app/main.go",
+    ]);
     // The path is derived from dir+name and a server-supplied `path` is NOT
     // trusted — so even a server that emits a duplicate/wrong path cannot
     // reintroduce the shared-key recursion. Here both rows claim "dup" yet get
@@ -704,16 +1132,38 @@ describe("FileExplorerTab", () => {
   it("guards a large code file from the main-thread renderer, offering download instead (ISI-4705)", async () => {
     const big = "x".repeat(300 * 1024); // > RICH_PREVIEW_MAX_BYTES (256 KiB)
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "huge.go", path: "huge.go", type: "file", size: 3_850_240 }] } },
-      contents: { "huge.go": { path: "huge.go", size: 3_850_240, contentType: "text", data: b64(big), offset: 0, length: big.length } },
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "huge.go", path: "huge.go", type: "file", size: 3_850_240 },
+          ],
+        },
+      },
+      contents: {
+        "huge.go": {
+          path: "huge.go",
+          size: 3_850_240,
+          contentType: "text",
+          data: b64(big),
+          offset: 0,
+          length: big.length,
+        },
+      },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("huge.go"));
-    await waitFor(() => expect(screen.getByTestId("files-too-large")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-too-large")).toBeTruthy(),
+    );
     // The expensive code renderer is NOT mounted for an oversized window.
     expect(screen.queryByTestId("files-code")).toBeNull();
-    expect(screen.getByTestId("files-too-large-download").getAttribute("href")).toContain("huge.go");
+    expect(
+      screen.getByTestId("files-too-large-download").getAttribute("href"),
+    ).toContain("huge.go");
     // A capped read (length < size) is always flagged truncated, even though the
     // server omits the `truncated` field.
     expect(screen.getByTestId("files-preview-truncated")).toBeTruthy();
@@ -725,7 +1175,12 @@ describe("FileExplorerTab", () => {
   // and tripped the error boundary. normalizeContent backfills the requested path.
   it("previews a file whose content payload omits `path`, without crashing (ISI-4705)", async () => {
     routeFetch({
-      listings: { "": { path: "", entries: [{ name: "01-plan.md", type: "file", size: 12 }] } },
+      listings: {
+        "": {
+          path: "",
+          entries: [{ name: "01-plan.md", type: "file", size: 12 }],
+        },
+      },
       // NOTE: no `path` on the content, exactly like the live reader response.
       contents: {
         "01-plan.md": {
@@ -738,13 +1193,19 @@ describe("FileExplorerTab", () => {
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByText("01-plan.md"));
     // The markdown preview renders — not the error-boundary panel.
-    await waitFor(() => expect(screen.getByTestId("files-markdown")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-markdown")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("files-honest")).toBeNull();
     // The path was backfilled from the request, so the preview header shows it.
-    expect(screen.getByTestId("files-preview-path").textContent).toBe("01-plan.md");
+    expect(screen.getByTestId("files-preview-path").textContent).toBe(
+      "01-plan.md",
+    );
   });
 
   it("normalizeContent backfills the requested path when the wire omits it (ISI-4705)", () => {
@@ -757,7 +1218,14 @@ describe("FileExplorerTab", () => {
     } as WireFileContent);
     expect(c.path).toBe("docs/01-plan.md");
     // A server that DOES echo a path is preserved.
-    const kept = normalizeContent("req/path", { path: "real/path", size: 0, contentType: "text", data: "", offset: 0, length: 0 } as FileContent);
+    const kept = normalizeContent("req/path", {
+      path: "real/path",
+      size: 0,
+      contentType: "text",
+      data: "",
+      offset: 0,
+      length: 0,
+    } as FileContent);
     expect(kept.path).toBe("real/path");
   });
 
@@ -772,7 +1240,11 @@ describe("FileExplorerTab", () => {
 
     expect(errSpy).toHaveBeenCalledWith(
       "[client-crash]",
-      expect.objectContaining({ source: "unit-test", message: "kaboom", context: { projectId: "web" } }),
+      expect.objectContaining({
+        source: "unit-test",
+        message: "kaboom",
+        context: { projectId: "web" },
+      }),
     );
     expect(beacon).toHaveBeenCalledTimes(1);
     expect(beacon.mock.calls[0][0]).toBe("/api/telemetry/client-error");
@@ -814,7 +1286,12 @@ describe("FileExplorerTab", () => {
             { name: "Main.java", path: "Main.java", type: "file", size: 10 },
             { name: "Program.cs", path: "Program.cs", type: "file", size: 10 },
             { name: "notes.md", path: "notes.md", type: "file", size: 10 },
-            { name: "report.docx", path: "report.docx", type: "file", size: 10 },
+            {
+              name: "report.docx",
+              path: "report.docx",
+              type: "file",
+              size: 10,
+            },
             { name: "logo.png", path: "logo.png", type: "file", size: 10 },
             { name: "data.json", path: "data.json", type: "file", size: 10 },
             { name: "bundle.zip", path: "bundle.zip", type: "file", size: 10 },
@@ -825,11 +1302,15 @@ describe("FileExplorerTab", () => {
       },
     });
     render(<FileExplorerTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+    );
 
     // Each recognised extension paints its glyph a distinct tone class...
     const toneOf = (label: string): string => {
-      const glyph = screen.getByText(label).parentElement?.querySelector(".file-explorer__glyph--file");
+      const glyph = screen
+        .getByText(label)
+        .parentElement?.querySelector(".file-explorer__glyph--file");
       return glyph?.getAttribute("class") ?? "";
     };
     expect(toneOf("main.go")).toContain("file-explorer__glyph--go");
@@ -847,9 +1328,15 @@ describe("FileExplorerTab", () => {
     expect(toneOf("Makefile")).toContain("file-explorer__glyph--default");
 
     // A directory carries the accent folder glyph, never a file tone.
-    const dirGlyph = screen.getByText("src").parentElement?.querySelector(".file-explorer__glyph--dir");
+    const dirGlyph = screen
+      .getByText("src")
+      .parentElement?.querySelector(".file-explorer__glyph--dir");
     expect(dirGlyph).toBeTruthy();
-    expect(screen.getByText("src").parentElement?.querySelector(".file-explorer__glyph--file")).toBeNull();
+    expect(
+      screen
+        .getByText("src")
+        .parentElement?.querySelector(".file-explorer__glyph--file"),
+    ).toBeNull();
   });
 });
 
@@ -869,13 +1356,21 @@ describe("FileExplorerTab — D5a cache-first (ISI-5485)", () => {
         await gate;
         return resolveWith();
       }
-      return { ok: false, status: 404, json: () => Promise.resolve(null) } as Response;
+      return {
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve(null),
+      } as Response;
     });
     vi.stubGlobal("fetch", spy as unknown as typeof fetch);
     return { spy, release };
   }
   const resp = (body: unknown, status = 200): Response =>
-    ({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) }) as unknown as Response;
+    ({
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(body),
+    }) as unknown as Response;
 
   it("renders the tree synchronously from cache with no blocking spinner + a Syncing… chip (AC1)", async () => {
     cacheListing("web", "", {
@@ -926,7 +1421,9 @@ describe("FileExplorerTab — D5a cache-first (ISI-5485)", () => {
       await Promise.resolve();
     });
 
-    await waitFor(() => expect(screen.getByTestId("files-sync-updated")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-sync-updated")).toBeTruthy(),
+    );
     expect(screen.getByText("new.ts")).toBeTruthy();
     expect(screen.queryByText("gone.ts")).toBeNull(); // removed in place
     expect(screen.getByText("keep.ts")).toBeTruthy(); // survived (restated)
@@ -939,7 +1436,11 @@ describe("FileExplorerTab — D5a cache-first (ISI-5485)", () => {
       entries: [{ name: "old.ts", path: "old.ts", type: "file", size: 1 }],
     });
     const { release } = deferredRootFetch(() =>
-      resp({ path: "", generation: "g2", entries: [{ name: "fresh.ts", type: "file", size: 1 }] }),
+      resp({
+        path: "",
+        generation: "g2",
+        entries: [{ name: "fresh.ts", type: "file", size: 1 }],
+      }),
     );
 
     render(<FileExplorerTab projectId="web" />);
@@ -971,7 +1472,9 @@ describe("FileExplorerTab — D5a cache-first (ISI-5485)", () => {
       await Promise.resolve();
     });
 
-    await waitFor(() => expect(screen.getByTestId("files-sync-stale")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("files-sync-stale")).toBeTruthy(),
+    );
     expect(screen.getByText("keep.ts")).toBeTruthy(); // degraded, not blank
   });
 });

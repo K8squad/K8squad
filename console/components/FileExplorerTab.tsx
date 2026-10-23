@@ -16,7 +16,15 @@
 // time it is opened (GET .../files?path=), so a deep workspace never front-loads
 // the whole tree. Selecting a file fetches its content (GET .../files/content).
 
-import { Component, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Component,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import hljs from "highlight.js/lib/core";
 import hlGo from "highlight.js/lib/languages/go";
 import hlTypescript from "highlight.js/lib/languages/typescript";
@@ -126,7 +134,8 @@ const MAX_TREE_DEPTH = 64;
 // chevron. Single-path, multi-subpath `d` strings (Feather/Lucide geometry).
 const TREE_ICON = {
   chevron: "M9 18l6-6-6-6",
-  folder: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z",
+  folder:
+    "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z",
   folderOpen:
     "M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
   file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
@@ -136,13 +145,17 @@ const TREE_ICON = {
   // same 24-grid / currentColor vocabulary as the folder glyphs above.
   code: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9.5 12.5L7.5 14.5l2 2 M14.5 12.5l2 2-2 2",
   data: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9.5 12a1.5 1.5 0 0 0-1.5 1.5 1.5 1.5 0 0 1-1 1.4 1.5 1.5 0 0 1 1 1.4A1.5 1.5 0 0 0 9.5 19 M14.5 12a1.5 1.5 0 0 1 1.5 1.5 1.5 1.5 0 0 0 1 1.4 1.5 1.5 0 0 0-1 1.4 1.5 1.5 0 0 1-1.5 1.5",
-  image: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2 M20 19l-4-4-3 3-2-2-3 3",
-  media: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M10 12.5v5l4-2.5z",
-  archive: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M11 12h2 M11 15h2 M11 18h2",
+  image:
+    "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2 M20 19l-4-4-3 3-2-2-3 3",
+  media:
+    "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M10 12.5v5l4-2.5z",
+  archive:
+    "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M11 12h2 M11 15h2 M11 18h2",
   // ISI-5339 (S6): state-frame glyphs for the six honest states + the freshness
   // pill — same 24-grid / currentColor vocabulary as the tree icons above.
   clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2",
-  refresh: "M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10 M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
+  refresh:
+    "M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10 M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
   lock: "M5 11h14v10H5z M8 11V7a4 4 0 0 1 8 0v4",
   info: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 16v-4 M12 8h.01",
   box: "M21 8l-9-5-9 5v8l9 5 9-5z M3 8l9 5 9-5 M12 13v8",
@@ -151,7 +164,13 @@ const TREE_ICON = {
 
 /** One tree glyph. A single <path> renders every subpath in the `d` string, so
  * multi-part icons (file lines, folder-open lid) need no per-subpath elements. */
-function TreeIcon({ name, className }: { name: keyof typeof TREE_ICON; className?: string }) {
+function TreeIcon({
+  name,
+  className,
+}: {
+  name: keyof typeof TREE_ICON;
+  className?: string;
+}) {
   return (
     <svg
       className={className}
@@ -176,7 +195,10 @@ function TreeIcon({ name, className }: { name: keyof typeof TREE_ICON; className
 // `code` glyph — go, py, java, c#, … — still read apart at a glance (the GitHub
 // language-colour model, kept monochrome-per-icon). Unknown extensions fall back
 // to the plain document glyph in the muted tone, so nothing ever loses an icon.
-const FILE_TYPE: Record<string, { icon: keyof typeof TREE_ICON; tone: string }> = {};
+const FILE_TYPE: Record<
+  string,
+  { icon: keyof typeof TREE_ICON; tone: string }
+> = {};
 {
   const reg = (icon: keyof typeof TREE_ICON, tone: string, exts: string[]) => {
     for (const e of exts) FILE_TYPE[e] = { icon, tone };
@@ -193,25 +215,120 @@ const FILE_TYPE: Record<string, { icon: keyof typeof TREE_ICON; tone: string }> 
   reg("code", "php", ["php"]);
   reg("code", "cpp", ["c", "h", "cpp", "cc", "cxx", "hpp", "hh"]);
   reg("code", "shell", ["sh", "bash", "zsh", "fish", "ps1"]);
-  reg("code", "web", ["html", "htm", "css", "scss", "sass", "less", "vue", "svelte"]);
-  reg("code", "code", ["swift", "kt", "kts", "scala", "lua", "r", "dart", "ex", "exs", "clj", "pl", "sql", "graphql"]);
+  reg("code", "web", [
+    "html",
+    "htm",
+    "css",
+    "scss",
+    "sass",
+    "less",
+    "vue",
+    "svelte",
+  ]);
+  reg("code", "code", [
+    "swift",
+    "kt",
+    "kts",
+    "scala",
+    "lua",
+    "r",
+    "dart",
+    "ex",
+    "exs",
+    "clj",
+    "pl",
+    "sql",
+    "graphql",
+  ]);
   // Structured data / config — braces glyph.
-  reg("data", "data", ["json", "yaml", "yml", "toml", "ini", "cfg", "conf", "env", "xml", "csv", "tsv", "proto", "lock"]);
+  reg("data", "data", [
+    "json",
+    "yaml",
+    "yml",
+    "toml",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "xml",
+    "csv",
+    "tsv",
+    "proto",
+    "lock",
+  ]);
   // Plain text & lightweight markup — document glyph, muted.
-  reg("file", "doc", ["md", "mdx", "markdown", "txt", "rst", "adoc", "tex", "log", "text"]);
+  reg("file", "doc", [
+    "md",
+    "mdx",
+    "markdown",
+    "txt",
+    "rst",
+    "adoc",
+    "tex",
+    "log",
+    "text",
+  ]);
   // Rich office documents & PDF — document glyph, warm tone.
-  reg("file", "docx", ["doc", "docx", "odt", "rtf", "pdf", "ppt", "pptx", "xls", "xlsx", "ods"]);
+  reg("file", "docx", [
+    "doc",
+    "docx",
+    "odt",
+    "rtf",
+    "pdf",
+    "ppt",
+    "pptx",
+    "xls",
+    "xlsx",
+    "ods",
+  ]);
   // Images — picture glyph.
-  reg("image", "image", ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif", "tif", "tiff"]);
+  reg("image", "image", [
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "svg",
+    "webp",
+    "bmp",
+    "ico",
+    "avif",
+    "tif",
+    "tiff",
+  ]);
   // Audio / video — play glyph.
-  reg("media", "media", ["mp4", "mov", "webm", "mkv", "avi", "mp3", "wav", "flac", "ogg", "m4a", "aac"]);
+  reg("media", "media", [
+    "mp4",
+    "mov",
+    "webm",
+    "mkv",
+    "avi",
+    "mp3",
+    "wav",
+    "flac",
+    "ogg",
+    "m4a",
+    "aac",
+  ]);
   // Archives — box-with-slats glyph.
-  reg("archive", "archive", ["zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "7z", "zst"]);
+  reg("archive", "archive", [
+    "zip",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "xz",
+    "rar",
+    "7z",
+    "zst",
+  ]);
 }
 
 /** Resolve a file name to its type glyph + tone. Dotfiles with no extension
  * (`.gitignore`) and unknown extensions fall back to the plain document glyph. */
-function fileTypeGlyph(name: string): { icon: keyof typeof TREE_ICON; tone: string } {
+function fileTypeGlyph(name: string): {
+  icon: keyof typeof TREE_ICON;
+  tone: string;
+} {
   const dot = name.lastIndexOf(".");
   const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
   return FILE_TYPE[ext] ?? { icon: "file", tone: "default" };
@@ -353,15 +470,28 @@ function SkeletonRows({ depth, count = 5 }: { depth: number; count?: number }) {
 function SpinningUpStrip({ attempt }: { attempt: number }) {
   const pct = Math.min(100, Math.round((attempt / RETRY_MAX_ATTEMPTS) * 100));
   return (
-    <div className="file-explorer__spinup" role="status" data-testid="files-preparing">
-      <TreeIcon name="refresh" className="file-explorer__spin file-explorer__spin--accent" />
+    <div
+      className="file-explorer__spinup"
+      role="status"
+      data-testid="files-preparing"
+    >
+      <TreeIcon
+        name="refresh"
+        className="file-explorer__spin file-explorer__spin--accent"
+      />
       <div className="file-explorer__spinup-copy">
-        <p className="file-explorer__spinup-title">Spinning up the file reader…</p>
+        <p className="file-explorer__spinup-title">
+          Spinning up the file reader…
+        </p>
         <p className="muted">
-          Getting a read-only view of this workspace ready. This usually takes a few seconds.
+          Getting a read-only view of this workspace ready. This usually takes a
+          few seconds.
         </p>
         <div className="file-explorer__progress" aria-hidden="true">
-          <div className="file-explorer__progress-fill" style={{ width: `${pct}%` }} />
+          <div
+            className="file-explorer__progress-fill"
+            style={{ width: `${pct}%` }}
+          />
         </div>
       </div>
     </div>
@@ -371,19 +501,35 @@ function SpinningUpStrip({ attempt }: { attempt: number }) {
 /** Frame 03·B — the amber read-timeout banner: auto-retry with a visible
  * attempt budget + a [Retry now] that refetches immediately and keeps the
  * user's place in the tree (spec §4). role="status": polite, expected. */
-function RetryBanner({ attempt, onRetryNow }: { attempt: number; onRetryNow: () => void }) {
+function RetryBanner({
+  attempt,
+  onRetryNow,
+}: {
+  attempt: number;
+  onRetryNow: () => void;
+}) {
   const seconds = Math.round(retryDelayMs(attempt) / 1000);
   return (
-    <div className="banner banner--warn" role="status" data-testid="files-retrying">
+    <div
+      className="banner banner--warn"
+      role="status"
+      data-testid="files-retrying"
+    >
       <p className="file-explorer__banner-title">
-        <TreeIcon name="refresh" className="file-explorer__spin" /> This is taking longer than
-        usual — retrying…
+        <TreeIcon name="refresh" className="file-explorer__spin" /> This is
+        taking longer than usual — retrying…
       </p>
       <p className="muted">
-        We&apos;re retrying automatically — attempt {attempt} of {RETRY_MAX_ATTEMPTS}, next try in{" "}
-        {seconds}s. You can wait or retry now; your place in the tree is kept.
+        We&apos;re retrying automatically — attempt {attempt} of{" "}
+        {RETRY_MAX_ATTEMPTS}, next try in {seconds}s. You can wait or retry now;
+        your place in the tree is kept.
       </p>
-      <button type="button" className="btn" onClick={onRetryNow} data-testid="files-retry-now">
+      <button
+        type="button"
+        className="btn"
+        onClick={onRetryNow}
+        data-testid="files-retry-now"
+      >
         Retry now
       </button>
     </div>
@@ -421,10 +567,14 @@ function StateFrame({
       data-testid={testId}
       title={detail}
     >
-      <span className={`file-explorer__state-badge file-explorer__state-badge--${tone}`}>
+      <span
+        className={`file-explorer__state-badge file-explorer__state-badge--${tone}`}
+      >
         {badge}
       </span>
-      <div className={`file-explorer__state-frame file-explorer__state-frame--${tone}`}>
+      <div
+        className={`file-explorer__state-frame file-explorer__state-frame--${tone}`}
+      >
         <TreeIcon name={icon} className="file-explorer__state-icon" />
       </div>
       <h2 className="file-explorer__state-title">{title}</h2>
@@ -493,7 +643,9 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   // The selected file preview (path + fetched content state).
   const [selected, setSelected] = useState<string | null>(null);
-  const [preview, setPreview] = useState<FilesState<FileContent>>({ kind: "loading" });
+  const [preview, setPreview] = useState<FilesState<FileContent>>({
+    kind: "loading",
+  });
   // ISI-4651: the selected file's stat / change metadata (details pane).
   const [stat, setStat] = useState<FilesState<FileStat>>({ kind: "loading" });
   // ISI-5339 (S6): [Retry now] / [Try again] bump this to cancel any scheduled
@@ -512,7 +664,9 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   // expand that hits a cold reader follows the same bounded ladder as the
   // root — no row spins forever, and every pending row reaches loaded /
   // retrying / error with a manual retry affordance.
-  const dirTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const dirTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
   const aliveRef = useRef(true);
   // Guards against a stale (previous-project) async continuation writing into
   // the fresh project's dir map — workspace-relative keys like "src" collide.
@@ -653,10 +807,15 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
         const s = !isRetry
           ? await loadDir("", ac.signal)
           : await (async (): Promise<DirState> => {
-              const raw = await listProjectFilesAttempt(projectId, "", attempt, ac.signal);
+              const raw = await listProjectFilesAttempt(
+                projectId,
+                "",
+                attempt,
+                ac.signal,
+              );
               if (raw.kind !== "ready") return raw;
-                cacheListing(projectId, "", raw.data);
-                return { kind: "ready", data: toDirData(raw.data) };
+              cacheListing(projectId, "", raw.data);
+              return { kind: "ready", data: toDirData(raw.data) };
             })();
         if (!alive) return;
         if (s.kind === "retrying" || s.kind === "preparing") {
@@ -699,7 +858,11 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
           s = !isRetry
             ? await loadDir(path)
             : await (async (): Promise<DirState> => {
-                const raw = await listProjectFilesAttempt(projectId, path, attempt);
+                const raw = await listProjectFilesAttempt(
+                  projectId,
+                  path,
+                  attempt,
+                );
                 if (raw.kind !== "ready") return raw;
                 cacheListing(projectId, path, raw.data);
                 return { kind: "ready", data: toDirData(raw.data) };
@@ -753,7 +916,9 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
       // Lazy-load the first time this directory is opened (and keep any prior
       // listing on re-open — toggling never refetches a loaded dir).
       if (!dirs[path]) {
-        setDirs((cur) => (cur[path] ? cur : { ...cur, [path]: { kind: "loading" } }));
+        setDirs((cur) =>
+          cur[path] ? cur : { ...cur, [path]: { kind: "loading" } },
+        );
         loadDirRetry(path, 1);
       }
     },
@@ -779,7 +944,11 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   // ISI-5339 Frame 01: loading / preparing / retrying NEVER blank the tab —
   // the shell paints instantly with skeleton rows (plus the bounded spinning-up
   // strip on 202 preparing, or the amber retry banner on read-timeout).
-  if (root.kind === "loading" || root.kind === "preparing" || root.kind === "retrying") {
+  if (
+    root.kind === "loading" ||
+    root.kind === "preparing" ||
+    root.kind === "retrying"
+  ) {
     return (
       <section
         aria-busy="true"
@@ -788,12 +957,22 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
       >
         <header>
           <h1>File Explorer</h1>
-          <p className="muted">Read-only view of this project&apos;s workspace files.</p>
+          <p className="muted">
+            Read-only view of this project&apos;s workspace files.
+          </p>
         </header>
-        {root.kind === "preparing" && <SpinningUpStrip attempt={root.attempt} />}
-        {root.kind === "retrying" && <RetryBanner attempt={root.attempt} onRetryNow={refreshRoot} />}
+        {root.kind === "preparing" && (
+          <SpinningUpStrip attempt={root.attempt} />
+        )}
+        {root.kind === "retrying" && (
+          <RetryBanner attempt={root.attempt} onRetryNow={refreshRoot} />
+        )}
         <div className="file-explorer">
-          <nav className="file-explorer__tree" aria-label="Workspace files" data-testid="files-tree">
+          <nav
+            className="file-explorer__tree"
+            aria-label="Workspace files"
+            data-testid="files-tree"
+          >
             <ul>
               <SkeletonRows depth={0} />
             </ul>
@@ -801,7 +980,11 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
           <div className="file-explorer__preview" data-testid="files-preview">
             <p className="muted">Select a file to preview its contents.</p>
           </div>
-          <aside className="file-explorer__details" data-testid="files-details" aria-label="File details">
+          <aside
+            className="file-explorer__details"
+            data-testid="files-details"
+            aria-label="File details"
+          >
             <p className="muted">Select a file to see its details.</p>
           </aside>
         </div>
@@ -809,10 +992,16 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
     );
   }
   if (root.kind === "unauthenticated") {
-    return honest("Not signed in", "Your session has expired — sign in to browse this project's files.");
+    return honest(
+      "Not signed in",
+      "Your session has expired — sign in to browse this project's files.",
+    );
   }
   if (root.kind === "not-found") {
-    return honest("No files", "This project has no workspace, or you cannot access it.");
+    return honest(
+      "No files",
+      "This project has no workspace, or you cannot access it.",
+    );
   }
   if (root.kind === "not-wired") {
     return honest(
@@ -836,7 +1025,12 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
           testId="files-error"
           alert
           action={
-            <button type="button" className="btn" onClick={refreshRoot} data-testid="files-try-again">
+            <button
+              type="button"
+              className="btn"
+              onClick={refreshRoot}
+              data-testid="files-try-again"
+            >
               Try again
             </button>
           }
@@ -854,8 +1048,10 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   //   degraded + workspace_busy + none  → snapshot_unavailable (LIVE PAUSED)
   //   degraded=false + no_browse_target → no-run (NO RUN YET)
   //   plain 200 + 0 rows                → empty (EMPTY)
-  const snapshotMode = degraded && root.data.reason === FILE_REASON_WORKSPACE_BUSY;
-  const noTarget = !degraded && root.data.reason === FILE_REASON_NO_BROWSE_TARGET;
+  const snapshotMode =
+    degraded && root.data.reason === FILE_REASON_WORKSPACE_BUSY;
+  const noTarget =
+    !degraded && root.data.reason === FILE_REASON_NO_BROWSE_TARGET;
 
   // Frame 03·A: the pill is always present when a listing is shown.
   const pill = rootFetchedAt != null && rootEntries.length > 0 && (
@@ -869,21 +1065,32 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   return (
     <section data-testid="file-explorer">
       <header className="file-explorer__header">
-        <h1>File Explorer {pill} {syncState && <SyncChip state={syncState} />}</h1>
-        <p className="muted">Read-only view of this project&apos;s workspace files.</p>
+        <h1>
+          File Explorer {pill} {syncState && <SyncChip state={syncState} />}
+        </h1>
+        <p className="muted">
+          Read-only view of this project&apos;s workspace files.
+        </p>
       </header>
 
       {/* Frame 02 · busy_snapshot — a served snapshot with real rows: amber
           banner + Snapshot pill. "Real data, slightly stale", never an alarm. */}
       {snapshotMode && rootEntries.length > 0 && (
-        <div className="banner banner--warn" role="status" data-testid="files-busy-banner">
+        <div
+          className="banner banner--warn"
+          role="status"
+          data-testid="files-busy-banner"
+        >
           <strong>
             Showing a snapshot from{" "}
-            {root.data.snapshotTakenAt ? new Date(root.data.snapshotTakenAt).toLocaleString() : "the last commit"}
+            {root.data.snapshotTakenAt
+              ? new Date(root.data.snapshotTakenAt).toLocaleString()
+              : "the last commit"}
           </strong>
           <p className="muted">
-            An agent is editing this workspace right now, so you&apos;re seeing a point-in-time
-            snapshot. The live view returns automatically when the agent is done.
+            An agent is editing this workspace right now, so you&apos;re seeing
+            a point-in-time snapshot. The live view returns automatically when
+            the agent is done.
           </p>
         </div>
       )}
@@ -922,7 +1129,11 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
         />
       ) : (
         <div className="file-explorer">
-          <nav className="file-explorer__tree" aria-label="Workspace files" data-testid="files-tree">
+          <nav
+            className="file-explorer__tree"
+            aria-label="Workspace files"
+            data-testid="files-tree"
+          >
             <ul>
               {sortEntries(rootEntries).map((e) => (
                 <TreeNode
@@ -941,9 +1152,17 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
             </ul>
           </nav>
           <div className="file-explorer__preview" data-testid="files-preview">
-            <PreviewPane projectId={projectId} path={selected} state={preview} />
+            <PreviewPane
+              projectId={projectId}
+              path={selected}
+              state={preview}
+            />
           </div>
-          <aside className="file-explorer__details" data-testid="files-details" aria-label="File details">
+          <aside
+            className="file-explorer__details"
+            data-testid="files-details"
+            aria-label="File details"
+          >
             <DetailsPane path={selected} state={stat} />
           </aside>
         </div>
@@ -987,7 +1206,11 @@ function TreeNode({
   // caret itself spins (inline per-row spinner) — the tree is never blocked and
   // every other row stays interactive.
   const childLoading =
-    isDir && isOpen && (!dirs[entry.path] || dirs[entry.path].kind === "loading" || dirs[entry.path].kind === "preparing");
+    isDir &&
+    isOpen &&
+    (!dirs[entry.path] ||
+      dirs[entry.path].kind === "loading" ||
+      dirs[entry.path].kind === "preparing");
 
   // ISI-4652: per-row download. A sibling anchor (not nested in the row button —
   // interactive elements cannot nest), so a download click never toggles/selects.
@@ -996,7 +1219,9 @@ function TreeNode({
       className="file-explorer__download"
       href={downloadProjectFileUrl(projectId, entry.path)}
       download
-      aria-label={isDir ? `Download ${entry.name} as archive` : `Download ${entry.name}`}
+      aria-label={
+        isDir ? `Download ${entry.name} as archive` : `Download ${entry.name}`
+      }
       title={isDir ? "Download folder (.tar.gz)" : "Download file"}
       data-testid={isDir ? "files-download-dir" : "files-download-file"}
     >
@@ -1055,7 +1280,9 @@ function TreeNode({
       </div>
       {isOpen && (
         <ul>
-          {!childState || childState.kind === "loading" || childState.kind === "preparing" ? (
+          {!childState ||
+          childState.kind === "loading" ||
+          childState.kind === "preparing" ? (
             // ISI-5339 Frame 01: skeleton children indented beneath the row —
             // not a blocking full-tree spinner. (A `preparing` child is mid-
             // poll: the loadDirRetry ladder is driving it to a terminal state.)
@@ -1075,7 +1302,8 @@ function TreeNode({
               data-testid="files-dir-retrying"
             >
               <span>
-                Taking longer than usual — retrying… (attempt {childState.attempt} of {RETRY_MAX_ATTEMPTS})
+                Taking longer than usual — retrying… (attempt{" "}
+                {childState.attempt} of {RETRY_MAX_ATTEMPTS})
               </span>
               <button
                 type="button"
@@ -1088,7 +1316,10 @@ function TreeNode({
             </li>
           ) : childState.kind === "ready" ? (
             childState.data.entries.length === 0 ? (
-              <li className="muted" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>
+              <li
+                className="muted"
+                style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+              >
                 (empty)
               </li>
             ) : depth + 1 > MAX_TREE_DEPTH ? (
@@ -1097,7 +1328,8 @@ function TreeNode({
                 style={{ paddingLeft: 8 + (depth + 1) * 14 }}
                 data-testid="files-too-deep"
               >
-                Too deeply nested to expand here — download the folder to see the rest.
+                Too deeply nested to expand here — download the folder to see
+                the rest.
               </li>
             ) : (
               sortEntries(childState.data.entries).map((c) => (
@@ -1163,17 +1395,31 @@ function DetailsPane({
     );
   }
   if (state.kind === "not-wired") {
-    return <p className="muted">File details are not available in this deployment yet.</p>;
+    return (
+      <p className="muted">
+        File details are not available in this deployment yet.
+      </p>
+    );
   }
   if (state.kind === "unauthenticated") {
-    return <p className="muted">Your session has expired — sign in to see file details.</p>;
+    return (
+      <p className="muted">
+        Your session has expired — sign in to see file details.
+      </p>
+    );
   }
   if (state.kind === "retrying") {
-    return <p className="muted">This is taking longer than usual — retrying…</p>;
+    return (
+      <p className="muted">This is taking longer than usual — retrying…</p>
+    );
   }
   if (state.kind === "preparing") {
     return (
-      <p className="muted" aria-busy="true" data-testid="files-details-preparing">
+      <p
+        className="muted"
+        aria-busy="true"
+        data-testid="files-details-preparing"
+      >
         Spinning up the file reader…
       </p>
     );
@@ -1189,7 +1435,10 @@ function DetailsPane({
   const s = state.data;
   return (
     <div>
-      <h2 className="file-explorer__details-name" data-testid="files-details-name">
+      <h2
+        className="file-explorer__details-name"
+        data-testid="files-details-name"
+      >
         {s.name}
       </h2>
       <dl className="file-explorer__details-list">
@@ -1214,14 +1463,21 @@ function DetailsPane({
       </dl>
 
       {s.degraded && (
-        <div className="banner banner--info" role="status" data-testid="files-details-busy">
+        <div
+          className="banner banner--info"
+          role="status"
+          data-testid="files-details-busy"
+        >
           Workspace busy — details reflect the last-committed snapshot.
         </div>
       )}
 
       <h3 className="file-explorer__details-change-title">Last change</h3>
       {s.git ? (
-        <dl className="file-explorer__details-list" data-testid="files-details-change">
+        <dl
+          className="file-explorer__details-list"
+          data-testid="files-details-change"
+        >
           <div>
             <dt>Author</dt>
             <dd data-testid="files-details-author">{s.git.author}</dd>
@@ -1233,7 +1489,9 @@ function DetailsPane({
           <div>
             <dt>Commit</dt>
             <dd>
-              <code data-testid="files-details-hash">{shortHash(s.git.commitHash)}</code>
+              <code data-testid="files-details-hash">
+                {shortHash(s.git.commitHash)}
+              </code>
             </dd>
           </div>
           <div>
@@ -1285,16 +1543,30 @@ function PreviewPane({
     );
   }
   if (state.kind === "not-found") {
-    return <p className="muted" data-testid="files-preview-missing">That file is no longer available.</p>;
+    return (
+      <p className="muted" data-testid="files-preview-missing">
+        That file is no longer available.
+      </p>
+    );
   }
   if (state.kind === "not-wired") {
-    return <p className="muted">File preview is not available in this deployment yet.</p>;
+    return (
+      <p className="muted">
+        File preview is not available in this deployment yet.
+      </p>
+    );
   }
   if (state.kind === "unauthenticated") {
-    return <p className="muted">Your session has expired — sign in to preview files.</p>;
+    return (
+      <p className="muted">
+        Your session has expired — sign in to preview files.
+      </p>
+    );
   }
   if (state.kind === "retrying") {
-    return <p className="muted">This is taking longer than usual — retrying…</p>;
+    return (
+      <p className="muted">This is taking longer than usual — retrying…</p>
+    );
   }
   if (state.kind === "preparing") {
     return (
@@ -1320,7 +1592,13 @@ function PreviewPane({
  * (`FileExplorerTabInner`) re-renders on every `open`/`dirs`/`selected`/`preview`/
  * `stat` change, and inlining these in the JSX re-decoded and re-highlighted the
  * whole (up to 1 MiB) window on each of those unrelated renders. */
-function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }) {
+function FilePreviewBody({
+  projectId,
+  c,
+}: {
+  projectId: string;
+  c: FileContent;
+}) {
   const kind = previewKind(c.path, c.contentType);
   // The returned window size in bytes. Prefer the server's `length`, but that
   // field — exactly like `path` — is not on the Go struct and can be absent; fall
@@ -1330,7 +1608,8 @@ function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }
   const windowBytes = c.length ?? Math.floor(((c.data?.length ?? 0) * 3) / 4);
   // Partial iff the window is smaller than the whole file. A missing `length`
   // reads as "unknown", never silently as "not truncated".
-  const truncated = c.truncated === true || (c.length != null && c.length < c.size);
+  const truncated =
+    c.truncated === true || (c.length != null && c.length < c.size);
   // Guard EVERY text-ish renderer — code, markdown, AND plain <pre>: a 1 MiB
   // .log/.csv classifies as `text` and still bloats the DOM. Images/binary are
   // cheap placeholders and pass through.
@@ -1341,12 +1620,18 @@ function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }
   // Decode once; skip entirely when the bytes are never rendered as text
   // (binary/image placeholders, or the too-large panel).
   const decoded = useMemo(
-    () => (richTooLarge || kind === "binary" || kind === "image" ? "" : decodeTextContent(c.data)),
+    () =>
+      richTooLarge || kind === "binary" || kind === "image"
+        ? ""
+        : decodeTextContent(c.data),
     [richTooLarge, kind, c.data],
   );
   // Highlight once per (bytes, path) — not on every parent re-render.
   const codeHtml = useMemo(
-    () => (kind === "code" && !richTooLarge ? highlightCode(decoded, codeLanguage(c.path)) : ""),
+    () =>
+      kind === "code" && !richTooLarge
+        ? highlightCode(decoded, codeLanguage(c.path))
+        : "",
     [kind, richTooLarge, decoded, c.path],
   );
 
@@ -1356,7 +1641,10 @@ function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }
         <code data-testid="files-preview-path">{c.path}</code>{" "}
         <span className="muted">· {humanBytes(c.size)}</span>
         {truncated && (
-          <span className="muted" data-testid="files-preview-truncated"> · preview truncated (size cap)</span>
+          <span className="muted" data-testid="files-preview-truncated">
+            {" "}
+            · preview truncated (size cap)
+          </span>
         )}
         {" · "}
         <a
@@ -1369,7 +1657,11 @@ function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }
       </div>
 
       {c.degraded && (
-        <div className="banner banner--info" role="status" data-testid="files-preview-busy">
+        <div
+          className="banner banner--info"
+          role="status"
+          data-testid="files-preview-busy"
+        >
           Workspace busy — showing last-committed bytes.
         </div>
       )}
@@ -1378,8 +1670,8 @@ function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }
         <div data-testid="files-too-large">
           <p className="muted">
             This file is too large to preview here ({humanBytes(windowBytes)}
-            {windowBytes < c.size ? ` of ${humanBytes(c.size)}` : ""}). Download it to view the full
-            contents.
+            {windowBytes < c.size ? ` of ${humanBytes(c.size)}` : ""}). Download
+            it to view the full contents.
           </p>
           <a
             href={downloadProjectFileUrl(projectId, c.path)}
@@ -1391,14 +1683,25 @@ function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }
         </div>
       ) : kind === "binary" ? (
         <div data-testid="files-binary">
-          <p className="muted">Binary file — {humanBytes(c.size)}. Not shown as text.</p>
-          <a href={rawBytesDataUrl(c)} download={fileName(c.path)} data-testid="files-binary-download">
+          <p className="muted">
+            Binary file — {humanBytes(c.size)}. Not shown as text.
+          </p>
+          <a
+            href={rawBytesDataUrl(c)}
+            download={fileName(c.path)}
+            data-testid="files-binary-download"
+          >
             Download raw bytes
           </a>
         </div>
       ) : kind === "image" ? (
         <div data-testid="files-image">
-          <img className="file-explorer__image" src={imageDataUrl(c)} alt={fileName(c.path)} />
+          {/* eslint-disable-next-line @next/next/no-img-element -- raw data:-URL bytes of a repo file; next/image cannot optimize data: URLs */}
+          <img
+            className="file-explorer__image"
+            src={imageDataUrl(c)}
+            alt={fileName(c.path)}
+          />
         </div>
       ) : kind === "markdown" ? (
         <div className="file-explorer__markdown" data-testid="files-markdown">
@@ -1431,10 +1734,7 @@ function highlightCode(source: string, language: string | null): string {
 }
 
 function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function honest(title: string, why: string) {

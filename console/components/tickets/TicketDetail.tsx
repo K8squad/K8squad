@@ -90,13 +90,23 @@ import {
 import { createDiscussionClient } from "@/lib/discussion/api";
 import type { MentionSuggestion } from "@/lib/discussion/types";
 import type { CSSProperties } from "react";
-import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
+import {
+  STATE_LABELS,
+  type WorkItem,
+  type WorkItemState,
+} from "@/lib/tickets/types";
 import { STATUS_META } from "@/lib/tickets/statusColor";
 import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
 import { AssigneeChipView } from "./RailAssigneeChip";
-import { useDispatchWatch, type DispatchWatch } from "@/lib/tickets/useDispatchWatch";
-import { useTicketRunStream, ambientRunId } from "@/lib/tickets/useTicketRunStream";
+import {
+  useDispatchWatch,
+  type DispatchWatch,
+} from "@/lib/tickets/useDispatchWatch";
+import {
+  useTicketRunStream,
+  ambientRunId,
+} from "@/lib/tickets/useTicketRunStream";
 import { useActiveRunDiscovery } from "@/lib/tickets/useActiveRunDiscovery";
 import type { LiveThinkingRow } from "@/lib/tickets/thread";
 import { DispatchPendingCard } from "./DispatchPendingCard";
@@ -136,7 +146,13 @@ function shortId(id: string): string {
 // route via the SAME Story-8.11 runHref helper the run-comment trace ribbon
 // uses — a bare run UUID row is unnavigable for the board. The full run id
 // stays in the title tooltip for debugging.
-function AgentRunTraceItem({ runId, agentName }: { runId: string; agentName: string }) {
+function AgentRunTraceItem({
+  runId,
+  agentName,
+}: {
+  runId: string;
+  agentName: string;
+}) {
   return (
     <a
       href={runHref(runId)}
@@ -216,9 +232,7 @@ function useChildren(
 // failed read all degrade to "none" ⇒ the rail renders the honest em-dash, never a
 // fabricated link (FR-I3). One extra GET per detail load, reusing listWorkItems.
 type ParentState =
-  | { kind: "loading" }
-  | { kind: "none" }
-  | { kind: "ready"; parent: WorkItem };
+  { kind: "loading" } | { kind: "none" } | { kind: "ready"; parent: WorkItem };
 
 function useParentLink(projectId: string, workItemId: string): ParentState {
   const [state, setState] = useState<ParentState>({ kind: "loading" });
@@ -359,7 +373,11 @@ function StatusControl({
         ))}
       </select>
       {err && (
-        <p className="ksq-composer__error" role="alert" data-testid="detail-status-error">
+        <p
+          className="ksq-composer__error"
+          role="alert"
+          data-testid="detail-status-error"
+        >
           {err}
         </p>
       )}
@@ -450,7 +468,9 @@ function AssigneeControl({
               watch={dispatchWatch}
               fallback={
                 <span className="muted" data-testid="detail-requested">
-                  Requested: <code className="ksq-ticket-id">{requestedAgent}</code> · dispatch pending
+                  Requested:{" "}
+                  <code className="ksq-ticket-id">{requestedAgent}</code> ·
+                  dispatch pending
                 </span>
               }
             />
@@ -474,7 +494,9 @@ function AssigneeControl({
       onAssigned(); // re-fetch — the requested_agent stamp (+ lane advance) follows
     } catch (e) {
       const code = e instanceof ApiError ? e.status : 0;
-      setErr(assignErrorMessage(code, e instanceof ApiError ? e.body : undefined));
+      setErr(
+        assignErrorMessage(code, e instanceof ApiError ? e.body : undefined),
+      );
       onAssigned(); // a 409 means the lane moved under us — re-sync
     } finally {
       setBusy(false);
@@ -484,7 +506,7 @@ function AssigneeControl({
   // On a re-run lane the value stays at the placeholder so re-selecting the same
   // past agent still emits a change (a same-agent re-run must not no-op). On
   // backlog/todo the value mirrors the pre-claim requested agent.
-  const selectValue = isRerun ? "" : requestedAgent ?? "";
+  const selectValue = isRerun ? "" : (requestedAgent ?? "");
   const placeholderLabel = isRerun ? "Re-run with agent…" : "Assign agent…";
   return (
     <div className="ksq-rail-control">
@@ -501,15 +523,19 @@ function AssigneeControl({
         }}
       >
         {(isRerun || !requestedAgent) && (
-          <option value="">{agents.length > 0 ? placeholderLabel : "Loading squad…"}</option>
+          <option value="">
+            {agents.length > 0 ? placeholderLabel : "Loading squad…"}
+          </option>
         )}
         {/* The requested name may predate this roster load (or have left the
             team) — keep a matching option so the select never silently shows
             a blank value for a ticket that HAS a requested agent. Off the
             re-run lanes only: there the value is the placeholder, not a name. */}
-        {!isRerun && requestedAgent && !agents.some((a) => a.name === requestedAgent) && (
-          <option value={requestedAgent}>Requested: {requestedAgent}</option>
-        )}
+        {!isRerun &&
+          requestedAgent &&
+          !agents.some((a) => a.name === requestedAgent) && (
+            <option value={requestedAgent}>Requested: {requestedAgent}</option>
+          )}
         {agents.map((a) => (
           <option key={a.id} value={a.name}>
             {!isRerun && a.name === requestedAgent
@@ -525,7 +551,10 @@ function AssigneeControl({
           agent={requestedAgent}
           watch={dispatchWatch}
           fallback={
-            <span className="ksq-field__hint muted" data-testid="detail-requested-pending">
+            <span
+              className="ksq-field__hint muted"
+              data-testid="detail-requested-pending"
+            >
               dispatch pending
             </span>
           }
@@ -539,7 +568,11 @@ function AssigneeControl({
             : "Assigning dispatches the agent to start this ticket."}
       </span>
       {err && (
-        <p className="ksq-composer__error" role="alert" data-testid="detail-assignee-error">
+        <p
+          className="ksq-composer__error"
+          role="alert"
+          data-testid="detail-assignee-error"
+        >
           {err}
         </p>
       )}
@@ -560,12 +593,14 @@ function ActivityRow({
   if (item.kind === "event" && item.event) {
     const e = item.event;
     return (
-      <li className="ksq-activity ksq-activity--event" data-testid="activity-event">
+      <li
+        className="ksq-activity ksq-activity--event"
+        data-testid="activity-event"
+      >
         <span className="ksq-activity__dot" aria-hidden="true" />
         <span className="muted">
           {e.principal ? displayName(e.principal) : "someone"} moved{" "}
-          {stateLabel(e.fromState)} →{" "}
-          {stateLabel(e.toState)}
+          {stateLabel(e.fromState)} → {stateLabel(e.toState)}
         </span>
         <time className="ksq-ticket-id">{fmt(item.at)}</time>
       </li>
@@ -575,8 +610,13 @@ function ActivityRow({
     const c = item.change;
     const isPr = c.kind === "pull_request";
     return (
-      <li className="ksq-activity ksq-activity--change" data-testid="activity-change">
-        <span className="ksq-chip ksq-chip--prov">{isPr ? "PR" : "commit"}</span>
+      <li
+        className="ksq-activity ksq-activity--change"
+        data-testid="activity-change"
+      >
+        <span className="ksq-chip ksq-chip--prov">
+          {isPr ? "PR" : "commit"}
+        </span>
         {isPr ? (
           <a href={c.ref} target="_blank" rel="noopener noreferrer">
             {c.summary || c.ref}
@@ -661,7 +701,10 @@ function ProgressSegmentView({ seg }: { seg: ProgressSegment }) {
   }
   if (seg.kind === "status") {
     return (
-      <p className="ksq-activity__body ksq-progress__status" data-testid="progress-status">
+      <p
+        className="ksq-activity__body ksq-progress__status"
+        data-testid="progress-status"
+      >
         <span className="ksq-chip ksq-chip--state">{seg.state}</span>
         {seg.reason && <span className="muted">{seg.reason}</span>}
       </p>
@@ -682,11 +725,19 @@ function ProgressSegmentView({ seg }: { seg: ProgressSegment }) {
  *  row for the summary the producer attached (S2 populates this further with the
  *  command/skill/server head). Bare `[tool:read/result(ok)]` rows (no summary)
  *  render as a single quiet chip — no expander, no noise. */
-function ToolChip({ seg }: { seg: Extract<ProgressSegment, { kind: "tool" }> }) {
+function ToolChip({
+  seg,
+}: {
+  seg: Extract<ProgressSegment, { kind: "tool" }>;
+}) {
   const [open, setOpen] = useState(false);
   const hasDetail = Boolean(seg.summary);
   return (
-    <div className="ksq-toolchip" data-testid="progress-tool" data-phase={seg.phase}>
+    <div
+      className="ksq-toolchip"
+      data-testid="progress-tool"
+      data-phase={seg.phase}
+    >
       <div className="ksq-toolchip__head">
         {hasDetail ? (
           <button
@@ -716,14 +767,20 @@ function ToolChip({ seg }: { seg: Extract<ProgressSegment, { kind: "tool" }> }) 
           </span>
         ) : (
           !seg.done && (
-            <span className="muted ksq-toolchip__running" data-testid="progress-tool-running">
+            <span
+              className="muted ksq-toolchip__running"
+              data-testid="progress-tool-running"
+            >
               …
             </span>
           )
         )}
       </div>
       {hasDetail && open && (
-        <pre className="ksq-toolchip__detail" data-testid="progress-tool-detail">
+        <pre
+          className="ksq-toolchip__detail"
+          data-testid="progress-tool-detail"
+        >
           {seg.summary}
         </pre>
       )}
@@ -773,7 +830,8 @@ function RunCommentCard({
   // never surfaced (ProgressBody parses them). Older agent runs keep a *collapse*
   // affordance (the "−" toggle) so a long thread can still be tamed by hand — the
   // gate is gone, the option is not.
-  const collapsible = item.authorKind === "agent" && !(meta?.isLatestAgent ?? false);
+  const collapsible =
+    item.authorKind === "agent" && !(meta?.isLatestAgent ?? false);
   const [open, setOpen] = useState(true);
 
   if (collapsible && !open) {
@@ -784,7 +842,11 @@ function RunCommentCard({
         data-role={item.authorKind}
         style={accentStyle}
       >
-        <span className="ksq-runcomment__avatar" data-kind={item.authorKind} aria-hidden="true">
+        <span
+          className="ksq-runcomment__avatar"
+          data-kind={item.authorKind}
+          aria-hidden="true"
+        >
           {meta?.avatar ?? "?"}
         </span>
         <button
@@ -795,13 +857,19 @@ function RunCommentCard({
           onClick={() => setOpen(true)}
         >
           <strong>{author}</strong>
-          <span className="ksq-chip" data-role={item.authorKind} data-testid="activity-role">
+          <span
+            className="ksq-chip"
+            data-role={item.authorKind}
+            data-testid="activity-role"
+          >
             {item.authorKind}
           </span>
           <span className="muted ksq-runcomment__snippet">
             {envelopeSnippet(parseProgressEnvelope(comment.body ?? ""))}
           </span>
-          <time className="ksq-ticket-id ksq-runcomment__time">{fmt(item.at)}</time>
+          <time className="ksq-ticket-id ksq-runcomment__time">
+            {fmt(item.at)}
+          </time>
         </button>
       </li>
     );
@@ -814,16 +882,26 @@ function RunCommentCard({
       data-role={item.authorKind}
       style={accentStyle}
     >
-      <span className="ksq-runcomment__avatar" data-kind={item.authorKind} aria-hidden="true">
+      <span
+        className="ksq-runcomment__avatar"
+        data-kind={item.authorKind}
+        aria-hidden="true"
+      >
         {meta?.avatar ?? "?"}
       </span>
       <div className="ksq-runcomment__bubble">
         <div className="ksq-activity__head ksq-runcomment__head">
           <strong>{author}</strong>
-          <span className="ksq-chip" data-role={item.authorKind} data-testid="activity-role">
+          <span
+            className="ksq-chip"
+            data-role={item.authorKind}
+            data-testid="activity-role"
+          >
             {item.authorKind}
           </span>
-          <time className="ksq-ticket-id ksq-runcomment__time">{fmt(item.at)}</time>
+          <time className="ksq-ticket-id ksq-runcomment__time">
+            {fmt(item.at)}
+          </time>
           {collapsible && (
             <button
               type="button"
@@ -853,7 +931,9 @@ function RunCommentCard({
               aria-label={meta.running ? "Run in progress" : "Run idle"}
             />
             {meta.running && (
-              <span className="muted ksq-runcomment__status-label">running</span>
+              <span className="muted ksq-runcomment__status-label">
+                running
+              </span>
             )}
           </div>
         )}
@@ -917,7 +997,8 @@ function dispatchConflictReason(body?: string): string {
  */
 function assignErrorMessage(code: number, body?: string): string {
   if (code === 403) return "That agent isn't a member of this project's team.";
-  if (code === 501) return "Assigning agents isn't hosted on this deployment yet.";
+  if (code === 501)
+    return "Assigning agents isn't hosted on this deployment yet.";
   if (code === 409) {
     switch (dispatchConflictReason(body)) {
       case "live_run":
@@ -1023,9 +1104,9 @@ function Composer({
   // Which trigger opened the popover: `@` (agent) vs `#` (ticket picker).
   const [trigger, setTrigger] = useState<MentionTrigger>("@");
   // Work-item suggestions fetched for a live `#` fragment (debounced below).
-  const [ticketSuggestions, setTicketSuggestions] = useState<MentionSuggestion[]>(
-    [],
-  );
+  const [ticketSuggestions, setTicketSuggestions] = useState<
+    MentionSuggestion[]
+  >([]);
   // The ticket LINKS the `#` picker collected, carried into the comment POST.
   const [refs, setRefs] = useState<TicketReference[]>([]);
   const caretRef = useRef(0);
@@ -1170,7 +1251,12 @@ function Composer({
       setAssignee("");
     } catch (err) {
       const code = err instanceof ApiError ? err.status : 0;
-      setAssignErr(assignErrorMessage(code, err instanceof ApiError ? err.body : undefined));
+      setAssignErr(
+        assignErrorMessage(
+          code,
+          err instanceof ApiError ? err.body : undefined,
+        ),
+      );
       if (code === 501) setAssignUnavailable(true);
     } finally {
       setAssigning(false);
@@ -1473,7 +1559,8 @@ function Composer({
           role="status"
           data-testid="detail-dispatch-status"
         >
-          Dispatched to {dispatchAgent} · waiting for the operator to start the run…
+          Dispatched to {dispatchAgent} · waiting for the operator to start the
+          run…
         </p>
       )}
     </form>
@@ -1603,9 +1690,10 @@ function TicketBody({
   // in flight ⇒ the hook returns null and both surfaces stay dark. The `at` nonce is the
   // hook's rearm key (ISI-4918): a SECOND nudge on the same ticket re-seeds the ladder
   // instead of leaving it parked on the previous dispatch's terminal state.
-  const [dispatch, setDispatch] = useState<{ agent: string; at: number } | null>(
-    null,
-  );
+  const [dispatch, setDispatch] = useState<{
+    agent: string;
+    at: number;
+  } | null>(null);
   // Clear ONLY on navigation to a different ticket — NOT on the reconciling re-fetch
   // that fires right after a dispatch (a new `thread` object with the SAME workItemId),
   // which would otherwise yank the just-seeded card out within a frame of the 200.
@@ -1648,7 +1736,12 @@ function TicketBody({
   const streaming =
     Boolean(dispatchWatch?.runId) ||
     ambientRunId(thread.runId, thread.state, dispatchWatch?.runId) !== "";
-  useActiveRunDiscovery(thread.workItemId, thread.runId, streaming, onCommentPosted);
+  useActiveRunDiscovery(
+    thread.workItemId,
+    thread.runId,
+    streaming,
+    onCommentPosted,
+  );
   // ISI-5248 defense-in-depth: the SELF-DISPATCH run (dispatchWatch.runId) is the one
   // useTicketRunStream deliberately skips above, so nothing else reloads the thread when
   // THIS page's own dispatch settles. When that ladder reaches terminal (succeeded/
@@ -1764,9 +1857,9 @@ function TicketBody({
   // top level is the children read already loaded (useChildren); deeper levels
   // lazy-load on expand exactly like TicketsScreen's controller. Client-only view
   // state (expand/collapse) — never a mutation, never a fabricated child.
-  const [childrenCache, setChildrenCache] = useState<Record<string, WorkItem[]>>(
-    {},
-  );
+  const [childrenCache, setChildrenCache] = useState<
+    Record<string, WorkItem[]>
+  >({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const loadChildren = useCallback(
     async (parentId: string): Promise<WorkItem[]> => {
@@ -1828,274 +1921,284 @@ function TicketBody({
   return (
     <>
       <div className="ksq-ticket-detail__grid">
-      {/* ---- Main column: header+description, then S2/S3/S4 mount regions ---- */}
-      <div className="ksq-ticket-detail__main">
-        <section
-          className="card ksq-ticket-detail__header"
-          data-testid="detail-header"
-        >
-          <div className="ksq-ticket-detail__ids">
-            <code className="ksq-ticket-id" title={thread.workItemId}>
-              {shortId(thread.workItemId)}
-            </code>
-            <StatusChip state={thread.state} />
-            {thread.blockedReason && (
-              <span
-                className="ksq-chip"
-                data-tone="blocked"
-                data-testid="detail-blocked"
-              >
-                blocked
-              </span>
-            )}
-          </div>
-          <h1 className="ksq-ticket-detail__title">{thread.title}</h1>
-          {/* Opener meta: the read model carries no created-at/opener for the item
+        {/* ---- Main column: header+description, then S2/S3/S4 mount regions ---- */}
+        <div className="ksq-ticket-detail__main">
+          <section
+            className="card ksq-ticket-detail__header"
+            data-testid="detail-header"
+          >
+            <div className="ksq-ticket-detail__ids">
+              <code className="ksq-ticket-id" title={thread.workItemId}>
+                {shortId(thread.workItemId)}
+              </code>
+              <StatusChip state={thread.state} />
+              {thread.blockedReason && (
+                <span
+                  className="ksq-chip"
+                  data-tone="blocked"
+                  data-testid="detail-blocked"
+                >
+                  blocked
+                </span>
+              )}
+            </div>
+            <h1 className="ksq-ticket-detail__title">{thread.title}</h1>
+            {/* Opener meta: the read model carries no created-at/opener for the item
               itself, so we surface the honest thing we do have — the current
               holder and the most recent status move (if any). Never fabricated. */}
-          <p className="ksq-ticket-detail__meta muted" data-testid="detail-meta">
-            {thread.holder ? (
-              <>
-                Held by{" "}
-                <code className="ksq-ticket-id">{thread.holder}</code>
-              </>
-            ) : (
-              <>Unclaimed</>
-            )}
-            {thread.statusHistory.length > 0 && (
-              <>
-                {" · updated "}
-                <time className="ksq-ticket-id">
-                  {fmt(
-                    thread.statusHistory[thread.statusHistory.length - 1]
-                      .occurredAt,
-                  )}
-                </time>
-              </>
-            )}
-          </p>
-          <hr className="ksq-hairline" />
-          <div data-testid="detail-description">
-            {thread.description ? (
-              <Markdown className="ksq-prose">{thread.description}</Markdown>
-            ) : (
-              <p className="muted">No description.</p>
-            )}
-          </div>
-        </section>
+            <p
+              className="ksq-ticket-detail__meta muted"
+              data-testid="detail-meta"
+            >
+              {thread.holder ? (
+                <>
+                  Held by <code className="ksq-ticket-id">{thread.holder}</code>
+                </>
+              ) : (
+                <>Unclaimed</>
+              )}
+              {thread.statusHistory.length > 0 && (
+                <>
+                  {" · updated "}
+                  <time className="ksq-ticket-id">
+                    {fmt(
+                      thread.statusHistory[thread.statusHistory.length - 1]
+                        .occurredAt,
+                    )}
+                  </time>
+                </>
+              )}
+            </p>
+            <hr className="ksq-hairline" />
+            <div data-testid="detail-description">
+              {thread.description ? (
+                <Markdown className="ksq-prose">{thread.description}</Markdown>
+              ) : (
+                <p className="muted">No description.</p>
+              )}
+            </div>
+          </section>
 
-        {/* ISI-5284 (WS-4) — coordinator propose-mode proposals on the ticket
+          {/* ISI-5284 (WS-4) — coordinator propose-mode proposals on the ticket
             surface. Renders the SAME ProposalCard the discussion room uses; confirm
             fans into proposalconfirm.go and reloads the children so the resulting
             sub-ticket lands in the tree below. Falls back honestly (D3) when no
             coordinator thread is reachable — never a fabricated card. */}
-        <TicketProposals
-          projectId={projectId}
-          threadId={proposalThreadId}
-          manager={structuringManager}
-          onExecuted={onProposalExecuted}
-          issuesHref={issuesHref}
-        />
+          <TicketProposals
+            projectId={projectId}
+            threadId={proposalThreadId}
+            manager={structuringManager}
+            onExecuted={onProposalExecuted}
+            issuesHref={issuesHref}
+          />
 
-        {/* ISI-5536 (E2) — decision_request cards on the ticket surface. Same thread
+          {/* ISI-5536 (E2) — decision_request cards on the ticket surface. Same thread
             seam as the proposals above; renders the DecisionCard the Inbox row uses.
             Silent until an agent actually asks (anti-nag); answering re-dispatches the
             raising agent, so re-sync the children on a decision. */}
-        <TicketDecisions
-          projectId={projectId}
-          threadId={proposalThreadId}
-          onDecided={onProposalExecuted}
-        />
+          <TicketDecisions
+            projectId={projectId}
+            threadId={proposalThreadId}
+            onDecided={onProposalExecuted}
+          />
 
-        {/* S2 — the ticket's sub-tickets, rendered through the shared SubTicketTree
+          {/* S2 — the ticket's sub-tickets, rendered through the shared SubTicketTree
             (story 8.17): a parent → sub-ticket hierarchy that reads identically to
             the Kanban/List views, lazy-loading deeper levels on expand. */}
-        <SubTickets
-          state={childrenState}
-          issuesHref={issuesHref}
-          tree={tree}
-          onTreeKeyDown={treeKeyDown}
-        />
+          <SubTickets
+            state={childrenState}
+            issuesHref={issuesHref}
+            tree={tree}
+            onTreeKeyDown={treeKeyDown}
+          />
 
-        {/* S3 (ISI-4449) — the agent-run → GitHub-style comment renderer. Each
+          {/* S3 (ISI-4449) — the agent-run → GitHub-style comment renderer. Each
             comment renders as a run bubble (avatar spine + header + run meta
             strip + body + trace ribbon); status moves and change refs stay as
             thin timeline rows, chronologically interleaved (GitHub's own model),
             newest last. */}
-        <section className="card" data-testid="detail-activity">
-          <h2>Activity</h2>
-          {activity.length === 0 && !dispatchWatch ? (
-            <p className="muted" data-testid="detail-activity-empty">
-              No activity yet.
-            </p>
-          ) : (
-            <ul className="ksq-activity-list">
-              {activity.map((item, i) => (
-                <ActivityRow key={`${item.kind}-${i}`} item={item} runMeta={runMeta} projectId={projectId} />
-              ))}
-              {/* ISI-4881 (S3): the placeholder run bubble lands at the tail — where
+          <section className="card" data-testid="detail-activity">
+            <h2>Activity</h2>
+            {activity.length === 0 && !dispatchWatch ? (
+              <p className="muted" data-testid="detail-activity-empty">
+                No activity yet.
+              </p>
+            ) : (
+              <ul className="ksq-activity-list">
+                {activity.map((item, i) => (
+                  <ActivityRow
+                    key={`${item.kind}-${i}`}
+                    item={item}
+                    runMeta={runMeta}
+                    projectId={projectId}
+                  />
+                ))}
+                {/* ISI-4881 (S3): the placeholder run bubble lands at the tail — where
                   the real RunCommentCard eventually renders (activity is newest-last),
                   so there is no layout jump on hand-off. Appears within a frame of the
                   dispatch 200, before any Run row exists (board OQ1: card + status line). */}
-              {dispatchWatch && dispatch && (
-                <DispatchPendingCard
-                  watch={dispatchWatch}
-                  agentName={dispatch.agent}
-                />
-              )}
-              {/* ISI-5196 (S5): the ISI-5174 "an agent is working…" pill, ported to
+                {dispatchWatch && dispatch && (
+                  <DispatchPendingCard
+                    watch={dispatchWatch}
+                    agentName={dispatch.agent}
+                  />
+                )}
+                {/* ISI-5196 (S5): the ISI-5174 "an agent is working…" pill, ported to
                   the ticket view. Rides the SAME dispatchWatch SSE bus (no second
                   stream / no polling, AC4); its working label carries the current
                   step verb the live `thinking` rows report ("… is editing X…"),
                   and it resolves to "replied" / "could not respond" on the honest
                   ladder's terminal state. */}
-              {dispatchWatch && dispatch && (
-                <li className="ksq-activity ksq-activity--working">
-                  <TicketWorkingIndicator
-                    view={ticketWorkingView(
-                      dispatch.agent,
-                      dispatchWatch.state,
-                      dispatchWatch.thinking,
-                    )}
-                  />
-                </li>
-              )}
-            </ul>
-          )}
+                {dispatchWatch && dispatch && (
+                  <li className="ksq-activity ksq-activity--working">
+                    <TicketWorkingIndicator
+                      view={ticketWorkingView(
+                        dispatch.agent,
+                        dispatchWatch.state,
+                        dispatchWatch.thinking,
+                      )}
+                    />
+                  </li>
+                )}
+              </ul>
+            )}
 
-          {/* ISI-4918 (S7 of ISI-4853): the ISI-4495 "▶ Agent re-triggered" receipt is
+            {/* ISI-4918 (S7 of ISI-4853): the ISI-4495 "▶ Agent re-triggered" receipt is
               FOLDED INTO the honest ladder above — a plain comment that re-dispatches a
               parked ticket now seeds the same DispatchPendingCard (Queued → Picking up…
               → Working…) the explicit-assign path uses, so there is ONE coherent run
               signal, never a static line competing with the live card. */}
 
-          {/* S4 — the human comment composer (ISI-4454) no longer lives at the
+            {/* S4 — the human comment composer (ISI-4454) no longer lives at the
               tail of this scrolling Activity card: ISI-5157 lifts it into a bar
               docked to the bottom of the view (below), so it is always reachable
               on a long ticket. Same <Composer>, only its position changed. */}
-        </section>
-      </div>
+          </section>
+        </div>
 
-      {/* ---- Right rail: pinned Properties + Sub-tickets status + Run & trace ---- */}
-      <aside className="ksq-ticket-detail__side">
-        <section className="card" data-testid="detail-properties">
-          <h2>Properties</h2>
-          <dl className="ksq-proplist">
-            <dt className="muted">Project</dt>
-            <dd data-testid="prop-project">
-              <code className="ksq-ticket-id">{projectId}</code>
-            </dd>
+        {/* ---- Right rail: pinned Properties + Sub-tickets status + Run & trace ---- */}
+        <aside className="ksq-ticket-detail__side">
+          <section className="card" data-testid="detail-properties">
+            <h2>Properties</h2>
+            <dl className="ksq-proplist">
+              <dt className="muted">Project</dt>
+              <dd data-testid="prop-project">
+                <code className="ksq-ticket-id">{projectId}</code>
+              </dd>
 
-            <dt className="muted">Status</dt>
-            <dd>
-              {/* ISI-4495 board ask: the detail page can MOVE the ticket — the
+              <dt className="muted">Status</dt>
+              <dd>
+                {/* ISI-4495 board ask: the detail page can MOVE the ticket — the
                   guard-limited select (same allowedTargets adjacency as the
                   kanban drag), one PATCH /state per move. */}
-              <StatusControl
-                state={thread.state}
-                workItemId={thread.workItemId}
-                canEdit={canComment(role)}
-                onMoved={onCommentPosted}
-              />
-            </dd>
+                <StatusControl
+                  state={thread.state}
+                  workItemId={thread.workItemId}
+                  canEdit={canComment(role)}
+                  onMoved={onCommentPosted}
+                />
+              </dd>
 
-            {/* Phase is the honest lifecycle affordance (FR-7 / ISI-4487): the ticket's
+              {/* Phase is the honest lifecycle affordance (FR-7 / ISI-4487): the ticket's
                 working phase, folding the legacy engine lanes. A legacy ticket on an
                 intake/terminal lane (or a non-coordinator team) sits on NO phase — we say
                 "— no phase", never fabricate a "Design". */}
-            <dt className="muted">Phase</dt>
-            <dd data-testid="prop-phase">
-              {(() => {
-                const phase = workingPhaseOf(thread.state);
-                return phase ? (
-                  <span className="ksq-chip">{STATUS_META[phase].label}</span>
-                ) : (
-                  <span className="muted">— no phase</span>
-                );
-              })()}
-            </dd>
+              <dt className="muted">Phase</dt>
+              <dd data-testid="prop-phase">
+                {(() => {
+                  const phase = workingPhaseOf(thread.state);
+                  return phase ? (
+                    <span className="ksq-chip">{STATUS_META[phase].label}</span>
+                  ) : (
+                    <span className="muted">— no phase</span>
+                  );
+                })()}
+              </dd>
 
-            <dt className="muted">Assignee</dt>
-            <dd>
-              {/* ISI-4495 board ask / ISI-4567 §2.2: on a backlog OR unclaimed
+              <dt className="muted">Assignee</dt>
+              <dd>
+                {/* ISI-4495 board ask / ISI-4567 §2.2: on a backlog OR unclaimed
                   todo ticket the squad roster dropdown chains the dispatch verb
                   (assign == start, ADR-0022 / ISI-4501 semantics — todo re-assigns
                   in place, pre-claim); elsewhere the holder renders read-only with
                   the requested agent surfaced pre-claim (§2.4). */}
-              <AssigneeControl
-                state={thread.state}
-                holder={thread.holder}
-                requestedAgent={thread.requestedAgent}
-                workItemId={thread.workItemId}
-                canEdit={canComment(role)}
-                onAssigned={onCommentPosted}
-                dispatchWatch={dispatchWatch}
-                onDispatched={(agent) => setDispatch({ agent, at: Date.now() })}
-              />
-            </dd>
+                <AssigneeControl
+                  state={thread.state}
+                  holder={thread.holder}
+                  requestedAgent={thread.requestedAgent}
+                  workItemId={thread.workItemId}
+                  canEdit={canComment(role)}
+                  onAssigned={onCommentPosted}
+                  dispatchWatch={dispatchWatch}
+                  onDispatched={(agent) =>
+                    setDispatch({ agent, at: Date.now() })
+                  }
+                />
+              </dd>
 
-            {/* Priority / Work mode / Parent / Labels are not carried by the M1.5
+              {/* Priority / Work mode / Parent / Labels are not carried by the M1.5
                 read model yet — render an honest em-dash, not a guess (FR-I3). */}
-            <dt className="muted">Priority</dt>
-            <dd data-testid="prop-priority">
-              <span className="muted">—</span>
-            </dd>
+              <dt className="muted">Priority</dt>
+              <dd data-testid="prop-priority">
+                <span className="muted">—</span>
+              </dd>
 
-            <dt className="muted">Work mode</dt>
-            <dd data-testid="prop-workmode">
-              <span className="muted">—</span>
-            </dd>
+              <dt className="muted">Work mode</dt>
+              <dd data-testid="prop-workmode">
+                <span className="muted">—</span>
+              </dd>
 
-            {/* ISI-5312 (impl of ISI-5311): on a sub-ticket the Parent row is now a
+              {/* ISI-5312 (impl of ISI-5311): on a sub-ticket the Parent row is now a
                 quick link UP to the parent (title + status pill); a root ticket keeps
                 the honest em-dash. Resolved frontend-only from the Project card list. */}
-            <dt className="muted">Parent</dt>
-            <dd data-testid="prop-parent">
-              <ParentLink state={parentLink} issuesHref={issuesHref} />
-            </dd>
+              <dt className="muted">Parent</dt>
+              <dd data-testid="prop-parent">
+                <ParentLink state={parentLink} issuesHref={issuesHref} />
+              </dd>
 
-            <dt className="muted">Labels</dt>
-            <dd data-testid="prop-labels">
-              <span className="muted">—</span>
-            </dd>
+              <dt className="muted">Labels</dt>
+              <dd data-testid="prop-labels">
+                <span className="muted">—</span>
+              </dd>
 
-            {thread.blockedReason && (
-              <>
-                <dt className="muted">Blocked</dt>
-                <dd>{thread.blockedReason}</dd>
-              </>
-            )}
-          </dl>
-        </section>
+              {thread.blockedReason && (
+                <>
+                  <dt className="muted">Blocked</dt>
+                  <dd>{thread.blockedReason}</dd>
+                </>
+              )}
+            </dl>
+          </section>
 
-        <SubTicketStatusCard
-          state={childrenState}
-          issuesHref={issuesHref}
-          onAdd={() => setAddingSub(true)}
-        />
+          <SubTicketStatusCard
+            state={childrenState}
+            issuesHref={issuesHref}
+            onAdd={() => setAddingSub(true)}
+          />
 
-        <section className="card" data-testid="detail-run-trace">
-          <h2>Agent run &amp; trace</h2>
-          {thread.runId ? (
-            <div className="agent-run-trace-list">
-              {/* ISI-4962: agent name + run deep-link rows. displayName strips the
+          <section className="card" data-testid="detail-run-trace">
+            <h2>Agent run &amp; trace</h2>
+            {thread.runId ? (
+              <div className="agent-run-trace-list">
+                {/* ISI-4962: agent name + run deep-link rows. displayName strips the
                   agent:/user: principal prefix (ISI-4567) and "" degrades to
                   "unknown" — never a fabricated agent. */}
-              <AgentRunTraceItem
-                runId={thread.runId}
-                agentName={displayName(thread.holder)}
-              />
-              {/* The Dynatrace deep-link renders here once the OBS contract
+                <AgentRunTraceItem
+                  runId={thread.runId}
+                  agentName={displayName(thread.holder)}
+                />
+                {/* The Dynatrace deep-link renders here once the OBS contract
                   (OBSERVABILITY_TRACE_URL + ksquad.work_item.ref) lands. Deferred. */}
-              <p className="muted" data-testid="detail-trace-pending">
-                End-to-end trace deep-link coming with the observability wiring.
-              </p>
-            </div>
-          ) : (
-            <p className="muted">No run linked yet.</p>
-          )}
-        </section>
-      </aside>
+                <p className="muted" data-testid="detail-trace-pending">
+                  End-to-end trace deep-link coming with the observability
+                  wiring.
+                </p>
+              </div>
+            ) : (
+              <p className="muted">No run linked yet.</p>
+            )}
+          </section>
+        </aside>
       </div>
 
       {/* ISI-5157 (board ask #3) — the comment + assign composer docked to the
@@ -2388,8 +2491,12 @@ function renderSubTicketNode(issuesHref: string) {
     return (
       <div className="ksq-subticket-row" data-testid="detail-subticket">
         {toggle}
-        <a href={`${issuesHref}/${encodeURIComponent(item.id)}`}>{item.title}</a>
-        <span className="ksq-chip ksq-chip--state">{stateLabel(item.state)}</span>
+        <a href={`${issuesHref}/${encodeURIComponent(item.id)}`}>
+          {item.title}
+        </a>
+        <span className="ksq-chip ksq-chip--state">
+          {stateLabel(item.state)}
+        </span>
       </div>
     );
   };

@@ -8,7 +8,13 @@
 // injected as a stub so these are pure component tests (no fetch/SSE).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketDecisions } from "@/components/tickets/TicketDecisions";
 import type { DiscussionClient } from "@/lib/discussion/api";
 import type { DecisionRequest } from "@/lib/discussion/types";
@@ -65,29 +71,51 @@ beforeEach(() => vi.clearAllMocks());
 describe("TicketDecisions — decision_request cards on the ticket surface (ISI-5536)", () => {
   it("renders a DecisionCard for each open card in the linked thread", async () => {
     const client = stubClient();
-    render(<TicketDecisions projectId="ns/demo" threadId="thr-1" client={client} />);
-    await waitFor(() => expect(screen.getByTestId("decision-card")).toBeTruthy());
-    expect(screen.getByTestId("decision-title").textContent).toContain("Which HTTP client?");
-    expect(client.listDecisionRequests).toHaveBeenCalledWith("ns/demo", "thr-1");
+    render(
+      <TicketDecisions projectId="ns/demo" threadId="thr-1" client={client} />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-card")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("decision-title").textContent).toContain(
+      "Which HTTP client?",
+    );
+    expect(client.listDecisionRequests).toHaveBeenCalledWith(
+      "ns/demo",
+      "thr-1",
+    );
   });
 
   it("answer fans into the seam, advances the phase to answered, and re-syncs", async () => {
     const client = stubClient();
     const onDecided = vi.fn();
     render(
-      <TicketDecisions projectId="ns/demo" threadId="thr-1" onDecided={onDecided} client={client} />,
+      <TicketDecisions
+        projectId="ns/demo"
+        threadId="thr-1"
+        onDecided={onDecided}
+        client={client}
+      />,
     );
-    await waitFor(() => expect(screen.getByTestId("decision-submit")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-submit")).toBeTruthy(),
+    );
 
     // The recommended option pre-selects, so Submit is enabled immediately.
     fireEvent.click(screen.getByTestId("decision-submit"));
 
     await waitFor(() =>
-      expect(client.answerDecisionRequest).toHaveBeenCalledWith("ns/demo", "msg-1", {
-        selectedOptionIds: ["reqwest"],
-      }),
+      expect(client.answerDecisionRequest).toHaveBeenCalledWith(
+        "ns/demo",
+        "msg-1",
+        {
+          selectedOptionIds: ["reqwest"],
+        },
+      ),
     );
-    await waitFor(() => expect(screen.getByTestId("decision-decided")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-decided")).toBeTruthy(),
+    );
     expect(onDecided).toHaveBeenCalledTimes(1);
     // The answer form is gone once the card leaves `open`.
     expect(screen.queryByTestId("decision-submit")).toBeNull();
@@ -97,9 +125,16 @@ describe("TicketDecisions — decision_request cards on the ticket surface (ISI-
     const client = stubClient();
     const onDecided = vi.fn();
     render(
-      <TicketDecisions projectId="ns/demo" threadId="thr-1" onDecided={onDecided} client={client} />,
+      <TicketDecisions
+        projectId="ns/demo"
+        threadId="thr-1"
+        onDecided={onDecided}
+        client={client}
+      />,
     );
-    await waitFor(() => expect(screen.getByTestId("decision-reject-open")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-reject-open")).toBeTruthy(),
+    );
 
     fireEvent.click(screen.getByTestId("decision-reject-open"));
     const reason = await screen.findByTestId("decision-reject-reason-input");
@@ -107,9 +142,15 @@ describe("TicketDecisions — decision_request cards on the ticket surface (ISI-
     fireEvent.click(screen.getByTestId("decision-reject-confirm"));
 
     await waitFor(() =>
-      expect(client.rejectDecisionRequest).toHaveBeenCalledWith("ns/demo", "msg-1", "neither fits"),
+      expect(client.rejectDecisionRequest).toHaveBeenCalledWith(
+        "ns/demo",
+        "msg-1",
+        "neither fits",
+      ),
     );
-    await waitFor(() => expect(screen.getByTestId("decision-decided")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-decided")).toBeTruthy(),
+    );
     expect(onDecided).toHaveBeenCalledTimes(1);
   });
 
@@ -122,9 +163,16 @@ describe("TicketDecisions — decision_request cards on the ticket surface (ISI-
     });
     const onDecided = vi.fn();
     render(
-      <TicketDecisions projectId="ns/demo" threadId="thr-1" onDecided={onDecided} client={client} />,
+      <TicketDecisions
+        projectId="ns/demo"
+        threadId="thr-1"
+        onDecided={onDecided}
+        client={client}
+      />,
     );
-    await waitFor(() => expect(screen.getByTestId("decision-submit")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("decision-submit")).toBeTruthy(),
+    );
 
     fireEvent.click(screen.getByTestId("decision-submit"));
 
@@ -150,7 +198,9 @@ describe("TicketDecisions — decision_request cards on the ticket surface (ISI-
 
   it("renders nothing and does not fetch when no thread is reachable", async () => {
     const client = stubClient();
-    render(<TicketDecisions projectId="ns/demo" threadId={null} client={client} />);
+    render(
+      <TicketDecisions projectId="ns/demo" threadId={null} client={client} />,
+    );
     expect(screen.queryByTestId("detail-decisions")).toBeNull();
     expect(client.listDecisionRequests).not.toHaveBeenCalled();
   });

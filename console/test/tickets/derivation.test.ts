@@ -45,11 +45,15 @@ describe("deriveColumns — §13 board-derivation is a PURE projection of state"
 
   it("places each item by state ONLY — a state-only fixture change moves the card", () => {
     const before = deriveColumns([item({ id: "a", state: "todo" })]);
-    expect(before.find((c) => c.state === "todo")!.items.map((i) => i.id)).toEqual(["a"]);
+    expect(
+      before.find((c) => c.state === "todo")!.items.map((i) => i.id),
+    ).toEqual(["a"]);
     // The ONLY change is `state` — no `column` field exists to consult.
     const after = deriveColumns([item({ id: "a", state: "in_review" })]);
     expect(after.find((c) => c.state === "todo")!.items).toHaveLength(0);
-    expect(after.find((c) => c.state === "in_review")!.items.map((i) => i.id)).toEqual(["a"]);
+    expect(
+      after.find((c) => c.state === "in_review")!.items.map((i) => i.id),
+    ).toEqual(["a"]);
   });
 
   it("a blocked item stays in its workflow lane — never a 6th column (§8.6)", () => {
@@ -68,19 +72,40 @@ describe("canDrag — UI RBAC gate mirrors the §6.7.2 server wall (global role)
   // "viewer" sentinel when unresolved — NOT a per-Project role. Only the fail-closed
   // sentinel (and the empty/absent session) is denied; any signed-in caller may drag,
   // mirroring canCreate and the human-only server wall (ISI-4502).
-  it.each(["viewer", undefined, null, ""])("unresolved role %p ⇒ NO drag", (role) => {
-    expect(canDrag(role as string)).toBe(false);
-  });
-  it.each(["admin", "user"])("signed-in global role %p ⇒ drag enabled", (role) => {
-    expect(canDrag(role)).toBe(true);
-  });
+  it.each(["viewer", undefined, null, ""])(
+    "unresolved role %p ⇒ NO drag",
+    (role) => {
+      expect(canDrag(role as string)).toBe(false);
+    },
+  );
+  it.each(["admin", "user"])(
+    "signed-in global role %p ⇒ drag enabled",
+    (role) => {
+      expect(canDrag(role)).toBe(true);
+    },
+  );
 });
 
 describe("sortWorkItems — per-column asc/desc incl. Updated (8.14c AC2)", () => {
   const rows = [
-    item({ id: "c-3", title: "Alpha", updatedAt: "2026-08-03T00:00:00Z", priority: "high" }),
-    item({ id: "a-1", title: "beta", updatedAt: "2026-08-01T00:00:00Z", priority: null }),
-    item({ id: "b-2", title: "Cyan", updatedAt: "2026-08-02T00:00:00Z", priority: "low" }),
+    item({
+      id: "c-3",
+      title: "Alpha",
+      updatedAt: "2026-08-03T00:00:00Z",
+      priority: "high",
+    }),
+    item({
+      id: "a-1",
+      title: "beta",
+      updatedAt: "2026-08-01T00:00:00Z",
+      priority: null,
+    }),
+    item({
+      id: "b-2",
+      title: "Cyan",
+      updatedAt: "2026-08-02T00:00:00Z",
+      priority: "low",
+    }),
   ];
 
   it("sorts by Updated asc and desc (recency via updated_at)", () => {
@@ -112,26 +137,71 @@ describe("sortWorkItems — per-column asc/desc incl. Updated (8.14c AC2)", () =
 
 describe("applyFilters — the SAME narrowing for both views (8.14d AC1)", () => {
   const rows = [
-    item({ id: "11111111-1111-1111-1111-111111111111", title: "Fix login", priority: "high", assignee: "ada", labels: ["bug"] }),
-    item({ id: "22222222-2222-2222-2222-222222222222", title: "Add docs", priority: "low", assignee: "bob", labels: ["docs"] }),
+    item({
+      id: "11111111-1111-1111-1111-111111111111",
+      title: "Fix login",
+      priority: "high",
+      assignee: "ada",
+      labels: ["bug"],
+    }),
+    item({
+      id: "22222222-2222-2222-2222-222222222222",
+      title: "Add docs",
+      priority: "low",
+      assignee: "bob",
+      labels: ["docs"],
+    }),
   ];
 
   it("empty filters are a no-op passthrough", () => {
-    expect(applyFilters(rows, { query: "", priority: "", assignee: "", label: "" })).toHaveLength(2);
+    expect(
+      applyFilters(rows, { query: "", priority: "", assignee: "", label: "" }),
+    ).toHaveLength(2);
   });
 
   it("query matches title OR id, case-insensitively", () => {
-    expect(applyFilters(rows, { query: "login", priority: "", assignee: "", label: "" })[0].title).toBe("Fix login");
-    expect(applyFilters(rows, { query: "11111111", priority: "", assignee: "", label: "" })[0].title).toBe("Fix login");
-    expect(applyFilters(rows, { query: "nope", priority: "", assignee: "", label: "" })).toHaveLength(0);
+    expect(
+      applyFilters(rows, {
+        query: "login",
+        priority: "",
+        assignee: "",
+        label: "",
+      })[0].title,
+    ).toBe("Fix login");
+    expect(
+      applyFilters(rows, {
+        query: "11111111",
+        priority: "",
+        assignee: "",
+        label: "",
+      })[0].title,
+    ).toBe("Fix login");
+    expect(
+      applyFilters(rows, {
+        query: "nope",
+        priority: "",
+        assignee: "",
+        label: "",
+      }),
+    ).toHaveLength(0);
   });
 
   it("contextual filters compose (priority + assignee + label)", () => {
     expect(
-      applyFilters(rows, { query: "", priority: "high", assignee: "ada", label: "bug" }),
+      applyFilters(rows, {
+        query: "",
+        priority: "high",
+        assignee: "ada",
+        label: "bug",
+      }),
     ).toHaveLength(1);
     expect(
-      applyFilters(rows, { query: "", priority: "high", assignee: "bob", label: "" }),
+      applyFilters(rows, {
+        query: "",
+        priority: "high",
+        assignee: "bob",
+        label: "",
+      }),
     ).toHaveLength(0);
   });
 
@@ -142,7 +212,12 @@ describe("applyFilters — the SAME narrowing for both views (8.14d AC1)", () =>
   });
 
   it("filtersToParams carries the server-side, tenancy-scoped predicates (§12.1)", () => {
-    const qs = filtersToParams({ query: "login", priority: "high", assignee: "", label: "bug" });
+    const qs = filtersToParams({
+      query: "login",
+      priority: "high",
+      assignee: "",
+      label: "bug",
+    });
     expect(new URLSearchParams(qs).get("q")).toBe("login");
     expect(new URLSearchParams(qs).get("priority")).toBe("high");
     expect(new URLSearchParams(qs).get("label")).toBe("bug");

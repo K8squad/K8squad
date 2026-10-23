@@ -87,7 +87,9 @@ describe("TicketProposals — coordinator propose-mode cards on the ticket surfa
         client={client}
       />,
     );
-    await waitFor(() => expect(screen.getByTestId("proposal-confirm")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("proposal-confirm")).toBeTruthy(),
+    );
 
     fireEvent.click(screen.getByTestId("proposal-confirm"));
 
@@ -96,9 +98,9 @@ describe("TicketProposals — coordinator propose-mode cards on the ticket surfa
     );
     // Phase advanced to the server's verdict…
     await waitFor(() =>
-      expect(screen.getByTestId("proposal-phase").getAttribute("data-phase")).toBe(
-        "executed",
-      ),
+      expect(
+        screen.getByTestId("proposal-phase").getAttribute("data-phase"),
+      ).toBe("executed"),
     );
     // …and the resulting sub-ticket triggers a children reload.
     expect(onExecuted).toHaveBeenCalledTimes(1);
@@ -118,7 +120,9 @@ describe("TicketProposals — coordinator propose-mode cards on the ticket surfa
         client={client}
       />,
     );
-    await waitFor(() => expect(screen.getByTestId("proposal-dismiss")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("proposal-dismiss")).toBeTruthy(),
+    );
 
     fireEvent.click(screen.getByTestId("proposal-dismiss"));
 
@@ -126,9 +130,9 @@ describe("TicketProposals — coordinator propose-mode cards on the ticket surfa
       expect(client.dismissProposal).toHaveBeenCalledWith("ns/demo", "msg-1"),
     );
     await waitFor(() =>
-      expect(screen.getByTestId("proposal-phase").getAttribute("data-phase")).toBe(
-        "dismissed",
-      ),
+      expect(
+        screen.getByTestId("proposal-phase").getAttribute("data-phase"),
+      ).toBe("dismissed"),
     );
     expect(onExecuted).not.toHaveBeenCalled();
   });
@@ -145,7 +149,9 @@ describe("TicketProposals — coordinator propose-mode cards on the ticket surfa
       />,
     );
     await waitFor(() =>
-      expect(screen.getByTestId("detail-proposals-no-coordinator")).toBeTruthy(),
+      expect(
+        screen.getByTestId("detail-proposals-no-coordinator"),
+      ).toBeTruthy(),
     );
     expect(screen.getByTestId("detail-proposals-assign-link")).toBeTruthy();
     expect(screen.queryByTestId("proposal-card")).toBeNull();
@@ -185,6 +191,8 @@ describe("TicketProposals — coordinator propose-mode cards on the ticket surfa
     );
     const pill = screen.getByTestId("ticket-working-indicator");
     expect(pill.getAttribute("data-phase")).toBe("working");
-    expect(screen.getByText("coordinator is structuring the work…")).toBeTruthy();
+    expect(
+      screen.getByText("coordinator is structuring the work…"),
+    ).toBeTruthy();
   });
 });

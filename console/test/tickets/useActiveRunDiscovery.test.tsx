@@ -50,19 +50,30 @@ describe("pickActiveRun", () => {
 
   it("accepts Claiming (holder set) as live", () => {
     expect(
-      pickActiveRun([{ id: "r", workItemRef: "wi-1", phase: "Claiming" }], "wi-1")
-        ?.id,
+      pickActiveRun(
+        [{ id: "r", workItemRef: "wi-1", phase: "Claiming" }],
+        "wi-1",
+      )?.id,
     ).toBe("r");
   });
 
   it("ignores terminal, Pending (not yet held), other-item, and id-less rows", () => {
-    for (const phase of ["Succeeded", "Failed", "Cancelled", "Pending", "Paused"]) {
+    for (const phase of [
+      "Succeeded",
+      "Failed",
+      "Cancelled",
+      "Pending",
+      "Paused",
+    ]) {
       expect(
         pickActiveRun([{ id: "r", workItemRef: "wi-1", phase }], "wi-1"),
       ).toBeNull();
     }
     expect(
-      pickActiveRun([{ id: "r", workItemRef: "wi-2", phase: "Running" }], "wi-1"),
+      pickActiveRun(
+        [{ id: "r", workItemRef: "wi-2", phase: "Running" }],
+        "wi-1",
+      ),
     ).toBeNull();
     expect(
       pickActiveRun([{ workItemRef: "wi-1", phase: "Running" }], "wi-1"),
@@ -97,9 +108,7 @@ describe("useActiveRunDiscovery — hook wiring", () => {
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
     const onRunAppeared = vi.fn();
 
-    renderHook(() =>
-      useActiveRunDiscovery("wi-1", "", false, onRunAppeared),
-    );
+    renderHook(() => useActiveRunDiscovery("wi-1", "", false, onRunAppeared));
 
     // First poll (immediate) sees nothing → no reload.
     await act(async () => {

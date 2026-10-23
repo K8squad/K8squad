@@ -47,12 +47,22 @@ function coerce(raw: unknown): EffectiveModel | null {
   const r = raw as Record<string, unknown>;
   const unresolved = r.unresolved === true;
   const roleName = typeof r.roleName === "string" ? r.roleName : undefined;
-  const fallbackModel = typeof r.fallbackModel === "string" ? r.fallbackModel : undefined;
+  const fallbackModel =
+    typeof r.fallbackModel === "string" ? r.fallbackModel : undefined;
   if (unresolved) {
-    return { model: "", tier: "default", roleName, fallbackModel, unresolved: true };
+    return {
+      model: "",
+      tier: "default",
+      roleName,
+      fallbackModel,
+      unresolved: true,
+    };
   }
   const model = typeof r.model === "string" ? r.model : "";
-  const tier = typeof r.tier === "string" && TIERS.has(r.tier) ? (r.tier as EffectiveTier) : null;
+  const tier =
+    typeof r.tier === "string" && TIERS.has(r.tier)
+      ? (r.tier as EffectiveTier)
+      : null;
   if (!model || !tier) return null;
   return { model, tier, roleName, fallbackModel };
 }
@@ -63,7 +73,10 @@ function coerce(raw: unknown): EffectiveModel | null {
  * null, not loading). `team` scopes an admin's cross-squad read (the ?team=
  * selector); tenants omit it.
  */
-export function useEffectiveModel(agentName?: string, team?: string): UseEffectiveModel {
+export function useEffectiveModel(
+  agentName?: string,
+  team?: string,
+): UseEffectiveModel {
   const [state, setState] = useState<UseEffectiveModel>({
     data: null,
     loading: false,
@@ -81,29 +94,47 @@ export function useEffectiveModel(agentName?: string, team?: string): UseEffecti
     setState({ data: null, loading: true, notFound: false, error: null });
 
     const qs = team ? `?team=${encodeURIComponent(team)}` : "";
-    fetch(`/api/squad/agents/${encodeURIComponent(name)}/effective-model${qs}`, {
-      signal: controller.signal,
-      headers: { accept: "application/json" },
-    })
+    fetch(
+      `/api/squad/agents/${encodeURIComponent(name)}/effective-model${qs}`,
+      {
+        signal: controller.signal,
+        headers: { accept: "application/json" },
+      },
+    )
       .then(async (res) => {
         if (res.status === 404) {
           setState({ data: null, loading: false, notFound: true, error: null });
           return;
         }
         if (!res.ok) {
-          setState({ data: null, loading: false, notFound: false, error: `effective-model unavailable (${res.status})` });
+          setState({
+            data: null,
+            loading: false,
+            notFound: false,
+            error: `effective-model unavailable (${res.status})`,
+          });
           return;
         }
         const body = coerce(await res.json());
         if (!body) {
-          setState({ data: null, loading: false, notFound: false, error: "unexpected effective-model response" });
+          setState({
+            data: null,
+            loading: false,
+            notFound: false,
+            error: "unexpected effective-model response",
+          });
           return;
         }
         setState({ data: body, loading: false, notFound: false, error: null });
       })
       .catch((e: unknown) => {
         if (controller.signal.aborted) return; // a name change / unmount aborted the in-flight read
-        setState({ data: null, loading: false, notFound: false, error: e instanceof Error ? e.message : "network error" });
+        setState({
+          data: null,
+          loading: false,
+          notFound: false,
+          error: e instanceof Error ? e.message : "network error",
+        });
       });
 
     return () => controller.abort();

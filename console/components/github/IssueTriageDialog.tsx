@@ -26,7 +26,11 @@ import {
   type IssueTriageInput,
   type IssueTriageState,
 } from "@/lib/github-status";
-import { agentOptionLabel, listSquadAgents, type AgentOption } from "@/lib/tickets/api";
+import {
+  agentOptionLabel,
+  listSquadAgents,
+  type AgentOption,
+} from "@/lib/tickets/api";
 
 /** The form's mutable state — the write-input subset, resolved from the view. */
 type Form = IssueTriageInput;
@@ -60,7 +64,10 @@ export function IssueTriageDialog({
   const [labelsRaw, setLabelsRaw] = useState("");
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<{ message: string; fields: string[] } | null>(null);
+  const [error, setError] = useState<{
+    message: string;
+    fields: string[];
+  } | null>(null);
 
   const titleId = useId();
   const enableId = useId();
@@ -76,7 +83,8 @@ export function IssueTriageDialog({
       if (!alive) return;
       setState(next);
       if (next.kind === "ready") {
-        const { enabled, triageAgentId, labelFilter, onlyUnassigned } = next.view;
+        const { enabled, triageAgentId, labelFilter, onlyUnassigned } =
+          next.view;
         setForm({ enabled, triageAgentId, labelFilter, onlyUnassigned });
         setLabelsRaw(labelFilter.join(", "));
       }
@@ -121,7 +129,10 @@ export function IssueTriageDialog({
     if (!form || !canEdit || saving) return;
     setSaving(true);
     setError(null);
-    const res = await saveIssueTriage(projectId, { ...form, labelFilter: parseLabels(labelsRaw) });
+    const res = await saveIssueTriage(projectId, {
+      ...form,
+      labelFilter: parseLabels(labelsRaw),
+    });
     setSaving(false);
     switch (res.kind) {
       case "saved":
@@ -132,7 +143,8 @@ export function IssueTriageDialog({
         return;
       case "denied":
         setError({
-          message: "You no longer have permission to change this configuration.",
+          message:
+            "You no longer have permission to change this configuration.",
           fields: [],
         });
         return;
@@ -153,7 +165,8 @@ export function IssueTriageDialog({
     }
   }, [form, canEdit, saving, projectId, labelsRaw, onClose]);
 
-  const fieldHasError = (field: string) => error?.fields.includes(field) ?? false;
+  const fieldHasError = (field: string) =>
+    error?.fields.includes(field) ?? false;
 
   return (
     <div
@@ -231,13 +244,21 @@ export function IssueTriageDialog({
               }}
             >
               {!canEdit && (
-                <p className="gh-ra-readonly" role="status" data-testid="gh-it-readonly">
-                  You can view this configuration but need contributor access to change it.
+                <p
+                  className="gh-ra-readonly"
+                  role="status"
+                  data-testid="gh-it-readonly"
+                >
+                  You can view this configuration but need contributor access to
+                  change it.
                 </p>
               )}
 
               {/* (a) Enable toggle. */}
-              <label className="gh-ra-field gh-ra-field--row" htmlFor={enableId}>
+              <label
+                className="gh-ra-field gh-ra-field--row"
+                htmlFor={enableId}
+              >
                 <input
                   ref={firstFieldRef}
                   id={enableId}
@@ -259,7 +280,9 @@ export function IssueTriageDialog({
                 <select
                   id={agentFieldId}
                   data-testid="it-agent"
-                  className={fieldHasError("triageAgentId") ? "gh-ra-invalid" : undefined}
+                  className={
+                    fieldHasError("triageAgentId") ? "gh-ra-invalid" : undefined
+                  }
                   aria-invalid={fieldHasError("triageAgentId") || undefined}
                   value={form.triageAgentId}
                   disabled={!canEdit}
@@ -270,7 +293,9 @@ export function IssueTriageDialog({
                       roster (renamed/removed) — never silently drop it. */}
                   {form.triageAgentId &&
                     !agents.some((a) => a.name === form.triageAgentId) && (
-                      <option value={form.triageAgentId}>{form.triageAgentId}</option>
+                      <option value={form.triageAgentId}>
+                        {form.triageAgentId}
+                      </option>
                     )}
                   {agents.map((a) => (
                     <option key={a.id} value={a.name}>
@@ -279,7 +304,8 @@ export function IssueTriageDialog({
                   ))}
                 </select>
                 <span className="gh-ra-hint muted">
-                  Any agent on this project&apos;s team. Required when triage is enabled.
+                  Any agent on this project&apos;s team. Required when triage is
+                  enabled.
                 </span>
               </label>
 
@@ -299,13 +325,16 @@ export function IssueTriageDialog({
                   }}
                 />
                 <span className="gh-ra-hint muted">
-                  Comma-separated. Triage only issues carrying at least one of these
-                  labels; leave empty to triage every new open issue.
+                  Comma-separated. Triage only issues carrying at least one of
+                  these labels; leave empty to triage every new open issue.
                 </span>
               </label>
 
               {/* (d) Only-unassigned toggle. */}
-              <label className="gh-ra-field gh-ra-field--row" htmlFor={onlyUnassignedId}>
+              <label
+                className="gh-ra-field gh-ra-field--row"
+                htmlFor={onlyUnassignedId}
+              >
                 <input
                   id={onlyUnassignedId}
                   type="checkbox"
@@ -326,7 +355,11 @@ export function IssueTriageDialog({
               )}
 
               {error && (
-                <p className="ksq-notice gh-ra-error" role="alert" data-testid="gh-it-save-error">
+                <p
+                  className="ksq-notice gh-ra-error"
+                  role="alert"
+                  data-testid="gh-it-save-error"
+                >
                   {error.message}
                 </p>
               )}
@@ -357,7 +390,15 @@ export function IssueTriageDialog({
   );
 }
 
-function Honest({ testId, title, why }: { testId: string; title: string; why: string }) {
+function Honest({
+  testId,
+  title,
+  why,
+}: {
+  testId: string;
+  title: string;
+  why: string;
+}) {
   return (
     <div className="gh-ra-honest" data-testid={testId}>
       <h4 className="gh-ra-honest__title">{title}</h4>

@@ -7,10 +7,7 @@
 // authority) is reused verbatim as the "running" test; queued/waiting/pending phases read as idle
 // there, so we add them here to match the task-list live idiom, where queued already counts as live.
 
-import {
-  phaseTone,
-  type SquadOverviewData,
-} from "@/components/SquadOverview";
+import { phaseTone, type SquadOverviewData } from "@/components/SquadOverview";
 
 /**
  * Does a run phase count as a live-activity cue? True when the run is actively working

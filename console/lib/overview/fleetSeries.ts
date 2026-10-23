@@ -32,7 +32,10 @@ export async function fetchFleetSeries(
 ): Promise<SeriesState> {
   const url = `/api/squad/overview/series?window=${encodeURIComponent(windowParam)}`;
   try {
-    const res = await fetch(url, { headers: { accept: "application/json" }, signal });
+    const res = await fetch(url, {
+      headers: { accept: "application/json" },
+      signal,
+    });
     if (!res.ok) return classifySeriesStatus(res.status);
     const series = (await res.json()) as FleetOverviewSeries;
     return { kind: "ready", series };

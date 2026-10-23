@@ -109,14 +109,21 @@ export function activeRunCount(projects: OverviewProject[] | null): number {
 export function fleetRuns(
   projects: OverviewProject[] | null,
   limit: number,
-): { project: OverviewProject; name: string; phase: string; claimedAt?: string | null; workItem?: string }[] {
+): {
+  project: OverviewProject;
+  name: string;
+  phase: string;
+  claimedAt?: string | null;
+  workItem?: string;
+}[] {
   const all = (projects ?? []).flatMap((p) =>
     (p.runs ?? []).map((r) => ({ project: p, ...r })),
   );
   return [...all]
     .sort(
       (a, b) =>
-        (Date.parse(b.claimedAt ?? "") || 0) - (Date.parse(a.claimedAt ?? "") || 0),
+        (Date.parse(b.claimedAt ?? "") || 0) -
+        (Date.parse(a.claimedAt ?? "") || 0),
     )
     .slice(0, limit);
 }
@@ -131,7 +138,10 @@ export function formatWhen(iso: string | null): string {
 
 /** Total runs a project reports across every phase (its headline figure in the jump row). */
 export function totalRuns(project: OverviewProject): number {
-  return Object.values(project.phaseCounts ?? {}).reduce((a, b) => a + (b ?? 0), 0);
+  return Object.values(project.phaseCounts ?? {}).reduce(
+    (a, b) => a + (b ?? 0),
+    0,
+  );
 }
 
 /** Split the fixed overview projection (ISI-4570) into real projects and the synthetic
@@ -170,7 +180,10 @@ function useSquadOverview(): OverviewState {
           setState(classifyOverviewStatus(res.status) as OverviewState);
           return;
         }
-        setState({ kind: "ready", data: (await res.json()) as SquadOverviewData });
+        setState({
+          kind: "ready",
+          data: (await res.json()) as SquadOverviewData,
+        });
       })
       .catch(() => alive && setState({ kind: "error", status: 0 }));
     return () => {
@@ -221,7 +234,10 @@ function useGithubSummary(): GithubSummaryState {
 // ---------------------------------------------------------------------------
 
 /** Fold a series read into the four PanelCard states, so every chart degrades honestly. */
-function seriesPanelState(state: SeriesState, available: boolean | undefined): "ready" | "loading" | "empty" | "error" {
+function seriesPanelState(
+  state: SeriesState,
+  available: boolean | undefined,
+): "ready" | "loading" | "empty" | "error" {
   if (state.kind === "loading") return "loading";
   if (state.kind === "error") return "error";
   return available ? "ready" : "empty";
@@ -230,17 +246,24 @@ function seriesPanelState(state: SeriesState, available: boolean | undefined): "
 /** ② Status-breakdown row (rev2 §2): issues-by-status snapshot distribution + in-window
  *  runs-by-status — both Paperclip-style h-bars, both from GET /api/squad/overview/series. */
 function StatusBreakdownRow({ state }: { state: SeriesState }) {
-  const series: FleetOverviewSeries | null = state.kind === "ready" ? state.series : null;
+  const series: FleetOverviewSeries | null =
+    state.kind === "ready" ? state.series : null;
   const tickets = series?.ticketsByStatus;
   const runs = series?.runsByStatus;
   const snapshot = latestTicketSnapshot(tickets?.snapshots);
 
   // Issues panel is ready only when the snapshot read is both available AND has a datapoint.
-  const issuesPanelState = seriesPanelState(state, Boolean(tickets?.available && snapshot));
+  const issuesPanelState = seriesPanelState(
+    state,
+    Boolean(tickets?.available && snapshot),
+  );
   const runsPanelState = seriesPanelState(state, runs?.available);
 
   return (
-    <div className="ov-charts-row ov-charts-row--even" data-testid="fleet-status-breakdown">
+    <div
+      className="ov-charts-row ov-charts-row--even"
+      data-testid="fleet-status-breakdown"
+    >
       <PanelCard
         title="Issues by status"
         state={issuesPanelState}
@@ -276,13 +299,17 @@ function StatusBreakdownRow({ state }: { state: SeriesState }) {
  *  tracked on the backend child). Until it ships, that panel renders the honest "not available"
  *  degrade state rather than a fabricated band (FR-I3), keeping the approved two-up layout. */
 function OverTimeRow({ state }: { state: SeriesState }) {
-  const series: FleetOverviewSeries | null = state.kind === "ready" ? state.series : null;
+  const series: FleetOverviewSeries | null =
+    state.kind === "ready" ? state.series : null;
   const tickets = series?.ticketsByStatus;
   const ticketsPanelState = seriesPanelState(state, tickets?.available);
   const snapshots = tickets?.snapshots ?? [];
 
   return (
-    <div className="ov-charts-row ov-charts-row--even" data-testid="fleet-series">
+    <div
+      className="ov-charts-row ov-charts-row--even"
+      data-testid="fleet-series"
+    >
       <PanelCard
         title="Runs by status over time · 30d"
         state="empty"
@@ -308,7 +335,11 @@ function OverTimeRow({ state }: { state: SeriesState }) {
 function MergeSparkline({ values }: { values: number[] }) {
   const max = Math.max(1, ...values);
   return (
-    <span className="ov-sparkline" role="img" aria-label={`PRs merged per day, last 7 days: ${values.join(", ")}`}>
+    <span
+      className="ov-sparkline"
+      role="img"
+      aria-label={`PRs merged per day, last 7 days: ${values.join(", ")}`}
+    >
       {values.map((v, i) => (
         <span
           key={i}
@@ -347,7 +378,11 @@ function GithubStrip({ state }: { state: GithubSummaryState }) {
           <GithubStat label="PRs open" value={t.prsOpened} />
           <GithubStat label="Merged" value={t.prsMerged} />
           <GithubStat label="Reviewed" value={t.prsReviewed} />
-          <GithubStat label="Checks red" value={t.checksRed} tone={t.checksRed > 0 ? "blocked" : undefined} />
+          <GithubStat
+            label="Checks red"
+            value={t.checksRed}
+            tone={t.checksRed > 0 ? "blocked" : undefined}
+          />
           <div className="ov-github-strip__spark">
             <span className="ov-github-stat__label">Merged · 7d</span>
             <MergeSparkline values={spark} />
@@ -358,9 +393,21 @@ function GithubStrip({ state }: { state: GithubSummaryState }) {
   );
 }
 
-function GithubStat({ label, value, tone }: { label: string; value: number; tone?: "blocked" }) {
+function GithubStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone?: "blocked";
+}) {
   return (
-    <div className="ov-github-stat" data-tone={tone} data-testid="fleet-github-stat">
+    <div
+      className="ov-github-stat"
+      data-tone={tone}
+      data-testid="fleet-github-stat"
+    >
       <span className="ov-github-stat__value">{value}</span>
       <span className="ov-github-stat__label">{label}</span>
     </div>
@@ -423,16 +470,27 @@ function ProjectJumpRow({
 }) {
   const summary = github.kind === "ready" ? github.data : null;
   return (
-    <PanelCard title="Projects" state={projects.length === 0 ? "empty" : "ready"} emptyLabel="No projects yet.">
+    <PanelCard
+      title="Projects"
+      state={projects.length === 0 ? "empty" : "ready"}
+      emptyLabel="No projects yet."
+    >
       <ul className="ov-project-jump" data-testid="fleet-projects">
         {projects.map((p) => {
           // Reuse the WS-4 per-project selector (selectRepoStat + repoCount): the open-PR
           // count is authoritative when the repo is mirrored, "—" otherwise (FR-I3).
           const openPrs = repoCount(selectRepoStat(summary, p.repoUrl), "prs");
           return (
-            <li key={`${p.namespace}/${p.name}`} className="ov-project-jump__row" data-testid="fleet-project-jump">
+            <li
+              key={`${p.namespace}/${p.name}`}
+              className="ov-project-jump__row"
+              data-testid="fleet-project-jump"
+            >
               <div className="ov-project-jump__id">
-                <a className="ov-project-jump__name" href={`/projects/${encodeProjectId(p.name)}`}>
+                <a
+                  className="ov-project-jump__name"
+                  href={`/projects/${encodeProjectId(p.name)}`}
+                >
                   {p.name}
                 </a>
                 <span className="muted ov-project-jump__ns">{p.namespace}</span>
@@ -441,7 +499,9 @@ function ProjectJumpRow({
               <div className="ov-project-jump__metrics">
                 <span>{totalRuns(p)} runs</span>
                 <span data-testid="fleet-project-prs">
-                  {typeof openPrs === "number" ? `${openPrs} open PR${openPrs === 1 ? "" : "s"}` : "— PRs"}
+                  {typeof openPrs === "number"
+                    ? `${openPrs} open PR${openPrs === 1 ? "" : "s"}`
+                    : "— PRs"}
                 </span>
               </div>
               <a
@@ -470,13 +530,20 @@ export function FleetOverview() {
   const github = useGithubSummary();
 
   const { projects } = useMemo(
-    () => partitionProjects(overview.kind === "ready" ? overview.data.projects : null),
+    () =>
+      partitionProjects(
+        overview.kind === "ready" ? overview.data.projects : null,
+      ),
     [overview],
   );
 
   if (overview.kind === "loading") {
     return (
-      <div className="ov-dashboard" data-testid="fleet-loading" aria-busy="true">
+      <div
+        className="ov-dashboard"
+        data-testid="fleet-loading"
+        aria-busy="true"
+      >
         <StatBand>
           <StatTile label="Running" value="" loading />
           <StatTile label="Idle" value="" loading />
@@ -489,10 +556,18 @@ export function FleetOverview() {
     );
   }
   if (overview.kind === "unauthenticated") {
-    return <p className="muted" data-testid="fleet-unauthenticated">Sign in to see the fleet overview.</p>;
+    return (
+      <p className="muted" data-testid="fleet-unauthenticated">
+        Sign in to see the fleet overview.
+      </p>
+    );
   }
   if (overview.kind === "no-team") {
-    return <p className="muted" data-testid="fleet-no-team">No team is connected yet — complete setup to see the fleet.</p>;
+    return (
+      <p className="muted" data-testid="fleet-no-team">
+        No team is connected yet — complete setup to see the fleet.
+      </p>
+    );
   }
   if (overview.kind === "not-wired") {
     return (

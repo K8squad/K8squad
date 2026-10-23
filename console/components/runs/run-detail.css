@@ -163,7 +163,8 @@
   );
 }
 .run-rail__node.is-current .run-rail__dot {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-running) 22%, transparent);
+  box-shadow: 0 0 0 4px
+    color-mix(in srgb, var(--status-running) 22%, transparent);
 }
 .run-rail__label {
   font-size: 12px;
@@ -446,7 +447,11 @@
   border-radius: 6px;
   padding: 8px 10px;
   border-left: 3px solid var(--panel-tone, var(--muted));
-  background: color-mix(in srgb, var(--panel-tone, var(--muted)) 8%, var(--surface));
+  background: color-mix(
+    in srgb,
+    var(--panel-tone, var(--muted)) 8%,
+    var(--surface)
+  );
 }
 .exchange__panel--prompt {
   --panel-tone: var(--accent);

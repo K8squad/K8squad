@@ -14,7 +14,10 @@
 // `connected` bool + the tri-state last-test (S1 AC2 — no token ever crosses the
 // wire). This module has no field that could carry token material back out.
 
-import { credentialCreateBody, type CredentialCreateInput } from "@/lib/credentials";
+import {
+  credentialCreateBody,
+  type CredentialCreateInput,
+} from "@/lib/credentials";
 
 // ── S1 read projection (mirror of projectsettings.go) ─────────────────────────
 
@@ -90,7 +93,10 @@ export type CredentialBadge = {
  * "untested" strictly off `lastTest`. Any unexpected lastTest collapses to
  * "untested" (honesty over a guessed-green).
  */
-export function credentialStatusLabel(connected: boolean, lastTest: string): CredentialBadge {
+export function credentialStatusLabel(
+  connected: boolean,
+  lastTest: string,
+): CredentialBadge {
   if (!connected) return { label: "Not connected", tone: "idle" };
   switch (lastTest) {
     case "passed":
@@ -204,7 +210,8 @@ export function buildProjectPutBody(
   const ref = (overlay.repoRef ?? detail.repo.ref ?? "").trim();
   if (ref) repo.ref = ref;
 
-  const authRef = overlay.credentialSecretRef ?? detail.repo.auth?.credentialSecretRef;
+  const authRef =
+    overlay.credentialSecretRef ?? detail.repo.auth?.credentialSecretRef;
   if (authRef && authRef.name) {
     repo.auth = {
       credentialSecretRef: authRef.key
@@ -219,8 +226,10 @@ export function buildProjectPutBody(
     if (overlay.sync.enabled) {
       const base: RepoSyncWire = { ...(detail.repo.sync ?? {}) };
       if (!base.provider) base.provider = "github";
-      if (overlay.sync.pollIntervalSeconds !== undefined) base.pollIntervalSeconds = overlay.sync.pollIntervalSeconds;
-      if (overlay.sync.reflectOutbound !== undefined) base.reflectOutbound = overlay.sync.reflectOutbound;
+      if (overlay.sync.pollIntervalSeconds !== undefined)
+        base.pollIntervalSeconds = overlay.sync.pollIntervalSeconds;
+      if (overlay.sync.reflectOutbound !== undefined)
+        base.reflectOutbound = overlay.sync.reflectOutbound;
       repo.sync = base;
     }
   } else if (detail.repo.sync) {
@@ -235,13 +244,18 @@ export function buildProjectPutBody(
   // full-replace footgun, same rule as goals/egress). An empty string / empty
   // array from the overlay is a deliberate clear ⇒ the field is omitted (backend
   // omitempty ⇒ spec field cleared).
-  const conventions = (overlay.docs ? overlay.docs.conventions : detail.conventions ?? "").trim();
+  const conventions = (
+    overlay.docs ? overlay.docs.conventions : (detail.conventions ?? "")
+  ).trim();
   if (conventions) body.conventions = conventions;
-  const rawRefs = overlay.docs ? overlay.docs.archDocRefs : detail.archDocRefs ?? [];
+  const rawRefs = overlay.docs
+    ? overlay.docs.archDocRefs
+    : (detail.archDocRefs ?? []);
   const archDocRefs = rawRefs.map((r) => r.trim()).filter((r) => r.length > 0);
   if (archDocRefs.length) body.archDocRefs = archDocRefs;
 
-  if (detail.egressPolicyRef && detail.egressPolicyRef.name) body.egressPolicyRef = detail.egressPolicyRef;
+  if (detail.egressPolicyRef && detail.egressPolicyRef.name)
+    body.egressPolicyRef = detail.egressPolicyRef;
   return body;
 }
 
@@ -257,20 +271,31 @@ export interface RepoAuthTestResult {
 // ── Browser-side composers over the BFF choke point ────────────────────────────
 
 /** Read the S1 projection through the BFF. 200 ⇒ ready; else the classified honest state. */
-export async function fetchProjectSettings(projectId: string): Promise<ProjectSettingsState> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/settings`, {
-    cache: "no-store",
-  });
-  if (res.ok) return { kind: "ready", data: (await res.json()) as ProjectSettings };
+export async function fetchProjectSettings(
+  projectId: string,
+): Promise<ProjectSettingsState> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/settings`,
+    {
+      cache: "no-store",
+    },
+  );
+  if (res.ok)
+    return { kind: "ready", data: (await res.json()) as ProjectSettings };
   return classifyProjectSettings(res.status);
 }
 
 /** Read the full authoring detail (goals/egress/auth) so a compose PUT round-trips
  *  the whole spec. Null ⇒ the detail read failed (caller surfaces an honest error). */
-export async function fetchProjectDetail(projectId: string): Promise<ProjectDetail | null> {
-  const res = await fetch(`/api/squad/projects/${encodeURIComponent(projectId)}`, {
-    cache: "no-store",
-  });
+export async function fetchProjectDetail(
+  projectId: string,
+): Promise<ProjectDetail | null> {
+  const res = await fetch(
+    `/api/squad/projects/${encodeURIComponent(projectId)}`,
+    {
+      cache: "no-store",
+    },
+  );
   if (!res.ok) return null;
   return (await res.json()) as ProjectDetail;
 }
@@ -333,5 +358,8 @@ export async function testRepoAuth(
   });
   if (res.ok) return (await res.json()) as RepoAuthTestResult;
   // A non-2xx from the probe surface is itself an honest failure to render.
-  return { ok: false, detail: `test-connection request failed (HTTP ${res.status})` };
+  return {
+    ok: false,
+    detail: `test-connection request failed (HTTP ${res.status})`,
+  };
 }

@@ -27,7 +27,13 @@
 //     parent, same ProjectRoleResolver write-tier as Repository): a row shown
 //     editable can never hit a 403 (§5).
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
 import {
   MASKED_VALUE,
@@ -53,7 +59,13 @@ import {
 
 type RowMsg = { tone: "ok" | "bad"; text: string };
 
-export function CredentialsVaultCard({ projectId, canEdit }: { projectId: string; canEdit: boolean }) {
+export function CredentialsVaultCard({
+  projectId,
+  canEdit,
+}: {
+  projectId: string;
+  canEdit: boolean;
+}) {
   const [state, setState] = useState<CredentialTypesState>({ kind: "loading" });
 
   const load = useCallback(async () => {
@@ -69,16 +81,25 @@ export function CredentialsVaultCard({ projectId, canEdit }: { projectId: string
   }, [load]);
 
   return (
-    <section id="settings-credentials" className="card settings__card" data-testid="settings-credentials-panel">
+    <section
+      id="settings-credentials"
+      className="card settings__card"
+      data-testid="settings-credentials-panel"
+    >
       <div className="settings__card-head">
         <h2 className="settings__card-title">Credentials</h2>
       </div>
       <p className="muted settings__note">
-        Tokens the project&apos;s skills need to run. Each row is a credential type a gated skill
-        declares — paste a value to connect it. Values are stored as Kubernetes Secrets and are
-        never shown back.
+        Tokens the project&apos;s skills need to run. Each row is a credential
+        type a gated skill declares — paste a value to connect it. Values are
+        stored as Kubernetes Secrets and are never shown back.
       </p>
-      <CredentialsBody state={state} projectId={projectId} canEdit={canEdit} onReload={load} />
+      <CredentialsBody
+        state={state}
+        projectId={projectId}
+        canEdit={canEdit}
+        onReload={load}
+      />
     </section>
   );
 }
@@ -96,7 +117,11 @@ function CredentialsBody({
 }) {
   if (state.kind === "loading") {
     return (
-      <div className="card skeleton" aria-busy="true" data-testid="credentials-loading">
+      <div
+        className="card skeleton"
+        aria-busy="true"
+        data-testid="credentials-loading"
+      >
         Loading credentials…
       </div>
     );
@@ -153,7 +178,14 @@ function CredentialsBody({
     );
   }
 
-  return <CredentialsTable types={state.data.types} projectId={projectId} canEdit={canEdit} onReload={onReload} />;
+  return (
+    <CredentialsTable
+      types={state.data.types}
+      projectId={projectId}
+      canEdit={canEdit}
+      onReload={onReload}
+    />
+  );
 }
 
 function CredentialsTable({
@@ -183,7 +215,9 @@ function CredentialsTable({
   // which would block the event loop and is easy to mis-dismiss for a destructive op).
   const [rotatingType, setRotatingType] = useState<string | null>(null);
   const [rotateValues, setRotateValues] = useState<Record<string, string>>({});
-  const [confirmingDeleteType, setConfirmingDeleteType] = useState<string | null>(null);
+  const [confirmingDeleteType, setConfirmingDeleteType] = useState<
+    string | null
+  >(null);
 
   const setValue = useCallback((type: string, v: string) => {
     setValues((prev) => ({ ...prev, [type]: v }));
@@ -243,14 +277,22 @@ function CredentialsTable({
       const value = values[type] ?? "";
       setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "" } }));
       if (!value) {
-        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "Paste a value for this credential." } }));
+        setRowMsg((prev) => ({
+          ...prev,
+          [type]: { tone: "bad", text: "Paste a value for this credential." },
+        }));
         return;
       }
       setBusyType(type);
       try {
         // name is carried for wire-completeness (spec §1.2); the apiserver derives
         // the Secret name from (project, type) and ignores it on the vault axis.
-        const res = await createToolCredential({ name: type, value, type, projectId });
+        const res = await createToolCredential({
+          name: type,
+          value,
+          type,
+          projectId,
+        });
         if (res.ok) {
           // Write-only discipline: drop the typed value from state on success so it
           // never lingers — the row re-renders masked off the reloaded gateState.
@@ -259,18 +301,30 @@ function CredentialsTable({
             delete next[type];
             return next;
           });
-          setRowMsg((prev) => ({ ...prev, [type]: { tone: "ok", text: "Saved." } }));
+          setRowMsg((prev) => ({
+            ...prev,
+            [type]: { tone: "ok", text: "Saved." },
+          }));
           await onReload();
         } else {
           const outcome = classifyVaultCreateStatus(res.status);
           const verbatim = await vaultErrorText(res);
           setRowMsg((prev) => ({
             ...prev,
-            [type]: { tone: "bad", text: verbatim ?? vaultCreateMessage(outcome) },
+            [type]: {
+              tone: "bad",
+              text: verbatim ?? vaultCreateMessage(outcome),
+            },
           }));
         }
       } catch {
-        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "The credential store is unreachable — try again." } }));
+        setRowMsg((prev) => ({
+          ...prev,
+          [type]: {
+            tone: "bad",
+            text: "The credential store is unreachable — try again.",
+          },
+        }));
       } finally {
         setBusyType(null);
       }
@@ -289,7 +343,13 @@ function CredentialsTable({
       const value = rotateValues[type] ?? "";
       setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "" } }));
       if (!value) {
-        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "Paste a new value to rotate this credential." } }));
+        setRowMsg((prev) => ({
+          ...prev,
+          [type]: {
+            tone: "bad",
+            text: "Paste a new value to rotate this credential.",
+          },
+        }));
         return;
       }
       setBusyType(type);
@@ -304,18 +364,30 @@ function CredentialsTable({
             return next;
           });
           setRotatingType(null);
-          setRowMsg((prev) => ({ ...prev, [type]: { tone: "ok", text: "Rotated." } }));
+          setRowMsg((prev) => ({
+            ...prev,
+            [type]: { tone: "ok", text: "Rotated." },
+          }));
           await onReload();
         } else {
           const outcome = classifyVaultRotateStatus(res.status);
           const verbatim = await vaultErrorText(res);
           setRowMsg((prev) => ({
             ...prev,
-            [type]: { tone: "bad", text: verbatim ?? vaultRotateMessage(outcome) },
+            [type]: {
+              tone: "bad",
+              text: verbatim ?? vaultRotateMessage(outcome),
+            },
           }));
         }
       } catch {
-        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "The credential store is unreachable — try again." } }));
+        setRowMsg((prev) => ({
+          ...prev,
+          [type]: {
+            tone: "bad",
+            text: "The credential store is unreachable — try again.",
+          },
+        }));
       } finally {
         setBusyType(null);
       }
@@ -336,17 +408,29 @@ function CredentialsTable({
         const outcome = classifyVaultDeleteStatus(res.status);
         if (vaultDeleteSucceeded(outcome)) {
           setConfirmingDeleteType(null);
-          setRowMsg((prev) => ({ ...prev, [type]: { tone: "ok", text: vaultDeleteMessage(outcome) } }));
+          setRowMsg((prev) => ({
+            ...prev,
+            [type]: { tone: "ok", text: vaultDeleteMessage(outcome) },
+          }));
           await onReload();
         } else {
           const verbatim = await vaultErrorText(res);
           setRowMsg((prev) => ({
             ...prev,
-            [type]: { tone: "bad", text: verbatim ?? vaultDeleteMessage(outcome) },
+            [type]: {
+              tone: "bad",
+              text: verbatim ?? vaultDeleteMessage(outcome),
+            },
           }));
         }
       } catch {
-        setRowMsg((prev) => ({ ...prev, [type]: { tone: "bad", text: "The credential store is unreachable — try again." } }));
+        setRowMsg((prev) => ({
+          ...prev,
+          [type]: {
+            tone: "bad",
+            text: "The credential store is unreachable — try again.",
+          },
+        }));
       } finally {
         setBusyType(null);
       }
@@ -356,7 +440,10 @@ function CredentialsTable({
 
   return (
     <div className="settings__cred-table-wrap">
-      <table className="settings__cred-table" data-testid="credentials-vault-table">
+      <table
+        className="settings__cred-table"
+        data-testid="credentials-vault-table"
+      >
         <thead>
           <tr>
             <th scope="col">Name</th>
@@ -450,7 +537,10 @@ function CredentialRow({
       <td data-testid={`cred-name-${entry.type}`}>
         <span className="settings__cred-name">{entry.displayName}</span>
         {requiredMissing ? (
-          <span className="muted settings__cred-hint" data-testid={`cred-required-hint-${entry.type}`}>
+          <span
+            className="muted settings__cred-hint"
+            data-testid={`cred-required-hint-${entry.type}`}
+          >
             This skill can&apos;t run until you add this credential.
           </span>
         ) : null}
@@ -458,7 +548,10 @@ function CredentialRow({
 
       {/* Type — the registry key (read-only; the row IS the type). */}
       <td>
-        <code className="settings__cred-type" data-testid={`cred-type-${entry.type}`}>
+        <code
+          className="settings__cred-type"
+          data-testid={`cred-type-${entry.type}`}
+        >
           {entry.type}
         </code>
       </td>
@@ -482,7 +575,11 @@ function CredentialRow({
             autoFocus
           />
         ) : satisfied ? (
-          <span className="settings__cred-masked" data-testid={`cred-masked-${entry.type}`} aria-label="value saved (hidden)">
+          <span
+            className="settings__cred-masked"
+            data-testid={`cred-masked-${entry.type}`}
+            aria-label="value saved (hidden)"
+          >
             {MASKED_VALUE}
           </span>
         ) : canEdit ? (
@@ -497,7 +594,10 @@ function CredentialRow({
             form={`cred-form-${entry.type}`}
           />
         ) : (
-          <span className="muted" data-testid={`cred-value-readonly-${entry.type}`}>
+          <span
+            className="muted"
+            data-testid={`cred-value-readonly-${entry.type}`}
+          >
             —
           </span>
         )}
@@ -505,7 +605,10 @@ function CredentialRow({
 
       {/* Consumed by — the skills/MCPServers that read this type. */}
       <td>
-        <span className="settings__cred-chips" data-testid={`cred-consumers-${entry.type}`}>
+        <span
+          className="settings__cred-chips"
+          data-testid={`cred-consumers-${entry.type}`}
+        >
           {entry.consumedBy.length ? (
             entry.consumedBy.map((c) => (
               <span key={c} className="settings__chip settings__chip--muted">
@@ -533,8 +636,17 @@ function CredentialRow({
       <td>
         <div className="settings__cred-actions">
           {canEdit && !satisfied ? (
-            <form id={`cred-form-${entry.type}`} onSubmit={onSave} className="settings__cred-save-form">
-              <button className="btn btn--primary" type="submit" disabled={busy} data-testid={`cred-save-${entry.type}`}>
+            <form
+              id={`cred-form-${entry.type}`}
+              onSubmit={onSave}
+              className="settings__cred-save-form"
+            >
+              <button
+                className="btn btn--primary"
+                type="submit"
+                disabled={busy}
+                data-testid={`cred-save-${entry.type}`}
+              >
                 {busy ? "Saving…" : "Save"}
               </button>
             </form>
@@ -566,7 +678,11 @@ function CredentialRow({
                 • confirmingDelete → Confirm delete (danger) + Cancel — an inline
                                    two-step guard, not a blocking native confirm(). */}
           {canEdit && satisfied && rotating ? (
-            <form id={`cred-rotate-form-${entry.type}`} onSubmit={onRotate} className="settings__cred-save-form">
+            <form
+              id={`cred-rotate-form-${entry.type}`}
+              onSubmit={onRotate}
+              className="settings__cred-save-form"
+            >
               <button
                 className="btn btn--primary"
                 type="submit"
@@ -586,8 +702,13 @@ function CredentialRow({
               </button>
             </form>
           ) : canEdit && satisfied && confirmingDelete ? (
-            <span className="settings__cred-confirm" data-testid={`cred-delete-confirm-wrap-${entry.type}`}>
-              <span className="muted settings__cred-hint">Delete this credential?</span>
+            <span
+              className="settings__cred-confirm"
+              data-testid={`cred-delete-confirm-wrap-${entry.type}`}
+            >
+              <span className="muted settings__cred-hint">
+                Delete this credential?
+              </span>
               <button
                 className="btn btn--danger"
                 type="button"
@@ -633,7 +754,11 @@ function CredentialRow({
           ) : null}
         </div>
         {msg && msg.text ? (
-          <p className={`settings__msg settings__msg--${msg.tone}`} data-testid={`cred-msg-${entry.type}`} role="status">
+          <p
+            className={`settings__msg settings__msg--${msg.tone}`}
+            data-testid={`cred-msg-${entry.type}`}
+            role="status"
+          >
             {msg.text}
           </p>
         ) : null}

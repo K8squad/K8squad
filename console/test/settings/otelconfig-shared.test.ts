@@ -51,7 +51,11 @@ describe("deriveDestination — common-or-first across enabled signals", () => {
   });
 
   it("disabled (null) signals never contribute to the derived Destination", () => {
-    const form = { traces: sig({ endpoint: "traces-host:4317" }), metrics: null, logs: null };
+    const form = {
+      traces: sig({ endpoint: "traces-host:4317" }),
+      metrics: null,
+      logs: null,
+    };
     expect(deriveDestination(form).endpoint).toBe("traces-host:4317");
   });
 
@@ -142,7 +146,10 @@ describe("fromWireShared — inherit vs override derivation", () => {
     };
     const model = fromWireShared(wire);
     expect(model.signals.traces).toEqual({ enabled: true, mode: "inherit" });
-    expect(model.signals.metrics).toMatchObject({ enabled: true, mode: "override" });
+    expect(model.signals.metrics).toMatchObject({
+      enabled: true,
+      mode: "override",
+    });
   });
 
   it("absent signals are opt-out (disabled) slots", () => {
@@ -198,20 +205,39 @@ describe("toWireShared — inherit copies shared, override keeps own; wire shape
 
   it("override signal serialises its own values, ignoring the Destination", () => {
     const model: DestinationModel = {
-      destination: { endpoint: collector, protocol: "grpc", authSecretRef: "", resourceAttributes: {}, sampling: null },
+      destination: {
+        endpoint: collector,
+        protocol: "grpc",
+        authSecretRef: "",
+        resourceAttributes: {},
+        sampling: null,
+      },
       signals: {
         traces: { enabled: true, mode: "inherit" },
         metrics: { enabled: false },
-        logs: { enabled: true, mode: "override", override: sig({ endpoint: "logs-host:4318", protocol: "http" }) },
+        logs: {
+          enabled: true,
+          mode: "override",
+          override: sig({ endpoint: "logs-host:4318", protocol: "http" }),
+        },
       },
     };
     const wire = toWireShared(model);
-    expect(wire.spec?.logs).toEqual({ endpoint: "logs-host:4318", protocol: "http" });
+    expect(wire.spec?.logs).toEqual({
+      endpoint: "logs-host:4318",
+      protocol: "http",
+    });
   });
 
   it("toFormShared drops disabled signals to null (opt-out)", () => {
     const model: DestinationModel = {
-      destination: { endpoint: collector, protocol: "grpc", authSecretRef: "", resourceAttributes: {}, sampling: null },
+      destination: {
+        endpoint: collector,
+        protocol: "grpc",
+        authSecretRef: "",
+        resourceAttributes: {},
+        sampling: null,
+      },
       signals: {
         traces: { enabled: true, mode: "inherit" },
         metrics: { enabled: false },
@@ -236,18 +262,34 @@ describe("round-trip fidelity — shared model is lossless over the wire", () =>
     },
     "shared with one override": {
       spec: {
-        traces: { endpoint: collector, protocol: "grpc", authSecretRef: "tok", resourceAttributes: { env: "prod" } },
-        metrics: { endpoint: collector, protocol: "grpc", authSecretRef: "tok", resourceAttributes: { env: "prod" } },
+        traces: {
+          endpoint: collector,
+          protocol: "grpc",
+          authSecretRef: "tok",
+          resourceAttributes: { env: "prod" },
+        },
+        metrics: {
+          endpoint: collector,
+          protocol: "grpc",
+          authSecretRef: "tok",
+          resourceAttributes: { env: "prod" },
+        },
         logs: { endpoint: "logs-host:4318", protocol: "http" },
       },
     },
     "partial opt-in (traces only)": {
-      spec: { traces: { endpoint: collector, protocol: "grpc", sampling: 0.5 } },
+      spec: {
+        traces: { endpoint: collector, protocol: "grpc", sampling: 0.5 },
+      },
     },
     "divergent everything": {
       spec: {
         traces: { endpoint: "t:4317", protocol: "grpc", authSecretRef: "a" },
-        metrics: { endpoint: "m:4318", protocol: "http", resourceAttributes: { k: "v" } },
+        metrics: {
+          endpoint: "m:4318",
+          protocol: "http",
+          resourceAttributes: { k: "v" },
+        },
         logs: { endpoint: "l:4317", protocol: "grpc" },
       },
     },

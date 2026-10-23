@@ -21,9 +21,21 @@
 
 import { Fragment } from "react";
 import { nextSortDir, sortWorkItems } from "@/lib/tickets/derivation";
-import { type SortKey, type SortSpec, type WorkItem } from "@/lib/tickets/types";
-import { PHASE_STATUSES, statusColor, statusMeta } from "@/lib/tickets/statusColor";
-import { INDENT_CAP, TicketTreeToggle, type TreeController } from "./SubTicketTree";
+import {
+  type SortKey,
+  type SortSpec,
+  type WorkItem,
+} from "@/lib/tickets/types";
+import {
+  PHASE_STATUSES,
+  statusColor,
+  statusMeta,
+} from "@/lib/tickets/statusColor";
+import {
+  INDENT_CAP,
+  TicketTreeToggle,
+  type TreeController,
+} from "./SubTicketTree";
 
 const COLUMNS: ReadonlyArray<{ key: SortKey; label: string }> = [
   { key: "id", label: "ID" },
@@ -174,11 +186,16 @@ export function ListView({
               <span aria-hidden="true" className="ksq-avatar">
                 {initials(item.assignee)}
               </span>
-              <span className="ksq-listrow__assignee-name">{item.assignee}</span>
+              <span className="ksq-listrow__assignee-name">
+                {item.assignee}
+              </span>
             </>
           ) : (
             <>
-              <span aria-hidden="true" className="ksq-avatar ksq-avatar--empty" />
+              <span
+                aria-hidden="true"
+                className="ksq-avatar ksq-avatar--empty"
+              />
               <span className="ksq-dim">Unassigned</span>
             </>
           )}
@@ -190,7 +207,9 @@ export function ListView({
               {l}
             </span>
           ))}
-          {(item.labels ?? []).length === 0 && <span className="ksq-dim">—</span>}
+          {(item.labels ?? []).length === 0 && (
+            <span className="ksq-dim">—</span>
+          )}
         </span>
 
         <span className="ksq-listrow__updated" role="cell">
@@ -205,7 +224,9 @@ export function ListView({
   // its own caret and recurses. Div bands (not <tr>) let the whole row be a flex
   // band with a coloured spine; the tree is a flat sibling list, no table.
   function renderTreeRows(item: WorkItem, depth: number): React.ReactNode {
-    const children = tree.isExpanded(item.id) ? tree.childrenOf(item.id) : undefined;
+    const children = tree.isExpanded(item.id)
+      ? tree.childrenOf(item.id)
+      : undefined;
     return (
       <Fragment key={item.id}>
         {renderRow(item, depth)}
@@ -260,7 +281,11 @@ export function ListView({
 /** The 10-status colour legend (S5) — documents every phase hue + the blocked note. */
 function StatusLegend() {
   return (
-    <div className="ksq-legend" data-testid="status-legend" aria-label="Status colour legend">
+    <div
+      className="ksq-legend"
+      data-testid="status-legend"
+      aria-label="Status colour legend"
+    >
       <span className="ksq-legend__label">Phases</span>
       {PHASE_STATUSES.map((state) => {
         const meta = statusMeta(state);
@@ -277,7 +302,10 @@ function StatusLegend() {
           </span>
         );
       })}
-      <span className="ksq-legend__item ksq-legend__item--blocked" data-testid="legend-blocked">
+      <span
+        className="ksq-legend__item ksq-legend__item--blocked"
+        data-testid="legend-blocked"
+      >
         <span aria-hidden="true" className="ksq-warn-glyph">
           ⚠
         </span>
@@ -288,7 +316,10 @@ function StatusLegend() {
 }
 
 function initials(name: string): string {
-  const parts = name.trim().split(/[\s._-]+/).filter(Boolean);
+  const parts = name
+    .trim()
+    .split(/[\s._-]+/)
+    .filter(Boolean);
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
@@ -296,5 +327,7 @@ function initials(name: string): string {
 
 function formatUpdated(iso: string): string {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toISOString().slice(0, 16).replace("T", " ");
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toISOString().slice(0, 16).replace("T", " ");
 }

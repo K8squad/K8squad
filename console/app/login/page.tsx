@@ -68,7 +68,9 @@ export default function LoginPage() {
       else setError("Sign-in is temporarily unavailable. Please try again.");
       setSubmitting(false);
     } catch {
-      setError("Can’t reach the sign-in service. Check your connection and retry.");
+      setError(
+        "Can’t reach the sign-in service. Check your connection and retry.",
+      );
       setSubmitting(false);
     }
   }
@@ -84,8 +86,8 @@ export default function LoginPage() {
             Operate your agent squads with confidence.
           </h1>
           <p className="login__lede">
-            The control surface for Kubernetes-native agent squads — compose CRDs,
-            watch runs stream live, and govern every team from one place.
+            The control surface for Kubernetes-native agent squads — compose
+            CRDs, watch runs stream live, and govern every team from one place.
           </p>
           <ul className="login__points">
             <li>Live run streams &amp; provenance</li>
@@ -110,7 +112,11 @@ export default function LoginPage() {
 
           <form className="login__form" onSubmit={onSubmit} noValidate>
             {error && (
-              <p className="login__error field-error" role="alert" aria-live="assertive">
+              <p
+                className="login__error field-error"
+                role="alert"
+                aria-live="assertive"
+              >
                 {error}
               </p>
             )}

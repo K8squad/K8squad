@@ -111,9 +111,21 @@ export const SUGGESTED_AGENT_ROLES: ReadonlyArray<{
   label: string;
   summary: string;
 }> = [
-  { roleRef: "role-boss", label: "Boss", summary: "Plans, decomposes and delegates." },
-  { roleRef: "role-implementer", label: "Implementer", summary: "Writes, tests and ships code." },
-  { roleRef: "role-manager", label: "Manager", summary: "Grooms, reviews and unblocks." },
+  {
+    roleRef: "role-boss",
+    label: "Boss",
+    summary: "Plans, decomposes and delegates.",
+  },
+  {
+    roleRef: "role-implementer",
+    label: "Implementer",
+    summary: "Writes, tests and ships code.",
+  },
+  {
+    roleRef: "role-manager",
+    label: "Manager",
+    summary: "Grooms, reviews and unblocks.",
+  },
 ];
 
 /** Type guard: a payload is a well-formed projection (fail-open boundary for the BFF fetch). */
@@ -133,10 +145,14 @@ export function isOnboardingProgress(v: unknown): v is OnboardingProgress {
 /** The first incomplete milestone id, or null at 4/4. Validates against the known ids — an
  * unrecognized `nextMilestone` from a newer server degrades to null (complete-looking) rather
  * than routing Nadia to a surface this console doesn't know. */
-export function nextMilestoneId(p: OnboardingProgress): OnboardingMilestoneId | null {
+export function nextMilestoneId(
+  p: OnboardingProgress,
+): OnboardingMilestoneId | null {
   if (p.done >= p.total) return null;
   const id = p.nextMilestone ?? "";
-  return (ONBOARDING_MILESTONES as ReadonlyArray<{ id: string }>).some((m) => m.id === id)
+  return (ONBOARDING_MILESTONES as ReadonlyArray<{ id: string }>).some(
+    (m) => m.id === id,
+  )
     ? (id as OnboardingMilestoneId)
     : // Server said "incomplete" but named no known milestone — fall back to the step number.
       (ONBOARDING_MILESTONES[p.step - 1]?.id ?? null);
@@ -187,7 +203,10 @@ export function milestoneStates(
  * Hero copy per frame. done == 0 → frame 01 ("Welcome to K8squad"); 0 < done < total →
  * frame 06 ("Finish setting up your squad"); done == total → frame 07 ("Your squad is ready").
  */
-export function heroCopy(p: OnboardingProgress): { title: string; sub: string } {
+export function heroCopy(p: OnboardingProgress): {
+  title: string;
+  sub: string;
+} {
   if (isJourneyComplete(p)) {
     return {
       title: "Your squad is ready",
@@ -201,7 +220,10 @@ export function heroCopy(p: OnboardingProgress): { title: string; sub: string } 
     };
   }
   const left = p.total - p.done;
-  const headline = p.done * 2 === p.total ? "You're halfway there" : `${p.done} of ${p.total} complete`;
+  const headline =
+    p.done * 2 === p.total
+      ? "You're halfway there"
+      : `${p.done} of ${p.total} complete`;
   return {
     title: "Finish setting up your squad",
     sub: `${headline} — ${left} step${left === 1 ? "" : "s"} left. Pick up where you left off.`,
@@ -239,9 +261,13 @@ export function shouldShowLaunchpad(
 export const ONBOARDING_DISMISS_KEY = "ksquad.onboarding.dismissed";
 
 /** Read this device's dismissal flag (false outside the browser / on storage errors). */
-export function readLocalDismissed(storage?: Pick<Storage, "getItem">): boolean {
+export function readLocalDismissed(
+  storage?: Pick<Storage, "getItem">,
+): boolean {
   try {
-    const s = storage ?? (typeof window !== "undefined" ? window.localStorage : undefined);
+    const s =
+      storage ??
+      (typeof window !== "undefined" ? window.localStorage : undefined);
     return s?.getItem(ONBOARDING_DISMISS_KEY) === "true";
   } catch {
     return false;
@@ -254,7 +280,9 @@ export function writeLocalDismissed(
   storage?: Pick<Storage, "setItem" | "removeItem">,
 ): void {
   try {
-    const s = storage ?? (typeof window !== "undefined" ? window.localStorage : undefined);
+    const s =
+      storage ??
+      (typeof window !== "undefined" ? window.localStorage : undefined);
     if (!s) return;
     if (dismissed) s.setItem(ONBOARDING_DISMISS_KEY, "true");
     else s.removeItem(ONBOARDING_DISMISS_KEY);

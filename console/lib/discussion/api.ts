@@ -101,10 +101,7 @@ export interface DiscussionClient {
    * @-mention search (ISI-4926): agent + work-item suggestions for the
    * composer popover, agents first, tenancy-fenced server-side.
    */
-  searchMentions(
-    projectId: string,
-    q: string,
-  ): Promise<MentionSuggestion[]>;
+  searchMentions(projectId: string, q: string): Promise<MentionSuggestion[]>;
   /**
    * Project roster (ISI-5107): the agents dispatchable into THIS project for
    * the right rail + composer direct-target selector. Scoped server-side from

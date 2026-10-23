@@ -41,7 +41,10 @@ const agentDetail: AgentDetailWire = {
 
 describe("roleModelPut", () => {
   it("sends identity + the model field only — unsent spec fields are the merge's job", () => {
-    const body = roleModelPut(roleDetail, { model: "claude-sonnet-5", fallbackModel: undefined });
+    const body = roleModelPut(roleDetail, {
+      model: "claude-sonnet-5",
+      fallbackModel: undefined,
+    });
     expect(body).toEqual({
       name: "engineer",
       promptRef: { name: "engineer-prompt" },
@@ -55,32 +58,50 @@ describe("roleModelPut", () => {
   });
 
   it("clears the role-tier pin with JSON null (inherit the org default)", () => {
-    const body = roleModelPut(roleDetail, { model: "", fallbackModel: undefined });
+    const body = roleModelPut(roleDetail, {
+      model: "",
+      fallbackModel: undefined,
+    });
     expect(body.model).toBeNull();
   });
 
   it("round-trips the resourceVersion token opaquely when present", () => {
-    const body = roleModelPut({ ...roleDetail, resourceVersion: "" }, { model: "m", fallbackModel: undefined });
+    const body = roleModelPut(
+      { ...roleDetail, resourceVersion: "" },
+      { model: "m", fallbackModel: undefined },
+    );
     expect(body).not.toHaveProperty("resourceVersion");
   });
 
   it("sends the fallback only when the user touched it", () => {
-    expect(roleModelPut(roleDetail, { model: "m", fallbackModel: undefined })).not.toHaveProperty("fallbackModel");
-    expect(roleModelPut(roleDetail, { model: "m", fallbackModel: "qwen3-8b" }).fallbackModel).toEqual({
+    expect(
+      roleModelPut(roleDetail, { model: "m", fallbackModel: undefined }),
+    ).not.toHaveProperty("fallbackModel");
+    expect(
+      roleModelPut(roleDetail, { model: "m", fallbackModel: "qwen3-8b" })
+        .fallbackModel,
+    ).toEqual({
       model: "qwen3-8b",
     });
-    expect(roleModelPut(roleDetail, { model: "m", fallbackModel: "" }).fallbackModel).toBeNull();
+    expect(
+      roleModelPut(roleDetail, { model: "m", fallbackModel: "" }).fallbackModel,
+    ).toBeNull();
   });
 });
 
 describe("roleSkillsPut", () => {
   it("replaces the defaultSkills array wholesale (a sent array overwrites)", () => {
     const body = roleSkillsPut(roleDetail, ["code-review", "deploy"]);
-    expect(body.defaultSkills).toEqual([{ name: "code-review" }, { name: "deploy" }]);
+    expect(body.defaultSkills).toEqual([
+      { name: "code-review" },
+      { name: "deploy" },
+    ]);
   });
 
   it("de-duplicates and trims, and clears with JSON null when empty", () => {
-    expect(roleSkillsPut(roleDetail, ["git", " git ", ""]).defaultSkills).toEqual([{ name: "git" }]);
+    expect(
+      roleSkillsPut(roleDetail, ["git", " git ", ""]).defaultSkills,
+    ).toEqual([{ name: "git" }]);
     expect(roleSkillsPut(roleDetail, []).defaultSkills).toBeNull();
   });
 });
@@ -145,7 +166,9 @@ describe("putCompose ?team= forwarding", () => {
   });
 
   it("appends the team selector to the compose URL when a team is given", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     await putCompose("roles", "engineer", { name: "engineer" }, "globex");
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -154,7 +177,9 @@ describe("putCompose ?team= forwarding", () => {
   });
 
   it("percent-encodes the team selector", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     await putCompose("agents", "agent-7", { name: "agent-7" }, "team a/b");
     const url = fetchMock.mock.calls[0][0] as string;
@@ -162,7 +187,9 @@ describe("putCompose ?team= forwarding", () => {
   });
 
   it("omits the query entirely when no team is given (tenant self-scope)", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     await putCompose("agents", "agent-7", { name: "agent-7" });
     const url = fetchMock.mock.calls[0][0] as string;

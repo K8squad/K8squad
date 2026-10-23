@@ -21,5 +21,9 @@ export async function POST(
   ctx: { params: Promise<{ workItemId: string }> },
 ): Promise<Response> {
   const { workItemId } = await ctx.params;
-  return proxyJsonWrite(_req, `/api/work-items/${encodeURIComponent(workItemId)}/kill`, "POST");
+  return proxyJsonWrite(
+    _req,
+    `/api/work-items/${encodeURIComponent(workItemId)}/kill`,
+    "POST",
+  );
 }

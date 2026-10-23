@@ -33,10 +33,18 @@ describe("SetupChip — AC2 (incomplete + dismissed → persistent chip)", () =>
     const { unmount } = render(
       <SetupChip progress={{ ...partial, nextMilestone: "team", done: 0 }} />,
     );
-    expect(screen.getByTestId("setup-chip")).toHaveAttribute("href", "/compose");
+    expect(screen.getByTestId("setup-chip")).toHaveAttribute(
+      "href",
+      "/compose",
+    );
     unmount();
-    render(<SetupChip progress={{ ...partial, nextMilestone: "agents", done: 1 }} />);
-    expect(screen.getByTestId("setup-chip")).toHaveAttribute("href", "/agents-team");
+    render(
+      <SetupChip progress={{ ...partial, nextMilestone: "agents", done: 1 }} />,
+    );
+    expect(screen.getByTestId("setup-chip")).toHaveAttribute(
+      "href",
+      "/agents-team",
+    );
   });
 });
 

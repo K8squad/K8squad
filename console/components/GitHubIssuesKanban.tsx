@@ -48,25 +48,58 @@ const FALLBACK_REPO_SLUG = "K8squad/K8squad";
 
 type ColumnKey = "backlog" | "todo" | "in-progress" | "done";
 
-const COLUMNS: ReadonlyArray<{ key: ColumnKey; label: string; hint: string }> = [
-  { key: "backlog", label: "Backlog", hint: "Open, not yet scheduled" },
-  { key: "todo", label: "To Do", hint: "Scheduled, ready to pick up" },
-  { key: "in-progress", label: "In Progress", hint: "Work underway" },
-  { key: "done", label: "Done", hint: "Closed issues" },
-];
+const COLUMNS: ReadonlyArray<{ key: ColumnKey; label: string; hint: string }> =
+  [
+    { key: "backlog", label: "Backlog", hint: "Open, not yet scheduled" },
+    { key: "todo", label: "To Do", hint: "Scheduled, ready to pick up" },
+    { key: "in-progress", label: "In Progress", hint: "Work underway" },
+    { key: "done", label: "Done", hint: "Closed issues" },
+  ];
 
-const IN_PROGRESS_RE = /(^|[^a-z])(in[\s-]?progress|in[\s-]?review|wip|doing)([^a-z]|$)/i;
-const TODO_RE = /(^|[^a-z])(to[\s-]?do|todo|ready|next|planned|triage)([^a-z]|$)/i;
-const BLOCKED_RE = /(^|[^a-z])(blocked|blocker|on[\s-]?hold|waiting)([^a-z]|$)/i;
+const IN_PROGRESS_RE =
+  /(^|[^a-z])(in[\s-]?progress|in[\s-]?review|wip|doing)([^a-z]|$)/i;
+const TODO_RE =
+  /(^|[^a-z])(to[\s-]?do|todo|ready|next|planned|triage)([^a-z]|$)/i;
+const BLOCKED_RE =
+  /(^|[^a-z])(blocked|blocker|on[\s-]?hold|waiting)([^a-z]|$)/i;
 
-type Priority = { rank: number; label: string; tone: "critical" | "high" | "medium" | "low" };
+type Priority = {
+  rank: number;
+  label: string;
+  tone: "critical" | "high" | "medium" | "low";
+};
 
 // Priority rules read ONLY the provider's label text; no labels ⇒ no priority.
-const PRIORITY_RULES: ReadonlyArray<{ re: RegExp; rank: number; label: string; tone: Priority["tone"] }> = [
-  { re: /(^|[^a-z])(p0|sev0|sev1|critical|urgent)([^a-z]|$)/i, rank: 0, label: "Critical", tone: "critical" },
-  { re: /(^|[^a-z])(p1|high)([^a-z]|$)/i, rank: 1, label: "High", tone: "high" },
-  { re: /(^|[^a-z])(p2|medium|normal)([^a-z]|$)/i, rank: 2, label: "Medium", tone: "medium" },
-  { re: /(^|[^a-z])(p3|p4|low|minor)([^a-z]|$)/i, rank: 3, label: "Low", tone: "low" },
+const PRIORITY_RULES: ReadonlyArray<{
+  re: RegExp;
+  rank: number;
+  label: string;
+  tone: Priority["tone"];
+}> = [
+  {
+    re: /(^|[^a-z])(p0|sev0|sev1|critical|urgent)([^a-z]|$)/i,
+    rank: 0,
+    label: "Critical",
+    tone: "critical",
+  },
+  {
+    re: /(^|[^a-z])(p1|high)([^a-z]|$)/i,
+    rank: 1,
+    label: "High",
+    tone: "high",
+  },
+  {
+    re: /(^|[^a-z])(p2|medium|normal)([^a-z]|$)/i,
+    rank: 2,
+    label: "Medium",
+    tone: "medium",
+  },
+  {
+    re: /(^|[^a-z])(p3|p4|low|minor)([^a-z]|$)/i,
+    rank: 3,
+    label: "Low",
+    tone: "low",
+  },
 ];
 
 function labelsOf(issue: GithubIssue): string[] {
@@ -110,7 +143,10 @@ function isPriorityLabel(label: string): boolean {
 
 /** LocalRunBadge is the clearly-LOCAL status chip (ISI-4760, Epic 4). Its tone
  * mirrors the work-item run state from the Epic 2 read contract (ISI-4757 §7). */
-export type LocalRunBadge = { label: string; tone: "running" | "queued" | "done" };
+export type LocalRunBadge = {
+  label: string;
+  tone: "running" | "queued" | "done";
+};
 
 /** localRunBadge derives the honest local overlay from `issue.local` — the
  * OPTIONAL bridge block the apiserver attaches only for a GitHub issue linked to
@@ -194,7 +230,9 @@ export function GitHubIssuesKanban({
   if (issues.length === 0) return null;
 
   const now = Date.now();
-  const grouped = new Map<ColumnKey, GithubIssue[]>(COLUMNS.map((c) => [c.key, []]));
+  const grouped = new Map<ColumnKey, GithubIssue[]>(
+    COLUMNS.map((c) => [c.key, []]),
+  );
   for (const issue of issues) grouped.get(columnFor(issue))!.push(issue);
 
   const open = issues.filter((i) => !isClosed(i)).length;
@@ -202,11 +240,15 @@ export function GitHubIssuesKanban({
   const inProgress = grouped.get("in-progress")?.length ?? 0;
   const prioritized = issues
     .map((issue) => ({ issue, priority: priorityFor(issue) }))
-    .filter((x): x is { issue: GithubIssue; priority: Priority } => x.priority !== null)
+    .filter(
+      (x): x is { issue: GithubIssue; priority: Priority } =>
+        x.priority !== null,
+    )
     .sort(
       (a, b) =>
         a.priority.rank - b.priority.rank ||
-        (Date.parse(b.issue.updatedAt ?? "") || 0) - (Date.parse(a.issue.updatedAt ?? "") || 0),
+        (Date.parse(b.issue.updatedAt ?? "") || 0) -
+          (Date.parse(a.issue.updatedAt ?? "") || 0),
     );
   const assignees = new Set(issues.flatMap((i) => i.assignees ?? []));
 
@@ -243,7 +285,10 @@ export function GitHubIssuesKanban({
       </header>
 
       {triageOpen && projectId && (
-        <IssueTriageDialog projectId={projectId} onClose={() => setTriageOpen(false)} />
+        <IssueTriageDialog
+          projectId={projectId}
+          onClose={() => setTriageOpen(false)}
+        />
       )}
 
       <ul className="gh-issues__stats" data-testid="gh-issues-stats">
@@ -284,11 +329,17 @@ export function GitHubIssuesKanban({
                   key={`pq-${issue.number}`}
                   className={[
                     `gh-priority-item gh-priority-item--${priority.tone}`,
-                    pqBadge && pqRun ? `gh-priority-item--treated gh-priority-item--treated-${pqRun}` : "",
-                  ].filter(Boolean).join(" ")}
+                    pqBadge && pqRun
+                      ? `gh-priority-item--treated gh-priority-item--treated-${pqRun}`
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                 >
                   <IssueLink issue={issue} />
-                  <span className={`gh-priority-badge gh-priority-badge--${priority.tone}`}>
+                  <span
+                    className={`gh-priority-badge gh-priority-badge--${priority.tone}`}
+                  >
                     {priority.label}
                   </span>
                   {pqBadge && pqRun ? (
@@ -299,9 +350,14 @@ export function GitHubIssuesKanban({
                       data-testid="gh-pq-local-run"
                       aria-label={`Local Paperclip status: ${pqBadge.label}`}
                     >
-                      <span className="gh-local-badge__icon" aria-hidden="true">{runStateIcon(pqRun)}</span>
+                      <span className="gh-local-badge__icon" aria-hidden="true">
+                        {runStateIcon(pqRun)}
+                      </span>
                       {pqRun === "running" && (
-                        <span className="gh-local-badge__pulse" aria-hidden="true" />
+                        <span
+                          className="gh-local-badge__pulse"
+                          aria-hidden="true"
+                        />
                       )}
                       {pqBadge.label}
                     </span>
@@ -332,7 +388,10 @@ export function GitHubIssuesKanban({
             >
               <header className="gh-kanban-col__head">
                 <span className="gh-kanban-col__name">{col.label}</span>
-                <span className="gh-kanban-col__count" data-testid={`gh-kanban-count-${col.key}`}>
+                <span
+                  className="gh-kanban-col__count"
+                  data-testid={`gh-kanban-count-${col.key}`}
+                >
                   {items.length}
                 </span>
               </header>
@@ -393,11 +452,16 @@ function IssueLink({ issue }: { issue: GithubIssue }) {
 
 /** runStateIcon returns the shape icon for the treated card status pill (ISI-5678).
  * Shape alone disambiguates without colour (WCAG 1.4.1 redundancy). */
-function runStateIcon(runState: NonNullable<GithubIssue["local"]>["runState"]): string {
+function runStateIcon(
+  runState: NonNullable<GithubIssue["local"]>["runState"],
+): string {
   switch (runState) {
-    case "running": return "▶";
-    case "todo":    return "◴";
-    case "done":    return "✓";
+    case "running":
+      return "▶";
+    case "todo":
+      return "◴";
+    case "done":
+      return "✓";
   }
 }
 
@@ -438,8 +502,12 @@ function IssueCard({
       className={[
         "gh-kanban-card gh-kanban-card--clickable",
         isBlocked(issue) ? "gh-kanban-card--blocked" : "",
-        treated && runState ? `gh-kanban-card--treated gh-kanban-card--treated-${runState}` : "",
-      ].filter(Boolean).join(" ")}
+        treated && runState
+          ? `gh-kanban-card--treated gh-kanban-card--treated-${runState}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
       data-testid="gh-issue-card"
       data-issue-number={issue.number}
       role="button"
@@ -455,11 +523,18 @@ function IssueCard({
     >
       {/* ① Left rail — runState hue bar (ISI-5678 channel 1). Absent on untreated cards. */}
       {treated && runState && (
-        <div className={`gh-kanban-card__rail gh-kanban-card__rail--${runState}`} aria-hidden="true" />
+        <div
+          className={`gh-kanban-card__rail gh-kanban-card__rail--${runState}`}
+          aria-hidden="true"
+        />
       )}
       {/* ④ "ksq" provenance marker — top-right (ISI-5678 channel 4). */}
       {treated && (
-        <span className="gh-issue-ksq-marker" aria-label="Paperclip-treated" data-testid="gh-issue-ksq-marker">
+        <span
+          className="gh-issue-ksq-marker"
+          aria-label="Paperclip-treated"
+          data-testid="gh-issue-ksq-marker"
+        >
           ksq
         </span>
       )}
@@ -478,7 +553,9 @@ function IssueCard({
             data-testid="gh-issue-local-run"
             aria-label={`Local Paperclip status: ${localBadge.label}`}
           >
-            <span className="gh-local-badge__icon" aria-hidden="true">{runStateIcon(runState)}</span>
+            <span className="gh-local-badge__icon" aria-hidden="true">
+              {runStateIcon(runState)}
+            </span>
             {runState === "running" && (
               <span className="gh-local-badge__pulse" aria-hidden="true" />
             )}
@@ -494,16 +571,25 @@ function IssueCard({
           </span>
         )}
         {isBlocked(issue) && (
-          <span className="gh-priority-badge gh-priority-badge--blocked" data-testid="gh-issue-blocked">
+          <span
+            className="gh-priority-badge gh-priority-badge--blocked"
+            data-testid="gh-issue-blocked"
+          >
             Blocked
           </span>
         )}
         {chips.slice(0, 4).map((label) => (
-          <span className="gh-label-chip" key={label} data-testid="gh-issue-label">
+          <span
+            className="gh-label-chip"
+            key={label}
+            data-testid="gh-issue-label"
+          >
             {label}
           </span>
         ))}
-        {chips.length > 4 && <span className="gh-label-chip muted">+{chips.length - 4}</span>}
+        {chips.length > 4 && (
+          <span className="gh-label-chip muted">+{chips.length - 4}</span>
+        )}
       </div>
       <div className="gh-kanban-card__meta">
         {/* ③ Agent avatar monogram (ISI-5678 channel 3). Shown on treated cards;
@@ -516,7 +602,9 @@ function IssueCard({
             data-testid="gh-issue-avatar"
             title={`${agentName} — our team`}
           >
-            <span className="gh-issue-avatar__mono" aria-hidden="true">{agentMonogram}</span>
+            <span className="gh-issue-avatar__mono" aria-hidden="true">
+              {agentMonogram}
+            </span>
             <span className="gh-issue-avatar__name">{agentName}</span>
             <span className="gh-issue-avatar__team muted">our team</span>
           </span>
@@ -525,11 +613,16 @@ function IssueCard({
             className={`gh-issue-assignee${issue.assignees?.length ? "" : " muted"}`}
             data-testid="gh-issue-assignee"
           >
-            {issue.assignees?.length ? issue.assignees.join(", ") : "Unassigned"}
+            {issue.assignees?.length
+              ? issue.assignees.join(", ")
+              : "Unassigned"}
           </span>
         )}
         {updated && (
-          <span className="muted gh-issue-updated" data-testid="gh-issue-updated">
+          <span
+            className="muted gh-issue-updated"
+            data-testid="gh-issue-updated"
+          >
             {updated}
           </span>
         )}
@@ -620,7 +713,10 @@ function GitHubIssuePopup({
               control. Rendered only with a project context — the bridge is
               project-scoped, so without a projectId the slot stays empty rather
               than showing a non-functional (fabricated) affordance (ADR-0013). */}
-          <div className="gh-issue-popup__assign" data-testid="gh-issue-assign-slot">
+          <div
+            className="gh-issue-popup__assign"
+            data-testid="gh-issue-assign-slot"
+          >
             {projectId && (
               <AssignAndDispatch
                 projectId={projectId}
@@ -706,7 +802,9 @@ function AssignAndDispatch({
     let alive = true;
     void listSquadAgents().then((agents) => {
       if (!alive) return;
-      setRoster(agents.length > 0 ? { kind: "ready", agents } : { kind: "empty" });
+      setRoster(
+        agents.length > 0 ? { kind: "ready", agents } : { kind: "empty" },
+      );
     });
     return () => {
       alive = false;
@@ -747,7 +845,9 @@ function AssignAndDispatch({
         }}
       >
         {roster.kind === "loading" && <option value="">Loading agents…</option>}
-        {roster.kind === "empty" && <option value="">No agents available</option>}
+        {roster.kind === "empty" && (
+          <option value="">No agents available</option>
+        )}
         {roster.kind === "ready" && (
           <>
             <option value="">Select an agent…</option>
@@ -771,7 +871,11 @@ function AssignAndDispatch({
       </button>
 
       {error && (
-        <p className="gh-issue-assign__error" role="alert" data-testid="gh-issue-assign-error">
+        <p
+          className="gh-issue-assign__error"
+          role="alert"
+          data-testid="gh-issue-assign-error"
+        >
           {error}
         </p>
       )}

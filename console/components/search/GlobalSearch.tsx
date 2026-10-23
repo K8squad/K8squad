@@ -34,7 +34,11 @@ type Status = "idle" | "loading" | "ok" | "error";
 
 export interface GlobalSearchProps {
   /** Data loader (BFF GET /api/search). Injectable for tests; defaults to the real fetch. */
-  search?: (q: string, limit?: number, signal?: AbortSignal) => Promise<SearchResponse>;
+  search?: (
+    q: string,
+    limit?: number,
+    signal?: AbortSignal,
+  ) => Promise<SearchResponse>;
 }
 
 function isEditableTarget(el: EventTarget | null): boolean {
@@ -77,7 +81,8 @@ export function GlobalSearch({ search = fetchSearch }: GlobalSearchProps) {
         setActive(-1);
         setStatus("ok");
       } catch (err) {
-        if (controller.signal.aborted || (err as Error)?.name === "AbortError") return;
+        if (controller.signal.aborted || (err as Error)?.name === "AbortError")
+          return;
         setResults([]);
         setStatus("error");
       }
@@ -207,15 +212,24 @@ export function GlobalSearch({ search = fetchSearch }: GlobalSearchProps) {
       {showPanel && (
         <div className="gsearch__panel" data-testid="global-search-panel">
           {status === "loading" ? (
-            <p className="gsearch__state muted" data-testid="global-search-loading">
+            <p
+              className="gsearch__state muted"
+              data-testid="global-search-loading"
+            >
               Searching…
             </p>
           ) : status === "error" ? (
-            <p className="gsearch__state gsearch__state--error" data-testid="global-search-error">
+            <p
+              className="gsearch__state gsearch__state--error"
+              data-testid="global-search-error"
+            >
               Search is unavailable right now.
             </p>
           ) : results.length === 0 ? (
-            <p className="gsearch__state muted" data-testid="global-search-empty">
+            <p
+              className="gsearch__state muted"
+              data-testid="global-search-empty"
+            >
               No matches.
             </p>
           ) : (
@@ -254,16 +268,22 @@ export function GlobalSearch({ search = fetchSearch }: GlobalSearchProps) {
                         <span
                           className="gsearch__title"
                           // sanitizeSnippet escapes all html and re-admits ONLY <mark>.
-                          dangerouslySetInnerHTML={{ __html: sanitizeSnippet(r.title) }}
+                          dangerouslySetInnerHTML={{
+                            __html: sanitizeSnippet(r.title),
+                          }}
                         />
-                        <span className={`gsearch__badge gsearch__badge--${badge.tone}`}>
+                        <span
+                          className={`gsearch__badge gsearch__badge--${badge.tone}`}
+                        >
                           {badge.label}
                         </span>
                       </span>
                       {r.snippet && (
                         <span
                           className="gsearch__snippet muted"
-                          dangerouslySetInnerHTML={{ __html: sanitizeSnippet(r.snippet) }}
+                          dangerouslySetInnerHTML={{
+                            __html: sanitizeSnippet(r.snippet),
+                          }}
                         />
                       )}
                     </a>

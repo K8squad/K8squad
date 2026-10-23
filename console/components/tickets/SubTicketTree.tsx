@@ -99,7 +99,11 @@ export function TicketNode({
       style={{ ["--tree-indent-depth" as string]: indentDepth }}
     >
       {beyondCap && (
-        <span aria-hidden="true" className="ksq-tree-continue" title="Continued child (indent capped)">
+        <span
+          aria-hidden="true"
+          className="ksq-tree-continue"
+          title="Continued child (indent capped)"
+        >
           ↳
         </span>
       )}
@@ -164,7 +168,9 @@ export function SubTicketChildren({
 export function useTreeKeyboardNav() {
   return useCallback((evt: React.KeyboardEvent<HTMLDivElement>) => {
     const carets = Array.from(
-      evt.currentTarget.querySelectorAll<HTMLButtonElement>("[data-tree-caret]"),
+      evt.currentTarget.querySelectorAll<HTMLButtonElement>(
+        "[data-tree-caret]",
+      ),
     );
     if (carets.length === 0) return;
     const current = carets.indexOf(document.activeElement as HTMLButtonElement);
@@ -185,7 +191,8 @@ export function useTreeKeyboardNav() {
       case "ArrowLeft": {
         if (current >= 0) {
           const wantExpanded = evt.key === "ArrowRight";
-          const isExpanded = carets[current].getAttribute("aria-expanded") === "true";
+          const isExpanded =
+            carets[current].getAttribute("aria-expanded") === "true";
           if (isExpanded !== wantExpanded) carets[current].click();
           evt.preventDefault();
         }

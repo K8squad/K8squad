@@ -96,7 +96,9 @@ describe("vibe default (ISI-6158 C2) — curated first, never a constraint", () 
 
   it("resolves the mistral provider token for the same-provider fallback warning", () => {
     expect(modelProvider("mistral-large-latest")).toBe("mistral");
-    expect(sameProvider("mistral-large-latest", "mistral-medium-latest")).toBe(true);
+    expect(sameProvider("mistral-large-latest", "mistral-medium-latest")).toBe(
+      true,
+    );
     expect(sameProvider("mistral-large-latest", "claude-opus-4-8")).toBe(false);
   });
 });

@@ -4,3 +4,7 @@ package-lock.json
 test-results
 playwright-report
 coverage
+# Byte-exact cross-tree contract fixture: internal/apiserver/workitemstate_contract_test.go
+# POSTs these exact bytes and console test/tickets/api.test.ts asserts string equality —
+# do NOT let formatters restyle it.
+test/tickets/fixtures/state-transition-request.json

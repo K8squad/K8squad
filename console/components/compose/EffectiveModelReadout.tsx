@@ -23,7 +23,10 @@ interface EffectiveModelReadoutProps {
   team?: string;
 }
 
-export function EffectiveModelReadout({ agentName, team }: EffectiveModelReadoutProps) {
+export function EffectiveModelReadout({
+  agentName,
+  team,
+}: EffectiveModelReadoutProps) {
   const { data, loading, notFound, error } = useEffectiveModel(agentName, team);
 
   // Create mode (no persisted agent) or existence-hiding 404: nothing to resolve —
@@ -32,7 +35,10 @@ export function EffectiveModelReadout({ agentName, team }: EffectiveModelReadout
 
   if (loading) {
     return (
-      <div className="effective-model effective-model--loading" aria-busy="true">
+      <div
+        className="effective-model effective-model--loading"
+        aria-busy="true"
+      >
         <span className="effective-model__label">Effective model</span>
         <span className="effective-model__hint">Resolving…</span>
       </div>
@@ -45,7 +51,9 @@ export function EffectiveModelReadout({ agentName, team }: EffectiveModelReadout
     return (
       <div className="effective-model" role="status">
         <span className="effective-model__label">Effective model</span>
-        <span className="effective-model__hint">Couldn’t resolve the effective model right now.</span>
+        <span className="effective-model__hint">
+          Couldn’t resolve the effective model right now.
+        </span>
       </div>
     );
   }
@@ -54,11 +62,14 @@ export function EffectiveModelReadout({ agentName, team }: EffectiveModelReadout
   // the model is genuinely unset at every tier until an admin sets the org default.
   if (data.unresolved) {
     return (
-      <div className="effective-model effective-model--unresolved" role="status">
+      <div
+        className="effective-model effective-model--unresolved"
+        role="status"
+      >
         <span className="effective-model__label">Effective model</span>
         <p className="effective-model__warn">
-          No effective model — the org default is unset. The platform can’t resolve a model until an
-          admin sets it (Settings → Configuration).
+          No effective model — the org default is unset. The platform can’t
+          resolve a model until an admin sets it (Settings → Configuration).
         </p>
       </div>
     );

@@ -25,7 +25,11 @@ export function AgentForm({
   effectiveModelTeam,
 }: AgentFormProps) {
   const nameField = (
-    <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+    <Field
+      label="Name"
+      hint="DNS-1123 label (lowercase, digits, '-')"
+      error={errors["name"]}
+    >
       <input
         value={cf.form.name}
         onChange={(e) => patch({ name: e.target.value })}
@@ -37,7 +41,11 @@ export function AgentForm({
 
   return (
     <div className="compose__grid">
-      <Field label="Project" hint="the squad this Agent composes within" error={errors["project"]}>
+      <Field
+        label="Project"
+        hint="the squad this Agent composes within"
+        error={errors["project"]}
+      >
         <input
           value={cf.form.project}
           onChange={(e) => patch({ project: e.target.value })}
@@ -69,8 +77,15 @@ export function AgentForm({
         errors={errors}
         patch={patch}
       />
-      <EffectiveModelReadout agentName={effectiveModelName} team={effectiveModelTeam} />
-      <Field label="Credential Secret ref" hint="name or name/key" error={errors["credentialSecretRef.name"]}>
+      <EffectiveModelReadout
+        agentName={effectiveModelName}
+        team={effectiveModelTeam}
+      />
+      <Field
+        label="Credential Secret ref"
+        hint="name or name/key"
+        error={errors["credentialSecretRef.name"]}
+      >
         <input
           value={cf.form.credentialSecretRef}
           onChange={(e) => patch({ credentialSecretRef: e.target.value })}
@@ -93,7 +108,10 @@ export function AgentForm({
           <option value="human-seat">Human seat (interactive OAuth)</option>
         </select>
       </Field>
-      <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">
+      <Field
+        label="Skill refs"
+        hint="optional — one name (or namespace/name) per line"
+      >
         <textarea
           rows={3}
           value={cf.form.skillRefs}

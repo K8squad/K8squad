@@ -49,9 +49,9 @@ describe("dispatchTargets", () => {
     // No @-mention + party + human author ⇒ the backend broadcasts to every
     // dispatchable roster agent (paused/blocked skipped), so the affordance must
     // show a working row for each. Default author is human.
-    expect(dispatchTargets("just a note to the room", undefined, ROSTER)).toEqual(
-      ["john", "bmad-pm"],
-    );
+    expect(
+      dispatchTargets("just a note to the room", undefined, ROSTER),
+    ).toEqual(["john", "bmad-pm"]);
   });
 
   it("an AGENT bare-party post dispatches nobody (loop-safety)", () => {
@@ -63,9 +63,9 @@ describe("dispatchTargets", () => {
   });
 
   it("skips paused and blocked agents (opt-out guardrail)", () => {
-    expect(
-      dispatchTargets("@napping @stuck @john", undefined, ROSTER),
-    ).toEqual(["john"]);
+    expect(dispatchTargets("@napping @stuck @john", undefined, ROSTER)).toEqual(
+      ["john"],
+    );
   });
 
   it("matches case-insensitively", () => {
@@ -93,9 +93,9 @@ describe("dispatchTargets", () => {
   });
 
   it("a direct post dispatches ONLY the target, ignoring body mentions", () => {
-    expect(
-      dispatchTargets("@bmad-pm too", "direct:john", ROSTER),
-    ).toEqual(["john"]);
+    expect(dispatchTargets("@bmad-pm too", "direct:john", ROSTER)).toEqual([
+      "john",
+    ]);
   });
 
   it("a direct post to a paused agent dispatches nobody", () => {
@@ -120,9 +120,9 @@ describe("dispatchTargets", () => {
     }));
     // No @-mention ⇒ broadcast; the whole 30-agent roster is dispatchable but
     // the broadcast cap bounds the affordance at 25.
-    expect(dispatchTargets("what does everyone think?", undefined, big)).toHaveLength(
-      25,
-    );
+    expect(
+      dispatchTargets("what does everyone think?", undefined, big),
+    ).toHaveLength(25);
   });
 
   it("broadcast skips paused/blocked agents (opt-out holds on the broadcast path)", () => {
@@ -135,7 +135,9 @@ describe("dispatchTargets", () => {
   it("an explicit @-mention still targets only mentioned agents, not a broadcast", () => {
     // A party post that DOES @-mention stays on the mention path (cap 5), never
     // falling through to the whole-room broadcast.
-    expect(dispatchTargets("@john only you", undefined, ROSTER)).toEqual(["john"]);
+    expect(dispatchTargets("@john only you", undefined, ROSTER)).toEqual([
+      "john",
+    ]);
   });
 });
 
@@ -174,9 +176,9 @@ describe("seedWatches", () => {
   });
 
   it("no agents ⇒ no watches added", () => {
-    expect(seedWatches([], { messageId: "m1", agentNames: [], now: 1 })).toEqual(
-      [],
-    );
+    expect(
+      seedWatches([], { messageId: "m1", agentNames: [], now: 1 }),
+    ).toEqual([]);
   });
 });
 
@@ -186,8 +188,20 @@ describe("seedWatches", () => {
 
 describe("applyReply", () => {
   const base: DispatchWatch[] = [
-    { key: watchKey("m1", "john"), agentName: "john", messageId: "m1", phase: "working", since: 0 },
-    { key: watchKey("m1", "bmad-pm"), agentName: "bmad-pm", messageId: "m1", phase: "working", since: 0 },
+    {
+      key: watchKey("m1", "john"),
+      agentName: "john",
+      messageId: "m1",
+      phase: "working",
+      since: 0,
+    },
+    {
+      key: watchKey("m1", "bmad-pm"),
+      agentName: "bmad-pm",
+      messageId: "m1",
+      phase: "working",
+      since: 0,
+    },
   ];
 
   it("resolves by author principal (case-insensitive)", () => {
@@ -226,7 +240,13 @@ describe("applyReply", () => {
 
 describe("expireStale", () => {
   const w: DispatchWatch[] = [
-    { key: "k1", agentName: "john", messageId: "m1", phase: "working", since: 0 },
+    {
+      key: "k1",
+      agentName: "john",
+      messageId: "m1",
+      phase: "working",
+      since: 0,
+    },
   ];
 
   it("marks a stale working watch failed once the timeout elapses", () => {
@@ -259,12 +279,24 @@ describe("groupByMessage / hasActiveWork", () => {
     expect(hasActiveWork([])).toBe(false);
     expect(
       hasActiveWork([
-        { key: "a", agentName: "x", messageId: "m", phase: "replied", since: 0 },
+        {
+          key: "a",
+          agentName: "x",
+          messageId: "m",
+          phase: "replied",
+          since: 0,
+        },
       ]),
     ).toBe(false);
     expect(
       hasActiveWork([
-        { key: "a", agentName: "x", messageId: "m", phase: "working", since: 0 },
+        {
+          key: "a",
+          agentName: "x",
+          messageId: "m",
+          phase: "working",
+          since: 0,
+        },
       ]),
     ).toBe(true);
   });

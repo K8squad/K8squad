@@ -10,7 +10,9 @@ const ORIGIN = "https://console.local";
 describe("sanitizeNext — post-login open-redirect guard", () => {
   it("keeps a plain root-relative path", () => {
     expect(sanitizeNext("/overview", ORIGIN)).toBe("/overview");
-    expect(sanitizeNext("/projects/p1?tab=runs#top", ORIGIN)).toBe("/projects/p1?tab=runs#top");
+    expect(sanitizeNext("/projects/p1?tab=runs#top", ORIGIN)).toBe(
+      "/projects/p1?tab=runs#top",
+    );
   });
 
   it("defaults to / when next is absent", () => {

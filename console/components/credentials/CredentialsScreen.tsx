@@ -46,7 +46,10 @@ export interface CredentialsScreenProps {
   /** BYO-key create action (BFF POST /api/credentials). Injectable for tests. */
   create?: (body: Record<string, string>) => Promise<Response>;
   /** Test-connection probe (BFF POST /api/credentials/{name}/test). Injectable for tests. */
-  test?: (name: string, body: { runtime: string; teamId?: string }) => Promise<Response>;
+  test?: (
+    name: string,
+    body: { runtime: string; teamId?: string },
+  ) => Promise<Response>;
   /** Clock for deterministic expiry derivations in tests. */
   now?: () => Date;
 }
@@ -98,7 +101,9 @@ export function CredentialsScreen({
             try {
               const tRes = await loadTeams();
               if (tRes.status >= 200 && tRes.status < 300) {
-                const tBody = (await tRes.json().catch(() => ({}))) as CredentialTeamList;
+                const tBody = (await tRes
+                  .json()
+                  .catch(() => ({}))) as CredentialTeamList;
                 const list = (tBody?.teams ?? []).filter(
                   (t): t is CredentialTeamOption => !!t,
                 );
@@ -114,7 +119,9 @@ export function CredentialsScreen({
             return;
           }
           setState(
-            classifyCredentialsStatus(res.status) === "not-found" ? "not-found" : "error",
+            classifyCredentialsStatus(res.status) === "not-found"
+              ? "not-found"
+              : "error",
           );
         })
         .catch(() => setState("error"));
@@ -167,7 +174,8 @@ export function CredentialsScreen({
         <div>
           <h1>Credentials &amp; auth state</h1>
           <p className="muted">
-            Per-agent BYO subscription tokens — KSquad holds no master credential
+            Per-agent BYO subscription tokens — KSquad holds no master
+            credential
           </p>
         </div>
         <div className="creds__connect">
@@ -182,15 +190,20 @@ export function CredentialsScreen({
             Connect Claude — pending board approval
           </button>
           <span className="creds__connect-hint muted">
-            Zero-touch OAuth (requires OAuth) is pending a board Terms-of-Service decision
-            (ISI-3661) — no ETA. Use “Add a credential” below to bring your own key and connect
-            now. No CLI is shipped yet.
+            Zero-touch OAuth (requires OAuth) is pending a board
+            Terms-of-Service decision (ISI-3661) — no ETA. Use “Add a
+            credential” below to bring your own key and connect now. No CLI is
+            shipped yet.
           </span>
         </div>
       </header>
 
       {hold && (
-        <div className="creds__banner" data-testid="paused-banner" data-tone="bad">
+        <div
+          className="creds__banner"
+          data-testid="paused-banner"
+          data-tone="bad"
+        >
           <span className="creds__banner-icon" aria-hidden>
             !
           </span>
@@ -226,7 +239,11 @@ export function CredentialsScreen({
         </div>
       )}
 
-      {state === "loading" && <p className="muted" data-testid="creds-loading">Loading credential state…</p>}
+      {state === "loading" && (
+        <p className="muted" data-testid="creds-loading">
+          Loading credential state…
+        </p>
+      )}
 
       {state === "unconfigured" && (
         <EmptyState
@@ -297,7 +314,11 @@ export function CredentialsScreen({
               {rows.map((row) => {
                 const badge = healthBadge(row, clock());
                 return (
-                  <tr key={row.agent} data-agent={row.agent} data-health={row.health}>
+                  <tr
+                    key={row.agent}
+                    data-agent={row.agent}
+                    data-health={row.health}
+                  >
                     <td className="creds__agent">{row.agent}</td>
                     <td>{row.runtime}</td>
                     <td>
@@ -306,7 +327,10 @@ export function CredentialsScreen({
                     <td>{tokenTypeLabel(row)}</td>
                     <td>{expiryLabel(row, clock())}</td>
                     <td>
-                      <span className={`creds__badge creds__badge--${badge.tone}`} data-testid="health-badge">
+                      <span
+                        className={`creds__badge creds__badge--${badge.tone}`}
+                        data-testid="health-badge"
+                      >
                         {badge.label}
                       </span>
                     </td>
@@ -320,7 +344,9 @@ export function CredentialsScreen({
                           #{pr.name}
                         </a>
                       ))}
-                      {!(row.pausedRuns ?? []).length && <span className="muted">idle</span>}
+                      {!(row.pausedRuns ?? []).length && (
+                        <span className="muted">idle</span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -373,7 +399,8 @@ function TeamPicker({
       </select>
       {prompt && selected === "" && (
         <p className="muted" data-testid="creds-team-prompt">
-          You administer more than one squad — pick a team to view and add its credentials.
+          You administer more than one squad — pick a team to view and add its
+          credentials.
         </p>
       )}
     </div>
@@ -390,7 +417,10 @@ function CreateCredentialForm({
   onCreated,
 }: {
   create: (body: Record<string, string>) => Promise<Response>;
-  test: (name: string, body: { runtime: string; teamId?: string }) => Promise<Response>;
+  test: (
+    name: string,
+    body: { runtime: string; teamId?: string },
+  ) => Promise<Response>;
   teamId: string;
   teamReady: boolean;
   onCreated: () => void;
@@ -399,9 +429,17 @@ function CreateCredentialForm({
   const [runtime, setRuntime] = useState(CREATE_RUNTIME_OPTIONS[0].value);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
-  const [created, setCreated] = useState<{ name: string; runtime: string } | null>(null);
-  const [testMsg, setTestMsg] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
+  const [msg, setMsg] = useState<{ tone: "ok" | "bad"; text: string } | null>(
+    null,
+  );
+  const [created, setCreated] = useState<{
+    name: string;
+    runtime: string;
+  } | null>(null);
+  const [testMsg, setTestMsg] = useState<{
+    tone: "ok" | "bad";
+    text: string;
+  } | null>(null);
   const [testBusy, setTestBusy] = useState(false);
 
   const onSubmit = useCallback(
@@ -416,7 +454,9 @@ function CreateCredentialForm({
       }
       setBusy(true);
       try {
-        const res = await create(credentialCreateBody({ name, runtime, value, teamId }));
+        const res = await create(
+          credentialCreateBody({ name, runtime, value, teamId }),
+        );
         const outcome = classifyCreateStatus(res.status);
         if (outcome === "created") {
           const body = await res.json().catch(() => ({}));
@@ -432,7 +472,10 @@ function CreateCredentialForm({
           setMsg({ tone: "bad", text: await createErrorText(outcome, res) });
         }
       } catch {
-        setMsg({ tone: "bad", text: "The credential store is unreachable — try again." });
+        setMsg({
+          tone: "bad",
+          text: "The credential store is unreachable — try again.",
+        });
       } finally {
         setBusy(false);
       }
@@ -455,27 +498,44 @@ function CreateCredentialForm({
         const detail = typeof body?.detail === "string" ? body.detail : "";
         setTestMsg({
           tone: ok ? "ok" : "bad",
-          text: ok ? `Connected${detail ? ` — ${detail}` : ""}` : detail || "The endpoint declined the credential.",
+          text: ok
+            ? `Connected${detail ? ` — ${detail}` : ""}`
+            : detail || "The endpoint declined the credential.",
         });
       } else if (res.status === 501) {
-        setTestMsg({ tone: "bad", text: "This credential type can't be tested yet." });
+        setTestMsg({
+          tone: "bad",
+          text: "This credential type can't be tested yet.",
+        });
       } else {
-        setTestMsg({ tone: "bad", text: "Couldn't reach the test probe — try again." });
+        setTestMsg({
+          tone: "bad",
+          text: "Couldn't reach the test probe — try again.",
+        });
       }
     } catch {
-      setTestMsg({ tone: "bad", text: "Couldn't reach the test probe — try again." });
+      setTestMsg({
+        tone: "bad",
+        text: "Couldn't reach the test probe — try again.",
+      });
     } finally {
       setTestBusy(false);
     }
   }, [created, test, teamId]);
 
   return (
-    <form id="creds-add" className="creds__form" data-testid="creds-create-form" onSubmit={onSubmit}>
+    <form
+      id="creds-add"
+      className="creds__form"
+      data-testid="creds-create-form"
+      onSubmit={onSubmit}
+    >
       <h2 className="creds__form-title">Add a credential</h2>
       <p className="muted creds__form-lede">
-        Bring your own provider key — the v1 path. KSquad stores it as a per-team Kubernetes Secret
-        and never shows it back. Zero-touch OAuth (Connect Claude) is pending a board
-        Terms-of-Service decision (ISI-3661) — no ETA.
+        Bring your own provider key — the v1 path. KSquad stores it as a
+        per-team Kubernetes Secret and never shows it back. Zero-touch OAuth
+        (Connect Claude) is pending a board Terms-of-Service decision (ISI-3661)
+        — no ETA.
       </p>
       <div className="creds__form-grid">
         <label className="creds__field">
@@ -585,7 +645,10 @@ async function createErrorText(
       const fields = Array.isArray(body?.fields) ? body.fields : [];
       if (fields.length) {
         return fields
-          .map((f: { field?: string; message?: string }) => `${f.field ?? "field"}: ${f.message ?? "invalid"}`)
+          .map(
+            (f: { field?: string; message?: string }) =>
+              `${f.field ?? "field"}: ${f.message ?? "invalid"}`,
+          )
           .join("; ");
       }
       return "The credential was rejected — check the name, runtime, and key.";
@@ -601,7 +664,10 @@ async function defaultLoad(teamId?: string): Promise<Response> {
 }
 
 async function defaultLoadTeams(): Promise<Response> {
-  return fetch("/api/squad/teams", { headers: { accept: "application/json" }, cache: "no-store" });
+  return fetch("/api/squad/teams", {
+    headers: { accept: "application/json" },
+    cache: "no-store",
+  });
 }
 
 async function defaultCreate(body: Record<string, string>): Promise<Response> {

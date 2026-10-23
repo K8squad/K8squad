@@ -14,7 +14,10 @@ export function isTicketsView(v: string | null | undefined): v is TicketsView {
 }
 
 /** Resolve the initial view: `?view=` param first, then localStorage, else Kanban. */
-export function resolveInitialView(search: string, storage: Storage | null): TicketsView {
+export function resolveInitialView(
+  search: string,
+  storage: Storage | null,
+): TicketsView {
   const fromUrl = new URLSearchParams(search).get("view");
   if (isTicketsView(fromUrl)) return fromUrl;
   try {

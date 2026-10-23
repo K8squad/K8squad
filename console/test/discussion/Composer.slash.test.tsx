@@ -109,9 +109,9 @@ describe("<Composer> — /reset slash command", () => {
   });
 
   it("does not disturb the @-mention popover for ordinary mention text", async () => {
-    const searchMentions = vi.fn().mockResolvedValue([
-      { type: "agent", id: "a1", displayName: "Amelia" },
-    ]);
+    const searchMentions = vi
+      .fn()
+      .mockResolvedValue([{ type: "agent", id: "a1", displayName: "Amelia" }]);
     render(
       <Composer
         onPost={vi.fn()}

@@ -32,7 +32,10 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (!upstream.ok) {
     return new Response(JSON.stringify({ projects: [] }), {
       status: 200,
-      headers: { "content-type": "application/json", "cache-control": "no-store" },
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      },
     });
   }
   const body = (await upstream.json()) as OverviewWire;
@@ -42,6 +45,9 @@ export async function GET(req: NextRequest): Promise<Response> {
   }));
   return new Response(JSON.stringify({ projects }), {
     status: 200,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
   });
 }

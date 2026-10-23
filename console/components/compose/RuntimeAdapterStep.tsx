@@ -34,7 +34,11 @@
 // with no rework. S1 is the first consumer.
 
 import type { CSSProperties, ReactNode } from "react";
-import { RUNTIME_ADAPTERS, RUNTIME_ADAPTER_LABELS, type RuntimeAdapter } from "@/lib/compose";
+import {
+  RUNTIME_ADAPTERS,
+  RUNTIME_ADAPTER_LABELS,
+  type RuntimeAdapter,
+} from "@/lib/compose";
 
 /**
  * Accent hue per adapter. The original three reuse the LOCKED status hues (zero new
@@ -74,8 +78,15 @@ export function RuntimeAdapterStep({
 }) {
   const tint = ADAPTER_TINT[adapter];
   return (
-    <div className="runtime-adapter" style={{ "--adapter-accent": tint } as CSSProperties}>
-      <div className="runtime-adapter__tabs" role="radiogroup" aria-label="Runtime adapter">
+    <div
+      className="runtime-adapter"
+      style={{ "--adapter-accent": tint } as CSSProperties}
+    >
+      <div
+        className="runtime-adapter__tabs"
+        role="radiogroup"
+        aria-label="Runtime adapter"
+      >
         {RUNTIME_ADAPTERS.map((a) => (
           <button
             key={a}
@@ -91,7 +102,12 @@ export function RuntimeAdapterStep({
         ))}
       </div>
 
-      <div className="runtime-adapter__cred" data-adapter={adapter} role="group" aria-label={`${RUNTIME_ADAPTER_LABELS[adapter]} credentials`}>
+      <div
+        className="runtime-adapter__cred"
+        data-adapter={adapter}
+        role="group"
+        aria-label={`${RUNTIME_ADAPTER_LABELS[adapter]} credentials`}
+      >
         {adapter === "claude" && (
           <>
             <button
@@ -101,33 +117,37 @@ export function RuntimeAdapterStep({
               aria-disabled="true"
               data-testid="claude-oauth-cta"
             >
-              Sign in with Claude <span className="chip chip--soon">coming soon</span>
+              Sign in with Claude{" "}
+              <span className="chip chip--soon">coming soon</span>
             </button>
             <p className="muted">
-              Claude uses your API token in v1 — pick a curated Anthropic model below. One-click
-              &ldquo;Sign in with Claude&rdquo; (OAuth) is coming soon.
+              Claude uses your API token in v1 — pick a curated Anthropic model
+              below. One-click &ldquo;Sign in with Claude&rdquo; (OAuth) is
+              coming soon.
             </p>
           </>
         )}
         {adapter === "codex" && (
           <p className="muted">
-            Codex uses your API token — pick a curated model below. Live model listing isn&apos;t
-            available for this adapter.
+            Codex uses your API token — pick a curated model below. Live model
+            listing isn&apos;t available for this adapter.
           </p>
         )}
         {adapter === "opencode" &&
           (opencodeSlot ?? (
             <p className="muted" data-testid="opencode-manual-note">
-              OpenCode reaches your provider through a Bring-your-own endpoint (URL + token) — set the
-              endpoint Secret below and enter the model id directly. Fetching the provider&apos;s model
-              list is coming soon; until then, manual entry always works.
+              OpenCode reaches your provider through a Bring-your-own endpoint
+              (URL + token) — set the endpoint Secret below and enter the model
+              id directly. Fetching the provider&apos;s model list is coming
+              soon; until then, manual entry always works.
             </p>
           ))}
         {adapter === "vibe" &&
           (vibeSlot ?? (
             <p className="muted" data-testid="vibe-manual-note">
-              Vibe runs on a Mistral API key with an optional custom base URL. Configure the Mistral
-              endpoint under Settings → LLM (Vibe tab), then pick a model below.
+              Vibe runs on a Mistral API key with an optional custom base URL.
+              Configure the Mistral endpoint under Settings → LLM (Vibe tab),
+              then pick a model below.
             </p>
           ))}
         {adapter === "goose" && (
@@ -139,11 +159,13 @@ export function RuntimeAdapterStep({
               aria-disabled="true"
               data-testid="goose-preview-cta"
             >
-              Configure Goose runtime <span className="chip chip--soon">coming soon</span>
+              Configure Goose runtime{" "}
+              <span className="chip chip--soon">coming soon</span>
             </button>
             <p className="muted" data-testid="goose-preview-note">
-              Goose is in preview — its mesh adapter isn&apos;t wired up yet. It will reuse your
-              Mistral credentials once enabled (ISI-6382); pick a model below in the meantime.
+              Goose is in preview — its mesh adapter isn&apos;t wired up yet. It
+              will reuse your Mistral credentials once enabled (ISI-6382); pick
+              a model below in the meantime.
             </p>
           </>
         )}

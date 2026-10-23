@@ -120,7 +120,9 @@ export function Markdown({ children, className, testId }: Props) {
 
             const html = highlightCode(src.replace(/\n$/, ""), lang);
             return (
-              <pre className={`ksq-markdown__pre${lang ? ` language-${lang}` : ""}`}>
+              <pre
+                className={`ksq-markdown__pre${lang ? ` language-${lang}` : ""}`}
+              >
                 <code
                   className={cls}
                   dangerouslySetInnerHTML={{ __html: html }}
@@ -148,8 +150,5 @@ function highlightCode(source: string, language: string | null): string {
 }
 
 function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

@@ -46,9 +46,7 @@ describe("audienceWire — the minimal-wire projection", () => {
     expect(audienceWire("party")).toBeUndefined();
   });
   it("a direct audience emits its token", () => {
-    expect(audienceWire({ kind: "direct", agentId: "a-1" })).toBe(
-      "direct:a-1",
-    );
+    expect(audienceWire({ kind: "direct", agentId: "a-1" })).toBe("direct:a-1");
   });
   it("round-trips an already-built token (buildPostBody is idempotent)", () => {
     const once = audienceWire({ kind: "direct", agentId: "a-1" });

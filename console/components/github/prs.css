@@ -29,10 +29,18 @@
   border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--surface) 70%, #000 6%);
 }
-.gh-pr-flow__node--blue { border-left-color: var(--accent); }
-.gh-pr-flow__node--amber { border-left-color: var(--status-paused); }
-.gh-pr-flow__node--green { border-left-color: var(--gh-green); }
-.gh-pr-flow__node--red { border-left-color: var(--status-blocked); }
+.gh-pr-flow__node--blue {
+  border-left-color: var(--accent);
+}
+.gh-pr-flow__node--amber {
+  border-left-color: var(--status-paused);
+}
+.gh-pr-flow__node--green {
+  border-left-color: var(--gh-green);
+}
+.gh-pr-flow__node--red {
+  border-left-color: var(--status-blocked);
+}
 
 .gh-pr-flow__count {
   font-size: 1.5rem;
@@ -41,10 +49,18 @@
   font-variant-numeric: tabular-nums;
   color: var(--text-hi);
 }
-.gh-pr-flow__node--blue .gh-pr-flow__count { color: var(--accent); }
-.gh-pr-flow__node--amber .gh-pr-flow__count { color: var(--status-paused); }
-.gh-pr-flow__node--green .gh-pr-flow__count { color: var(--gh-green); }
-.gh-pr-flow__node--red .gh-pr-flow__count { color: var(--status-blocked); }
+.gh-pr-flow__node--blue .gh-pr-flow__count {
+  color: var(--accent);
+}
+.gh-pr-flow__node--amber .gh-pr-flow__count {
+  color: var(--status-paused);
+}
+.gh-pr-flow__node--green .gh-pr-flow__count {
+  color: var(--gh-green);
+}
+.gh-pr-flow__node--red .gh-pr-flow__count {
+  color: var(--status-blocked);
+}
 
 .gh-pr-flow__label {
   font-size: 0.78rem;
@@ -63,10 +79,18 @@
   transform: translateY(-50%);
   z-index: 1;
 }
-.gh-pr-flow__node--blue .gh-pr-flow__connector { border-left-color: var(--accent); }
-.gh-pr-flow__node--amber .gh-pr-flow__connector { border-left-color: var(--status-paused); }
-.gh-pr-flow__node--green .gh-pr-flow__connector { border-left-color: var(--gh-green); }
-.gh-pr-flow__node--red .gh-pr-flow__connector { border-left-color: var(--status-blocked); }
+.gh-pr-flow__node--blue .gh-pr-flow__connector {
+  border-left-color: var(--accent);
+}
+.gh-pr-flow__node--amber .gh-pr-flow__connector {
+  border-left-color: var(--status-paused);
+}
+.gh-pr-flow__node--green .gh-pr-flow__connector {
+  border-left-color: var(--gh-green);
+}
+.gh-pr-flow__node--red .gh-pr-flow__connector {
+  border-left-color: var(--status-blocked);
+}
 
 /* ---- status badge tones (PR stages) -------------------------------------------------------- */
 .gh-badge--open {
@@ -122,8 +146,14 @@
   text-decoration: none;
   overflow-wrap: anywhere;
 }
-.gh-pr-card__title:hover { color: var(--gh-teal); text-decoration: none; }
-.gh-pr-card__head .gh-badge { margin-left: auto; flex: none; }
+.gh-pr-card__title:hover {
+  color: var(--gh-teal);
+  text-decoration: none;
+}
+.gh-pr-card__head .gh-badge {
+  margin-left: auto;
+  flex: none;
+}
 
 /* ISI-4767 E5: local automated-review badge — a compact chip after the stage
    badge. Rendered as a link when it deep-links to the review work item, else as
@@ -153,7 +183,9 @@ a.gh-pr-review-badge:hover {
   gap: 6px 14px;
   margin: 0;
 }
-.gh-pr-card__field { min-width: 0; }
+.gh-pr-card__field {
+  min-width: 0;
+}
 .gh-pr-card__field dt {
   margin: 0;
   font-size: 0.7rem;
@@ -209,10 +241,18 @@ a.gh-pr-review-badge:hover {
   border-radius: 999px;
   background: var(--status-idle);
 }
-.gh-pr-dot--passed { background: var(--gh-green); }
-.gh-pr-dot--failed { background: var(--status-blocked); }
-.gh-pr-dot--running { background: var(--accent); }
-.gh-pr-dot--pending { background: var(--status-paused); }
+.gh-pr-dot--passed {
+  background: var(--gh-green);
+}
+.gh-pr-dot--failed {
+  background: var(--status-blocked);
+}
+.gh-pr-dot--running {
+  background: var(--accent);
+}
+.gh-pr-dot--pending {
+  background: var(--status-paused);
+}
 
 .gh-pr-card__foot {
   display: flex;
@@ -223,7 +263,9 @@ a.gh-pr-review-badge:hover {
   border-top: 1px solid var(--border);
   padding-top: 10px;
 }
-.gh-pr-card__foot .muted { margin-right: auto; }
+.gh-pr-card__foot .muted {
+  margin-right: auto;
+}
 .gh-pr-card__detail {
   padding: 4px 12px;
   border-radius: var(--radius-chip);
@@ -237,7 +279,10 @@ a.gh-pr-review-badge:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
-.gh-pr-card__detail:hover { border-color: var(--accent); color: var(--accent); }
+.gh-pr-card__detail:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 /* ---- selected-PR detail panel -------------------------------------------------------------- */
 .gh-pr-detail__fields {
@@ -317,8 +362,12 @@ a.gh-pr-review-badge:hover {
   padding: 2px 6px;
   border-radius: var(--radius-control);
 }
-.gh-ra-dialog__close:hover { color: var(--text-hi); }
-.gh-ra-dialog__body { padding: 16px 18px; }
+.gh-ra-dialog__close:hover {
+  color: var(--text-hi);
+}
+.gh-ra-dialog__body {
+  padding: 16px 18px;
+}
 
 .gh-ra-form {
   display: flex;
@@ -377,7 +426,9 @@ a.gh-pr-review-badge:hover {
   font-size: 0.78rem;
   color: var(--text-1);
 }
-.gh-ra-error { margin: 0; }
+.gh-ra-error {
+  margin: 0;
+}
 .gh-ra-honest {
   padding: 8px 0;
 }

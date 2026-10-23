@@ -13,7 +13,10 @@ export function Breadcrumb({ pathname }: { pathname: string }) {
     <nav className="crumbs" aria-label="Breadcrumb">
       <ol>
         {crumbs.map((c, i) => (
-          <li key={`${c.label}-${i}`} aria-current={i === crumbs.length - 1 ? "page" : undefined}>
+          <li
+            key={`${c.label}-${i}`}
+            aria-current={i === crumbs.length - 1 ? "page" : undefined}
+          >
             {c.href !== null && i < crumbs.length - 1 ? (
               <Link href={c.href}>{c.label}</Link>
             ) : (

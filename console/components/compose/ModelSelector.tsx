@@ -25,7 +25,12 @@
 
 import { useEffect, useState } from "react";
 import { Field } from "./fields";
-import { isCuratedModel, modelShapeHint, sameProvider, useModelHints } from "@/lib/modelHints";
+import {
+  isCuratedModel,
+  modelShapeHint,
+  sameProvider,
+  useModelHints,
+} from "@/lib/modelHints";
 import type { FieldErrors } from "@/lib/compose";
 
 /** Sentinel <option> value for the "Custom model…" escape hatch (never a real model id). */
@@ -89,7 +94,9 @@ export function ModelSelector({
   // Advisory trigger chips (v1, not persisted): rate-limit is the signal the shim actually switches
   // on today (FallbackModel CRD doc); the others are presentational placeholders. Local state only —
   // no CRD field, so nothing rides toWire.
-  const [triggers, setTriggers] = useState<Set<TriggerId>>(() => new Set<TriggerId>(["rate-limit"]));
+  const [triggers, setTriggers] = useState<Set<TriggerId>>(
+    () => new Set<TriggerId>(["rate-limit"]),
+  );
   function toggleTrigger(id: TriggerId) {
     setTriggers((prev) => {
       const next = new Set(prev);
@@ -102,9 +109,12 @@ export function ModelSelector({
   // Fallback section open-state is presentation-only (there is no fallbackEnabled form field): a
   // saved fallbackModel (edit hydration) opens it, and the user may toggle it explicitly. Turning it
   // off clears both fallback fields so a hidden fallback never rides the apply.
-  const [fallbackEnabled, setFallbackEnabled] = useState(() => fallbackModel.trim() !== "");
+  const [fallbackEnabled, setFallbackEnabled] = useState(
+    () => fallbackModel.trim() !== "",
+  );
   useEffect(() => {
-    if (fallbackModel.trim() !== "" && !fallbackEnabled) setFallbackEnabled(true);
+    if (fallbackModel.trim() !== "" && !fallbackEnabled)
+      setFallbackEnabled(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fallbackModel]);
   function toggleFallback() {
@@ -118,17 +128,21 @@ export function ModelSelector({
 
   // Same-provider resilience warning (FR-4.1/4.2): only meaningful while the fallback is on and both
   // ids resolve to the same coarse provider.
-  const showSameProviderWarning = fallbackEnabled && sameProvider(model, fallbackModel);
+  const showSameProviderWarning =
+    fallbackEnabled && sameProvider(model, fallbackModel);
 
   // Custom mode is presentation-only: derive its initial value from a saved-but-non-curated model
   // (edit hydration → opens in Custom pre-filled, AC2), then let the user toggle it explicitly.
-  const [customMode, setCustomMode] = useState(() => model.trim() !== "" && !curated);
+  const [customMode, setCustomMode] = useState(
+    () => model.trim() !== "" && !curated,
+  );
 
   // Keep the BYO toggle honest if modelEndpointRef is populated externally (e.g. a future edit
   // hydration): a bound Secret means the endpoint is on (AC4). Turning BYO off clears the ref, so
   // this never fights the user's own toggle.
   useEffect(() => {
-    if (modelEndpointRef.trim() !== "" && !byoEnabled) patch({ byoEnabled: true });
+    if (modelEndpointRef.trim() !== "" && !byoEnabled)
+      patch({ byoEnabled: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelEndpointRef]);
 
@@ -160,7 +174,9 @@ export function ModelSelector({
   function toggleByo() {
     const next = !byoEnabled;
     // Turning off clears the ref so an unused endpoint never rides along on the apply.
-    patch(next ? { byoEnabled: true } : { byoEnabled: false, modelEndpointRef: "" });
+    patch(
+      next ? { byoEnabled: true } : { byoEnabled: false, modelEndpointRef: "" },
+    );
   }
 
   const shapeHint = customMode ? modelShapeHint(model) : undefined;
@@ -171,7 +187,7 @@ export function ModelSelector({
         label="Model"
         hint={
           customMode
-            ? shapeHint ?? "Any model id — written verbatim."
+            ? (shapeHint ?? "Any model id — written verbatim.")
             : blankMeansInherit
               ? "Pick a curated model, or “Custom model…”. Leave blank to inherit the org default."
               : "Pick a curated model, or choose “Custom model…” for any other id."
@@ -194,7 +210,11 @@ export function ModelSelector({
             aria-invalid={!!errors["model"]}
             aria-label="Model"
           >
-            <option value="">{blankMeansInherit ? "— Inherit org default —" : "— Select a model —"}</option>
+            <option value="">
+              {blankMeansInherit
+                ? "— Inherit org default —"
+                : "— Select a model —"}
+            </option>
             {hints.map((h) => (
               <option key={h.id} value={h.id}>
                 {h.label}
@@ -209,7 +229,11 @@ export function ModelSelector({
           child of it: a <button> inside a <label> alongside the input is invalid, ambiguous-focus
           markup for assistive tech (Copilot review, PR #240). */}
       {customMode && (
-        <button type="button" className="btn btn--ghost compose__model-back" onClick={backToList}>
+        <button
+          type="button"
+          className="btn btn--ghost compose__model-back"
+          onClick={backToList}
+        >
           ‹ Curated list
         </button>
       )}
@@ -227,11 +251,18 @@ export function ModelSelector({
             aria-controls={BYO_REGION_ID}
             onClick={toggleByo}
           >
-            {byoEnabled ? "✓ Bring your own endpoint" : "Bring your own endpoint"}
+            {byoEnabled
+              ? "✓ Bring your own endpoint"
+              : "Bring your own endpoint"}
           </button>
 
           {byoEnabled && (
-            <div id={BYO_REGION_ID} className="compose__byo-region" role="group" aria-label="Bring your own endpoint">
+            <div
+              id={BYO_REGION_ID}
+              className="compose__byo-region"
+              role="group"
+              aria-label="Bring your own endpoint"
+            >
               <Field
                 label="Endpoint Secret ref"
                 hint="name or name/key of an existing endpoint Secret (self-hosted / Ollama / non-Anthropic)"
@@ -246,9 +277,11 @@ export function ModelSelector({
                 />
               </Field>
               <p className="muted compose__byo-note">
-                Select an existing endpoint Secret — this sets <code>modelEndpointRef</code> only and writes no
-                Secret. Creating a new endpoint inline (URL + token) is coming soon and will go through the
-                credentials surface, never the compose service account.
+                Select an existing endpoint Secret — this sets{" "}
+                <code>modelEndpointRef</code> only and writes no Secret.
+                Creating a new endpoint inline (URL + token) is coming soon and
+                will go through the credentials surface, never the compose
+                service account.
               </p>
             </div>
           )}
@@ -270,7 +303,12 @@ export function ModelSelector({
         </button>
 
         {fallbackEnabled && (
-          <div id={FALLBACK_REGION_ID} className="compose__fallback-region" role="group" aria-label="Fallback model">
+          <div
+            id={FALLBACK_REGION_ID}
+            className="compose__fallback-region"
+            role="group"
+            aria-label="Fallback model"
+          >
             <Field
               label="Fallback model"
               hint="Secondary model the runtime switches to mid-Run on a rate-limit — any model id."
@@ -292,7 +330,9 @@ export function ModelSelector({
             >
               <input
                 value={fallbackModelEndpointRef}
-                onChange={(e) => patch({ fallbackModelEndpointRef: e.target.value })}
+                onChange={(e) =>
+                  patch({ fallbackModelEndpointRef: e.target.value })
+                }
                 aria-invalid={!!errors["fallbackModel.modelEndpointRef.name"]}
                 aria-label="Fallback endpoint Secret ref"
                 placeholder="optional — my-endpoint or my-endpoint/url"
@@ -300,7 +340,11 @@ export function ModelSelector({
             </Field>
 
             {/* Advisory trigger chips — presentational only in v1 (no CRD trigger field). */}
-            <div className="compose__fallback-triggers" role="group" aria-label="Fallback triggers (advisory)">
+            <div
+              className="compose__fallback-triggers"
+              role="group"
+              aria-label="Fallback triggers (advisory)"
+            >
               {FALLBACK_TRIGGERS.map((t) => {
                 const on = triggers.has(t.id);
                 return (
@@ -317,14 +361,16 @@ export function ModelSelector({
               })}
             </div>
             <p className="muted compose__fallback-note">
-              Triggers are advisory in this version — the runtime switches on rate-limit today. Ordered
-              multi-fallback is coming in a future version.
+              Triggers are advisory in this version — the runtime switches on
+              rate-limit today. Ordered multi-fallback is coming in a future
+              version.
             </p>
 
             {showSameProviderWarning && (
               <p className="warn compose__fallback-warning" role="alert">
-                Your fallback is the same provider as your primary model — a provider-wide rate limit could
-                affect both. Consider a different provider for real resilience.
+                Your fallback is the same provider as your primary model — a
+                provider-wide rate limit could affect both. Consider a different
+                provider for real resilience.
               </p>
             )}
           </div>
@@ -336,7 +382,12 @@ export function ModelSelector({
           type="button"
           className="btn btn--ghost compose__apply-all"
           onClick={() =>
-            onApplyToAll({ model, modelEndpointRef, fallbackModel, fallbackModelEndpointRef })
+            onApplyToAll({
+              model,
+              modelEndpointRef,
+              fallbackModel,
+              fallbackModelEndpointRef,
+            })
           }
         >
           Apply this default to all agents

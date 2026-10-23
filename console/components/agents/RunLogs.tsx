@@ -111,7 +111,11 @@ export function RunLogs({
   return (
     <section className="run-logs" aria-label={`Logs for run ${runId}`}>
       <header className="run-logs__head">
-        <div className="run-logs__tabs" role="tablist" aria-label="Run log tabs">
+        <div
+          className="run-logs__tabs"
+          role="tablist"
+          aria-label="Run log tabs"
+        >
           {TABS.map((t) => (
             <button
               key={t.id}
@@ -146,7 +150,9 @@ export function RunLogs({
       )}
 
       <div role="tabpanel" className="run-logs__panel">
-        {state.kind === "loading" && <p className="muted">Loading {tab} logs…</p>}
+        {state.kind === "loading" && (
+          <p className="muted">Loading {tab} logs…</p>
+        )}
         {state.kind === "not-found" && (
           <p className="muted">These logs are not available.</p>
         )}

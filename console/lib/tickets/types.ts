@@ -70,13 +70,7 @@ export const EMPTY_FILTERS: TicketFilters = {
 };
 
 export type SortKey =
-  | "id"
-  | "title"
-  | "status"
-  | "priority"
-  | "assignee"
-  | "labels"
-  | "updated";
+  "id" | "title" | "status" | "priority" | "assignee" | "labels" | "updated";
 
 export type SortDir = "asc" | "desc";
 
@@ -109,7 +103,12 @@ export interface StateTransitionBody {
 
 /** Create-time priority vocabulary — mirrors the coord enum (validPriorities,
  * pkg/coord/workitemwrite.go) and migration 0020's CHECK. Empty ⇒ no priority. */
-export const WORK_ITEM_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
+export const WORK_ITEM_PRIORITIES = [
+  "low",
+  "medium",
+  "high",
+  "urgent",
+] as const;
 export type WorkItemPriority = (typeof WORK_ITEM_PRIORITIES)[number];
 
 export const PRIORITY_LABELS: Record<WorkItemPriority, string> = {

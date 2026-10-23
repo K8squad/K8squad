@@ -45,7 +45,10 @@ export type SingletonComposeKind = (typeof SINGLETON_COMPOSE_KINDS)[number];
 /** Every kind the generic BFF compose route may proxy: the wizard five + singletons. */
 export type ProxyableComposeKind = ComposeKind | SingletonComposeKind;
 export function isProxyableComposeKind(v: string): v is ProxyableComposeKind {
-  return isComposeKind(v) || (SINGLETON_COMPOSE_KINDS as readonly string[]).includes(v);
+  return (
+    isComposeKind(v) ||
+    (SINGLETON_COMPOSE_KINDS as readonly string[]).includes(v)
+  );
 }
 
 /** Create (POST) vs edit-by-name (PUT, new revision) — the compose surface's two write modes. */
@@ -76,7 +79,8 @@ export function parseComposeParams(p: {
   const raw = (p.kind ?? "").trim();
   const aliased = raw === "agent" ? "agents" : raw; // accept the singular shorthand as an alias
   // No explicitly pre-selected kind ⇒ full default state; never let a stray mode/name through.
-  if (!isComposeKind(aliased)) return { kind: "projects", mode: "create", name: "" };
+  if (!isComposeKind(aliased))
+    return { kind: "projects", mode: "create", name: "" };
   const mode: ComposeMode = p.mode === "edit" ? "edit" : "create";
   const name = (p.name ?? "").trim();
   return { kind: aliased, mode, name };
@@ -242,7 +246,13 @@ export function emptyForm(kind: ComposeKind): ComposeForm {
     case "projects":
       return {
         kind,
-        form: { name: "", repoUrl: "", repoRef: "", goals: "", egressPolicyRef: "" },
+        form: {
+          name: "",
+          repoUrl: "",
+          repoRef: "",
+          goals: "",
+          egressPolicyRef: "",
+        },
       };
     case "agents":
       return {
@@ -308,10 +318,14 @@ function lines(text: string): string[] {
 }
 
 /** Parse "name" or "namespace/name" into an object ref (namespace optional). */
-export function parseObjectRef(s: string): { name: string; namespace?: string } {
+export function parseObjectRef(s: string): {
+  name: string;
+  namespace?: string;
+} {
   const t = s.trim();
   const i = t.indexOf("/");
-  if (i > 0) return { name: t.slice(i + 1).trim(), namespace: t.slice(0, i).trim() };
+  if (i > 0)
+    return { name: t.slice(i + 1).trim(), namespace: t.slice(0, i).trim() };
   return { name: t };
 }
 
@@ -331,7 +345,9 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
       const f = cf.form;
       return {
         name: f.name.trim(),
-        ...(f.namespaceStrategy.trim() ? { namespaceStrategy: f.namespaceStrategy.trim() } : {}),
+        ...(f.namespaceStrategy.trim()
+          ? { namespaceStrategy: f.namespaceStrategy.trim() }
+          : {}),
       };
     }
     case "projects": {
@@ -344,7 +360,9 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
           ...(f.repoRef.trim() ? { ref: f.repoRef.trim() } : {}),
         },
         ...(goals.length ? { goals } : {}),
-        ...(f.egressPolicyRef.trim() ? { egressPolicyRef: parseObjectRef(f.egressPolicyRef) } : {}),
+        ...(f.egressPolicyRef.trim()
+          ? { egressPolicyRef: parseObjectRef(f.egressPolicyRef) }
+          : {}),
       };
     }
     case "agents": {
@@ -360,9 +378,13 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
         // and a blank field means "inherit from Role → org-default". Omitting rather than sending
         // model:"" keeps the write wire clean and matches the CRD's omitempty intent.
         ...(f.model.trim() ? { model: f.model.trim() } : {}),
-        ...(f.modelEndpointRef.trim() ? { modelEndpointRef: parseSecretRef(f.modelEndpointRef) } : {}),
+        ...(f.modelEndpointRef.trim()
+          ? { modelEndpointRef: parseSecretRef(f.modelEndpointRef) }
+          : {}),
         credentialSecretRef: parseSecretRef(f.credentialSecretRef),
-        ...(f.credentialClass.trim() ? { credentialClass: f.credentialClass.trim() } : {}),
+        ...(f.credentialClass.trim()
+          ? { credentialClass: f.credentialClass.trim() }
+          : {}),
         // Fallback rides through only when a fallback model is set; its optional endpoint Secret
         // mirrors the primary modelEndpointRef shape (name or name/key).
         ...(f.fallbackModel.trim()
@@ -370,7 +392,11 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
               fallbackModel: {
                 model: f.fallbackModel.trim(),
                 ...(f.fallbackModelEndpointRef.trim()
-                  ? { modelEndpointRef: parseSecretRef(f.fallbackModelEndpointRef) }
+                  ? {
+                      modelEndpointRef: parseSecretRef(
+                        f.fallbackModelEndpointRef,
+                      ),
+                    }
                   : {}),
               },
             }
@@ -383,13 +409,17 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
       // Emit only the canonical six phases, in canonical order, de-duped — a stray or
       // unknown selection never rides the wire (mirrors the webhook enum). Absent /
       // empty ⇒ phase-agnostic, so the field is omitted entirely (back-compat default).
-      const activePhases = WORKING_PHASES.filter((p) => f.activePhases.includes(p));
+      const activePhases = WORKING_PHASES.filter((p) =>
+        f.activePhases.includes(p),
+      );
       return {
         project: f.project.trim(),
         name: f.name.trim(),
         promptRef: parseObjectRef(f.promptRef),
         ...(defaultSkills.length ? { defaultSkills } : {}),
-        ...(f.runtimeClassHint.trim() ? { runtimeClassHint: f.runtimeClassHint.trim() } : {}),
+        ...(f.runtimeClassHint.trim()
+          ? { runtimeClassHint: f.runtimeClassHint.trim() }
+          : {}),
         ...(activePhases.length ? { activePhases } : {}),
         // coordinator + its mode travel together: `coordinator` is omitted when false
         // (absent ⇒ not a coordinator), and `coordinatorMode` rides ONLY when the toggle
@@ -398,7 +428,9 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
         ...(f.coordinator
           ? {
               coordinator: true,
-              ...(f.coordinatorMode.trim() ? { coordinatorMode: f.coordinatorMode.trim() } : {}),
+              ...(f.coordinatorMode.trim()
+                ? { coordinatorMode: f.coordinatorMode.trim() }
+                : {}),
             }
           : {}),
         // Role-tier model (ISI-4891 S2): a blank model is omitted entirely — the role
@@ -410,7 +442,11 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
               fallbackModel: {
                 model: f.fallbackModel.trim(),
                 ...(f.fallbackModelEndpointRef.trim()
-                  ? { modelEndpointRef: parseSecretRef(f.fallbackModelEndpointRef) }
+                  ? {
+                      modelEndpointRef: parseSecretRef(
+                        f.fallbackModelEndpointRef,
+                      ),
+                    }
                   : {}),
               },
             }
@@ -460,20 +496,29 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
 // body, rather than a colliding second route).
 
 /** Inverse of parseObjectRef: {name, namespace?} → "namespace/name" or "name". */
-function objectRefToString(ref: { name?: string; namespace?: string } | null | undefined): string {
+function objectRefToString(
+  ref: { name?: string; namespace?: string } | null | undefined,
+): string {
   if (!ref || !ref.name) return "";
   return ref.namespace ? `${ref.namespace}/${ref.name}` : ref.name;
 }
 
 /** Inverse of parseSecretRef: {name, key?} → "name/key" or "name". */
-function secretRefToString(ref: { name?: string; key?: string } | null | undefined): string {
+function secretRefToString(
+  ref: { name?: string; key?: string } | null | undefined,
+): string {
   if (!ref || !ref.name) return "";
   return ref.key ? `${ref.name}/${ref.key}` : ref.name;
 }
 
 /** Join a ref list into the one-per-line textarea shape lines() splits. */
-function refsToLines(refs: Array<{ name?: string; namespace?: string }> | null | undefined): string {
-  return (refs ?? []).map(objectRefToString).filter((s) => s.length > 0).join("\n");
+function refsToLines(
+  refs: Array<{ name?: string; namespace?: string }> | null | undefined,
+): string {
+  return (refs ?? [])
+    .map(objectRefToString)
+    .filter((s) => s.length > 0)
+    .join("\n");
 }
 
 type WireObjectRef = { name?: string; namespace?: string };
@@ -489,7 +534,10 @@ interface AgentWire {
   modelEndpointRef?: WireSecretRef | null;
   credentialSecretRef?: WireSecretRef;
   credentialClass?: string;
-  fallbackModel?: { model?: string; modelEndpointRef?: WireSecretRef | null } | null;
+  fallbackModel?: {
+    model?: string;
+    modelEndpointRef?: WireSecretRef | null;
+  } | null;
 }
 interface RoleWire {
   name?: string;
@@ -501,7 +549,10 @@ interface RoleWire {
   coordinatorMode?: string;
   // ISI-4891 S2: role-tier model + fallback (no primary modelEndpointRef on RoleSpec).
   model?: string;
-  fallbackModel?: { model?: string; modelEndpointRef?: WireSecretRef | null } | null;
+  fallbackModel?: {
+    model?: string;
+    modelEndpointRef?: WireSecretRef | null;
+  } | null;
 }
 interface ProjectWire {
   name?: string;
@@ -530,7 +581,13 @@ export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
   switch (kind) {
     case "teams": {
       const t = w as TeamWire;
-      return { kind, form: { name: t.name ?? "", namespaceStrategy: t.namespaceStrategy ?? "" } };
+      return {
+        kind,
+        form: {
+          name: t.name ?? "",
+          namespaceStrategy: t.namespaceStrategy ?? "",
+        },
+      };
     }
     case "projects": {
       const p = w as ProjectWire;
@@ -560,7 +617,9 @@ export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
           credentialSecretRef: secretRefToString(a.credentialSecretRef),
           credentialClass: a.credentialClass ?? "",
           fallbackModel: a.fallbackModel?.model ?? "",
-          fallbackModelEndpointRef: secretRefToString(a.fallbackModel?.modelEndpointRef),
+          fallbackModelEndpointRef: secretRefToString(
+            a.fallbackModel?.modelEndpointRef,
+          ),
           // UI-only: BYO is on iff a primary model endpoint ref is present.
           byoEnabled: !!(a.modelEndpointRef && a.modelEndpointRef.name),
         },
@@ -578,14 +637,18 @@ export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
           runtimeClassHint: r.runtimeClassHint ?? "",
           // Re-canonicalize on hydration too: keep only the known six, in canonical
           // order, so an edit form never carries a stray phase the multi-select can't show.
-          activePhases: WORKING_PHASES.filter((p) => (r.activePhases ?? []).includes(p)),
+          activePhases: WORKING_PHASES.filter((p) =>
+            (r.activePhases ?? []).includes(p),
+          ),
           coordinator: !!r.coordinator,
           coordinatorMode: r.coordinatorMode ?? "",
           // ISI-4891 S2: hydrate role-tier model + fallback. A blank model round-trips
           // to "inherit org default"; the fallback's own endpoint ref (if any) hydrates.
           model: r.model ?? "",
           fallbackModel: r.fallbackModel?.model ?? "",
-          fallbackModelEndpointRef: secretRefToString(r.fallbackModel?.modelEndpointRef),
+          fallbackModelEndpointRef: secretRefToString(
+            r.fallbackModel?.modelEndpointRef,
+          ),
           // adapter is UI-only and adapter-agnostic in the persisted spec, so the
           // credential branch always resets to the primary "claude" path on load.
           adapter: "claude",
@@ -594,7 +657,8 @@ export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
     }
     case "skills": {
       const s = w as SkillWire;
-      const sourceType: SkillSourceType = s.sourceType === "git" ? "git" : "inline";
+      const sourceType: SkillSourceType =
+        s.sourceType === "git" ? "git" : "inline";
       return {
         kind,
         form: {
@@ -634,7 +698,11 @@ export function validate(cf: ComposeForm): FieldErrors {
       checkName("name", f.name, errs);
       checkRequired("runtimeRef.name", parseObjectRef(f.runtimeRef).name, errs);
       checkRequired("roleRef.name", parseObjectRef(f.roleRef).name, errs);
-      checkRequired("credentialSecretRef.name", parseSecretRef(f.credentialSecretRef).name, errs);
+      checkRequired(
+        "credentialSecretRef.name",
+        parseSecretRef(f.credentialSecretRef).name,
+        errs,
+      );
       // Model is INTENTIONALLY not required (ISI-4892 / S3, Flow C precondition). Agent.spec.model is
       // `omitempty`/optional on the CRD (ISI-4430): a blank model means "inherit" — the Model-Per-Role
       // resolver falls through to the Role tier, then the org-default ModelConfig. The server stays the
@@ -644,7 +712,12 @@ export function validate(cf: ComposeForm): FieldErrors {
       // BYO endpoint (Story B / AC3, AC5): when the toggle is on, an endpoint Secret ref must be
       // provided — an enabled-but-empty BYO is a half-configured apply and blocks submit. When the
       // toggle is off the ref is ignored (treated absent by toWire's blank-omit).
-      if (f.byoEnabled) checkRequired("modelEndpointRef.name", parseSecretRef(f.modelEndpointRef).name, errs);
+      if (f.byoEnabled)
+        checkRequired(
+          "modelEndpointRef.name",
+          parseSecretRef(f.modelEndpointRef).name,
+          errs,
+        );
       break;
     }
     case "roles": {
@@ -652,11 +725,18 @@ export function validate(cf: ComposeForm): FieldErrors {
       checkRequired("project", f.project, errs);
       checkName("name", f.name, errs);
       checkRequired("promptRef.name", parseObjectRef(f.promptRef).name, errs);
-      if (f.runtimeClassHint && !["gvisor", "kata", "runc"].includes(f.runtimeClassHint))
+      if (
+        f.runtimeClassHint &&
+        !["gvisor", "kata", "runc"].includes(f.runtimeClassHint)
+      )
         errs["runtimeClassHint"] = "must be one of gvisor, kata, runc";
       // Phase enum (webhook: unknown phase strings rejected). The UI only offers the
       // six, but defend the model edge so a bad selection fails fast with a field error.
-      if (f.activePhases.some((p) => !(WORKING_PHASES as readonly string[]).includes(p)))
+      if (
+        f.activePhases.some(
+          (p) => !(WORKING_PHASES as readonly string[]).includes(p),
+        )
+      )
         errs["activePhases"] =
           "must be one of design, planning, implementation, code_review, testing, documentation";
       // coordinatorMode is valid ONLY alongside coordinator=true (webhook rule): a mode
@@ -665,7 +745,9 @@ export function validate(cf: ComposeForm): FieldErrors {
       if (f.coordinatorMode.trim()) {
         if (!f.coordinator)
           errs["coordinatorMode"] = "is only valid when coordinator is enabled";
-        else if (!(COORDINATOR_MODES as readonly string[]).includes(f.coordinatorMode))
+        else if (
+          !(COORDINATOR_MODES as readonly string[]).includes(f.coordinatorMode)
+        )
           errs["coordinatorMode"] = "must be one of auto, propose";
       }
       break;
@@ -713,7 +795,13 @@ export type ComposeResult = {
 // persisted (the resolved model id is provider-agnostic).
 
 /** The runtime-adapter credential branch (Frame-4, board LOCK OQ5; vibe/goose ISI-6380). */
-export const RUNTIME_ADAPTERS = ["claude", "codex", "opencode", "vibe", "goose"] as const;
+export const RUNTIME_ADAPTERS = [
+  "claude",
+  "codex",
+  "opencode",
+  "vibe",
+  "goose",
+] as const;
 export type RuntimeAdapter = (typeof RUNTIME_ADAPTERS)[number];
 
 /** Human labels for the adapter selector. */
@@ -764,7 +852,12 @@ export type LlmProviderOption = {
  * host lane — until then its list/save calls surface the honest server error state.
  */
 export const LLM_PROVIDER_OPTIONS: readonly LlmProviderOption[] = [
-  { id: "ollama", label: "Ollama (local)", mode: "url", defaultUrl: "http://localhost:11434" },
+  {
+    id: "ollama",
+    label: "Ollama (local)",
+    mode: "url",
+    defaultUrl: "http://localhost:11434",
+  },
   { id: "zai", label: "Z.ai", mode: "apiKey" },
   { id: "deepseek", label: "DeepSeek", mode: "apiKey" },
   { id: "kimi-moonshot", label: "Kimi (Moonshot)", mode: "apiKey" },
@@ -795,13 +888,27 @@ export function llmProviderById(id: string): LlmProviderOption | undefined {
 export type ListedModel = { id: string; label?: string };
 
 /** One row of GET /api/modelendpoints (the advanced "existing endpoint" dropdown). */
-export type ModelEndpointRow = { name: string; provider: string; url: string; hasToken: boolean };
+export type ModelEndpointRow = {
+  name: string;
+  provider: string;
+  url: string;
+  hasToken: boolean;
+};
 
 /** The POST /api/modelendpoints/list-models request body. */
-export type ListModelsRequest = { provider: string; url?: string; apiKey?: string };
+export type ListModelsRequest = {
+  provider: string;
+  url?: string;
+  apiKey?: string;
+};
 
 /** The POST /api/modelendpoints (Secret upsert) request body. */
-export type CreateEndpointRequest = { name?: string; provider: string; url?: string; apiKey?: string };
+export type CreateEndpointRequest = {
+  name?: string;
+  provider: string;
+  url?: string;
+  apiKey?: string;
+};
 
 export type ModelConfigForm = {
   // adapter is UI-only (the credential path); it is NOT serialized — the org
@@ -857,7 +964,10 @@ export function modelConfigToWire(f: ModelConfigForm): Record<string, unknown> {
 interface ModelConfigWire {
   model?: string;
   modelEndpointRef?: WireSecretRef | null;
-  fallbackModel?: { model?: string; modelEndpointRef?: WireSecretRef | null } | null;
+  fallbackModel?: {
+    model?: string;
+    modelEndpointRef?: WireSecretRef | null;
+  } | null;
 }
 
 /**
@@ -884,7 +994,9 @@ export function inferModelConfigAdapter(
   // mistral is the vibe runtime's lane (ISI-6380): a mistral-bound org default
   // rehydrates onto the vibe tab, not the opencode BYO tab.
   if (ep.provider === "mistral") return "vibe";
-  return LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider) ? "opencode" : "claude";
+  return LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider)
+    ? "opencode"
+    : "claude";
 }
 
 /**
@@ -908,7 +1020,9 @@ export function modelConfigFromWire(
     modelEndpointRef: endpoint,
     byoEnabled: endpoint.length > 0,
     fallbackModel: w.fallbackModel?.model ?? "",
-    fallbackModelEndpointRef: secretRefToString(w.fallbackModel?.modelEndpointRef),
+    fallbackModelEndpointRef: secretRefToString(
+      w.fallbackModel?.modelEndpointRef,
+    ),
   };
 }
 
@@ -922,7 +1036,12 @@ export function modelConfigFromWire(
 export function validateModelConfig(f: ModelConfigForm): FieldErrors {
   const errs: FieldErrors = {};
   checkRequired("model", f.model, errs);
-  if (f.byoEnabled) checkRequired("modelEndpointRef.name", parseSecretRef(f.modelEndpointRef).name, errs);
+  if (f.byoEnabled)
+    checkRequired(
+      "modelEndpointRef.name",
+      parseSecretRef(f.modelEndpointRef).name,
+      errs,
+    );
   return errs;
 }
 

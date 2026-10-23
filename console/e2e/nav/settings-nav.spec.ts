@@ -46,10 +46,9 @@ test.describe("ISI-5004 · Settings rail: dedicated LLM entry + OTel-only config
     await expect(page).toHaveURL(/\/settings\/llm$/);
 
     // Active rail state is honest: the LLM Settings item is active, OTel is not.
-    await expect(page.getByRole("link", { name: "LLM Settings" })).toHaveAttribute(
-      "data-active",
-      "true",
-    );
+    await expect(
+      page.getByRole("link", { name: "LLM Settings" }),
+    ).toHaveAttribute("data-active", "true");
 
     // Breadcrumb ends at the dedicated surface.
     const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });

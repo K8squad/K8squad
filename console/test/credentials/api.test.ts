@@ -48,26 +48,35 @@ describe("GET /api/credentials — the read proxy", () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const res = await credentialsGET(
-      makeReq("/api/credentials", { headers: { cookie: "ksquad_session=dev-token-abc" } }),
+      makeReq("/api/credentials", {
+        headers: { cookie: "ksquad_session=dev-token-abc" },
+      }),
     );
 
     expect(res.status).toBe(200);
     const sent = (fetchMock.mock.calls[0] as unknown[])[0] as string;
     expect(sent).toContain("/api/credentials");
-    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { headers: Headers };
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as {
+      headers: Headers;
+    };
     expect(init.headers.get("cookie")).toBe("ksquad_session=dev-token-abc");
     expect(await res.json()).toEqual({ team: "squad-a", agents: [] });
   });
 
   it("relays the documented 501 VERBATIM (unconfigured contract, never re-mapped)", async () => {
-    globalThis.fetch = stubFetch(501, { error: "not implemented", tracking: "ISI-2902" }) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(501, {
+      error: "not implemented",
+      tracking: "ISI-2902",
+    }) as unknown as typeof fetch;
     const res = await credentialsGET(makeReq("/api/credentials"));
     expect(res.status).toBe(501);
     expect((await res.json()).tracking).toBe("ISI-2902");
   });
 
   it("relays a deny (403) as 403 — the apiserver's decision is the authority", async () => {
-    globalThis.fetch = stubFetch(403, { error: "denied" }) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(403, {
+      error: "denied",
+    }) as unknown as typeof fetch;
     const res = await credentialsGET(makeReq("/api/credentials"));
     expect(res.status).toBe(403);
   });
@@ -86,8 +95,17 @@ describe("POST /api/credentials — the BYO write proxy (ISI-3983)", () => {
     const res = await credentialsPOST(
       makeReq("/api/credentials", {
         method: "POST",
-        headers: { cookie: "ksquad_session=dev-token-abc", "content-type": "application/json" },
-        body: JSON.stringify({ name: "team-anthropic", runtime: "claude-code", class: "service-account", value: "sk-secret", teamId: "t-1" }),
+        headers: {
+          cookie: "ksquad_session=dev-token-abc",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          name: "team-anthropic",
+          runtime: "claude-code",
+          class: "service-account",
+          value: "sk-secret",
+          teamId: "t-1",
+        }),
       }),
     );
 
@@ -106,12 +124,19 @@ describe("POST /api/credentials — the BYO write proxy (ISI-3983)", () => {
   });
 
   it("relays the fleet-admin 400 'select a team' verbatim (ISI-3937)", async () => {
-    globalThis.fetch = stubFetch(400, { error: "select a team for this credential" }) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(400, {
+      error: "select a team for this credential",
+    }) as unknown as typeof fetch;
     const res = await credentialsPOST(
       makeReq("/api/credentials", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: "k", runtime: "hermes", class: "service-account", value: "v" }),
+        body: JSON.stringify({
+          name: "k",
+          runtime: "hermes",
+          class: "service-account",
+          value: "v",
+        }),
       }),
     );
     expect(res.status).toBe(400);
@@ -129,7 +154,12 @@ describe("POST /api/credentials — the BYO write proxy (ISI-3983)", () => {
           origin: "https://evil.example",
           "content-type": "application/json",
         },
-        body: JSON.stringify({ name: "k", runtime: "hermes", class: "service-account", value: "v" }),
+        body: JSON.stringify({
+          name: "k",
+          runtime: "hermes",
+          class: "service-account",
+          value: "v",
+        }),
       }),
     );
     expect(res.status).toBe(403);
@@ -153,14 +183,23 @@ describe("POST /api/credentials — the BYO write proxy (ISI-3983)", () => {
 
 describe("PUT /api/credentials — the vault rotate proxy (ISI-5860 / design O-2)", () => {
   it("forwards the caller's cookie + body as a PUT and relays 200 secretRef verbatim (never the value)", async () => {
-    const fetchMock = stubFetch(200, { secretRef: "secret://squad-a/proj-proj-a-cred-github" });
+    const fetchMock = stubFetch(200, {
+      secretRef: "secret://squad-a/proj-proj-a-cred-github",
+    });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const res = await credentialsPUT(
       makeReq("/api/credentials", {
         method: "PUT",
-        headers: { cookie: "ksquad_session=dev-token-abc", "content-type": "application/json" },
-        body: JSON.stringify({ value: "ghp_rotated", type: "github", projectId: "proj-a" }),
+        headers: {
+          cookie: "ksquad_session=dev-token-abc",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          value: "ghp_rotated",
+          type: "github",
+          projectId: "proj-a",
+        }),
       }),
     );
 
@@ -176,12 +215,19 @@ describe("PUT /api/credentials — the vault rotate proxy (ISI-5860 / design O-2
   });
 
   it("relays a 409 'still being removed' retry verbatim (the recreate-after-delete race)", async () => {
-    globalThis.fetch = stubFetch(409, { error: "the previous credential is still being removed; retry the rotation" }) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(409, {
+      error:
+        "the previous credential is still being removed; retry the rotation",
+    }) as unknown as typeof fetch;
     const res = await credentialsPUT(
       makeReq("/api/credentials", {
         method: "PUT",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ value: "x", type: "github", projectId: "proj-a" }),
+        body: JSON.stringify({
+          value: "x",
+          type: "github",
+          projectId: "proj-a",
+        }),
       }),
     );
     expect(res.status).toBe(409);
@@ -194,8 +240,16 @@ describe("PUT /api/credentials — the vault rotate proxy (ISI-5860 / design O-2
     const res = await credentialsPUT(
       makeReq("/api/credentials", {
         method: "PUT",
-        headers: { host: "console.local", origin: "https://evil.example", "content-type": "application/json" },
-        body: JSON.stringify({ value: "v", type: "github", projectId: "proj-a" }),
+        headers: {
+          host: "console.local",
+          origin: "https://evil.example",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          value: "v",
+          type: "github",
+          projectId: "proj-a",
+        }),
       }),
     );
     expect(res.status).toBe(403);
@@ -211,7 +265,10 @@ describe("DELETE /api/credentials — the vault delete proxy (ISI-5860 / design 
     const res = await credentialsDELETE(
       makeReq("/api/credentials", {
         method: "DELETE",
-        headers: { cookie: "ksquad_session=dev-token-abc", "content-type": "application/json" },
+        headers: {
+          cookie: "ksquad_session=dev-token-abc",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ type: "github", projectId: "proj-a" }),
       }),
     );
@@ -225,7 +282,9 @@ describe("DELETE /api/credentials — the vault delete proxy (ISI-5860 / design 
   });
 
   it("relays a 404 VERBATIM — existence-hiding, never re-mapped (the FE treats it as 'already gone')", async () => {
-    globalThis.fetch = stubFetch(404, { error: "no credential of this type for this project" }) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(404, {
+      error: "no credential of this type for this project",
+    }) as unknown as typeof fetch;
     const res = await credentialsDELETE(
       makeReq("/api/credentials", {
         method: "DELETE",
@@ -242,7 +301,11 @@ describe("DELETE /api/credentials — the vault delete proxy (ISI-5860 / design 
     const res = await credentialsDELETE(
       makeReq("/api/credentials", {
         method: "DELETE",
-        headers: { host: "console.local", origin: "https://evil.example", "content-type": "application/json" },
+        headers: {
+          host: "console.local",
+          origin: "https://evil.example",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ type: "github", projectId: "proj-a" }),
       }),
     );
@@ -253,13 +316,19 @@ describe("DELETE /api/credentials — the vault delete proxy (ISI-5860 / design 
 
 describe("POST /api/credentials/{name}/test — the probe proxy (ISI-3983 teamId hint)", () => {
   it("percent-encodes the name, forwards the teamId body, and relays {ok,detail}", async () => {
-    const fetchMock = stubFetch(200, { ok: false, detail: "Rejected — the endpoint declined the credential (HTTP 401)" });
+    const fetchMock = stubFetch(200, {
+      ok: false,
+      detail: "Rejected — the endpoint declined the credential (HTTP 401)",
+    });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const res = await testPOST(
       makeReq("/api/credentials/team-anthropic/test", {
         method: "POST",
-        headers: { cookie: "ksquad_session=dev", "content-type": "application/json" },
+        headers: {
+          cookie: "ksquad_session=dev",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ runtime: "claude-code", teamId: "t-1" }),
       }),
       { params: Promise.resolve({ name: "team-anthropic" }) },
@@ -280,7 +349,11 @@ describe("POST /api/credentials/{name}/test — the probe proxy (ISI-3983 teamId
     const res = await testPOST(
       makeReq("/api/credentials/x/test", {
         method: "POST",
-        headers: { host: "console.local", origin: "https://evil.example", "content-type": "application/json" },
+        headers: {
+          host: "console.local",
+          origin: "https://evil.example",
+          "content-type": "application/json",
+        },
         body: "{}",
       }),
       { params: Promise.resolve({ name: "x" }) },
@@ -292,7 +365,10 @@ describe("POST /api/credentials/{name}/test — the probe proxy (ISI-3983 teamId
 
 describe("POST /api/credentials/connect — the 7.7 seam proxy", () => {
   it("POSTs upstream with the caller's cookie and relays the 501 naming ISI-2899", async () => {
-    const fetchMock = stubFetch(501, { error: "not implemented", tracking: "ISI-2899: credential controller + Connect Claude OAuth flow" });
+    const fetchMock = stubFetch(501, {
+      error: "not implemented",
+      tracking: "ISI-2899: credential controller + Connect Claude OAuth flow",
+    });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const res = await connectPOST(
@@ -303,15 +379,22 @@ describe("POST /api/credentials/connect — the 7.7 seam proxy", () => {
     );
 
     expect(res.status).toBe(501);
-    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { method: string; headers: Headers };
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as {
+      method: string;
+      headers: Headers;
+    };
     expect(init.method).toBe("POST");
     expect(init.headers.get("cookie")).toBe("ksquad_session=dev-token-abc");
     expect((await res.json()).tracking).toContain("ISI-2899");
   });
 
   it("relays a 200 (flow started) verbatim once 7.7 lands", async () => {
-    globalThis.fetch = stubFetch(200, { loginUrl: "https://auth.example/start" }) as unknown as typeof fetch;
-    const res = await connectPOST(makeReq("/api/credentials/connect", { method: "POST" }));
+    globalThis.fetch = stubFetch(200, {
+      loginUrl: "https://auth.example/start",
+    }) as unknown as typeof fetch;
+    const res = await connectPOST(
+      makeReq("/api/credentials/connect", { method: "POST" }),
+    );
     expect(res.status).toBe(200);
   });
 });

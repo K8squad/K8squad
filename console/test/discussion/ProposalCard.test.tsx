@@ -1,8 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
-import { ProposalCard, proposalActionLabel } from "@/components/discussion/ProposalCard";
+import {
+  ProposalCard,
+  proposalActionLabel,
+} from "@/components/discussion/ProposalCard";
 import { MessageItem } from "@/components/discussion/MessageItem";
-import type { Message, Proposal, ProposalPayload } from "@/lib/discussion/types";
+import type {
+  Message,
+  Proposal,
+  ProposalPayload,
+} from "@/lib/discussion/types";
 
 afterEach(cleanup);
 
@@ -22,7 +29,10 @@ function msg(over: Partial<Message> = {}): Message {
 
 function proposal(over: Partial<Proposal> = {}): Proposal {
   return {
-    Message: msg({ kind: "proposal", payload: { action: "create_ticket", title: "Ship the room" } }),
+    Message: msg({
+      kind: "proposal",
+      payload: { action: "create_ticket", title: "Ship the room" },
+    }),
     TeamID: "team-1",
     Payload: { action: "create_ticket", title: "Ship the room" },
     phase: "proposed",

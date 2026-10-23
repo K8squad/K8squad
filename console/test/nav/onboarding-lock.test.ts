@@ -28,7 +28,9 @@ describe("withOnboardingLock — FR-1.4 gating until a Team exists", () => {
     // Settings + children stay OPEN pre-Team (ISI-3870): an admin on an empty tenant must
     // reach OTel config / Credentials; the padlock is a journey affordance, not RBAC.
     expect(locked.get("settings")?.locked).toBeFalsy();
-    const usersNode = locked.get("settings")?.children?.find((c) => c.id === "users");
+    const usersNode = locked
+      .get("settings")
+      ?.children?.find((c) => c.id === "users");
     expect(usersNode?.locked).toBeFalsy();
     // Setup surfaces stay reachable: Compose authors milestone ① (the Team CR), Overview
     // carries the Launchpad (E1-S2), Dashboard is the landing root.
@@ -47,7 +49,9 @@ describe("withOnboardingLock — FR-1.4 gating until a Team exists", () => {
   it("returns the tree untouched once a Team exists (AC4 — everything unlocks)", () => {
     const tree = navTree();
     expect(withOnboardingLock(tree, true)).toBe(tree);
-    expect(byId(withOnboardingLock(tree, true)).get("agents-team")?.locked).toBeFalsy();
+    expect(
+      byId(withOnboardingLock(tree, true)).get("agents-team")?.locked,
+    ).toBeFalsy();
   });
 
   it("never mutates the canonical tree", () => {
@@ -77,7 +81,9 @@ describe("lock vs prune — locked nodes stay VISIBLE at every breakpoint", () =
   });
 
   it("carries the optional badge field through the derivation (AD-10 model)", () => {
-    const tree: NavNode[] = [{ id: "overview", label: "Overview", href: "/overview", badge: "2/4" }];
+    const tree: NavNode[] = [
+      { id: "overview", label: "Overview", href: "/overview", badge: "2/4" },
+    ];
     const out = visibleNav(withOnboardingLock(tree, false), "user");
     expect(out[0].badge).toBe("2/4");
   });

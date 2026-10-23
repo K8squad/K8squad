@@ -11,7 +11,11 @@ interface TeamFormProps {
 
 export function TeamForm({ cf, errors, patch }: TeamFormProps) {
   const nameField = (
-    <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+    <Field
+      label="Name"
+      hint="DNS-1123 label (lowercase, digits, '-')"
+      error={errors["name"]}
+    >
       <input
         value={cf.form.name}
         onChange={(e) => patch({ name: e.target.value })}

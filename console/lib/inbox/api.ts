@@ -65,11 +65,15 @@ export type InboxResponse = {
  * `scope: "mine"` (ISI-5537 E3) narrows an admin's fleet view back to their own team; a no-op for
  * non-admins (already team-fenced).
  */
-export async function fetchInbox(
-  opts?: { scope?: "mine"; signal?: AbortSignal },
-): Promise<InboxResponse> {
+export async function fetchInbox(opts?: {
+  scope?: "mine";
+  signal?: AbortSignal;
+}): Promise<InboxResponse> {
   const q = opts?.scope === "mine" ? "?scope=mine" : "";
-  const res = await fetch(`/api/inbox${q}`, { cache: "no-store", signal: opts?.signal });
+  const res = await fetch(`/api/inbox${q}`, {
+    cache: "no-store",
+    signal: opts?.signal,
+  });
   if (!res.ok) throw new Error(`inbox: ${res.status}`);
   return res.json() as Promise<InboxResponse>;
 }
@@ -124,14 +128,20 @@ export function inboxItemHref(item: InboxItem): string {
 }
 
 /** Map a decisionType to its chip colour class (violet/green/blue/amber). */
-export function decisionChipHue(decisionType: string): "violet" | "green" | "blue" | "amber" {
+export function decisionChipHue(
+  decisionType: string,
+): "violet" | "green" | "blue" | "amber" {
   switch (decisionType) {
-    case "review":        return "violet";
+    case "review":
+      return "violet";
     case "proposal":
-    case "approve":       return "green";
+    case "approve":
+      return "green";
     case "choose_one":
-    case "choose_many":   return "blue";
+    case "choose_many":
+      return "blue";
     case "free_form":
-    default:              return "amber";
+    default:
+      return "amber";
   }
 }

@@ -24,7 +24,13 @@ import {
 
 describe("RUNTIME_ADAPTERS — ISI-6380 five-tab contract", () => {
   it("exposes five tabs in order, each with a label", () => {
-    expect([...RUNTIME_ADAPTERS]).toEqual(["claude", "codex", "opencode", "vibe", "goose"]);
+    expect([...RUNTIME_ADAPTERS]).toEqual([
+      "claude",
+      "codex",
+      "opencode",
+      "vibe",
+      "goose",
+    ]);
     const unlabeled = (RUNTIME_ADAPTERS as readonly string[]).filter(
       (a) => !RUNTIME_ADAPTER_LABELS[a as RuntimeAdapter],
     );
@@ -32,10 +38,25 @@ describe("RUNTIME_ADAPTERS — ISI-6380 five-tab contract", () => {
   });
 });
 
-const OLLAMA: ModelEndpointRow = { name: "lan-ollama", provider: "ollama", url: "http://10.0.0.5:11434", hasToken: false };
-const DEEPSEEK: ModelEndpointRow = { name: "my-deepseek", provider: "deepseek", url: "", hasToken: true };
+const OLLAMA: ModelEndpointRow = {
+  name: "lan-ollama",
+  provider: "ollama",
+  url: "http://10.0.0.5:11434",
+  hasToken: false,
+};
+const DEEPSEEK: ModelEndpointRow = {
+  name: "my-deepseek",
+  provider: "deepseek",
+  url: "",
+  hasToken: true,
+};
 // A non-opencode (e.g. claude BYO) endpoint: its provider is NOT in LLM_PROVIDER_OPTIONS.
-const ANTHROPIC: ModelEndpointRow = { name: "anthropic-proxy", provider: "anthropic", url: "https://x", hasToken: true };
+const ANTHROPIC: ModelEndpointRow = {
+  name: "anthropic-proxy",
+  provider: "anthropic",
+  url: "https://x",
+  hasToken: true,
+};
 
 describe("inferModelConfigAdapter — ISI-5302 adapter recovery", () => {
   it("returns claude for an empty ref", () => {
@@ -43,16 +64,24 @@ describe("inferModelConfigAdapter — ISI-5302 adapter recovery", () => {
   });
 
   it("returns opencode when the ref names a saved opencode-backend endpoint", () => {
-    expect(inferModelConfigAdapter("lan-ollama", [OLLAMA, DEEPSEEK])).toBe("opencode");
-    expect(inferModelConfigAdapter("my-deepseek", [OLLAMA, DEEPSEEK])).toBe("opencode");
+    expect(inferModelConfigAdapter("lan-ollama", [OLLAMA, DEEPSEEK])).toBe(
+      "opencode",
+    );
+    expect(inferModelConfigAdapter("my-deepseek", [OLLAMA, DEEPSEEK])).toBe(
+      "opencode",
+    );
   });
 
   it("resolves the ref by name even when a /key suffix is present", () => {
-    expect(inferModelConfigAdapter("my-deepseek/token", [DEEPSEEK])).toBe("opencode");
+    expect(inferModelConfigAdapter("my-deepseek/token", [DEEPSEEK])).toBe(
+      "opencode",
+    );
   });
 
   it("returns claude for a non-opencode provider (claude BYO endpoint)", () => {
-    expect(inferModelConfigAdapter("anthropic-proxy", [ANTHROPIC])).toBe("claude");
+    expect(inferModelConfigAdapter("anthropic-proxy", [ANTHROPIC])).toBe(
+      "claude",
+    );
   });
 
   it("fails safe to claude when the ref can't be resolved (endpoints missing)", () => {
@@ -61,11 +90,20 @@ describe("inferModelConfigAdapter — ISI-5302 adapter recovery", () => {
   });
 
   it("rehydrates a mistral-bound default onto vibe, not opencode (ISI-6380)", () => {
-    const MISTRAL: ModelEndpointRow = { name: "my-mistral", provider: "mistral", url: "http://ollama.lan:11434/v1", hasToken: true };
-    expect(inferModelConfigAdapter("my-mistral", [MISTRAL, OLLAMA])).toBe("vibe");
+    const MISTRAL: ModelEndpointRow = {
+      name: "my-mistral",
+      provider: "mistral",
+      url: "http://ollama.lan:11434/v1",
+      hasToken: true,
+    };
+    expect(inferModelConfigAdapter("my-mistral", [MISTRAL, OLLAMA])).toBe(
+      "vibe",
+    );
     expect(inferModelConfigAdapter("my-mistral/token", [MISTRAL])).toBe("vibe");
     // other BYO backends must stay on opencode
-    expect(inferModelConfigAdapter("lan-ollama", [MISTRAL, OLLAMA])).toBe("opencode");
+    expect(inferModelConfigAdapter("lan-ollama", [MISTRAL, OLLAMA])).toBe(
+      "opencode",
+    );
   });
 });
 
@@ -81,7 +119,10 @@ describe("modelConfig toWire ∘ fromWire round-trip", () => {
     const wire = modelConfigToWire(saved);
     // adapter never rides the wire (persisted spec is adapter-agnostic).
     expect(wire).not.toHaveProperty("adapter");
-    expect(wire).toMatchObject({ model: "llama3.1:8b", modelEndpointRef: { name: "lan-ollama" } });
+    expect(wire).toMatchObject({
+      model: "llama3.1:8b",
+      modelEndpointRef: { name: "lan-ollama" },
+    });
 
     const rehydrated = modelConfigFromWire(wire, [OLLAMA]);
     expect(rehydrated.adapter).toBe("opencode");

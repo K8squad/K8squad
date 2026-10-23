@@ -6,13 +6,7 @@
 // system — green == running/in-progress everywhere (DESIGN-SPEC-ISI-4505 §2).
 
 export type Tone =
-  | "running"
-  | "paused"
-  | "blocked"
-  | "idle"
-  | "run"
-  | "accent"
-  | "neutral";
+  "running" | "paused" | "blocked" | "idle" | "run" | "accent" | "neutral";
 
 export function toneClass(tone: Tone | undefined): string {
   return `ov-tone--${tone ?? "neutral"}`;

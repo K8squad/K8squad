@@ -110,7 +110,9 @@ export function formatDuration(seconds: number | null | undefined): string {
  * overview run links (RunStream/KillRun resolve the coord claim from it). */
 export function runHref(run: RunListItem): string {
   const base = `/runs/${encodeURIComponent(run.name)}`;
-  return run.workItemRef ? `${base}?wi=${encodeURIComponent(run.workItemRef)}` : base;
+  return run.workItemRef
+    ? `${base}?wi=${encodeURIComponent(run.workItemRef)}`
+    : base;
 }
 
 export function RunsList({
@@ -376,7 +378,9 @@ export function RunsList({
                       {r.phase || "Unknown"}
                     </span>
                     {r.pausedReason && (
-                      <div className="muted runs-row__sub">{r.pausedReason}</div>
+                      <div className="muted runs-row__sub">
+                        {r.pausedReason}
+                      </div>
                     )}
                   </td>
                   <td>
@@ -410,7 +414,9 @@ export function RunsList({
                     )}
                   </td>
                   <td className="runs-cell-dim">
-                    {r.agents && r.agents.length > 0 ? r.agents.join(", ") : "—"}
+                    {r.agents && r.agents.length > 0
+                      ? r.agents.join(", ")
+                      : "—"}
                   </td>
                   {!projectId && (
                     <td>

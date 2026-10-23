@@ -14,31 +14,51 @@ import {
 
 describe("credentialStatusLabel — AC2 tri-state", () => {
   it("no credential ⇒ Not connected (never healthy)", () => {
-    expect(credentialStatusLabel(false, "untested")).toEqual({ label: "Not connected", tone: "idle" });
+    expect(credentialStatusLabel(false, "untested")).toEqual({
+      label: "Not connected",
+      tone: "idle",
+    });
     // connected:false wins regardless of a stale lastTest.
     expect(credentialStatusLabel(false, "passed").label).toBe("Not connected");
   });
   it("connected + passed ⇒ test passed (ok)", () => {
-    expect(credentialStatusLabel(true, "passed")).toEqual({ label: "Connected — test passed", tone: "ok" });
+    expect(credentialStatusLabel(true, "passed")).toEqual({
+      label: "Connected — test passed",
+      tone: "ok",
+    });
   });
   it("connected + failed ⇒ test failed (bad)", () => {
-    expect(credentialStatusLabel(true, "failed")).toEqual({ label: "Connected — test failed", tone: "bad" });
+    expect(credentialStatusLabel(true, "failed")).toEqual({
+      label: "Connected — test failed",
+      tone: "bad",
+    });
   });
   it("connected + untested (or unknown) ⇒ untested, never healthy", () => {
-    expect(credentialStatusLabel(true, "untested")).toEqual({ label: "Connected — untested", tone: "warn" });
+    expect(credentialStatusLabel(true, "untested")).toEqual({
+      label: "Connected — untested",
+      tone: "warn",
+    });
     // An unexpected value collapses to untested — honesty over a guessed-green.
-    expect(credentialStatusLabel(true, "weird").label).toBe("Connected — untested");
+    expect(credentialStatusLabel(true, "weird").label).toBe(
+      "Connected — untested",
+    );
   });
 });
 
 describe("classifyProjectSettings — AC7 honest states", () => {
-  it("401 ⇒ unauthenticated", () => expect(classifyProjectSettings(401)).toEqual({ kind: "unauthenticated" }));
+  it("401 ⇒ unauthenticated", () =>
+    expect(classifyProjectSettings(401)).toEqual({ kind: "unauthenticated" }));
   it("403/404 collapse ⇒ not-found (existence-hiding)", () => {
     expect(classifyProjectSettings(403)).toEqual({ kind: "not-found" });
     expect(classifyProjectSettings(404)).toEqual({ kind: "not-found" });
   });
-  it("501 ⇒ not-wired", () => expect(classifyProjectSettings(501)).toEqual({ kind: "not-wired" }));
-  it("5xx ⇒ error with status", () => expect(classifyProjectSettings(503)).toEqual({ kind: "error", status: 503 }));
+  it("501 ⇒ not-wired", () =>
+    expect(classifyProjectSettings(501)).toEqual({ kind: "not-wired" }));
+  it("5xx ⇒ error with status", () =>
+    expect(classifyProjectSettings(503)).toEqual({
+      kind: "error",
+      status: 503,
+    }));
 });
 
 function detail(over: Partial<ProjectDetail> = {}): ProjectDetail {
@@ -53,7 +73,10 @@ function detail(over: Partial<ProjectDetail> = {}): ProjectDetail {
 
 describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
   it("overlays repo url/ref but PRESERVES goals + egressPolicyRef (no silent wipe)", () => {
-    const body = buildProjectPutBody(detail(), { repoUrl: "https://github.com/org/new", repoRef: "dev" });
+    const body = buildProjectPutBody(detail(), {
+      repoUrl: "https://github.com/org/new",
+      repoRef: "dev",
+    });
     expect(body).toMatchObject({
       name: "proj-a",
       repo: { url: "https://github.com/org/new", ref: "dev" },
@@ -65,13 +88,26 @@ describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
   });
 
   it("an empty ref is omitted (apiserver reads it as 'default branch')", () => {
-    const body = buildProjectPutBody(detail({ repo: { url: "x" } }), { repoUrl: "https://github.com/org/new", repoRef: "  " });
+    const body = buildProjectPutBody(detail({ repo: { url: "x" } }), {
+      repoUrl: "https://github.com/org/new",
+      repoRef: "  ",
+    });
     expect((body.repo as Record<string, unknown>).ref).toBeUndefined();
   });
 
   it("carries an existing credential ref through a repo-only edit (never drops it)", () => {
-    const d = detail({ repo: { url: "u", ref: "main", auth: { credentialSecretRef: { name: "scm-pat", key: SCM_PAT_SECRET_KEY } } } });
-    const body = buildProjectPutBody(d, { repoUrl: "https://github.com/org/new" });
+    const d = detail({
+      repo: {
+        url: "u",
+        ref: "main",
+        auth: {
+          credentialSecretRef: { name: "scm-pat", key: SCM_PAT_SECRET_KEY },
+        },
+      },
+    });
+    const body = buildProjectPutBody(d, {
+      repoUrl: "https://github.com/org/new",
+    });
     expect((body.repo as Record<string, unknown>).auth).toEqual({
       credentialSecretRef: { name: "scm-pat", key: SCM_PAT_SECRET_KEY },
     });
@@ -96,9 +132,19 @@ describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
   // opaque sync sub-spec (webhookSecretRef/mirror/issueSync) when editing poll. ──
   it("carries an existing sync sub-spec through a repo-only edit (no sync overlay)", () => {
     const d = detail({
-      repo: { url: "u", ref: "main", sync: { provider: "github", pollIntervalSeconds: 300, webhookSecretRef: { name: "hook" } } },
+      repo: {
+        url: "u",
+        ref: "main",
+        sync: {
+          provider: "github",
+          pollIntervalSeconds: 300,
+          webhookSecretRef: { name: "hook" },
+        },
+      },
     });
-    const body = buildProjectPutBody(d, { repoUrl: "https://github.com/org/new" });
+    const body = buildProjectPutBody(d, {
+      repoUrl: "https://github.com/org/new",
+    });
     expect((body.repo as Record<string, unknown>).sync).toEqual({
       provider: "github",
       pollIntervalSeconds: 300,
@@ -108,7 +154,15 @@ describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
 
   it("overlays poll/reflect but PRESERVES the opaque sync passthrough (webhookSecretRef/mirror)", () => {
     const d = detail({
-      repo: { url: "u", sync: { provider: "github", pollIntervalSeconds: 300, webhookSecretRef: { name: "hook" }, mirror: { pullRequests: true } } },
+      repo: {
+        url: "u",
+        sync: {
+          provider: "github",
+          pollIntervalSeconds: 300,
+          webhookSecretRef: { name: "hook" },
+          mirror: { pullRequests: true },
+        },
+      },
     });
     const body = buildProjectPutBody(d, {
       repoUrl: "u",
@@ -124,21 +178,40 @@ describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
   });
 
   it("enabling sync with no prior sub-spec defaults the required provider to github", () => {
-    const body = buildProjectPutBody(detail(), { repoUrl: "u", sync: { enabled: true, pollIntervalSeconds: 120 } });
-    expect((body.repo as Record<string, unknown>).sync).toEqual({ provider: "github", pollIntervalSeconds: 120 });
+    const body = buildProjectPutBody(detail(), {
+      repoUrl: "u",
+      sync: { enabled: true, pollIntervalSeconds: 120 },
+    });
+    expect((body.repo as Record<string, unknown>).sync).toEqual({
+      provider: "github",
+      pollIntervalSeconds: 120,
+    });
   });
 
   it("disabling sync omits repo.sync entirely (spec.repo.sync ⇒ nil ⇒ disabled)", () => {
-    const d = detail({ repo: { url: "u", sync: { provider: "github", pollIntervalSeconds: 300 } } });
-    const body = buildProjectPutBody(d, { repoUrl: "u", sync: { enabled: false } });
+    const d = detail({
+      repo: {
+        url: "u",
+        sync: { provider: "github", pollIntervalSeconds: 300 },
+      },
+    });
+    const body = buildProjectPutBody(d, {
+      repoUrl: "u",
+      sync: { enabled: false },
+    });
     expect((body.repo as Record<string, unknown>).sync).toBeUndefined();
   });
 
   // ── ISI-5303: docs (conventions/archDocRefs) round-trip — a repo/sync save must
   // never wipe them, and a docs save must never wipe repo/goals/egress. ──
   it("PRESERVES existing conventions/archDocRefs through a repo-only edit (no docs overlay)", () => {
-    const d = detail({ conventions: "use tabs", archDocRefs: ["docs/arch.md", "https://x/y"] });
-    const body = buildProjectPutBody(d, { repoUrl: "https://github.com/org/new" });
+    const d = detail({
+      conventions: "use tabs",
+      archDocRefs: ["docs/arch.md", "https://x/y"],
+    });
+    const body = buildProjectPutBody(d, {
+      repoUrl: "https://github.com/org/new",
+    });
     expect(body.conventions).toBe("use tabs");
     expect(body.archDocRefs).toEqual(["docs/arch.md", "https://x/y"]);
   });
@@ -147,17 +220,26 @@ describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
     const d = detail({
       conventions: "old",
       archDocRefs: ["old.md"],
-      repo: { url: "u", auth: { credentialSecretRef: { name: "scm-pat", key: "apiKey" } } },
+      repo: {
+        url: "u",
+        auth: { credentialSecretRef: { name: "scm-pat", key: "apiKey" } },
+      },
     });
     const body = buildProjectPutBody(d, {
       repoUrl: "u",
-      docs: { conventions: "new conventions", archDocRefs: ["docs/a.md", "docs/b.md"] },
+      docs: {
+        conventions: "new conventions",
+        archDocRefs: ["docs/a.md", "docs/b.md"],
+      },
     });
     expect(body.conventions).toBe("new conventions");
     expect(body.archDocRefs).toEqual(["docs/a.md", "docs/b.md"]);
     // unrelated owned fields still ride through
     expect(body.goals).toEqual(["ship the thing", "keep it green"]);
-    expect(body.egressPolicyRef).toEqual({ name: "default-egress", namespace: "squad-a" });
+    expect(body.egressPolicyRef).toEqual({
+      name: "default-egress",
+      namespace: "squad-a",
+    });
     expect((body.repo as Record<string, unknown>).auth).toEqual({
       credentialSecretRef: { name: "scm-pat", key: "apiKey" },
     });

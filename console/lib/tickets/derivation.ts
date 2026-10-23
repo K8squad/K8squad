@@ -71,7 +71,10 @@ export function isRoot(item: WorkItem): boolean {
   return item.parentId == null;
 }
 
-const COLLATOR = new Intl.Collator("en", { sensitivity: "base", numeric: true });
+const COLLATOR = new Intl.Collator("en", {
+  sensitivity: "base",
+  numeric: true,
+});
 
 function compareValues(
   a: string | undefined,
@@ -120,10 +123,7 @@ export function sortWorkItems(
 }
 
 /** Toggle helper for the column-header buttons (aria-sort asc ⇄ desc). */
-export function nextSortDir(
-  current: SortSpec,
-  key: SortKey,
-): SortSpec {
+export function nextSortDir(current: SortSpec, key: SortKey): SortSpec {
   if (current.key !== key) return { key, dir: "asc" };
   return { key, dir: current.dir === "asc" ? "desc" : "asc" };
 }

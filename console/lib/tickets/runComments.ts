@@ -130,7 +130,11 @@ export function isRunningState(state: string): boolean {
 }
 
 /** Stable identity for a comment bubble — used to reconcile with buildActivity. */
-export function runCommentKey(author: string, at: string, body: string): string {
+export function runCommentKey(
+  author: string,
+  at: string,
+  body: string,
+): string {
   return JSON.stringify([at, author, body]);
 }
 

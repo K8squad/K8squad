@@ -10,7 +10,13 @@
 //   - the ticket's children render through SubTicketTree's nodes.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -47,8 +53,24 @@ const THREAD = {
 };
 
 const CHILDREN = [
-  { id: "wi-2", projectId: "ns/demo", parentId: "wi-1", title: "sub a", state: "done", blockedReason: null, updatedAt: "2026-09-14T00:00:00Z" },
-  { id: "wi-3", projectId: "ns/demo", parentId: "wi-1", title: "sub b", state: "todo", blockedReason: null, updatedAt: "2026-09-14T00:00:00Z" },
+  {
+    id: "wi-2",
+    projectId: "ns/demo",
+    parentId: "wi-1",
+    title: "sub a",
+    state: "done",
+    blockedReason: null,
+    updatedAt: "2026-09-14T00:00:00Z",
+  },
+  {
+    id: "wi-3",
+    projectId: "ns/demo",
+    parentId: "wi-1",
+    title: "sub b",
+    state: "todo",
+    blockedReason: null,
+    updatedAt: "2026-09-14T00:00:00Z",
+  },
 ];
 
 const PROPOSAL = {
@@ -70,14 +92,22 @@ function routeFetch(opts?: { proposals?: unknown[] }) {
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     const u = String(url);
     const method = (init?.method ?? "GET").toUpperCase();
-    if (u.includes("/api/session")) return Promise.resolve(jsonResponse({ globalRole: "contributor" }));
-    if (u.includes("/api/squad/agents")) return Promise.resolve(jsonResponse({ agents: [] }));
+    if (u.includes("/api/session"))
+      return Promise.resolve(jsonResponse({ globalRole: "contributor" }));
+    if (u.includes("/api/squad/agents"))
+      return Promise.resolve(jsonResponse({ agents: [] }));
     if (u.includes("/api/runs")) return Promise.resolve(jsonResponse([]));
-    if (u.includes("/discussion/threads/") && u.includes("/proposals") && method === "GET") {
+    if (
+      u.includes("/discussion/threads/") &&
+      u.includes("/proposals") &&
+      method === "GET"
+    ) {
       return Promise.resolve(jsonResponse(opts?.proposals ?? []));
     }
-    if (u.includes("/api/work-items/")) return Promise.resolve(jsonResponse(THREAD));
-    if (u.includes("/work-items")) return Promise.resolve(jsonResponse(CHILDREN));
+    if (u.includes("/api/work-items/"))
+      return Promise.resolve(jsonResponse(THREAD));
+    if (u.includes("/work-items"))
+      return Promise.resolve(jsonResponse(CHILDREN));
     return Promise.resolve(jsonResponse([], 200));
   });
 }
@@ -89,16 +119,20 @@ describe("TicketDetail — proposals + sub-ticket tree (ISI-5284 WS-4)", () => {
   it("renders coordinator proposal cards from the linked thread on the ticket surface", async () => {
     routeFetch({ proposals: [PROPOSAL] });
     render(
-      <TicketDetail projectId="ns/demo" workItemId="wi-1" proposalThreadId="thr-1" />,
+      <TicketDetail
+        projectId="ns/demo"
+        workItemId="wi-1"
+        proposalThreadId="thr-1"
+      />,
     );
 
     const section = await screen.findByTestId("detail-proposals");
     await waitFor(() =>
       expect(within(section).getByTestId("proposal-card")).toBeTruthy(),
     );
-    expect(within(section).getByTestId("proposal-action").textContent).toContain(
-      'Create ticket "wire the thing"',
-    );
+    expect(
+      within(section).getByTestId("proposal-action").textContent,
+    ).toContain('Create ticket "wire the thing"');
     expect(within(section).getByTestId("proposal-confirm")).toBeTruthy();
   });
 
@@ -108,7 +142,9 @@ describe("TicketDetail — proposals + sub-ticket tree (ISI-5284 WS-4)", () => {
 
     const section = await screen.findByTestId("detail-proposals");
     await waitFor(() =>
-      expect(within(section).getByTestId("detail-proposals-empty")).toBeTruthy(),
+      expect(
+        within(section).getByTestId("detail-proposals-empty"),
+      ).toBeTruthy(),
     );
     expect(within(section).queryByTestId("proposal-card")).toBeNull();
     // threadId null ⇒ the BFF proposals endpoint is never even queried.

@@ -71,7 +71,11 @@ export const emptyAuditFilters: AuditFilters = {
 /** Serialize filters into the API's query string. datetime-local values (naive local time)
  *  are converted to UTC RFC3339 — the server parses strict RFC3339. `before` and `limit` ride
  *  pagination, not the filter form. */
-export function auditQueryString(f: AuditFilters, before?: number | null, limit = 50): string {
+export function auditQueryString(
+  f: AuditFilters,
+  before?: number | null,
+  limit = 50,
+): string {
   const params = new URLSearchParams();
   if (f.workItem.trim()) params.set("work_item", f.workItem.trim());
   if (f.run.trim()) params.set("run", f.run.trim());
@@ -96,8 +100,11 @@ export type AuditOutcome =
   | { kind: "unconfigured" } // 501 — read model not wired (reader-less host shape)
   | { kind: "error" }; // 5xx / network
 
-export function classifyAuditStatus(status: number): Exclude<AuditOutcome, { kind: "ok" }>["kind"] {
-  if (status >= 200 && status < 300) throw new Error("ok is not a failure kind");
+export function classifyAuditStatus(
+  status: number,
+): Exclude<AuditOutcome, { kind: "ok" }>["kind"] {
+  if (status >= 200 && status < 300)
+    throw new Error("ok is not a failure kind");
   if (status === 403) return "forbidden-actor";
   if (status === 401 || status === 404) return "denied";
   if (status === 501) return "unconfigured";
@@ -106,23 +113,27 @@ export function classifyAuditStatus(status: number): Exclude<AuditOutcome, { kin
 
 /** Event badge tone: state-changing coordination events read as activity, terminal ones as
  *  outcomes, admin mutations as governance, everything else as neutral. */
-export type EventBadge = { label: string; tone: "info" | "ok" | "warn" | "idle" };
-
-const badgeByType: Record<string, { label: string; tone: EventBadge["tone"] }> = {
-  claim_acquired: { label: "Checkout", tone: "info" },
-  claim_renewed: { label: "Renew", tone: "info" },
-  claim_released: { label: "Release", tone: "info" },
-  comment_added: { label: "Comment", tone: "idle" },
-  artifact_registered: { label: "Artifact", tone: "ok" },
-  state_transition: { label: "Transition", tone: "warn" },
-  reconcile_advanced: { label: "Reconcile", tone: "idle" },
-  coordinator_dispatched: { label: "Dispatch", tone: "info" },
-  run_terminal: { label: "Run final", tone: "ok" },
-  completed: { label: "Completed", tone: "ok" },
-  user_created: { label: "User +", tone: "warn" },
-  user_updated: { label: "User ~", tone: "warn" },
-  user_deactivated: { label: "User −", tone: "warn" },
+export type EventBadge = {
+  label: string;
+  tone: "info" | "ok" | "warn" | "idle";
 };
+
+const badgeByType: Record<string, { label: string; tone: EventBadge["tone"] }> =
+  {
+    claim_acquired: { label: "Checkout", tone: "info" },
+    claim_renewed: { label: "Renew", tone: "info" },
+    claim_released: { label: "Release", tone: "info" },
+    comment_added: { label: "Comment", tone: "idle" },
+    artifact_registered: { label: "Artifact", tone: "ok" },
+    state_transition: { label: "Transition", tone: "warn" },
+    reconcile_advanced: { label: "Reconcile", tone: "idle" },
+    coordinator_dispatched: { label: "Dispatch", tone: "info" },
+    run_terminal: { label: "Run final", tone: "ok" },
+    completed: { label: "Completed", tone: "ok" },
+    user_created: { label: "User +", tone: "warn" },
+    user_updated: { label: "User ~", tone: "warn" },
+    user_deactivated: { label: "User −", tone: "warn" },
+  };
 
 export function eventBadge(e: AuditEvent): EventBadge {
   return badgeByType[e.eventType] ?? { label: e.eventType, tone: "idle" };

@@ -5,7 +5,13 @@
 // apiserver squad endpoint (squadTemplates / squadRequest.Models, composecrd.go).
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import {
   TemplateGallery,
   SQUAD_TEMPLATES,
@@ -20,7 +26,11 @@ const noop = () => {};
 beforeEach(() => {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({ ok: false, status: 501, text: () => Promise.resolve("") }),
+    vi.fn().mockResolvedValue({
+      ok: false,
+      status: 501,
+      text: () => Promise.resolve(""),
+    }),
   );
 });
 
@@ -49,7 +59,11 @@ describe("AC1 — the 3-card gallery (FR-2.1)", () => {
   });
 
   it("the catalog mirrors the apiserver template ids (wire contract)", () => {
-    expect(SQUAD_TEMPLATES.map((t) => t.id)).toEqual(["minimal-trio", "bmad", "solo"]);
+    expect(SQUAD_TEMPLATES.map((t) => t.id)).toEqual([
+      "minimal-trio",
+      "bmad",
+      "solo",
+    ]);
     expect(SQUAD_TEMPLATES[0].agents.map((a) => a.name)).toEqual([
       "boss",
       "implementer",
@@ -96,7 +110,9 @@ describe("AC2 — apply wires POST /api/compose/squad with preset models (FR-2.3
     vi.stubGlobal("fetch", fetchMock);
 
     render(<TemplateGallery onApplied={onApplied} onStartBlank={noop} />);
-    fireEvent.change(screen.getByLabelText(/Project scope/i), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText(/Project scope/i), {
+      target: { value: "acme" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /Use Minimal Trio/i }));
 
     await waitFor(() => expect(onApplied).toHaveBeenCalledTimes(1));
@@ -113,7 +129,9 @@ describe("AC2 — apply wires POST /api/compose/squad with preset models (FR-2.3
       implementer: "claude-sonnet-5",
       manager: "claude-sonnet-5",
     });
-    expect(onApplied.mock.calls[0][0]).toContain('team "acme-squad" (existing)');
+    expect(onApplied.mock.calls[0][0]).toContain(
+      'team "acme-squad" (existing)',
+    );
     expect(onApplied.mock.calls[0][0]).toContain("3 agents created");
   });
 
@@ -121,15 +139,22 @@ describe("AC2 — apply wires POST /api/compose/squad with preset models (FR-2.3
     const fetchMock = vi.fn().mockResolvedValue({
       status: 201,
       ok: true,
-      json: () => Promise.resolve({ agents: [{ name: "boss" }, { name: "implementer" }] }),
+      json: () =>
+        Promise.resolve({
+          agents: [{ name: "boss" }, { name: "implementer" }],
+        }),
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<TemplateGallery onApplied={noop} onStartBlank={noop} />);
     fireEvent.click(screen.getByRole("button", { name: /^Solo(?!.*Use)/ }));
-    fireEvent.change(screen.getByLabelText(/Project scope/i), { target: { value: "p" } });
+    fireEvent.change(screen.getByLabelText(/Project scope/i), {
+      target: { value: "p" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /Use Solo/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).template).toBe("solo");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).template).toBe(
+      "solo",
+    );
   });
 });
 
@@ -141,7 +166,12 @@ describe("AC3 — honesty: verbatim partial failures, never a fake-green (NFR-5)
       { kind: "Agent", name: "implementer", operation: "created" },
     ],
     errors: [
-      { kind: "Agent", name: "manager", status: 422, error: "validation failed: roleRef" },
+      {
+        kind: "Agent",
+        name: "manager",
+        status: 422,
+        error: "validation failed: roleRef",
+      },
     ],
   };
 
@@ -156,7 +186,9 @@ describe("AC3 — honesty: verbatim partial failures, never a fake-green (NFR-5)
       }),
     );
     render(<TemplateGallery onApplied={onApplied} onStartBlank={noop} />);
-    fireEvent.change(screen.getByLabelText(/Project scope/i), { target: { value: "acme" } });
+    fireEvent.change(screen.getByLabelText(/Project scope/i), {
+      target: { value: "acme" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /Use Minimal Trio/i }));
 
     const panel = await screen.findByTestId("squad-partial-result");
@@ -173,7 +205,9 @@ describe("AC3 — honesty: verbatim partial failures, never a fake-green (NFR-5)
     // onApplied (the success path) must NOT fire.
     expect(onApplied).not.toHaveBeenCalled();
     // Recovery CTA: finish by hand via the shared form.
-    expect(screen.getByRole("button", { name: /Finish by hand/i })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Finish by hand/i }),
+    ).toBeTruthy();
   });
 
   it("422 field errors surface verbatim (e.g. project required for non-admins)", async () => {
@@ -186,32 +220,48 @@ describe("AC3 — honesty: verbatim partial failures, never a fake-green (NFR-5)
           Promise.resolve(
             JSON.stringify({
               error: "validation failed",
-              fields: [{ field: "project", message: "is required (the write-tier membership scope for the squad's agents)" }],
+              fields: [
+                {
+                  field: "project",
+                  message:
+                    "is required (the write-tier membership scope for the squad's agents)",
+                },
+              ],
             }),
           ),
       }),
     );
     render(<TemplateGallery onApplied={noop} onStartBlank={noop} />);
-    fireEvent.change(screen.getByLabelText(/Project scope/i), { target: { value: "will-fail" } });
+    fireEvent.change(screen.getByLabelText(/Project scope/i), {
+      target: { value: "will-fail" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /Use Minimal Trio/i }));
 
     const alerts = await screen.findAllByRole("alert");
     expect(alerts.map((a) => a.textContent)).toContain("validation failed");
-    expect(
-      alerts.map((a) => a.textContent),
-    ).toContain("is required (the write-tier membership scope for the squad's agents)");
+    expect(alerts.map((a) => a.textContent)).toContain(
+      "is required (the write-tier membership scope for the squad's agents)",
+    );
   });
 
   it("501 degrades honestly to the not-available message", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ status: 501, ok: false, text: () => Promise.resolve("") }),
+      vi.fn().mockResolvedValue({
+        status: 501,
+        ok: false,
+        text: () => Promise.resolve(""),
+      }),
     );
     render(<TemplateGallery onApplied={noop} onStartBlank={noop} />);
-    fireEvent.change(screen.getByLabelText(/Project scope/i), { target: { value: "x" } });
+    fireEvent.change(screen.getByLabelText(/Project scope/i), {
+      target: { value: "x" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /Use Minimal Trio/i }));
     expect(
-      await screen.findByText("Compose is not available on this deployment yet."),
+      await screen.findByText(
+        "Compose is not available on this deployment yet.",
+      ),
     ).toBeTruthy();
   });
 });

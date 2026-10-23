@@ -22,14 +22,32 @@ describe("normalizeThread", () => {
       Description: "do the thing",
       State: "in_review",
       BlockedReason: "",
-      Comments: [{ author: "agent:builder", body: "seam wired", createdAt: "2026-09-14T10:00:00Z" }],
-      ChangeRefs: [{ kind: "commit", ref: "deadbeef", author: "agent:builder", createdAt: "2026-09-14T10:01:00Z" }],
+      Comments: [
+        {
+          author: "agent:builder",
+          body: "seam wired",
+          createdAt: "2026-09-14T10:00:00Z",
+        },
+      ],
+      ChangeRefs: [
+        {
+          kind: "commit",
+          ref: "deadbeef",
+          author: "agent:builder",
+          createdAt: "2026-09-14T10:01:00Z",
+        },
+      ],
       Holder: "agent:builder",
       RunID: "run-9",
       RequestedAgent: "agent:builder",
       Assignee: "agent:builder",
       statusHistory: [
-        { fromState: "in_progress", toState: "in_review", principal: "agent:builder", occurredAt: "2026-09-14T10:02:00Z" },
+        {
+          fromState: "in_progress",
+          toState: "in_review",
+          principal: "agent:builder",
+          occurredAt: "2026-09-14T10:02:00Z",
+        },
       ],
     });
     expect(t.workItemId).toBe("wi-1");
@@ -50,7 +68,9 @@ describe("normalizeThread", () => {
       title: "camel",
       description: "d",
       state: "todo",
-      comments: [{ author: "user:alice", body: "hi", createdAt: "2026-09-14T09:00:00Z" }],
+      comments: [
+        { author: "user:alice", body: "hi", createdAt: "2026-09-14T09:00:00Z" },
+      ],
       requestedAgent: "agent:reviewer",
       assignee: "agent:builder",
     });
@@ -70,7 +90,11 @@ describe("normalizeThread", () => {
   });
 
   it("normalizes requestedAgent/assignee to null when the wire omits them (ISI-4567 §2.1)", () => {
-    const t = normalizeThread({ workItemId: "wi-3", title: "t", state: "backlog" });
+    const t = normalizeThread({
+      workItemId: "wi-3",
+      title: "t",
+      state: "backlog",
+    });
     expect(t.requestedAgent).toBeNull();
     expect(t.assignee).toBeNull();
     // An empty-string stamp (sql NULL → "" on an older wire) also reads as null.
@@ -121,11 +145,25 @@ describe("buildActivity", () => {
   it("merges comments + events + changes chronologically, newest last", () => {
     const items = buildActivity(
       thread({
-        comments: [{ author: "u", body: "b", createdAt: "2026-09-14T10:00:00Z" }],
-        statusHistory: [
-          { fromState: "todo", toState: "in_progress", principal: "agent:x", occurredAt: "2026-09-14T09:00:00Z" },
+        comments: [
+          { author: "u", body: "b", createdAt: "2026-09-14T10:00:00Z" },
         ],
-        changeRefs: [{ kind: "commit", ref: "abc", author: "agent:x", createdAt: "2026-09-14T11:00:00Z" }],
+        statusHistory: [
+          {
+            fromState: "todo",
+            toState: "in_progress",
+            principal: "agent:x",
+            occurredAt: "2026-09-14T09:00:00Z",
+          },
+        ],
+        changeRefs: [
+          {
+            kind: "commit",
+            ref: "abc",
+            author: "agent:x",
+            createdAt: "2026-09-14T11:00:00Z",
+          },
+        ],
       }),
     );
     expect(items.map((i) => i.kind)).toEqual(["event", "comment", "change"]);
@@ -147,17 +185,29 @@ describe("buildActivity", () => {
 describe("mergeLiveThinking (ISI-5193)", () => {
   it("returns the activity unchanged when there are no live rows", () => {
     const base = buildActivity(
-      thread({ comments: [{ author: "u", body: "b", createdAt: "2026-09-14T10:00:00Z" }] }),
+      thread({
+        comments: [
+          { author: "u", body: "b", createdAt: "2026-09-14T10:00:00Z" },
+        ],
+      }),
     );
     expect(mergeLiveThinking(base, [])).toBe(base);
   });
 
   it("appends a live thinking row as an agent comment, chronologically", () => {
     const base = buildActivity(
-      thread({ comments: [{ author: "u", body: "hi", createdAt: "2026-09-14T10:00:00Z" }] }),
+      thread({
+        comments: [
+          { author: "u", body: "hi", createdAt: "2026-09-14T10:00:00Z" },
+        ],
+      }),
     );
     const merged = mergeLiveThinking(base, [
-      { author: "agent:sam", body: "[run abc] working…", at: "2026-09-14T10:05:00Z" },
+      {
+        author: "agent:sam",
+        body: "[run abc] working…",
+        at: "2026-09-14T10:05:00Z",
+      },
     ]);
     expect(merged).toHaveLength(2);
     const last = merged[merged.length - 1];
@@ -176,35 +226,52 @@ describe("mergeLiveThinking (ISI-5193)", () => {
     const base = buildActivity(
       thread({
         comments: [
-          { author: "agent:sam", body: "[run abc] step one", createdAt: "2026-09-14T10:00:00Z" },
+          {
+            author: "agent:sam",
+            body: "[run abc] step one",
+            createdAt: "2026-09-14T10:00:00Z",
+          },
         ],
       }),
     );
     const merged = mergeLiveThinking(base, [
-      { author: "agent:sam", body: "[run abc] step one", at: "2026-09-14T10:00:01Z" },
+      {
+        author: "agent:sam",
+        body: "[run abc] step one",
+        at: "2026-09-14T10:00:01Z",
+      },
     ]);
     expect(merged).toHaveLength(1);
     expect(merged[0].comment?.createdAt).toBe("2026-09-14T10:00:00Z"); // durable wins
   });
 
   it("de-dupes duplicate live rows (SSE reconnect replay) against each other", () => {
-    const merged = mergeLiveThinking([], [
-      { author: "agent:sam", body: "same", at: "2026-09-14T10:00:00Z" },
-      { author: "agent:sam", body: "same", at: "2026-09-14T10:00:00Z" },
-      { author: "agent:sam", body: "different", at: "2026-09-14T10:00:02Z" },
-    ]);
+    const merged = mergeLiveThinking(
+      [],
+      [
+        { author: "agent:sam", body: "same", at: "2026-09-14T10:00:00Z" },
+        { author: "agent:sam", body: "same", at: "2026-09-14T10:00:00Z" },
+        { author: "agent:sam", body: "different", at: "2026-09-14T10:00:02Z" },
+      ],
+    );
     expect(merged.map((i) => i.comment?.body)).toEqual(["same", "different"]);
   });
 
   it("skips a live row with an empty body", () => {
-    expect(mergeLiveThinking([], [{ author: "agent:sam", body: "", at: "x" }])).toHaveLength(0);
+    expect(
+      mergeLiveThinking([], [{ author: "agent:sam", body: "", at: "x" }]),
+    ).toHaveLength(0);
   });
 });
 
 describe("subTicketProgress", () => {
   it("counts done vs total", () => {
     expect(
-      subTicketProgress([{ state: "done" }, { state: "todo" }, { state: "done" }]),
+      subTicketProgress([
+        { state: "done" },
+        { state: "todo" },
+        { state: "done" },
+      ]),
     ).toEqual({ done: 2, total: 3 });
     expect(subTicketProgress([])).toEqual({ done: 0, total: 0 });
   });

@@ -54,7 +54,11 @@ export function PanelCard({
           <div className="ov-panel__state" role="alert">
             <span>{errorLabel}</span>
             {onRetry && (
-              <button type="button" className="ov-panel__retry" onClick={onRetry}>
+              <button
+                type="button"
+                className="ov-panel__retry"
+                onClick={onRetry}
+              >
                 Retry
               </button>
             )}

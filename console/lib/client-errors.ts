@@ -44,8 +44,12 @@ export function reportClientError(
       stack: err instanceof Error ? err.stack : undefined,
       context,
       at: new Date().toISOString(),
-      url: typeof location !== "undefined" ? location.pathname + location.search : undefined,
-      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
+      url:
+        typeof location !== "undefined"
+          ? location.pathname + location.search
+          : undefined,
+      userAgent:
+        typeof navigator !== "undefined" ? navigator.userAgent : undefined,
     };
 
     // Channel 1: structured console — greppable tag, always emitted.
@@ -54,8 +58,13 @@ export function reportClientError(
 
     // Channel 2: best-effort server beacon (fire-and-forget; a 404/blocked
     // beacon just returns false — never throws, never blocks the crash path).
-    if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
-      const blob = new Blob([JSON.stringify(report)], { type: "application/json" });
+    if (
+      typeof navigator !== "undefined" &&
+      typeof navigator.sendBeacon === "function"
+    ) {
+      const blob = new Blob([JSON.stringify(report)], {
+        type: "application/json",
+      });
       navigator.sendBeacon(BEACON_PATH, blob);
     }
   } catch {

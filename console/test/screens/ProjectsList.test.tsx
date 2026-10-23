@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { ProjectsList, projectId } from "@/components/ProjectsList";
 
 afterEach(() => {
@@ -47,7 +53,9 @@ describe("<ProjectsList> — S6 AC2 row retarget into the S1 workspace (ISI-3967
   it("fetches /api/squad/projects and renders one row per fleet project", async () => {
     stubFetch(200, fleetPayload);
     render(<ProjectsList />);
-    await waitFor(() => expect(screen.getByTestId("projects-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("projects-ready")).toBeTruthy(),
+    );
     expect(screen.getAllByTestId("projects-row").length).toBe(2);
     expect(screen.getAllByTestId("projects-phase-count").length).toBe(2);
   });
@@ -55,7 +63,9 @@ describe("<ProjectsList> — S6 AC2 row retarget into the S1 workspace (ISI-3967
   it("links each row's primary click to /projects/{namespace/name} — the S1 workspace, not the interim /agents?team=", async () => {
     stubFetch(200, fleetPayload);
     render(<ProjectsList />);
-    await waitFor(() => expect(screen.getByTestId("projects-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("projects-ready")).toBeTruthy(),
+    );
     const links = screen.getAllByTestId("projects-row-link");
     expect(links.length).toBe(2);
     // Real, keyboard-focusable anchors (not an onClick div) — S6 accessibility pin.
@@ -72,38 +82,56 @@ describe("<ProjectsList> — S6 AC2 row retarget into the S1 workspace (ISI-3967
     expect(links[0].textContent).toBe("webapp");
     // The retarget's whole point (AC2): the primary row anchor no longer points at the
     // interim agents-org jump.
-    links.forEach((l) => expect(l.getAttribute("href")?.startsWith("/agents?team=")).toBe(false));
+    links.forEach((l) =>
+      expect(l.getAttribute("href")?.startsWith("/agents?team=")).toBe(false),
+    );
   });
 
   it("keeps the secondary squad-agents jump when the owning Team UID resolved (ISI-3943 AC2)", async () => {
     stubFetch(200, fleetPayload);
     render(<ProjectsList />);
-    await waitFor(() => expect(screen.getByTestId("projects-ready")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("projects-ready")).toBeTruthy(),
+    );
     const agentsLinks = screen.getAllByTestId("projects-agents-link");
     expect(agentsLinks.length).toBe(2);
-    expect(agentsLinks[0].getAttribute("href")).toBe("/agents-team?team=uid-alpha");
+    expect(agentsLinks[0].getAttribute("href")).toBe(
+      "/agents-team?team=uid-alpha",
+    );
   });
 
   it("renders the empty state when the wire sends projects: null (nil-slice contract)", async () => {
     stubFetch(200, { fleet: false, projects: null });
     const originalLocation = window.location;
     const fakeLocation = { href: "" };
-    Object.defineProperty(window, "location", { value: fakeLocation, configurable: true });
+    Object.defineProperty(window, "location", {
+      value: fakeLocation,
+      configurable: true,
+    });
     render(<ProjectsList />);
-    await waitFor(() => expect(screen.getByTestId("projects-empty")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("projects-empty")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Create a project" }));
     expect(fakeLocation.href).toBe("/compose?kind=project");
-    Object.defineProperty(window, "location", { value: originalLocation, configurable: true });
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      configurable: true,
+    });
   });
 
   it("renders the honest terminal-state cards the BFF relays (classifyOverviewStatus contract)", async () => {
     stubFetch(401);
     render(<ProjectsList />);
-    await waitFor(() => expect(screen.getByTestId("projects-unauthenticated")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("projects-unauthenticated")).toBeTruthy(),
+    );
 
     cleanup();
     stubFetch(501);
     render(<ProjectsList />);
-    await waitFor(() => expect(screen.getByTestId("projects-not-wired")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("projects-not-wired")).toBeTruthy(),
+    );
   });
 });

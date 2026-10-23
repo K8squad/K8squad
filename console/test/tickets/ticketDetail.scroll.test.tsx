@@ -12,7 +12,13 @@
 // — here we prove only that it is DOCKED and that the FAB is wired.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -35,7 +41,10 @@ class NoopResizeObserver {
   unobserve() {}
   disconnect() {}
 }
-vi.stubGlobal("ResizeObserver", NoopResizeObserver as unknown as typeof ResizeObserver);
+vi.stubGlobal(
+  "ResizeObserver",
+  NoopResizeObserver as unknown as typeof ResizeObserver,
+);
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -69,14 +78,19 @@ function routeFetch() {
       return Promise.resolve(jsonResponse({ agents: SQUAD }));
     }
     if (u.includes("/api/runs")) return Promise.resolve(jsonResponse([]));
-    if (u.includes("/api/work-items/")) return Promise.resolve(jsonResponse(THREAD));
+    if (u.includes("/api/work-items/"))
+      return Promise.resolve(jsonResponse(THREAD));
     if (u.includes("/work-items")) return Promise.resolve(jsonResponse([]));
     return Promise.resolve(jsonResponse([]));
   });
 }
 
 /** Force the page to look scrollable (content below the fold) and notify listeners. */
-function setPageScroll({ scrollHeight, scrollY, innerHeight }: {
+function setPageScroll({
+  scrollHeight,
+  scrollY,
+  innerHeight,
+}: {
   scrollHeight: number;
   scrollY: number;
   innerHeight: number;
@@ -85,7 +99,10 @@ function setPageScroll({ scrollHeight, scrollY, innerHeight }: {
     configurable: true,
     value: scrollHeight,
   });
-  Object.defineProperty(window, "scrollY", { configurable: true, value: scrollY });
+  Object.defineProperty(window, "scrollY", {
+    configurable: true,
+    value: scrollY,
+  });
   Object.defineProperty(window, "innerHeight", {
     configurable: true,
     value: innerHeight,

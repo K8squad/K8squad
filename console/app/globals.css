@@ -42,8 +42,12 @@
   /* Geist Sans / Geist Mono (self-hosted via next/font, wired on <html> in app/layout.tsx). The
    * --font-geist-* vars come from GeistSans.variable / GeistMono.variable; system stack is the
    * fallback if the font asset fails to load. */
-  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --font-sans: var(--font-geist-sans), system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  --font-mono:
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  --font-sans:
+    var(--font-geist-sans), system-ui, -apple-system, Segoe UI, Roboto,
+    sans-serif;
 }
 
 /* Dark: navy canvas, light text (default). Surfaces are a 4-step elevation ramp and text a 3-step
@@ -2243,15 +2247,17 @@ a:hover {
   color: var(--text-2);
   border-radius: var(--radius) var(--radius) 0 0;
   min-height: 40px;
-  transition: color 0.1s, border-color 0.1s;
+  transition:
+    color 0.1s,
+    border-color 0.1s;
 }
 .compose__tab:hover {
   color: var(--text-1);
   background: var(--canvas);
 }
 .compose__tab--active {
-  color: #3D7DFF;
-  border-bottom-color: #3D7DFF;
+  color: #3d7dff;
+  border-bottom-color: #3d7dff;
   font-weight: 600;
 }
 .compose__tab--adv {
@@ -2274,8 +2280,8 @@ a:hover {
   align-items: flex-start;
   gap: 8px;
   padding: 10px 14px;
-  background: color-mix(in srgb, #3D7DFF 8%, var(--canvas));
-  border: 1px solid color-mix(in srgb, #3D7DFF 25%, var(--border));
+  background: color-mix(in srgb, #3d7dff 8%, var(--canvas));
+  border: 1px solid color-mix(in srgb, #3d7dff 25%, var(--border));
   border-radius: var(--radius);
   margin-bottom: 12px;
   font-size: 13px;
@@ -2283,7 +2289,7 @@ a:hover {
 }
 .compose__guidance-icon {
   flex-shrink: 0;
-  color: #3D7DFF;
+  color: #3d7dff;
   font-style: normal;
 }
 
@@ -2595,8 +2601,15 @@ a:hover {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
+    linear-gradient(
+      color-mix(in srgb, var(--border) 55%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--border) 55%, transparent) 1px,
+      transparent 1px
+    );
   background-size: 44px 44px;
   mask-image: radial-gradient(120% 90% at 10% 10%, #000 0%, transparent 70%);
   opacity: 0.5;
@@ -4647,8 +4660,15 @@ a:hover {
   animation: gh-pulse 1.4s ease-in-out infinite;
 }
 @keyframes gh-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%       { opacity: 0.5; transform: scale(0.75); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.75);
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .gh-local-badge__pulse {
@@ -4697,7 +4717,8 @@ a:hover {
   height: 18px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--ksq-run, #a78bfa) 20%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ksq-run, #a78bfa) 45%, var(--border));
+  border: 1px solid
+    color-mix(in srgb, var(--ksq-run, #a78bfa) 45%, var(--border));
   color: var(--ksq-run, #a78bfa);
   font-size: 9px;
   font-weight: 700;
@@ -5167,7 +5188,11 @@ a:hover {
   opacity: 0.7;
 }
 .effective-model--unresolved {
-  border-color: color-mix(in srgb, var(--status-warn, #f59e0b) 45%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--status-warn, #f59e0b) 45%,
+    transparent
+  );
   background: color-mix(in srgb, var(--status-warn, #f59e0b) 8%, transparent);
 }
 .effective-model__warn {

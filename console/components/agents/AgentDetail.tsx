@@ -91,7 +91,10 @@ export function AgentDetail({
           <StatusChip status={agent.status} pausedReason={agent.pausedReason} />
         </div>
         <div className="agent-detail__meta">
-          <span className="org-node__runtime" title={`runtime: ${agent.runtimeType}`}>
+          <span
+            className="org-node__runtime"
+            title={`runtime: ${agent.runtimeType}`}
+          >
             {agent.runtimeType}
           </span>
           <span className="org-node__roles">
@@ -119,71 +122,74 @@ export function AgentDetail({
       <div className="card">
         <h2 className="agent-detail__runs-title">Run history</h2>
         <p className="muted agent-detail__tokens-note">
-          Token counts are runtime-reported / best-effort — legibility,
-          not the billing authority (authoritative consumption is the dashboard).
+          Token counts are runtime-reported / best-effort — legibility, not the
+          billing authority (authoritative consumption is the dashboard).
         </p>
         {runs.length === 0 ? (
           <p className="muted">No runs yet for this agent.</p>
         ) : (
           <div className="run-history-wrap">
-          <table className="run-history">
-            <thead>
-              <tr>
-                <th scope="col">Run</th>
-                <th scope="col">Status</th>
-                <th scope="col">Duration</th>
-                <th scope="col">Tokens</th>
-                <th scope="col">Work item</th>
-                <th scope="col" aria-label="drill in" />
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((r) => {
-                const isOpen = openRun === r.id;
-                return [
-                  <tr key={r.id} className="run-history__row">
-                    <td>
-                      <code>{r.id}</code>
-                    </td>
-                    <td>
-                      <span
-                        className={`run-phase run-phase--${r.phase.toLowerCase()}`}
-                      >
-                        {r.phase}
-                        {r.pausedReason ? ` (${r.pausedReason})` : ""}
-                      </span>
-                    </td>
-                    <td>{fmtDuration(r.durationSeconds)}</td>
-                    <td>{fmtTokens(r)}</td>
-                    <td>
-                      {r.workItemRef ? <code>{r.workItemRef}</code> : "—"}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="run-history__drill"
-                        aria-expanded={isOpen}
-                        onClick={() => setOpenRun(isOpen ? null : r.id)}
-                      >
-                        {isOpen ? "Hide logs" : "View logs"}
-                      </button>
-                    </td>
-                  </tr>,
-                  isOpen ? (
-                    <tr key={`${r.id}-logs`} className="run-history__logs-row">
-                      <td colSpan={6}>
-                        <RunLogs
-                          runId={r.id}
-                          phase={r.phase}
-                          traceId={r.traceId}
-                        />
+            <table className="run-history">
+              <thead>
+                <tr>
+                  <th scope="col">Run</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Duration</th>
+                  <th scope="col">Tokens</th>
+                  <th scope="col">Work item</th>
+                  <th scope="col" aria-label="drill in" />
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => {
+                  const isOpen = openRun === r.id;
+                  return [
+                    <tr key={r.id} className="run-history__row">
+                      <td>
+                        <code>{r.id}</code>
                       </td>
-                    </tr>
-                  ) : null,
-                ];
-              })}
-            </tbody>
-          </table>
+                      <td>
+                        <span
+                          className={`run-phase run-phase--${r.phase.toLowerCase()}`}
+                        >
+                          {r.phase}
+                          {r.pausedReason ? ` (${r.pausedReason})` : ""}
+                        </span>
+                      </td>
+                      <td>{fmtDuration(r.durationSeconds)}</td>
+                      <td>{fmtTokens(r)}</td>
+                      <td>
+                        {r.workItemRef ? <code>{r.workItemRef}</code> : "—"}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="run-history__drill"
+                          aria-expanded={isOpen}
+                          onClick={() => setOpenRun(isOpen ? null : r.id)}
+                        >
+                          {isOpen ? "Hide logs" : "View logs"}
+                        </button>
+                      </td>
+                    </tr>,
+                    isOpen ? (
+                      <tr
+                        key={`${r.id}-logs`}
+                        className="run-history__logs-row"
+                      >
+                        <td colSpan={6}>
+                          <RunLogs
+                            runId={r.id}
+                            phase={r.phase}
+                            traceId={r.traceId}
+                          />
+                        </td>
+                      </tr>
+                    ) : null,
+                  ];
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

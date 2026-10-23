@@ -36,8 +36,7 @@ const P: Record<NavIconId, string> = {
   // the mail-envelope and checklist marks already in the set. Reads as "things arriving
   // that need attention" at 18px rail size.
   inbox: "M4 4h16v11H4V4zm0 11l4 5h8l4-5M12 4v8m-3-3l3 3 3-3",
-  compose:
-    "M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z",
+  compose: "M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z",
   teams:
     "M9 11a3 3 0 100-6 3 3 0 000 6zM3 20v-1c0-2.2 2.7-4 6-4s6 1.8 6 4v1H3zm13-9a3 3 0 10-1-5.8M21 20v-1c0-1.8-1.6-3-3.5-3.6",
   // Agents & Team (ISI-5432): the unified surface node — the org glyph (one agent among its
@@ -51,18 +50,17 @@ const P: Record<NavIconId, string> = {
   project:
     "M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V6z",
   build: "M13 2L4 14h6l-1 8 9-12h-6l1-8z",
-  tickets:
-    "M4 5h16v4a2 2 0 000 4v4H4v-4a2 2 0 000-4V5zM10 7v2m0 3v2m0 3v1",
+  tickets: "M4 5h16v4a2 2 0 000 4v4H4v-4a2 2 0 000-4V5zM10 7v2m0 3v2m0 3v1",
   runs: "M6 3h12v14l-6 4-6-4V3zm2 6h8M8 13h8",
-  discussion:
-    "M4 4h16v12H8l-4 4V4zm4 4h8M8 12h5",
+  discussion: "M4 4h16v12H8l-4 4V4zm4 4h8M8 12h5",
   // GitHub / source-control (ISI-4092): trademark-safe git-fork line-mark — two upper commit
   // nodes converging into a lower node. Brand-neutral, symmetric, reads clearly at 16px.
   github:
     "M9 18a3 3 0 106 0 3 3 0 10-6 0M3 6a3 3 0 106 0 3 3 0 10-6 0M15 6a3 3 0 106 0 3 3 0 10-6 0M18 9v2a2 2 0 01-2 2H8a2 2 0 01-2-2V9M12 12v3",
   // Files (ISI-4006 S4c): document/page with folded corner + text lines — the read-only
   // File Explorer section. Distinct from the folder `project`/`projects` glyphs.
-  files: "M6 2h8l4 4v14a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2zM14 2v4h4M8 13h8M8 17h5",
+  files:
+    "M6 2h8l4 4v14a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2zM14 2v4h4M8 13h8M8 17h5",
   settings:
     "M12 8a4 4 0 100 8 4 4 0 000-8zm8.4 4l1.6-1.2-1.6-2.7-1.9.6a7 7 0 00-1.7-1L16.4 4h-3.2l-.6 1.9a7 7 0 00-1.7 1l-1.9-.6L7.4 8.8 9 10a7 7 0 000 2l-1.6 1.2 1.6 2.7 1.9-.6a7 7 0 001.7 1l.6 1.9h3.2l.6-1.9a7 7 0 001.7-1l1.9.6 1.6-2.7L20.4 12a7 7 0 000-.1z",
   configuration:
@@ -79,8 +77,7 @@ const P: Record<NavIconId, string> = {
   // Project-Detail Workspace section icons (ISI-3957 S1): landing + issues (files/github reuse the
   // ISI-4006/ISI-4092 glyphs defined above; issues reuses the tickets glyph).
   landing: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
-  issues:
-    "M4 5h16v4a2 2 0 000 4v4H4v-4a2 2 0 000-4V5zM10 7v2m0 3v2m0 3v1",
+  issues: "M4 5h16v4a2 2 0 000 4v4H4v-4a2 2 0 000-4V5zM10 7v2m0 3v2m0 3v1",
   menu: "M4 6h16M4 12h16M4 18h16",
   // Padlock (E1-S3 nav lock): rounded shackle + body, stroke style matching the set.
   lock: "M8 11V7a4 4 0 118 0v4M5 11h14v10H5V11z",

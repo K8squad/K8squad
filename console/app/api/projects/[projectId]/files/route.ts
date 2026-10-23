@@ -26,5 +26,8 @@ export async function GET(
 ): Promise<Response> {
   const { projectId } = await params;
   const search = req.nextUrl.search;
-  return proxyJson(req, `/api/projects/${encodeURIComponent(projectId)}/files${search}`);
+  return proxyJson(
+    req,
+    `/api/projects/${encodeURIComponent(projectId)}/files${search}`,
+  );
 }

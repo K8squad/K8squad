@@ -155,9 +155,9 @@ describe("createDiscussionClient — contract paths (AC1)", () => {
 describe("createDiscussionClient — existence-hiding (AC5)", () => {
   it("cross-Team read (403) surfaces as not-found with no foreign data", async () => {
     const client = createDiscussionClient(stub(403, [{ id: "foreign" }]));
-    await expect(client.getThread("teamA-proj", "thread")).rejects.toMatchObject(
-      { outcome: "not-found" },
-    );
+    await expect(
+      client.getThread("teamA-proj", "thread"),
+    ).rejects.toMatchObject({ outcome: "not-found" });
   });
 
   it("404 surfaces as not-found", async () => {
@@ -169,9 +169,9 @@ describe("createDiscussionClient — existence-hiding (AC5)", () => {
 
   it("a denied retract (403) surfaces as not-found, never leaking the message", async () => {
     const client = createDiscussionClient(stub(403, {}));
-    await expect(
-      client.retractMessage("p", "t", "m"),
-    ).rejects.toMatchObject({ outcome: "not-found" });
+    await expect(client.retractMessage("p", "t", "m")).rejects.toMatchObject({
+      outcome: "not-found",
+    });
   });
 });
 
@@ -236,9 +236,7 @@ describe("createDiscussionClient — v2 wire (ISI-4929 / ISI-4926)", () => {
     const client = createDiscussionClient(fetchImpl);
     const agents = await client.getRoster("squad-b/todo-demo");
     // The slug is percent-encoded so "namespace/name" is one path segment.
-    expect(urls[0]).toBe(
-      "/api/projects/squad-b%2Ftodo-demo/discussion/roster",
-    );
+    expect(urls[0]).toBe("/api/projects/squad-b%2Ftodo-demo/discussion/roster");
     expect(agents).toHaveLength(1);
     expect(agents[0]).toMatchObject({ id: "john", name: "john" });
   });
@@ -284,7 +282,11 @@ describe("createDiscussionClient — party sessions (ISI-5617 / ISI-5613 Gap 2)"
 
   it("listPartySessions collapses a deny/404 and a null body to []", async () => {
     expect(
-      await createDiscussionClient(stub(404, null)).listPartySessions("p", "t", true),
+      await createDiscussionClient(stub(404, null)).listPartySessions(
+        "p",
+        "t",
+        true,
+      ),
     ).toEqual([]);
     expect(
       await createDiscussionClient(stub(200, null)).listPartySessions("p", "t"),

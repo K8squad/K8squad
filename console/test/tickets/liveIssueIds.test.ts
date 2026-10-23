@@ -22,7 +22,13 @@ describe("isLiveRunPhase — task-list live semantics (ISI-5520)", () => {
   });
 
   it("does NOT treat terminal or paused phases as live", () => {
-    for (const p of ["Succeeded", "Failed", "Cancelled", "Canceled", "Paused"]) {
+    for (const p of [
+      "Succeeded",
+      "Failed",
+      "Cancelled",
+      "Canceled",
+      "Paused",
+    ]) {
       expect(isLiveRunPhase(p)).toBe(false);
     }
   });
@@ -64,7 +70,9 @@ describe("liveIssueIdsFromOverview — project-sliced live-issue set", () => {
       { name: "r1", workItem: "wi-a", phase: "Running" },
     ]);
     expect(liveIssueIdsFromOverview(data, "demo").has("wi-a")).toBe(true);
-    expect(liveIssueIdsFromOverview(data, "demo-ns/demo").has("wi-a")).toBe(true);
+    expect(liveIssueIdsFromOverview(data, "demo-ns/demo").has("wi-a")).toBe(
+      true,
+    );
     expect(liveIssueIdsFromOverview(data, "other").size).toBe(0);
   });
 

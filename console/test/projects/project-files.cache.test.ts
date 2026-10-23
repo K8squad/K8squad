@@ -25,11 +25,24 @@ afterEach(() => {
 });
 
 /** A cacheable (non-degraded, generation-stamped) listing. */
-function listing(gen: string, entries: FileEntry[], over: Partial<FileListing> = {}): FileListing {
+function listing(
+  gen: string,
+  entries: FileEntry[],
+  over: Partial<FileListing> = {},
+): FileListing {
   return { path: "", entries, generation: gen, ...over };
 }
-const file = (name: string, size: number, path = name): FileEntry => ({ name, path, type: "file", size });
-const dir = (name: string, path = name): FileEntry => ({ name, path, type: "dir" });
+const file = (name: string, size: number, path = name): FileEntry => ({
+  name,
+  path,
+  type: "file",
+  size,
+});
+const dir = (name: string, path = name): FileEntry => ({
+  name,
+  path,
+  type: "dir",
+});
 
 describe("project-files D5a cache — cacheability (M1/M2)", () => {
   it("caches a non-degraded generation-stamped listing and serves it fromCache", () => {
@@ -44,13 +57,17 @@ describe("project-files D5a cache — cacheability (M1/M2)", () => {
   });
 
   it("M1: never caches a degraded / busy / no_browse_target listing", () => {
-    cacheListing("p", "", listing("g1", [], { degraded: true, reason: "workspace_busy" }));
+    cacheListing(
+      "p",
+      "",
+      listing("g1", [], { degraded: true, reason: "workspace_busy" }),
+    );
     expect(getCachedListing("p", "")).toBeNull();
     cacheListing("p", "", listing("g1", [], { reason: "no_browse_target" }));
     expect(getCachedListing("p", "")).toBeNull();
   });
 
-  it("M2: an absent/empty generation is uncacheable (never keyed on \"\")", () => {
+  it('M2: an absent/empty generation is uncacheable (never keyed on "")', () => {
     cacheListing("p", "", { path: "", entries: [file("a.ts", 1)] }); // no generation
     expect(getCachedListing("p", "")).toBeNull();
     cacheListing("p", "", listing("", [file("a.ts", 1)])); // empty generation
@@ -63,7 +80,8 @@ describe("project-files D5a cache — cacheability (M1/M2)", () => {
 describe("project-files D5a cache — LRU cap (M3)", () => {
   it("evicts the oldest entry once the cap is exceeded", () => {
     const CAP = 256;
-    for (let i = 0; i <= CAP; i++) cacheListing("p", `d${i}`, listing("g1", [file("f", 1)]));
+    for (let i = 0; i <= CAP; i++)
+      cacheListing("p", `d${i}`, listing("g1", [file("f", 1)]));
     // d0 was the oldest of CAP+1 inserts → evicted; the newest survives.
     expect(getCachedListing("p", "d0")).toBeNull();
     expect(getCachedListing("p", `d${CAP}`)).not.toBeNull();
@@ -73,7 +91,8 @@ describe("project-files D5a cache — LRU cap (M3)", () => {
     const CAP = 256;
     cacheListing("p", "keep", listing("g1", [file("f", 1)]));
     // Fill exactly to the cap (keep + d0..d254 = 256) so nothing is evicted yet.
-    for (let i = 0; i < CAP - 1; i++) cacheListing("p", `d${i}`, listing("g1", [file("f", 1)]));
+    for (let i = 0; i < CAP - 1; i++)
+      cacheListing("p", `d${i}`, listing("g1", [file("f", 1)]));
     // Touch `keep` so it becomes MRU — now d0 is the least-recently-used.
     getCachedListing("p", "keep");
     // One more insert tips over the cap → the victim is d0, NOT the touched keep.
@@ -137,7 +156,9 @@ describe("project-files D5a — applyRevalidation coherence verdict", () => {
       expect(out.reconcile.restated).toEqual(["a.ts"]);
     }
     // Cache now holds the fresh bytes.
-    expect((getCachedListing("p", "")!.entries ?? []).map((e) => e.name)).toEqual(["a.ts", "new.ts"]);
+    expect(
+      (getCachedListing("p", "")!.entries ?? []).map((e) => e.name),
+    ).toEqual(["a.ts", "new.ts"]);
   });
 
   it("replaced: a generation change hard-invalidates the project and replaces wholesale (C3)", () => {
@@ -156,12 +177,31 @@ describe("project-files D5a — applyRevalidation coherence verdict", () => {
 
 describe("project-files D5a — revalidateListing fetcher (M4/M5)", () => {
   const okJson = (body: unknown): Response =>
-    ({ ok: true, status: 200, json: () => Promise.resolve(body) }) as unknown as Response;
+    ({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    }) as unknown as Response;
   const status = (code: number): Response =>
-    ({ ok: code >= 200 && code < 300, status: code, json: () => Promise.resolve(null) }) as unknown as Response;
+    ({
+      ok: code >= 200 && code < 300,
+      status: code,
+      json: () => Promise.resolve(null),
+    }) as unknown as Response;
 
   it("returns fresh bytes on a 200 cacheable listing", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(okJson({ path: "", entries: [{ name: "a.ts", type: "file", size: 1 }], generation: "g1" }))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          okJson({
+            path: "",
+            entries: [{ name: "a.ts", type: "file", size: 1 }],
+            generation: "g1",
+          }),
+        ),
+      ),
+    );
     const fresh = await revalidateListing("p", "");
     expect(fresh).not.toBeNull();
     expect(fresh!.generation).toBe("g1");
@@ -169,21 +209,45 @@ describe("project-files D5a — revalidateListing fetcher (M4/M5)", () => {
   });
 
   it("M4: a 202/503 (foreground state) resolves null — never escalates, cache kept", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(status(503))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(status(503))),
+    );
     expect(await revalidateListing("p", "")).toBeNull();
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(status(202))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(status(202))),
+    );
     expect(await revalidateListing("p", "")).toBeNull();
   });
 
   it("M4: a 200-degraded (project went busy) resolves null — keep cache, show stale", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(okJson({ path: "", entries: [], degraded: true, reason: "workspace_busy", generation: "g1" }))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          okJson({
+            path: "",
+            entries: [],
+            degraded: true,
+            reason: "workspace_busy",
+            generation: "g1",
+          }),
+        ),
+      ),
+    );
     expect(await revalidateListing("p", "")).toBeNull();
   });
 
   it("M5: concurrent revalidates for the same key share one in-flight request", async () => {
-    const spy = vi.fn(() => Promise.resolve(okJson({ path: "", entries: [], generation: "g1" })));
+    const spy = vi.fn(() =>
+      Promise.resolve(okJson({ path: "", entries: [], generation: "g1" })),
+    );
     vi.stubGlobal("fetch", spy as unknown as typeof fetch);
-    const [a, b] = await Promise.all([revalidateListing("p", ""), revalidateListing("p", "")]);
+    const [a, b] = await Promise.all([
+      revalidateListing("p", ""),
+      revalidateListing("p", ""),
+    ]);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(a!.generation).toBe("g1");
     expect(b!.generation).toBe("g1");

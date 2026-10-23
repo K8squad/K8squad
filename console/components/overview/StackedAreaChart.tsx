@@ -42,7 +42,11 @@ export function StackedAreaChart({
   if (loading) {
     return (
       <div className="ov-chart">
-        <div className="ov-chart__state" role="status" aria-label="Loading chart">
+        <div
+          className="ov-chart__state"
+          role="status"
+          aria-label="Loading chart"
+        >
           <span className="ov-skel" style={{ width: "100%", height: 120 }} />
         </div>
       </div>
@@ -58,7 +62,11 @@ export function StackedAreaChart({
   if (n < 2 || maxTotal === 0) {
     return (
       <div className="ov-chart">
-        <div className="ov-chart__state" role="img" aria-label={ariaLabel ?? "No time-series data"}>
+        <div
+          className="ov-chart__state"
+          role="img"
+          aria-label={ariaLabel ?? "No time-series data"}
+        >
           <span>Not enough history yet.</span>
         </div>
         {caption && <span className="ov-chart__caption">{caption}</span>}
@@ -93,7 +101,9 @@ export function StackedAreaChart({
     ariaLabel ??
     `Stacked area chart of ${series.map((s) => s.label).join(", ")} over ${n}` +
       ` ${xLabels ? "points" : "time points"}` +
-      (xLabels && xLabels.length ? ` from ${xLabels[0]} to ${xLabels[xLabels.length - 1]}` : "");
+      (xLabels && xLabels.length
+        ? ` from ${xLabels[0]} to ${xLabels[xLabels.length - 1]}`
+        : "");
 
   return (
     <div className="ov-chart">
@@ -106,7 +116,13 @@ export function StackedAreaChart({
       >
         <title>{desc}</title>
         {bands.map((b) => (
-          <polygon key={b.key} points={b.points} fill={b.color} fillOpacity={0.85} aria-hidden="true" />
+          <polygon
+            key={b.key}
+            points={b.points}
+            fill={b.color}
+            fillOpacity={0.85}
+            aria-hidden="true"
+          />
         ))}
       </svg>
       <div className="ov-chart__legend" aria-hidden="true">

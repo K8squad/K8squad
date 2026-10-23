@@ -184,9 +184,7 @@ function UserRow({
             className="users-select"
             value={user.globalRole}
             disabled={busy || deactivated}
-            onChange={(e) =>
-              onRoleChange(user, e.target.value as GlobalRole)
-            }
+            onChange={(e) => onRoleChange(user, e.target.value as GlobalRole)}
           >
             <option value="user">user</option>
             <option value="admin">admin</option>

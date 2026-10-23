@@ -16,7 +16,13 @@
 // asynchronously. The button is debounced client-side (30 s) to match the
 // server-side window — a 429 from the server also latches the client debounce.
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
 import { GitHubIssuesKanban } from "@/components/GitHubIssuesKanban";
 import { CiCdPipelineStatus } from "@/components/github/CiCdPipelineStatus";
@@ -95,7 +101,11 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
 
   if (state.kind === "loading") {
     return (
-      <section className="github-status" aria-busy="true" data-testid="github-loading">
+      <section
+        className="github-status"
+        aria-busy="true"
+        data-testid="github-loading"
+      >
         <h1>GitHub status</h1>
         <p className="muted">Loading repo status from the mirror…</p>
       </section>
@@ -103,10 +113,16 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
   }
 
   if (state.kind === "unauthenticated") {
-    return honest("Not signed in", "Your session has expired — sign in to view GitHub status.");
+    return honest(
+      "Not signed in",
+      "Your session has expired — sign in to view GitHub status.",
+    );
   }
   if (state.kind === "not-found") {
-    return honest("No GitHub status", "This project has no GitHub status, or you cannot access it.");
+    return honest(
+      "No GitHub status",
+      "This project has no GitHub status, or you cannot access it.",
+    );
   }
   if (state.kind === "not-wired") {
     return honest(
@@ -229,7 +245,10 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
       </header>
 
       {chip.tone === "running" && (
-        <p className="muted github-status__autoline" data-testid="github-autoline">
+        <p
+          className="muted github-status__autoline"
+          data-testid="github-autoline"
+        >
           ⚡ Auto-refreshed — webhook + 5-min poll · no manual kick
         </p>
       )}
@@ -237,7 +256,12 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
       {/* Global sync-health banner: stays above the view switch so a stale or
          errored mirror is visible on every GitHub screen, not just Sync status. */}
       {card && (
-        <StateCard card={card} syncing={syncing} onRetry={() => void handleSync()} projectId={projectId} />
+        <StateCard
+          card={card}
+          syncing={syncing}
+          onRetry={() => void handleSync()}
+          projectId={projectId}
+        />
       )}
 
       <nav
@@ -305,9 +329,17 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
               data-ghost={stale ? "true" : "false"}
               data-stale={stale ? "true" : "false"}
             >
-              <PullRequestManagement data={data} projectId={projectId} ghost={stale} />
+              <PullRequestManagement
+                data={data}
+                projectId={projectId}
+                ghost={stale}
+              />
               <GitHubIssuesKanban issues={data.issues} projectId={projectId} />
-              <CiCdPipelineStatus data={data} projectId={projectId} ghost={stale} />
+              <CiCdPipelineStatus
+                data={data}
+                projectId={projectId}
+                ghost={stale}
+              />
               <ReleasePanel releases={data.releases} />
               <BranchPanel branches={data.branches} />
             </div>
@@ -400,7 +432,8 @@ function StateCard({
   onRetry: () => void;
   projectId: string;
 }) {
-  const toneClass = card.tone === "neutral" ? "" : ` github-state-card--${card.tone}`;
+  const toneClass =
+    card.tone === "neutral" ? "" : ` github-state-card--${card.tone}`;
   return (
     <div
       className={`card github-state-card${toneClass}`}
@@ -461,10 +494,18 @@ function prCounts(prs: GithubStatus["pullRequests"]): PrCounts {
 
 function checkCounts(checks: GithubStatus["checkRuns"]) {
   const completed = checks.filter(
-    (c) => (c.conclusion && c.conclusion.length > 0) || (c.state || "").toLowerCase() === "completed",
+    (c) =>
+      (c.conclusion && c.conclusion.length > 0) ||
+      (c.state || "").toLowerCase() === "completed",
   );
-  const passed = completed.filter((c) => (c.conclusion || "").toLowerCase() === "success");
-  return { total: checks.length, completed: completed.length, passed: passed.length };
+  const passed = completed.filter(
+    (c) => (c.conclusion || "").toLowerCase() === "success",
+  );
+  return {
+    total: checks.length,
+    completed: completed.length,
+    passed: passed.length,
+  };
 }
 
 /** A rate in [0,1], or null when there is no denominator — the honest absence. */
@@ -496,7 +537,9 @@ function repoHealth(data: GithubStatus): {
 } {
   const prs = prCounts(data.pullRequests);
   const checks = checkCounts(data.checkRuns);
-  const openIssues = data.issues.filter((i) => (i.state || "").toLowerCase() === "open").length;
+  const openIssues = data.issues.filter(
+    (i) => (i.state || "").toLowerCase() === "open",
+  ).length;
 
   const mergeRate = rate(prs.merged, prs.merged + prs.closed);
   const ciRate = rate(checks.passed, checks.completed);
@@ -507,9 +550,13 @@ function repoHealth(data: GithubStatus): {
     { label: "CI success rate", value: pct(ciRate), tone: "green" },
     { label: "Issue close rate", value: pct(issueRate), tone: "green" },
   ];
-  const available = [mergeRate, ciRate, issueRate].filter((r): r is number => r !== null);
+  const available = [mergeRate, ciRate, issueRate].filter(
+    (r): r is number => r !== null,
+  );
   const score =
-    available.length === 0 ? null : available.reduce((a, b) => a + b, 0) / available.length;
+    available.length === 0
+      ? null
+      : available.reduce((a, b) => a + b, 0) / available.length;
   return { score, tier: healthTier(score), signals };
 }
 
@@ -564,7 +611,10 @@ function activityEvents(data: GithubStatus): ActivityEvent[] {
       key: `release-${r.tag || r.name}`,
       kind: "release",
       action: "published",
-      title: r.tag && r.name && r.tag !== r.name ? `${r.name} · ${r.tag}` : r.tag || r.name,
+      title:
+        r.tag && r.name && r.tag !== r.name
+          ? `${r.name} · ${r.tag}`
+          : r.tag || r.name,
       url: r.url,
       actor: r.actor,
       at: r.publishedAt,
@@ -594,7 +644,9 @@ function agoFrom(iso: string | undefined): string {
 function OverviewDashboard({ data }: { data: GithubStatus }) {
   const prs = prCounts(data.pullRequests);
   const checks = checkCounts(data.checkRuns);
-  const openIssues = data.issues.filter((i) => (i.state || "").toLowerCase() === "open").length;
+  const openIssues = data.issues.filter(
+    (i) => (i.state || "").toLowerCase() === "open",
+  ).length;
   const closedIssues = data.issues.length - openIssues;
   const defaultBranch = data.branches.find((b) => b.default);
   const latestRelease = data.releases[0];
@@ -612,7 +664,9 @@ function OverviewDashboard({ data }: { data: GithubStatus }) {
       label: "Branches",
       value: data.branches.length,
       tone: "teal",
-      sub: defaultBranch ? `${defaultBranch.name} default` : "no default branch",
+      sub: defaultBranch
+        ? `${defaultBranch.name} default`
+        : "no default branch",
       testId: "stat-branches",
     },
     {
@@ -633,14 +687,17 @@ function OverviewDashboard({ data }: { data: GithubStatus }) {
       label: "Check Runs",
       value: checks.total,
       tone: "purple",
-      sub: checks.completed > 0 ? `${checks.passed} passing` : "no completed runs",
+      sub:
+        checks.completed > 0 ? `${checks.passed} passing` : "no completed runs",
       testId: "stat-check-runs",
     },
     {
       label: "Releases",
       value: data.releases.length,
       tone: "orange",
-      sub: latestRelease ? latestRelease.tag || latestRelease.name : "none published",
+      sub: latestRelease
+        ? latestRelease.tag || latestRelease.name
+        : "none published",
       testId: "stat-releases",
     },
   ];
@@ -649,8 +706,14 @@ function OverviewDashboard({ data }: { data: GithubStatus }) {
     <div className="github-overview" data-testid="github-overview">
       <div className="github-stat-tiles" data-testid="github-stat-tiles">
         {metrics.map((m) => (
-          <div className="github-stat-tile" key={m.label} data-testid={m.testId}>
-            <span className={`github-stat-tile__value github-tone--${m.tone}`}>{m.value}</span>
+          <div
+            className="github-stat-tile"
+            key={m.label}
+            data-testid={m.testId}
+          >
+            <span className={`github-stat-tile__value github-tone--${m.tone}`}>
+              {m.value}
+            </span>
             <span className="github-stat-tile__label muted">{m.label}</span>
             <span className="github-stat-tile__sub muted">{m.sub}</span>
           </div>
@@ -687,7 +750,9 @@ function OverviewDashboard({ data }: { data: GithubStatus }) {
                       {e.actor ? ` by @${e.actor}` : ""} · {agoFrom(e.at)}
                     </span>
                   </div>
-                  <span className={`github-timeline__badge github-tone--bg-${e.tone}`}>
+                  <span
+                    className={`github-timeline__badge github-tone--bg-${e.tone}`}
+                  >
                     {e.action}
                   </span>
                 </li>
@@ -700,9 +765,14 @@ function OverviewDashboard({ data }: { data: GithubStatus }) {
           <h2 className="github-health__title">Repository Health</h2>
           <div className="github-health__score">
             <span className="github-health__value" data-testid="health-score">
-              {health.score === null ? "—" : `${Math.round(health.score * 100)}%`}
+              {health.score === null
+                ? "—"
+                : `${Math.round(health.score * 100)}%`}
             </span>
-            <span className="github-health__tier muted" data-testid="health-tier">
+            <span
+              className="github-health__tier muted"
+              data-testid="health-tier"
+            >
               {health.tier}
             </span>
           </div>
@@ -710,7 +780,11 @@ function OverviewDashboard({ data }: { data: GithubStatus }) {
             {health.signals.map((s) => (
               <div className="github-health__signal" key={s.label}>
                 <dt className="muted">{s.label}</dt>
-                <dd className={`github-health__signal-value github-tone--${s.tone}`}>{s.value}</dd>
+                <dd
+                  className={`github-health__signal-value github-tone--${s.tone}`}
+                >
+                  {s.value}
+                </dd>
               </div>
             ))}
           </dl>

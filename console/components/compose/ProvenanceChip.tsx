@@ -11,7 +11,10 @@ export type ProvenanceTier = "default" | "role" | "agent";
 
 // Exported so S3's read-out can label its "runs with … <chip>" sentence without duplicating
 // the string logic. Role name is fail-soft: a missing name degrades to plain "from Role".
-export function provenanceLabel(tier: ProvenanceTier, roleName?: string): string {
+export function provenanceLabel(
+  tier: ProvenanceTier,
+  roleName?: string,
+): string {
   switch (tier) {
     case "default":
       return "from Default";

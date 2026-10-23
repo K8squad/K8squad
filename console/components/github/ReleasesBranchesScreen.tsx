@@ -85,7 +85,8 @@ export function ReleasesBranchesScreen({
   const releases = [...data.releases].sort(byPublishedDesc);
   const branches = [...data.branches].sort(byBranch);
   const age = data.sync?.ageSeconds;
-  const freshness = age === undefined ? "not synced yet" : `synced ${ageLabel(age)}`;
+  const freshness =
+    age === undefined ? "not synced yet" : `synced ${ageLabel(age)}`;
 
   const published = releases.filter((r) => r.state === "published").length;
   const prereleases = releases.filter((r) => r.state === "prerelease").length;
@@ -100,7 +101,9 @@ export function ReleasesBranchesScreen({
     >
       <header className="gh-screen__head">
         <div className="gh-screen__heading">
-          <h2 className="gh-screen__title">Releases &amp; Branches Management</h2>
+          <h2 className="gh-screen__title">
+            Releases &amp; Branches Management
+          </h2>
           <p className="gh-screen__sub">
             <span className="gh-screen__repo">{GITHUB_REPO_LABEL}</span>
             {` · ${releases.length} release${releases.length === 1 ? "" : "s"} · `}
@@ -169,13 +172,20 @@ export function ReleasesBranchesScreen({
           </header>
           <div className="gh-panel__body">
             {releases.length === 0 ? (
-              <p className="gh-panel__empty" role="status" data-testid="gh-releases-empty">
+              <p
+                className="gh-panel__empty"
+                role="status"
+                data-testid="gh-releases-empty"
+              >
                 No releases mirrored yet.
               </p>
             ) : (
               <ul className="gh-releases" data-testid="gh-release-list">
                 {releases.map((r, i) => (
-                  <ReleaseRow key={`release-${r.tag || r.name}-${i}`} release={r} />
+                  <ReleaseRow
+                    key={`release-${r.tag || r.name}-${i}`}
+                    release={r}
+                  />
                 ))}
               </ul>
             )}
@@ -188,17 +198,47 @@ export function ReleasesBranchesScreen({
           </header>
           <div className="gh-panel__body">
             <div className="gh-stats">
-              <Stat value={releases.length} label="Total Releases" sub="mirrored" tone="blue" />
-              <Stat value={published} label="Published" sub="released" tone="green" />
-              <Stat value={prereleases} label="Pre-releases" sub="flagged" tone="amber" />
-              <Stat value={drafts} label="Drafts" sub="unpublished" tone="muted" />
-              <Stat value={branches.length} label="Branches" sub="mirrored" tone="blue" />
+              <Stat
+                value={releases.length}
+                label="Total Releases"
+                sub="mirrored"
+                tone="blue"
+              />
+              <Stat
+                value={published}
+                label="Published"
+                sub="released"
+                tone="green"
+              />
+              <Stat
+                value={prereleases}
+                label="Pre-releases"
+                sub="flagged"
+                tone="amber"
+              />
+              <Stat
+                value={drafts}
+                label="Drafts"
+                sub="unpublished"
+                tone="muted"
+              />
+              <Stat
+                value={branches.length}
+                label="Branches"
+                sub="mirrored"
+                tone="blue"
+              />
             </div>
-            <div className="gh-notes" data-testid="gh-notes-generator" style={{ marginTop: 14 }}>
+            <div
+              className="gh-notes"
+              data-testid="gh-notes-generator"
+              style={{ marginTop: 14 }}
+            >
               <div className="gh-notes__text">
                 <h4 className="gh-notes__title">Release Notes Generator</h4>
                 <p className="gh-notes__desc">
-                  GitHub drafts notes automatically from commits and merged pull requests.
+                  GitHub drafts notes automatically from commits and merged pull
+                  requests.
                 </p>
               </div>
               <a
@@ -228,7 +268,11 @@ export function ReleasesBranchesScreen({
         </header>
         <div className="gh-panel__body">
           {branches.length === 0 ? (
-            <p className="gh-panel__empty" role="status" data-testid="gh-branches-empty">
+            <p
+              className="gh-panel__empty"
+              role="status"
+              data-testid="gh-branches-empty"
+            >
               No branches mirrored yet.
             </p>
           ) : (
@@ -239,8 +283,9 @@ export function ReleasesBranchesScreen({
             </ul>
           )}
           <p className="gh-caption">
-            Default branch and head commits are projected from GitHub. The mirror does not carry
-            branch protection or base refs, so they are not shown.
+            Default branch and head commits are projected from GitHub. The
+            mirror does not carry branch protection or base refs, so they are
+            not shown.
           </p>
         </div>
       </section>
@@ -252,7 +297,10 @@ function ReleaseRow({ release }: { release: GithubRelease }) {
   const tag = release.tag || release.name;
   const state = releaseState(release.state);
   const href = githubReleaseHref(release.tag || release.name, release.url);
-  const notes = release.tag && release.name && release.name !== release.tag ? release.name : "";
+  const notes =
+    release.tag && release.name && release.name !== release.tag
+      ? release.name
+      : "";
   const when = timeAgo(release.publishedAt);
   const meta =
     release.state === "draft"
@@ -264,7 +312,10 @@ function ReleaseRow({ release }: { release: GithubRelease }) {
           : "Release time not mirrored";
 
   return (
-    <li className={`gh-release gh-release--${state.mod}`} data-testid="gh-release-row">
+    <li
+      className={`gh-release gh-release--${state.mod}`}
+      data-testid="gh-release-row"
+    >
       <div className="gh-release__row">
         <a
           className="gh-release__tag"
@@ -277,7 +328,10 @@ function ReleaseRow({ release }: { release: GithubRelease }) {
           <ExtGlyph />
         </a>
         <span className="gh-release__side">
-          <span className={`gh-badge gh-badge--${state.mod}`} data-testid="gh-release-state">
+          <span
+            className={`gh-badge gh-badge--${state.mod}`}
+            data-testid="gh-release-state"
+          >
             {state.label}
           </span>
           <a
@@ -315,7 +369,9 @@ function BranchNode({ branch }: { branch: GithubBranch }) {
       </a>
       <span className="gh-branch__meta">
         {branch.default && <span className="gh-branch__badge">default</span>}
-        {branch.headSha && <span className="gh-branch__sha">{branch.headSha.slice(0, 7)}</span>}
+        {branch.headSha && (
+          <span className="gh-branch__sha">{branch.headSha.slice(0, 7)}</span>
+        )}
       </span>
     </li>
   );
@@ -333,7 +389,10 @@ function Stat({
   tone: "green" | "amber" | "blue" | "muted";
 }) {
   return (
-    <div className={`gh-stat gh-stat--${tone}`} data-testid={`gh-stat-${label.toLowerCase().replace(/\s+/g, "-")}`}>
+    <div
+      className={`gh-stat gh-stat--${tone}`}
+      data-testid={`gh-stat-${label.toLowerCase().replace(/\s+/g, "-")}`}
+    >
       <span className="gh-stat__value">{value}</span>
       <span className="gh-stat__label">{label}</span>
       <span className="gh-stat__label">{sub}</span>

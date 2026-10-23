@@ -12,7 +12,9 @@ import {
 } from "@/lib/discussion/threadList";
 import type { Thread } from "@/lib/discussion/types";
 
-function thread(over: Partial<Thread> & { id: string; createdAt: string }): Thread {
+function thread(
+  over: Partial<Thread> & { id: string; createdAt: string },
+): Thread {
   return {
     projectId: "p1",
     teamId: "t1",

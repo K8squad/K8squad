@@ -34,7 +34,12 @@ export interface LLMInteractionWire {
 
 /** The subset of the Run CRD the detail screen reads (api/v1alpha1/run_types.go). */
 export interface RunWire {
-  metadata?: { name?: string; namespace?: string; uid?: string; creationTimestamp?: string };
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    uid?: string;
+    creationTimestamp?: string;
+  };
   spec: {
     projectRef?: { name?: string };
     workItemRef?: string;
@@ -44,7 +49,11 @@ export interface RunWire {
     phase?: string;
     claimedAt?: string;
     traceID?: string;
-    totalTokenUsage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number };
+    totalTokenUsage?: {
+      totalTokens?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+    };
     artifactRefs?: { name?: string }[];
     conditions?: { type: string; reason?: string }[];
   };
@@ -83,7 +92,10 @@ export async function fetchRunDetail(
       signal,
     });
     if (!res.ok) return { kind: "error", status: res.status };
-    return { kind: "ready", detail: (await res.json()) as RunDetailResponseWire };
+    return {
+      kind: "ready",
+      detail: (await res.json()) as RunDetailResponseWire,
+    };
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       return { kind: "loading" };

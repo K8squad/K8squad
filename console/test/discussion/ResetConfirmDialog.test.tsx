@@ -15,8 +15,12 @@ describe("<ResetConfirmDialog>", () => {
         "This clears the visible transcript. History is preserved for audit.",
       ),
     ).toBeTruthy();
-    expect(screen.getByTestId("reset-dialog-cancel").textContent).toBe("Cancel");
-    expect(screen.getByTestId("reset-dialog-confirm").textContent).toBe("Reset");
+    expect(screen.getByTestId("reset-dialog-cancel").textContent).toBe(
+      "Cancel",
+    );
+    expect(screen.getByTestId("reset-dialog-confirm").textContent).toBe(
+      "Reset",
+    );
   });
 
   it("is a labelled modal dialog", () => {
@@ -28,7 +32,9 @@ describe("<ResetConfirmDialog>", () => {
 
   it("focuses Cancel on mount, not Reset (Enter never destroys by accident)", () => {
     render(<ResetConfirmDialog onCancel={vi.fn()} onConfirm={vi.fn()} />);
-    expect(document.activeElement).toBe(screen.getByTestId("reset-dialog-cancel"));
+    expect(document.activeElement).toBe(
+      screen.getByTestId("reset-dialog-cancel"),
+    );
   });
 
   it("Cancel and Reset fire their callbacks", () => {

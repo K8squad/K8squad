@@ -14,7 +14,14 @@ afterEach(cleanup);
 
 describe("<StatTile>", () => {
   it("paints the value with the semantic tone class and exposes label as group name", () => {
-    render(<StatTile label="Active runs" value={12} tone="running" sub="+3 vs yesterday" />);
+    render(
+      <StatTile
+        label="Active runs"
+        value={12}
+        tone="running"
+        sub="+3 vs yesterday"
+      />,
+    );
     const group = screen.getByRole("group", { name: "Active runs" });
     const value = within(group).getByText("12");
     expect(value).toHaveClass("ov-tone--running");
@@ -27,7 +34,9 @@ describe("<StatTile>", () => {
   });
 
   it("swaps value/sub for skeletons while loading (degrade-don't-blank)", () => {
-    const { container } = render(<StatTile label="Tokens" value={999} sub="est $4" loading />);
+    const { container } = render(
+      <StatTile label="Tokens" value={999} sub="est $4" loading />,
+    );
     expect(screen.queryByText("999")).not.toBeInTheDocument();
     expect(screen.queryByText("est $4")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".ov-skel").length).toBe(2);
@@ -47,8 +56,14 @@ describe("<StatTile>", () => {
 
 describe("<RunStatusMixBar>", () => {
   it("renders one width-proportional segment per non-zero state and labels the mix", () => {
-    render(<RunStatusMixBar counts={{ running: 3, paused: 1, blocked: 0, idle: 0 }} />);
-    const bar = screen.getByRole("img", { name: "3 running, 1 paused, 0 blocked, 0 idle" });
+    render(
+      <RunStatusMixBar
+        counts={{ running: 3, paused: 1, blocked: 0, idle: 0 }}
+      />,
+    );
+    const bar = screen.getByRole("img", {
+      name: "3 running, 1 paused, 0 blocked, 0 idle",
+    });
     const segs = bar.querySelectorAll(".ov-mixbar__seg");
     expect(segs.length).toBe(2); // zero-count states are omitted
     expect((segs[0] as HTMLElement).style.width).toBe("75%");
@@ -66,12 +81,20 @@ describe("<RunStatusMixBar>", () => {
 describe("<PanelCard>", () => {
   it("renders title, action link and children when ready", () => {
     render(
-      <PanelCard title="Recent ticket work" action={{ label: "View all", href: "/x" }}>
+      <PanelCard
+        title="Recent ticket work"
+        action={{ label: "View all", href: "/x" }}
+      >
         <p>row</p>
       </PanelCard>,
     );
-    expect(screen.getByRole("heading", { name: "Recent ticket work" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "View all" })).toHaveAttribute("href", "/x");
+    expect(
+      screen.getByRole("heading", { name: "Recent ticket work" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View all" })).toHaveAttribute(
+      "href",
+      "/x",
+    );
     expect(screen.getByText("row")).toBeInTheDocument();
   });
 
@@ -101,19 +124,35 @@ describe("<PanelCard>", () => {
 
   it("omits the retry button when no handler is provided", () => {
     render(<PanelCard title="P" state="error" />);
-    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
   });
 });
 
 describe("<StackedAreaChart>", () => {
   const series = [
-    { key: "todo", label: "Backlog", color: "var(--status-idle)", values: [4, 3, 2] },
-    { key: "wip", label: "In progress", color: "var(--status-running)", values: [1, 2, 3] },
+    {
+      key: "todo",
+      label: "Backlog",
+      color: "var(--status-idle)",
+      values: [4, 3, 2],
+    },
+    {
+      key: "wip",
+      label: "In progress",
+      color: "var(--status-running)",
+      values: [1, 2, 3],
+    },
   ];
 
   it("renders an accessible role=img svg with one polygon per series", () => {
     const { container } = render(
-      <StackedAreaChart series={series} xLabels={["Mon", "Tue", "Wed"]} caption="source: coord" />,
+      <StackedAreaChart
+        series={series}
+        xLabels={["Mon", "Tue", "Wed"]}
+        caption="source: coord"
+      />,
     );
     const img = screen.getByRole("img");
     expect(img.getAttribute("aria-label")).toMatch(/Backlog, In progress/);
@@ -123,7 +162,11 @@ describe("<StackedAreaChart>", () => {
   });
 
   it("degrades to 'not enough history' with fewer than two points", () => {
-    render(<StackedAreaChart series={[{ key: "a", label: "A", color: "var(--accent)", values: [1] }]} />);
+    render(
+      <StackedAreaChart
+        series={[{ key: "a", label: "A", color: "var(--accent)", values: [1] }]}
+      />,
+    );
     expect(screen.getByText("Not enough history yet.")).toBeInTheDocument();
     expect(document.querySelector("polygon")).toBeNull();
   });
@@ -131,7 +174,9 @@ describe("<StackedAreaChart>", () => {
   it("degrades when all values are zero", () => {
     render(
       <StackedAreaChart
-        series={[{ key: "a", label: "A", color: "var(--accent)", values: [0, 0, 0] }]}
+        series={[
+          { key: "a", label: "A", color: "var(--accent)", values: [0, 0, 0] },
+        ]}
       />,
     );
     expect(screen.getByText("Not enough history yet.")).toBeInTheDocument();
@@ -139,7 +184,9 @@ describe("<StackedAreaChart>", () => {
 
   it("shows a loading state", () => {
     render(<StackedAreaChart series={series} loading />);
-    expect(screen.getByRole("status", { name: "Loading chart" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "Loading chart" }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -161,7 +208,12 @@ describe("<HBarChart>", () => {
   });
 
   it("applies a custom value formatter", () => {
-    render(<HBarChart items={[{ label: "Tokens", value: 1200 }]} formatValue={(v) => `${v / 1000}k`} />);
+    render(
+      <HBarChart
+        items={[{ label: "Tokens", value: 1200 }]}
+        formatValue={(v) => `${v / 1000}k`}
+      />,
+    );
     expect(screen.getByText("1.2k")).toBeInTheDocument();
   });
 
@@ -172,6 +224,8 @@ describe("<HBarChart>", () => {
 
   it("shows a loading state", () => {
     render(<HBarChart items={items} loading />);
-    expect(screen.getByRole("status", { name: "Loading chart" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("status", { name: "Loading chart" }),
+    ).toBeInTheDocument();
   });
 });

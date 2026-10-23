@@ -32,7 +32,11 @@ describe("parseProgressEnvelope — narration", () => {
 
   it("tolerates a bare [untrusted] tag with no run prefix", () => {
     const seg = parseProgressEnvelope("[untrusted] no run id here");
-    expect(seg).toEqual({ kind: "narration", runId: undefined, text: "no run id here" });
+    expect(seg).toEqual({
+      kind: "narration",
+      runId: undefined,
+      text: "no run id here",
+    });
   });
 });
 
@@ -65,7 +69,9 @@ describe("parseProgressEnvelope — tool", () => {
   });
 
   it("lifts err out of result(err)", () => {
-    const seg = parseProgressEnvelope("[run r6][tool:edit/result(err)] file not found");
+    const seg = parseProgressEnvelope(
+      "[run r6][tool:edit/result(err)] file not found",
+    );
     expect(seg).toMatchObject({
       kind: "tool",
       status: "err",
@@ -86,7 +92,9 @@ describe("parseProgressEnvelope — tool", () => {
   });
 
   it("handles a bare result phase with no outcome", () => {
-    const seg = parseProgressEnvelope("[run r6][tool:read/result] decoded from json");
+    const seg = parseProgressEnvelope(
+      "[run r6][tool:read/result] decoded from json",
+    );
     expect(seg).toMatchObject({ kind: "tool", phase: "result", done: true });
     expect((seg as { status?: string }).status).toBeUndefined();
   });
@@ -94,7 +102,9 @@ describe("parseProgressEnvelope — tool", () => {
 
 describe("parseProgressEnvelope — status", () => {
   it("parses a terminal status with a reason", () => {
-    const seg = parseProgressEnvelope("[run r6][status] failed: exceeded budget");
+    const seg = parseProgressEnvelope(
+      "[run r6][status] failed: exceeded budget",
+    );
     expect(seg).toEqual({
       kind: "status",
       runId: "r6",
@@ -105,7 +115,12 @@ describe("parseProgressEnvelope — status", () => {
 
   it("parses a terminal status without a reason", () => {
     const seg = parseProgressEnvelope("[run r6][status] succeeded");
-    expect(seg).toEqual({ kind: "status", runId: "r6", state: "succeeded", reason: undefined });
+    expect(seg).toEqual({
+      kind: "status",
+      runId: "r6",
+      state: "succeeded",
+      reason: undefined,
+    });
   });
 });
 

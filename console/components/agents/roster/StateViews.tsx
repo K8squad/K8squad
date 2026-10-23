@@ -12,7 +12,11 @@
 /** Shimmer skeleton mirroring the rail + detail panes — shown while the four fleet lists load. */
 export function RosterLoading() {
   return (
-    <div className="roster-skeleton" aria-busy="true" aria-label="Loading agents and teams">
+    <div
+      className="roster-skeleton"
+      aria-busy="true"
+      aria-label="Loading agents and teams"
+    >
       <div className="roster-skeleton__rail">
         {Array.from({ length: 7 }).map((_, i) => (
           <div key={i} className="roster-skeleton__line" data-indent={i % 3} />
@@ -31,7 +35,9 @@ export function RosterLoading() {
 export function RosterError({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="roster-state roster-state--error" role="status">
-      <p className="roster-state__title">Couldn’t load your agents &amp; team</p>
+      <p className="roster-state__title">
+        Couldn’t load your agents &amp; team
+      </p>
       <p className="muted">
         The roster read didn’t come back. This is usually transient — try again.
       </p>
@@ -48,7 +54,8 @@ export function RosterEmpty() {
     <div className="roster-state roster-state--empty" role="status">
       <p className="roster-state__title">No agents or teams yet</p>
       <p className="muted">
-        Once a Team, Role, or Skill is composed for your session, it appears here.
+        Once a Team, Role, or Skill is composed for your session, it appears
+        here.
       </p>
     </div>
   );
@@ -58,7 +65,9 @@ export function RosterEmpty() {
 export function DetailPlaceholder() {
   return (
     <div className="roster-state roster-state--placeholder" role="status">
-      <p className="muted">Select a team, agent, role, or skill to see its detail.</p>
+      <p className="muted">
+        Select a team, agent, role, or skill to see its detail.
+      </p>
     </div>
   );
 }

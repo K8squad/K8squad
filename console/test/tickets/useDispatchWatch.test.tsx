@@ -60,9 +60,9 @@ describe("reduceDispatchWatch — ladder transitions", () => {
   it("advances to working ONLY on phase Running or SSE started (honesty guard)", () => {
     expect(run([{ type: "phase", phase: "Running" }]).state).toBe("working");
     expect(run([{ type: "lifecycle", name: "started" }]).state).toBe("working");
-    expect(toDispatchWatch(run([{ type: "phase", phase: "Running" }])).label).toBe(
-      "Working…",
-    );
+    expect(
+      toDispatchWatch(run([{ type: "phase", phase: "Running" }])).label,
+    ).toBe("Working…");
   });
 
   it("NEVER reaches working via picking-up signals (Claiming/assigned/scheduled/sandbox_bound)", () => {
@@ -79,7 +79,9 @@ describe("reduceDispatchWatch — ladder transitions", () => {
   });
 
   it("resolves terminal: Succeeded/ended → succeeded, Failed/Cancelled → failed", () => {
-    expect(run([{ type: "phase", phase: "Succeeded" }]).state).toBe("succeeded");
+    expect(run([{ type: "phase", phase: "Succeeded" }]).state).toBe(
+      "succeeded",
+    );
     expect(run([{ type: "phase", phase: "Failed" }]).state).toBe("failed");
     expect(run([{ type: "phase", phase: "Cancelled" }]).state).toBe("failed");
     expect(run([{ type: "lifecycle", name: "ended" }]).state).toBe("succeeded");
@@ -104,10 +106,7 @@ describe("reduceDispatchWatch — ladder transitions", () => {
   });
 
   it("reset rearms to a fresh queued machine", () => {
-    const m = run([
-      { type: "phase", phase: "Running" },
-      { type: "reset" },
-    ]);
+    const m = run([{ type: "phase", phase: "Running" }, { type: "reset" }]);
     expect(m).toEqual(initialDispatchMachine());
   });
 });
@@ -180,14 +179,26 @@ describe("pickDispatchRun", () => {
   // matcher must ignore them or the ladder collapses to the old run's terminal state.
   it("ignores rows that predate the dispatch (notBeforeMs)", () => {
     const now = Date.parse("2026-09-25T10:06:00Z");
-    const stale = { id: "prev", workItemRef: "wi-1", agents: ["alice"], phase: "Succeeded",
-                    startedAt: "2026-09-25T09:58:00Z" };
-    const freshPending = { id: "next", workItemRef: "wi-1", agents: ["alice"], phase: "Pending" };
+    const stale = {
+      id: "prev",
+      workItemRef: "wi-1",
+      agents: ["alice"],
+      phase: "Succeeded",
+      startedAt: "2026-09-25T09:58:00Z",
+    };
+    const freshPending = {
+      id: "next",
+      workItemRef: "wi-1",
+      agents: ["alice"],
+      phase: "Pending",
+    };
 
     // No notBefore → legacy behavior (matches the newest row, even a stale one).
     expect(pickDispatchRun([stale], "wi-1", "alice")?.id).toBe("prev");
     // With notBefore: the stale Succeeded row is excluded, the timestamp-less Pending row wins.
-    expect(pickDispatchRun([stale, freshPending], "wi-1", "alice", now)?.id).toBe("next");
+    expect(
+      pickDispatchRun([stale, freshPending], "wi-1", "alice", now)?.id,
+    ).toBe("next");
     // Only stale rows → nothing eligible yet (ladder stays queued until the new Run mints).
     expect(pickDispatchRun([stale], "wi-1", "alice", now)).toBeNull();
   });
@@ -198,22 +209,43 @@ describe("pickDispatchRun", () => {
   // startedAt, and treat zero/negative epochs as "no timestamp".
   it("does not treat Go zero-time startedAt as stale (live regression)", () => {
     const now = Date.parse("2026-09-25T10:06:00Z");
-    const freshClaiming = { id: "r22", workItemRef: "wi-1", agents: ["alice"], phase: "Claiming",
-                            startedAt: "2026-09-25T10:05:58Z" };
+    const freshClaiming = {
+      id: "r22",
+      workItemRef: "wi-1",
+      agents: ["alice"],
+      phase: "Claiming",
+      startedAt: "2026-09-25T10:05:58Z",
+    };
     // A just-minted run whose startedAt is the Go zero time (never claimed yet) must still match.
-    const zeroStarted = { id: "r23", workItemRef: "wi-1", agents: ["alice"], phase: "Pending",
-                          startedAt: "0001-01-01T00:00:00Z" };
-    expect(pickDispatchRun([freshClaiming, zeroStarted], "wi-1", "alice", now)?.id).toBe("r22");
+    const zeroStarted = {
+      id: "r23",
+      workItemRef: "wi-1",
+      agents: ["alice"],
+      phase: "Pending",
+      startedAt: "0001-01-01T00:00:00Z",
+    };
+    expect(
+      pickDispatchRun([freshClaiming, zeroStarted], "wi-1", "alice", now)?.id,
+    ).toBe("r22");
     // With ONLY a zero-time row (and no real staleness signal), the row is kept, not filtered.
-    expect(pickDispatchRun([zeroStarted], "wi-1", "alice", now)?.id).toBe("r23");
+    expect(pickDispatchRun([zeroStarted], "wi-1", "alice", now)?.id).toBe(
+      "r23",
+    );
   });
 
   it("admits a row started slightly before the dispatch (clock-skew floor)", () => {
     const now = Date.parse("2026-09-25T10:06:00Z");
     // Started 30s before the client's dispatch stamp — inside the 60s skew allowance.
     const row = pickDispatchRun(
-      [{ id: "just-now", workItemRef: "wi-1", agents: ["alice"], phase: "Running",
-         startedAt: "2026-09-25T10:05:30Z" }],
+      [
+        {
+          id: "just-now",
+          workItemRef: "wi-1",
+          agents: ["alice"],
+          phase: "Running",
+          startedAt: "2026-09-25T10:05:30Z",
+        },
+      ],
       "wi-1",
       "alice",
       now,
@@ -223,11 +255,23 @@ describe("pickDispatchRun", () => {
 
   it("never falls back into stale rows when only the stale ones match the agent", () => {
     const now = Date.parse("2026-09-25T10:06:00Z");
-    const staleAlice = { id: "prev", workItemRef: "wi-1", agents: ["alice"], phase: "Succeeded",
-                         startedAt: "2026-09-25T09:58:00Z" };
-    const freshBob = { id: "next", workItemRef: "wi-1", agents: ["bob"], phase: "Pending" };
+    const staleAlice = {
+      id: "prev",
+      workItemRef: "wi-1",
+      agents: ["alice"],
+      phase: "Succeeded",
+      startedAt: "2026-09-25T09:58:00Z",
+    };
+    const freshBob = {
+      id: "next",
+      workItemRef: "wi-1",
+      agents: ["bob"],
+      phase: "Pending",
+    };
     // Agent match exists only among stale rows → the fallback pool is the FRESH rows, not stale.
-    expect(pickDispatchRun([staleAlice, freshBob], "wi-1", "alice", now)?.id).toBe("next");
+    expect(
+      pickDispatchRun([staleAlice, freshBob], "wi-1", "alice", now)?.id,
+    ).toBe("next");
   });
 });
 
@@ -298,7 +342,10 @@ afterEach(() => {
 describe("useDispatchWatch — hook wiring", () => {
   it("returns null when no dispatch is in flight, queued synchronously on seed", () => {
     stubEventSource();
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse([])));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse([])),
+    );
 
     const { result, rerender } = renderHook(
       ({ id }: { id: string | null }) => useDispatchWatch(id, "alice"),
@@ -316,7 +363,10 @@ describe("useDispatchWatch — hook wiring", () => {
     vi.useFakeTimers();
     stubEventSource();
     // fetch resolves to no matching run so the ladder stays queued.
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse([])));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse([])),
+    );
 
     const { result, unmount } = renderHook(() =>
       useDispatchWatch("wi-1", "alice"),
@@ -344,7 +394,12 @@ describe("useDispatchWatch — hook wiring", () => {
     const instances = stubEventSource();
     const fetchMock = vi.fn(async () =>
       jsonResponse([
-        { id: "run-9", workItemRef: "wi-1", phase: "Pending", agents: ["alice"] },
+        {
+          id: "run-9",
+          workItemRef: "wi-1",
+          phase: "Pending",
+          agents: ["alice"],
+        },
       ]),
     );
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
@@ -375,8 +430,12 @@ describe("useDispatchWatch — hook wiring", () => {
     stubEventSource();
     let rows: unknown[] = [
       {
-        id: "prev-run", workItemRef: "wi-1", phase: "Succeeded", agents: ["alice"],
-        startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:01:00Z",
+        id: "prev-run",
+        workItemRef: "wi-1",
+        phase: "Succeeded",
+        agents: ["alice"],
+        startedAt: "2026-01-01T00:00:00Z",
+        endedAt: "2026-01-01T00:01:00Z",
       },
     ];
     const fetchMock = vi.fn(async () => jsonResponse(rows));
@@ -397,7 +456,12 @@ describe("useDispatchWatch — hook wiring", () => {
     // The operator mints the new Run (Pending, no startedAt yet) → discovered → picking_up.
     rows = [
       ...rows,
-      { id: "new-run", workItemRef: "wi-1", phase: "Pending", agents: ["alice"] },
+      {
+        id: "new-run",
+        workItemRef: "wi-1",
+        phase: "Pending",
+        agents: ["alice"],
+      },
     ];
     await act(async () => {
       await vi.advanceTimersByTimeAsync(DISPATCH_POLL_INTERVAL_MS + 5);
@@ -414,8 +478,12 @@ describe("useDispatchWatch — hook wiring", () => {
       vi.fn(async () =>
         jsonResponse([
           {
-            id: "run-1", workItemRef: "wi-1", phase: "Succeeded", agents: ["alice"],
-            startedAt: justNow, endedAt: justNow,
+            id: "run-1",
+            workItemRef: "wi-1",
+            phase: "Succeeded",
+            agents: ["alice"],
+            startedAt: justNow,
+            endedAt: justNow,
           },
         ]),
       ) as unknown as typeof fetch,

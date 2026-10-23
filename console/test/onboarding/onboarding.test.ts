@@ -18,7 +18,12 @@ import {
   type OnboardingProgress,
 } from "@/lib/onboarding";
 
-const virgin: OnboardingProgress = { step: 1, done: 0, total: 4, nextMilestone: "team" };
+const virgin: OnboardingProgress = {
+  step: 1,
+  done: 0,
+  total: 4,
+  nextMilestone: "team",
+};
 const halfway: OnboardingProgress = {
   step: 3,
   done: 2,
@@ -26,7 +31,12 @@ const halfway: OnboardingProgress = {
   nextMilestone: "models",
   dismissed: false,
 };
-const complete: OnboardingProgress = { step: 4, done: 4, total: 4, dismissed: false };
+const complete: OnboardingProgress = {
+  step: 4,
+  done: 4,
+  total: 4,
+  dismissed: false,
+};
 
 describe("isOnboardingProgress (fail-open payload guard)", () => {
   it("accepts a well-formed projection", () => {
@@ -54,7 +64,12 @@ describe("nextMilestoneId", () => {
   });
 
   it("falls back to the step number for an unrecognized server id", () => {
-    const p: OnboardingProgress = { step: 2, done: 1, total: 4, nextMilestone: "billing" };
+    const p: OnboardingProgress = {
+      step: 2,
+      done: 1,
+      total: 4,
+      nextMilestone: "billing",
+    };
     expect(nextMilestoneId(p)).toBe("agents");
   });
 });
@@ -79,7 +94,12 @@ describe("milestoneStates (frames 01/06)", () => {
   });
 
   it("1/4 resume: only the next card is actionable, later ones locked", () => {
-    const p: OnboardingProgress = { step: 2, done: 1, total: 4, nextMilestone: "agents" };
+    const p: OnboardingProgress = {
+      step: 2,
+      done: 1,
+      total: 4,
+      nextMilestone: "agents",
+    };
     expect(milestoneStates(p)).toEqual({
       team: "done",
       agents: "next",
@@ -107,12 +127,21 @@ describe("heroCopy", () => {
   it("frame 06 resume copy counts the steps left (halfway phrasing at 2/4)", () => {
     const c = heroCopy(halfway);
     expect(c.title).toBe("Finish setting up your squad");
-    expect(c.sub).toBe("You're halfway there — 2 steps left. Pick up where you left off.");
+    expect(c.sub).toBe(
+      "You're halfway there — 2 steps left. Pick up where you left off.",
+    );
   });
 
   it("non-halfway resume uses the n/m phrasing + singular step", () => {
-    const p: OnboardingProgress = { step: 4, done: 3, total: 4, nextMilestone: "project" };
-    expect(heroCopy(p).sub).toBe("3 of 4 complete — 1 step left. Pick up where you left off.");
+    const p: OnboardingProgress = {
+      step: 4,
+      done: 3,
+      total: 4,
+      nextMilestone: "project",
+    };
+    expect(heroCopy(p).sub).toBe(
+      "3 of 4 complete — 1 step left. Pick up where you left off.",
+    );
   });
 
   it("frame 07 celebrates completion", () => {
@@ -138,7 +167,9 @@ describe("shouldShowLaunchpad (D5 gate, FR-1.3)", () => {
   });
 
   it("hides on server dismissal (Team annotation)", () => {
-    expect(shouldShowLaunchpad({ ...halfway, dismissed: true }, false)).toBe(false);
+    expect(shouldShowLaunchpad({ ...halfway, dismissed: true }, false)).toBe(
+      false,
+    );
   });
 
   it("hides on this device's local dismissal", () => {

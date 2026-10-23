@@ -72,7 +72,9 @@ export function emptyConfig(): OtelConfigForm {
   return { traces: null, metrics: null, logs: null };
 }
 
-export function fromWire(wire: OtelConfigWire | null | undefined): OtelConfigForm {
+export function fromWire(
+  wire: OtelConfigWire | null | undefined,
+): OtelConfigForm {
   const spec = wire?.spec ?? {};
   const form = emptyConfig();
   for (const key of SIGNAL_KEYS) {
@@ -126,7 +128,8 @@ export type SignalValidation = {
 
 const HTTP_ENDPOINT = /^https?:\/\/\S+$/;
 const GRPC_ENDPOINT = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:\d{1,5})?$/i;
-const SECRET_REF = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\/[a-z0-9]([a-z0-9-]*[a-z0-9])?)?$/i;
+const SECRET_REF =
+  /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\/[a-z0-9]([a-z0-9-]*[a-z0-9])?)?$/i;
 
 /** Field-level validation mirroring the CRD's CEL/webhook rules (1.5) at the form edge. */
 export function validateSignal(s: SignalForm): SignalValidation {
@@ -149,7 +152,9 @@ export function validateSignal(s: SignalForm): SignalValidation {
   return v;
 }
 
-export function validateConfig(form: OtelConfigForm): Record<SignalKey, SignalValidation> {
+export function validateConfig(
+  form: OtelConfigForm,
+): Record<SignalKey, SignalValidation> {
   const out: Record<SignalKey, SignalValidation> = {
     traces: {},
     metrics: {},
@@ -225,9 +230,7 @@ function commonProtocol(vals: OtlpProtocol[]): OtlpProtocol {
   return vals.length > 0 ? vals[0] : "grpc";
 }
 
-function commonAttrs(
-  vals: Record<string, string>[],
-): Record<string, string> {
+function commonAttrs(vals: Record<string, string>[]): Record<string, string> {
   if (vals.length === 0) return {};
   const first = vals[0];
   if (vals.every((v) => attrsEqual(v, first))) return { ...first };

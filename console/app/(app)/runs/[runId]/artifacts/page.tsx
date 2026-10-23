@@ -18,7 +18,9 @@ export default async function RunArtifactsPage({
         <h1 style={{ margin: 0 }}>Run {runId} — artifacts</h1>
         <p className="muted" style={{ margin: "6px 0 0" }}>
           Artifact blobs and handoff outputs from the coordination record.{" "}
-          <a href={`/runs/${encodeURIComponent(runId)}`}>Back to the live stream</a>
+          <a href={`/runs/${encodeURIComponent(runId)}`}>
+            Back to the live stream
+          </a>
         </p>
       </header>
       <ArtifactBrowser runId={runId} />

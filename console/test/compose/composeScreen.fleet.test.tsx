@@ -9,7 +9,13 @@
 //     the gate fails OPEN (loading/error ⇒ form) so a transient failure never blocks composing.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { ComposeScreen } from "@/components/compose/ComposeScreen";
 
 let current = new URLSearchParams();
@@ -36,8 +42,30 @@ function stubRoutes(routes: Record<string, Route>) {
   return spy;
 }
 
-const tenantTeams = { fleet: false, teams: [{ name: "own", namespace: "own-ns", uid: "u-own", agentCount: 0, projectCount: 0 }] };
-const adminTeams = { fleet: true, teams: [{ name: "bmad-squad", namespace: "bmad-demo", uid: "u-bmad", agentCount: 13, projectCount: 1 }] };
+const tenantTeams = {
+  fleet: false,
+  teams: [
+    {
+      name: "own",
+      namespace: "own-ns",
+      uid: "u-own",
+      agentCount: 0,
+      projectCount: 0,
+    },
+  ],
+};
+const adminTeams = {
+  fleet: true,
+  teams: [
+    {
+      name: "bmad-squad",
+      namespace: "bmad-demo",
+      uid: "u-bmad",
+      agentCount: 13,
+      projectCount: 1,
+    },
+  ],
+};
 
 beforeEach(() => {
   current = new URLSearchParams();
@@ -55,11 +83,21 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
       "/api/squad/teams": { status: 200, body: tenantTeams },
       "/api/squad/skills": {
         status: 200,
-        body: { skills: [{ name: "web-search", namespace: "bmad-demo", sourceType: "inline" }] },
+        body: {
+          skills: [
+            {
+              name: "web-search",
+              namespace: "bmad-demo",
+              sourceType: "inline",
+            },
+          ],
+        },
       },
     });
     render(<ComposeScreen />);
-    await waitFor(() => expect(screen.getByText("web-search")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("web-search")).toBeInTheDocument(),
+    );
   });
 
   it("kind=roles lists fleet roles from /api/squad/roles", async () => {
@@ -68,11 +106,17 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
       "/api/squad/teams": { status: 200, body: tenantTeams },
       "/api/squad/roles": {
         status: 200,
-        body: { roles: [{ name: "planner", namespace: "bmad-demo", prompt: "plan-prompt" }] },
+        body: {
+          roles: [
+            { name: "planner", namespace: "bmad-demo", prompt: "plan-prompt" },
+          ],
+        },
       },
     });
     render(<ComposeScreen />);
-    await waitFor(() => expect(screen.getByText("planner")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("planner")).toBeInTheDocument(),
+    );
   });
 
   // ISI-3985: the agents kind was left on the dead /api/teams/current/org path (the literal
@@ -84,14 +128,20 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
       "/api/squad/teams": { status: 200, body: tenantTeams },
       "/api/squad/agents": {
         status: 200,
-        body: { agents: [{ name: "cade", runtime: "claude-code", skillCount: 3 }] },
+        body: {
+          agents: [{ name: "cade", runtime: "claude-code", skillCount: 3 }],
+        },
       },
     });
     render(<ComposeScreen />);
     await waitFor(() => expect(screen.getByText("cade")).toBeInTheDocument());
     expect(screen.getByText("3 skills")).toBeInTheDocument();
     // The dead legacy endpoint must never be called again.
-    expect(spy.mock.calls.some((c) => String(c[0]).includes("/api/teams/current/org"))).toBe(false);
+    expect(
+      spy.mock.calls.some((c) =>
+        String(c[0]).includes("/api/teams/current/org"),
+      ),
+    ).toBe(false);
   });
 
   it("singularizes the skill-count subtitle for a one-skill agent", async () => {
@@ -100,7 +150,9 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
       "/api/squad/teams": { status: 200, body: tenantTeams },
       "/api/squad/agents": {
         status: 200,
-        body: { agents: [{ name: "solo", runtime: "claude-code", skillCount: 1 }] },
+        body: {
+          agents: [{ name: "solo", runtime: "claude-code", skillCount: 1 }],
+        },
       },
     });
     render(<ComposeScreen />);
@@ -119,23 +171,32 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
       "/api/squad/teams": { status: 200, body: tenantTeams },
       "/api/squad/agents/cade": {
         status: 200,
-        body: { name: "cade", roleRef: { name: "boss" }, runtimeRef: { name: "claude-code" } },
+        body: {
+          name: "cade",
+          roleRef: { name: "boss" },
+          runtimeRef: { name: "claude-code" },
+        },
       },
       "/api/squad/agents": {
         status: 200,
-        body: { agents: [{ name: "cade", runtime: "claude-code", skillCount: 3 }] },
+        body: {
+          agents: [{ name: "cade", runtime: "claude-code", skillCount: 3 }],
+        },
       },
     });
     render(<ComposeScreen />);
     await waitFor(() => expect(screen.getByText("cade")).toBeInTheDocument());
     fireEvent.click(screen.getByText("cade"));
-    expect(screen.getByRole("button", { name: "Edit by name" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect((screen.getByPlaceholderText("my-resource") as HTMLInputElement).value).toBe("cade");
+    expect(
+      screen.getByRole("button", { name: "Edit by name" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      (screen.getByPlaceholderText("my-resource") as HTMLInputElement).value,
+    ).toBe("cade");
     // The REAL spec landed in the form (not an empty edit form) — proves hydration.
-    await waitFor(() => expect(screen.getByDisplayValue("boss")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("boss")).toBeInTheDocument(),
+    );
     expect(screen.getByDisplayValue("claude-code")).toBeInTheDocument();
   });
 });
@@ -165,7 +226,9 @@ describe("Compose no-own-team gate (ISI-3964)", () => {
     });
     render(<ComposeScreen />);
     await waitFor(() =>
-      expect(screen.getByTestId("compose-gate-create-team")).toBeInTheDocument(),
+      expect(
+        screen.getByTestId("compose-gate-create-team"),
+      ).toBeInTheDocument(),
     );
     fireEvent.click(screen.getByTestId("compose-gate-create-team"));
     // Teams kind is never gated — the gate is gone and the Teams tab is active.
@@ -213,7 +276,10 @@ describe("Compose edit-form hydration (ADR-0016 / ISI-4002)", () => {
         body: {
           name: "boss",
           promptRef: { name: "boss-prompt" },
-          defaultSkills: [{ name: "web-search" }, { namespace: "shared", name: "pg" }],
+          defaultSkills: [
+            { name: "web-search" },
+            { namespace: "shared", name: "pg" },
+          ],
           runtimeClassHint: "gvisor",
         },
       },
@@ -222,12 +288,16 @@ describe("Compose edit-form hydration (ADR-0016 / ISI-4002)", () => {
     });
     render(<ComposeScreen />);
     // The real authoring values land in the form (not an empty edit form).
-    await waitFor(() => expect(screen.getByDisplayValue("boss-prompt")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("boss-prompt")).toBeInTheDocument(),
+    );
     expect(screen.getByDisplayValue("gvisor")).toBeInTheDocument();
     // The default-skills textarea is newline-joined "web-search\nshared/pg".
     const skillsArea = screen
       .getAllByRole("textbox")
-      .find((el) => (el as HTMLTextAreaElement).value.includes("web-search")) as HTMLTextAreaElement;
+      .find((el) =>
+        (el as HTMLTextAreaElement).value.includes("web-search"),
+      ) as HTMLTextAreaElement;
     expect(skillsArea?.value).toBe("web-search\nshared/pg");
   });
 
@@ -240,7 +310,9 @@ describe("Compose edit-form hydration (ADR-0016 / ISI-4002)", () => {
     });
     render(<ComposeScreen />);
     await waitFor(() =>
-      expect(screen.getByTestId("compose-hydrate-notfound")).toBeInTheDocument(),
+      expect(
+        screen.getByTestId("compose-hydrate-notfound"),
+      ).toBeInTheDocument(),
     );
   });
 
@@ -256,11 +328,15 @@ describe("Compose edit-form hydration (ADR-0016 / ISI-4002)", () => {
     });
     render(<ComposeScreen />);
     // The gate must NOT appear (admin is browsing a specific squad, ADR-0016 read).
-    await waitFor(() => expect(screen.getByDisplayValue("bmad-boss-prompt")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("bmad-boss-prompt")).toBeInTheDocument(),
+    );
     expect(screen.queryByTestId("compose-no-team-gate")).toBeNull();
     // The read carried the squad selector.
     expect(
-      spy.mock.calls.some((c) => String(c[0]).includes("/api/squad/roles/boss?team=u-bmad")),
+      spy.mock.calls.some((c) =>
+        String(c[0]).includes("/api/squad/roles/boss?team=u-bmad"),
+      ),
     ).toBe(true);
   });
 });

@@ -33,7 +33,10 @@ class FakeEventSource {
     this.listeners.delete(name);
   }
   emit(name: string, data: unknown, lastEventId = "evt-1") {
-    this.listeners.get(name)?.({ data: JSON.stringify(data), lastEventId } as MessageEvent);
+    this.listeners.get(name)?.({
+      data: JSON.stringify(data),
+      lastEventId,
+    } as MessageEvent);
   }
   close() {
     this.closed = true;
@@ -100,7 +103,11 @@ describe("useRunStream — thinking event (ISI-5193)", () => {
     const instances = stubEventSource();
     const { result } = renderHook(() => useRunStream("run-9"));
     act(() => {
-      instances[0].emit("thinking", { runId: "run-9", author: "agent:sam", body: "" });
+      instances[0].emit("thinking", {
+        runId: "run-9",
+        author: "agent:sam",
+        body: "",
+      });
     });
     expect(result.current.events).toHaveLength(0);
   });

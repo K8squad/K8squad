@@ -8,12 +8,20 @@ import { workingPhaseOf } from "@/lib/tickets/transitions";
 // contract (arch ISI-4431 §4 / §1) and the honest empty-phase read model (FR-7).
 
 /** A valid base Role form with the new fields at their defaults. */
-function baseRole(over: Partial<Extract<ComposeForm, { kind: "roles" }>["form"]> = {}): ComposeForm {
+function baseRole(
+  over: Partial<Extract<ComposeForm, { kind: "roles" }>["form"]> = {},
+): ComposeForm {
   const empty = emptyForm("roles");
   if (empty.kind !== "roles") throw new Error("unreachable");
   return {
     kind: "roles",
-    form: { ...empty.form, project: "widget", name: "boss", promptRef: "boss-prompt", ...over },
+    form: {
+      ...empty.form,
+      project: "widget",
+      name: "boss",
+      promptRef: "boss-prompt",
+      ...over,
+    },
   };
 }
 
@@ -25,7 +33,9 @@ describe("RoleForm — activePhases wire", () => {
 
   it("canonicalizes selected phases to enum order, ignoring order + stray values", () => {
     const wire = toWire(
-      baseRole({ activePhases: ["testing", "design", "not-a-phase", "planning"] }),
+      baseRole({
+        activePhases: ["testing", "design", "not-a-phase", "planning"],
+      }),
     );
     // Emitted in canonical lifecycle order; the unknown value never rides the wire.
     expect(wire.activePhases).toEqual(["design", "planning", "testing"]);
@@ -34,13 +44,17 @@ describe("RoleForm — activePhases wire", () => {
 
 describe("RoleForm — coordinator + mode wire", () => {
   it("omits coordinator and coordinatorMode when the toggle is off", () => {
-    const wire = toWire(baseRole({ coordinator: false, coordinatorMode: "auto" }));
+    const wire = toWire(
+      baseRole({ coordinator: false, coordinatorMode: "auto" }),
+    );
     expect(wire).not.toHaveProperty("coordinator");
     expect(wire).not.toHaveProperty("coordinatorMode");
   });
 
   it("emits coordinator:true and the chosen mode when the toggle is on", () => {
-    const wire = toWire(baseRole({ coordinator: true, coordinatorMode: "propose" }));
+    const wire = toWire(
+      baseRole({ coordinator: true, coordinatorMode: "propose" }),
+    );
     expect(wire.coordinator).toBe(true);
     expect(wire.coordinatorMode).toBe("propose");
   });
@@ -55,17 +69,27 @@ describe("RoleForm — coordinator + mode wire", () => {
 describe("RoleForm — validate mirrors the webhook", () => {
   it("accepts a phase-bound coordinator role", () => {
     expect(
-      validate(baseRole({ activePhases: ["design"], coordinator: true, coordinatorMode: "auto" })),
+      validate(
+        baseRole({
+          activePhases: ["design"],
+          coordinator: true,
+          coordinatorMode: "auto",
+        }),
+      ),
     ).toEqual({});
   });
 
   it("rejects a mode set while coordinator is off", () => {
-    const errs = validate(baseRole({ coordinator: false, coordinatorMode: "auto" }));
+    const errs = validate(
+      baseRole({ coordinator: false, coordinatorMode: "auto" }),
+    );
     expect(errs.coordinatorMode).toMatch(/only valid when coordinator/);
   });
 
   it("rejects an unknown coordinator mode", () => {
-    const errs = validate(baseRole({ coordinator: true, coordinatorMode: "turbo" }));
+    const errs = validate(
+      baseRole({ coordinator: true, coordinatorMode: "turbo" }),
+    );
     expect(errs.coordinatorMode).toMatch(/auto, propose/);
   });
 
@@ -89,31 +113,52 @@ describe("RoleForm — role-tier model wire (ISI-4891 S2, Flow B)", () => {
 
   it("emits fallbackModel with its own BYO endpoint ref when both are set", () => {
     const wire = toWire(
-      baseRole({ model: "claude-opus-4-8", fallbackModel: "claude-haiku-4-5", fallbackModelEndpointRef: "fb/url" }),
+      baseRole({
+        model: "claude-opus-4-8",
+        fallbackModel: "claude-haiku-4-5",
+        fallbackModelEndpointRef: "fb/url",
+      }),
     );
-    expect(wire.fallbackModel).toEqual({ model: "claude-haiku-4-5", modelEndpointRef: { name: "fb", key: "url" } });
+    expect(wire.fallbackModel).toEqual({
+      model: "claude-haiku-4-5",
+      modelEndpointRef: { name: "fb", key: "url" },
+    });
   });
 
   it("emits a bare fallbackModel (no endpoint ref) when the ref is blank", () => {
-    const wire = toWire(baseRole({ fallbackModel: "claude-haiku-4-5", fallbackModelEndpointRef: "" }));
+    const wire = toWire(
+      baseRole({
+        fallbackModel: "claude-haiku-4-5",
+        fallbackModelEndpointRef: "",
+      }),
+    );
     expect(wire.fallbackModel).toEqual({ model: "claude-haiku-4-5" });
   });
 
   it("drops a fallback endpoint ref when no fallback model is set (never rides alone)", () => {
-    const wire = toWire(baseRole({ fallbackModel: "", fallbackModelEndpointRef: "orphan/url" }));
+    const wire = toWire(
+      baseRole({ fallbackModel: "", fallbackModelEndpointRef: "orphan/url" }),
+    );
     expect(wire).not.toHaveProperty("fallbackModel");
   });
 
   it("accepts a role with a model + fallback (no primary modelEndpointRef exists)", () => {
     expect(
-      validate(baseRole({ model: "claude-opus-4-8", fallbackModel: "claude-haiku-4-5" })),
+      validate(
+        baseRole({
+          model: "claude-opus-4-8",
+          fallbackModel: "claude-haiku-4-5",
+        }),
+      ),
     ).toEqual({});
   });
 
   // ISI-4891 Frame-4 fold-in: RuntimeAdapterStep's `adapter` is a UI-only credential
   // branch — it must NEVER ride the wire (the persisted role spec is adapter-agnostic).
   it("never serializes the runtime adapter (UI-only credential branch)", () => {
-    const wire = toWire(baseRole({ model: "claude-opus-4-8", adapter: "opencode" }));
+    const wire = toWire(
+      baseRole({ model: "claude-opus-4-8", adapter: "opencode" }),
+    );
     expect(wire).not.toHaveProperty("adapter");
     expect(wire.model).toBe("claude-opus-4-8");
   });

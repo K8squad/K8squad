@@ -27,39 +27,56 @@ describe("useRosterDetail", () => {
   it("transitions to {kind:'ok'} when the load resolves (ISI-5416 — the missing success arm)", async () => {
     const d = deferred<{ name: string }>();
     const load = vi.fn(() => d.promise);
-    const { result } = renderHook(() => useRosterDetail<{ name: string }>(load, 0));
+    const { result } = renderHook(() =>
+      useRosterDetail<{ name: string }>(load, 0),
+    );
 
     expect(result.current.kind).toBe("loading");
     await act(async () => {
       d.resolve({ name: "architect" });
     });
-    expect(result.current).toEqual({ kind: "ok", detail: { name: "architect" } });
+    expect(result.current).toEqual({
+      kind: "ok",
+      detail: { name: "architect" },
+    });
   });
 
   it("transitions to {kind:'error'} when the load rejects", async () => {
     const d = deferred<string>();
-    const { result } = renderHook(() => useRosterDetail<string>(() => d.promise, 0));
+    const { result } = renderHook(() =>
+      useRosterDetail<string>(() => d.promise, 0),
+    );
 
     await act(async () => {
       d.reject(new Error("Could not load."));
     });
-    expect(result.current).toEqual({ kind: "error", message: "Could not load." });
+    expect(result.current).toEqual({
+      kind: "error",
+      message: "Could not load.",
+    });
   });
 
   it("keeps a rejected non-Error message honest", async () => {
     const d = deferred<string>();
-    const { result } = renderHook(() => useRosterDetail<string>(() => d.promise, 0));
+    const { result } = renderHook(() =>
+      useRosterDetail<string>(() => d.promise, 0),
+    );
 
     await act(async () => {
       d.reject("boom");
     });
-    expect(result.current).toEqual({ kind: "error", message: "Could not load." });
+    expect(result.current).toEqual({
+      kind: "error",
+      message: "Could not load.",
+    });
   });
 
   it("does not setState after abort (a late resolve on an abandoned fetch is dropped)", async () => {
     const d = deferred<string>();
     const load = vi.fn((_signal: AbortSignal) => d.promise);
-    const { result, unmount } = renderHook(() => useRosterDetail<string>(load, 0));
+    const { result, unmount } = renderHook(() =>
+      useRosterDetail<string>(load, 0),
+    );
 
     unmount(); // runs the effect cleanup → controller.abort()
     await act(async () => {
@@ -74,9 +91,12 @@ describe("useRosterDetail", () => {
     const d2 = deferred<string>();
     const loads = [d1.promise, d2.promise];
     const load = vi.fn(() => loads.shift() ?? Promise.resolve("never"));
-    const { result, rerender } = renderHook(({ nonce }) => useRosterDetail<string>(load, nonce), {
-      initialProps: { nonce: 0 },
-    });
+    const { result, rerender } = renderHook(
+      ({ nonce }) => useRosterDetail<string>(load, nonce),
+      {
+        initialProps: { nonce: 0 },
+      },
+    );
 
     await act(async () => {
       d1.resolve("first");

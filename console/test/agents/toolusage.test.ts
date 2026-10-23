@@ -48,7 +48,9 @@ describe("GET /api/telemetry/tool-usage — the read proxy", () => {
   });
 
   it("scopes ?agent= into the upstream query", async () => {
-    const upstream = vi.fn(async () => jsonResponse(200, { agents: [], mcp: [] }));
+    const upstream = vi.fn(async () =>
+      jsonResponse(200, { agents: [], mcp: [] }),
+    );
     globalThis.fetch = upstream as unknown as typeof fetch;
 
     const res = await toolUsageGET(
@@ -57,13 +59,13 @@ describe("GET /api/telemetry/tool-usage — the read proxy", () => {
 
     expect(res.status).toBe(200);
     const calledURL = String((upstream.mock.calls[0] as unknown[])[0]);
-    expect(calledURL).toContain(
-      "/api/telemetry/tool-usage?agent=coder-1",
-    );
+    expect(calledURL).toContain("/api/telemetry/tool-usage?agent=coder-1");
   });
 
   it("omits the query string entirely without ?agent=", async () => {
-    const upstream = vi.fn(async () => jsonResponse(200, { agents: [], mcp: [] }));
+    const upstream = vi.fn(async () =>
+      jsonResponse(200, { agents: [], mcp: [] }),
+    );
     globalThis.fetch = upstream as unknown as typeof fetch;
 
     await toolUsageGET(makeReq("/api/telemetry/tool-usage"));
@@ -100,7 +102,9 @@ describe("fetchToolUsage", () => {
     const got = await fetchToolUsage("coder-1");
     expect(got).toEqual(payload);
 
-    globalThis.fetch = vi.fn(async () => jsonResponse(503, {})) as unknown as typeof fetch;
+    globalThis.fetch = vi.fn(async () =>
+      jsonResponse(503, {}),
+    ) as unknown as typeof fetch;
     await expect(fetchToolUsage()).rejects.toThrow("503");
   });
 });

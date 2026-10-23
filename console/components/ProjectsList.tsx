@@ -70,7 +70,10 @@ export function ProjectsList() {
           setState(classified as LoadState);
           return;
         }
-        setState({ kind: "ready", data: (await res.json()) as ProjectsListData });
+        setState({
+          kind: "ready",
+          data: (await res.json()) as ProjectsListData,
+        });
       })
       .catch(() => {
         if (alive) setState({ kind: "error", status: 0 });
@@ -92,8 +95,8 @@ export function ProjectsList() {
       <div className="card" data-testid="projects-unauthenticated">
         <h2 style={{ marginTop: 0 }}>Sign in required</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          The Projects list is scoped to your session. Authenticate through the console sign-in
-          flow and reload.
+          The Projects list is scoped to your session. Authenticate through the
+          console sign-in flow and reload.
         </p>
       </div>
     );
@@ -103,8 +106,8 @@ export function ProjectsList() {
       <div className="card" data-testid="projects-no-team">
         <h2 style={{ marginTop: 0 }}>No squad for your Team yet</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          Your session resolves to a Team with no projection — the Team may be newly created (or
-          deleted) and the cache has not observed it yet.
+          Your session resolves to a Team with no projection — the Team may be
+          newly created (or deleted) and the cache has not observed it yet.
         </p>
       </div>
     );
@@ -114,8 +117,8 @@ export function ProjectsList() {
       <div className="card" data-testid="projects-not-wired">
         <h2 style={{ marginTop: 0 }}>Projects list not wired</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          This apiserver runs without the projects read model (dev / cluster-less run) and answers
-          its documented 501.
+          This apiserver runs without the projects read model (dev /
+          cluster-less run) and answers its documented 501.
         </p>
       </div>
     );
@@ -125,8 +128,8 @@ export function ProjectsList() {
       <div className="card" data-testid="projects-error">
         <h2 style={{ marginTop: 0 }}>Projects unavailable</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          The read model could not be reached (HTTP {state.status || "network error"}). Retry
-          shortly.
+          The read model could not be reached (HTTP{" "}
+          {state.status || "network error"}). Retry shortly.
         </p>
       </div>
     );
@@ -193,7 +196,14 @@ export function ProjectsList() {
                   </>
                 ) : null}
               </p>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  flexWrap: "wrap",
+                  marginBottom: 8,
+                }}
+              >
                 {Object.entries(p.phaseCounts ?? {}).map(([phase, n]) => (
                   <span
                     key={phase}

@@ -110,9 +110,7 @@ export function MessageItem({
   const audience = parseAudience(message.audience);
 
   const isProposal = message.kind === "proposal";
-  const proposal = isProposal
-    ? proposalByMessageId?.[message.id]
-    : undefined;
+  const proposal = isProposal ? proposalByMessageId?.[message.id] : undefined;
 
   // The result post-back is a kind='structured' reply parented to a proposal
   // card; its payload carries the fan-out outcome (workItemId) the run chip

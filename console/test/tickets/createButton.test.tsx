@@ -10,7 +10,13 @@
 //      hide made "gated" indistinguishable from "feature not shipped").
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketsScreen } from "@/components/tickets/TicketsScreen";
 
 const fetchMock = vi.fn();
@@ -48,7 +54,9 @@ describe("TicketsScreen '+ New issue' RBAC affordance (ISI-4496)", () => {
 
     fireEvent.click(btn);
     // The CreateTicketSheet mounts its title field once opened.
-    expect(await screen.findByTestId("create-ticket-sheet")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("create-ticket-sheet"),
+    ).toBeInTheDocument();
   });
 
   it("an unresolved caller gets a DISABLED button WITH a diagnostic hint, not a vanished one", async () => {

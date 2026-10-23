@@ -20,14 +20,24 @@ import { HBarItem } from "@/components/overview/HBarChart";
 
 export interface TicketsSnapshot {
   date: string;
-  counts: Partial<Record<"backlog" | "todo" | "in_progress" | "in_review" | "done", number>>;
+  counts: Partial<
+    Record<"backlog" | "todo" | "in_progress" | "in_review" | "done", number>
+  >;
 }
 
 export interface ProjectOverviewSeries {
   project?: { name: string; namespace: string };
   window?: { from: string; to: string; bucket: string };
-  ticketsByStatus?: { available: boolean; snapshots?: TicketsSnapshot[] | null; reason?: string };
-  runsByStatus?: { available: boolean; byPhase?: Record<string, number> | null; total?: number };
+  ticketsByStatus?: {
+    available: boolean;
+    snapshots?: TicketsSnapshot[] | null;
+    reason?: string;
+  };
+  runsByStatus?: {
+    available: boolean;
+    byPhase?: Record<string, number> | null;
+    total?: number;
+  };
   tokens?: {
     available: boolean;
     input?: number;
@@ -53,9 +63,24 @@ export type SeriesState =
 // The four stacked-area bands the approved mock shows (§3). The §13 enum has five states; `todo`
 // folds into Backlog so the chart matches the mock's Backlog / In progress / In review / Done.
 export const AREA_BANDS = [
-  { key: "backlog", label: "Backlog", color: "var(--status-idle)", from: ["backlog", "todo"] },
-  { key: "in_progress", label: "In progress", color: "var(--status-running)", from: ["in_progress"] },
-  { key: "in_review", label: "In review", color: "var(--accent)", from: ["in_review"] },
+  {
+    key: "backlog",
+    label: "Backlog",
+    color: "var(--status-idle)",
+    from: ["backlog", "todo"],
+  },
+  {
+    key: "in_progress",
+    label: "In progress",
+    color: "var(--status-running)",
+    from: ["in_progress"],
+  },
+  {
+    key: "in_review",
+    label: "In review",
+    color: "var(--accent)",
+    from: ["in_review"],
+  },
   { key: "done", label: "Done", color: "var(--ksq-run)", from: ["done"] },
 ] as const;
 
@@ -81,9 +106,17 @@ export function areaXLabels(snapshots: TicketsSnapshot[]): string[] {
 // phase, so the mock's "Blocked" slot maps to the failed bucket.
 const RUN_BUCKETS = [
   { label: "Completed", color: "var(--status-running)", phases: ["succeeded"] },
-  { label: "Running", color: "var(--accent)", phases: ["pending", "claiming", "dispatching", "running", "collecting"] },
+  {
+    label: "Running",
+    color: "var(--accent)",
+    phases: ["pending", "claiming", "dispatching", "running", "collecting"],
+  },
   { label: "Paused", color: "var(--status-paused)", phases: ["paused"] },
-  { label: "Cancelled", color: "var(--status-idle)", phases: ["canceling", "cancelling", "cancelled", "canceled"] },
+  {
+    label: "Cancelled",
+    color: "var(--status-idle)",
+    phases: ["canceling", "cancelling", "cancelled", "canceled"],
+  },
   { label: "Failed", color: "var(--status-blocked)", phases: ["failed"] },
 ] as const;
 
@@ -91,7 +124,10 @@ const RUN_BUCKETS = [
 export function toRunBars(byPhase: Record<string, number>): HBarItem[] {
   const norm = new Map<string, number>();
   for (const [phase, n] of Object.entries(byPhase ?? {})) {
-    norm.set(phase.toLowerCase(), (norm.get(phase.toLowerCase()) ?? 0) + Math.max(0, n));
+    norm.set(
+      phase.toLowerCase(),
+      (norm.get(phase.toLowerCase()) ?? 0) + Math.max(0, n),
+    );
   }
   return RUN_BUCKETS.map((b) => ({
     label: b.label,
@@ -109,7 +145,11 @@ export function toRunBars(byPhase: Record<string, number>): HBarItem[] {
 // fabricated value (FR-I3). It becomes a real bar only once a blocked-condition aggregate ships.
 export const ISSUE_STATUS_BARS = [
   { label: "Todo", color: "var(--status-idle)", from: ["backlog", "todo"] },
-  { label: "In progress", color: "var(--status-running)", from: ["in_progress"] },
+  {
+    label: "In progress",
+    color: "var(--status-running)",
+    from: ["in_progress"],
+  },
   { label: "In review", color: "var(--accent)", from: ["in_review"] },
   { label: "Blocked", color: "var(--status-blocked)", from: [] as string[] },
   { label: "Done", color: "var(--ksq-run)", from: ["done"] },
@@ -128,7 +168,9 @@ export function latestTicketSnapshot(
  * canonical state (Blocked), or when no snapshot is available at all, is `value: null` so the
  * chart renders "—" rather than a fake 0-bar (FR-I3 fabrication discipline).
  */
-export function toIssueStatusBars(snapshot: TicketsSnapshot | null): HBarItem[] {
+export function toIssueStatusBars(
+  snapshot: TicketsSnapshot | null,
+): HBarItem[] {
   return ISSUE_STATUS_BARS.map((bar) => ({
     label: bar.label,
     color: bar.color,
@@ -136,7 +178,12 @@ export function toIssueStatusBars(snapshot: TicketsSnapshot | null): HBarItem[] 
       bar.from.length === 0 || !snapshot
         ? null
         : bar.from.reduce(
-            (sum, s) => sum + Math.max(0, snapshot.counts[s as keyof TicketsSnapshot["counts"]] ?? 0),
+            (sum, s) =>
+              sum +
+              Math.max(
+                0,
+                snapshot.counts[s as keyof TicketsSnapshot["counts"]] ?? 0,
+              ),
             0,
           ),
   }));
@@ -159,7 +206,9 @@ export function formatTokens(total: number | undefined): string {
  * mounted) and 501 (read model unwired) are the DEGRADE path — the charts show honest empty
  * states, the rest of the dashboard is unaffected. Everything else is a retryable error.
  */
-export function classifySeriesStatus(status: number): Exclude<SeriesState, { kind: "ready" | "loading" }> {
+export function classifySeriesStatus(
+  status: number,
+): Exclude<SeriesState, { kind: "ready" | "loading" }> {
   return status === 404 || status === 501
     ? { kind: "not-available", status }
     : { kind: "error", status };
@@ -173,7 +222,10 @@ export async function fetchProjectSeries(
 ): Promise<SeriesState> {
   const url = `/api/projects/${encodeURIComponent(projectId)}/overview?window=${encodeURIComponent(windowParam)}`;
   try {
-    const res = await fetch(url, { headers: { accept: "application/json" }, signal });
+    const res = await fetch(url, {
+      headers: { accept: "application/json" },
+      signal,
+    });
     if (!res.ok) return classifySeriesStatus(res.status);
     const series = (await res.json()) as ProjectOverviewSeries;
     return { kind: "ready", series };

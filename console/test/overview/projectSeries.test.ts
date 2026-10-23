@@ -16,13 +16,24 @@ import {
 
 describe("toAreaSeries", () => {
   const snaps: TicketsSnapshot[] = [
-    { date: "2026-09-14", counts: { backlog: 3, todo: 1, in_progress: 2, in_review: 1, done: 8 } },
-    { date: "2026-09-15", counts: { backlog: 2, todo: 0, in_progress: 3, in_review: 1, done: 8 } },
+    {
+      date: "2026-09-14",
+      counts: { backlog: 3, todo: 1, in_progress: 2, in_review: 1, done: 8 },
+    },
+    {
+      date: "2026-09-15",
+      counts: { backlog: 2, todo: 0, in_progress: 3, in_review: 1, done: 8 },
+    },
   ];
 
   it("folds the §13 enum into the mock's four bands (todo → Backlog)", () => {
     const series = toAreaSeries(snaps);
-    expect(series.map((s) => s.label)).toEqual(["Backlog", "In progress", "In review", "Done"]);
+    expect(series.map((s) => s.label)).toEqual([
+      "Backlog",
+      "In progress",
+      "In review",
+      "Done",
+    ]);
     // Backlog band = backlog + todo per snapshot.
     expect(series[0].values).toEqual([4, 2]);
     expect(series[1].values).toEqual([2, 3]); // in_progress
@@ -41,19 +52,38 @@ describe("toAreaSeries", () => {
 
 describe("areaXLabels", () => {
   it("shortens ISO dates to MM-DD for the accessible axis description", () => {
-    expect(areaXLabels([{ date: "2026-09-14", counts: {} }])).toEqual(["09-14"]);
+    expect(areaXLabels([{ date: "2026-09-14", counts: {} }])).toEqual([
+      "09-14",
+    ]);
   });
 });
 
 describe("toRunBars", () => {
   it("buckets raw RunPhase counts into the mock's five bars", () => {
-    const bars = toRunBars({ running: 2, succeeded: 12, paused: 1, cancelled: 3, failed: 1 });
+    const bars = toRunBars({
+      running: 2,
+      succeeded: 12,
+      paused: 1,
+      cancelled: 3,
+      failed: 1,
+    });
     const by = Object.fromEntries(bars.map((b) => [b.label, b.value]));
-    expect(by).toEqual({ Completed: 12, Running: 2, Paused: 1, Cancelled: 3, Failed: 1 });
+    expect(by).toEqual({
+      Completed: 12,
+      Running: 2,
+      Paused: 1,
+      Cancelled: 3,
+      Failed: 1,
+    });
   });
 
   it("is case-insensitive and merges phase spellings into one bucket", () => {
-    const bars = toRunBars({ RUNNING: 1, claiming: 1, Canceled: 2, cancelled: 1 });
+    const bars = toRunBars({
+      RUNNING: 1,
+      claiming: 1,
+      Canceled: 2,
+      cancelled: 1,
+    });
     const by = Object.fromEntries(bars.map((b) => [b.label, b.value]));
     expect(by.Running).toBe(2); // RUNNING + claiming
     expect(by.Cancelled).toBe(3); // Canceled + cancelled
@@ -104,7 +134,9 @@ describe("toIssueStatusBars (ISI-5738 §2 issues-by-status snapshot)", () => {
   });
 
   it("uses only existing status/brand tokens for the row colors (no new palette)", () => {
-    const colors = toIssueStatusBars({ date: "d", counts: {} }).map((b) => b.color);
+    const colors = toIssueStatusBars({ date: "d", counts: {} }).map(
+      (b) => b.color,
+    );
     expect(colors).toEqual([
       "var(--status-idle)",
       "var(--status-running)",
@@ -124,7 +156,9 @@ describe("toIssueStatusBars (ISI-5738 §2 issues-by-status snapshot)", () => {
       date: "d",
       counts: { backlog: -5, todo: 2 } as TicketsSnapshot["counts"],
     };
-    expect(toIssueStatusBars(snap).find((b) => b.label === "Todo")?.value).toBe(2);
+    expect(toIssueStatusBars(snap).find((b) => b.label === "Todo")?.value).toBe(
+      2,
+    );
   });
 });
 

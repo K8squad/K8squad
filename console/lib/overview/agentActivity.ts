@@ -68,7 +68,10 @@ export function resolveCardState(
 
 /** Up-to-two-letter initials from a display name (`Claude Code` → `CC`, `Winston` → `WI`). */
 export function agentInitials(name: string): string {
-  const parts = (name ?? "").trim().split(/[\s._/-]+/).filter(Boolean);
+  const parts = (name ?? "")
+    .trim()
+    .split(/[\s._/-]+/)
+    .filter(Boolean);
   if (parts.length === 0) return "?";
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
@@ -111,7 +114,11 @@ export function resolveDeepLink(
 ): AgentDeepLink | null {
   if (!run) return null;
   if (run.workItemUrl) {
-    return { href: run.workItemUrl, label: run.workItemRef || "work item", kind: "ticket" };
+    return {
+      href: run.workItemUrl,
+      label: run.workItemRef || "work item",
+      kind: "ticket",
+    };
   }
   if (run.discussionUrl) {
     return { href: run.discussionUrl, label: "discussion", kind: "discussion" };
@@ -128,7 +135,10 @@ export function resolveDeepLink(
 export const WAITING_SNIPPET = "waiting for first step…";
 export const UNAVAILABLE = "—";
 
-export function thinkingLine(state: AgentCardState, run: AgentCurrentOrLastRun | null | undefined): string {
+export function thinkingLine(
+  state: AgentCardState,
+  run: AgentCurrentOrLastRun | null | undefined,
+): string {
   const snippet = run?.lastThinkingSnippet?.trim();
   if (snippet) return snippet;
   if (state === "running") return WAITING_SNIPPET;
@@ -140,7 +150,10 @@ export function thinkingLine(state: AgentCardState, run: AgentCurrentOrLastRun |
  * `now` is injected (ms since epoch) so the projection stays pure/testable and SSR-stable.
  * An absent/invalid instant renders `—` (unavailable), never a fabricated time.
  */
-export function relativeActivityShort(iso: string | null | undefined, now: number): string {
+export function relativeActivityShort(
+  iso: string | null | undefined,
+  now: number,
+): string {
   if (!iso) return UNAVAILABLE;
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return UNAVAILABLE;
@@ -194,7 +207,9 @@ export function classifyActivityStatus(
 
 /** Fetch the agent-activity aggregate from the BFF. Degrades honestly — never throws
  * the page down (degrade-don't-blank, ISI-4229). */
-export async function fetchAgentActivity(signal?: AbortSignal): Promise<AgentActivityState> {
+export async function fetchAgentActivity(
+  signal?: AbortSignal,
+): Promise<AgentActivityState> {
   try {
     const res = await fetch("/api/squad/agents/activity", {
       headers: { accept: "application/json" },

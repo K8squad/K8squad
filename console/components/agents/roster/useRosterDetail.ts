@@ -29,7 +29,10 @@ export function useRosterDetail<T>(
       })
       .catch((e: unknown) => {
         if (controller.signal.aborted) return;
-        setState({ kind: "error", message: e instanceof Error ? e.message : "Could not load." });
+        setState({
+          kind: "error",
+          message: e instanceof Error ? e.message : "Could not load.",
+        });
       });
     return () => controller.abort();
     // `load` is a fresh per-render closure over name/team; the fetch is intentionally keyed on

@@ -25,7 +25,11 @@ import {
   type CiFailureInput,
   type CiFailureState,
 } from "@/lib/github-status";
-import { agentOptionLabel, listSquadAgents, type AgentOption } from "@/lib/tickets/api";
+import {
+  agentOptionLabel,
+  listSquadAgents,
+  type AgentOption,
+} from "@/lib/tickets/api";
 
 /** The form's mutable state — the write-input subset, resolved from the view. */
 type Form = CiFailureInput;
@@ -68,7 +72,10 @@ export function CiFailureDialog({
   const [branchesRaw, setBranchesRaw] = useState("");
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<{ message: string; fields: string[] } | null>(null);
+  const [error, setError] = useState<{
+    message: string;
+    fields: string[];
+  } | null>(null);
 
   const titleId = useId();
   const enableId = useId();
@@ -124,7 +131,10 @@ export function CiFailureDialog({
     if (!form || !canEdit || saving) return;
     setSaving(true);
     setError(null);
-    const res = await saveCiFailure(projectId, { ...form, branchFilter: parseBranches(branchesRaw) });
+    const res = await saveCiFailure(projectId, {
+      ...form,
+      branchFilter: parseBranches(branchesRaw),
+    });
     setSaving(false);
     switch (res.kind) {
       case "saved":
@@ -135,7 +145,8 @@ export function CiFailureDialog({
         return;
       case "denied":
         setError({
-          message: "You no longer have permission to change this configuration.",
+          message:
+            "You no longer have permission to change this configuration.",
           fields: [],
         });
         return;
@@ -156,7 +167,8 @@ export function CiFailureDialog({
     }
   }, [form, canEdit, saving, projectId, branchesRaw, onClose]);
 
-  const fieldHasError = (field: string) => error?.fields.includes(field) ?? false;
+  const fieldHasError = (field: string) =>
+    error?.fields.includes(field) ?? false;
 
   return (
     <div
@@ -234,13 +246,21 @@ export function CiFailureDialog({
               }}
             >
               {!canEdit && (
-                <p className="gh-ra-readonly" role="status" data-testid="gh-cf-readonly">
-                  You can view this configuration but need contributor access to change it.
+                <p
+                  className="gh-ra-readonly"
+                  role="status"
+                  data-testid="gh-cf-readonly"
+                >
+                  You can view this configuration but need contributor access to
+                  change it.
                 </p>
               )}
 
               {/* (a) Enable toggle. */}
-              <label className="gh-ra-field gh-ra-field--row" htmlFor={enableId}>
+              <label
+                className="gh-ra-field gh-ra-field--row"
+                htmlFor={enableId}
+              >
                 <input
                   ref={firstFieldRef}
                   id={enableId}
@@ -261,7 +281,9 @@ export function CiFailureDialog({
                 <select
                   id={agentFieldId}
                   data-testid="cf-agent"
-                  className={fieldHasError("agentId") ? "gh-ra-invalid" : undefined}
+                  className={
+                    fieldHasError("agentId") ? "gh-ra-invalid" : undefined
+                  }
                   aria-invalid={fieldHasError("agentId") || undefined}
                   value={form.agentId}
                   disabled={!canEdit}
@@ -279,7 +301,8 @@ export function CiFailureDialog({
                   ))}
                 </select>
                 <span className="gh-ra-hint muted">
-                  Any agent on this project&apos;s team. Required when triage is enabled.
+                  Any agent on this project&apos;s team. Required when triage is
+                  enabled.
                 </span>
               </label>
 
@@ -299,14 +322,20 @@ export function CiFailureDialog({
                   }}
                 />
                 <span className="gh-ra-hint muted">
-                  Comma-separated head branches. Leave empty to triage every mirrored
-                  check-run ref (default branch + open-PR heads).
+                  Comma-separated head branches. Leave empty to triage every
+                  mirrored check-run ref (default branch + open-PR heads).
                 </span>
               </label>
 
               {/* (d) Conclusion selector. */}
-              <fieldset className="gh-ra-field" data-testid="cf-conclusions" id={conclusionsId}>
-                <legend className="gh-ra-field__label">Qualifying conclusions</legend>
+              <fieldset
+                className="gh-ra-field"
+                data-testid="cf-conclusions"
+                id={conclusionsId}
+              >
+                <legend className="gh-ra-field__label">
+                  Qualifying conclusions
+                </legend>
                 {CI_FAILURE_CONCLUSIONS.map((c) => (
                   <label className="gh-ra-radio" key={c}>
                     <input
@@ -317,15 +346,21 @@ export function CiFailureDialog({
                       checked={form.conclusions.includes(c)}
                       disabled={!canEdit}
                       onChange={(e) =>
-                        patch({ conclusions: toggleConclusion(form.conclusions, c, e.target.checked) })
+                        patch({
+                          conclusions: toggleConclusion(
+                            form.conclusions,
+                            c,
+                            e.target.checked,
+                          ),
+                        })
                       }
                     />
                     <span>{CI_FAILURE_CONCLUSION_LABEL[c]}</span>
                   </label>
                 ))}
                 <span className="gh-ra-hint muted">
-                  Which terminal check-run conclusions count as a failure. Defaults to
-                  Failed when none are selected.
+                  Which terminal check-run conclusions count as a failure.
+                  Defaults to Failed when none are selected.
                 </span>
               </fieldset>
 
@@ -336,7 +371,11 @@ export function CiFailureDialog({
               )}
 
               {error && (
-                <p className="ksq-notice gh-ra-error" role="alert" data-testid="gh-cf-save-error">
+                <p
+                  className="ksq-notice gh-ra-error"
+                  role="alert"
+                  data-testid="gh-cf-save-error"
+                >
                   {error.message}
                 </p>
               )}
@@ -367,7 +406,15 @@ export function CiFailureDialog({
   );
 }
 
-function Honest({ testId, title, why }: { testId: string; title: string; why: string }) {
+function Honest({
+  testId,
+  title,
+  why,
+}: {
+  testId: string;
+  title: string;
+  why: string;
+}) {
   return (
     <div className="gh-ra-honest" data-testid={testId}>
       <h4 className="gh-ra-honest__title">{title}</h4>

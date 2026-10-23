@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { GET as sessionGET, POST as sessionPOST, DELETE as sessionDELETE } from "@/app/api/session/route";
+import {
+  GET as sessionGET,
+  POST as sessionPOST,
+  DELETE as sessionDELETE,
+} from "@/app/api/session/route";
 
 // ISI-3522: the /login flow's BFF leg. The console form POSTs {username,password} to /api/session,
 // which proxies apiserver POST /auth/login (the ONE authz choke point, §13) and — critically —
@@ -27,7 +31,8 @@ describe("POST /api/session — the login proxy", () => {
       status: 200,
       headers: {
         "content-type": "application/json",
-        "set-cookie": "ksquad_session=opaque-token; Path=/; HttpOnly; SameSite=Lax",
+        "set-cookie":
+          "ksquad_session=opaque-token; Path=/; HttpOnly; SameSite=Lax",
       },
     });
     const fetchMock = vi.fn(async () => upstream);
@@ -44,23 +49,29 @@ describe("POST /api/session — the login proxy", () => {
     // Upstream target is the apiserver login route, and the body was forwarded unchanged.
     const sentUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
     expect(sentUrl).toContain("/auth/login");
-    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { method: string; body?: string };
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as {
+      method: string;
+      body?: string;
+    };
     expect(init.method).toBe("POST");
     expect(init.body).toBe(JSON.stringify({ username: "op", password: "pw" }));
 
     // The cookie the apiserver minted is relayed back — without this, login silently no-ops.
     expect(res.status).toBe(200);
-    expect(res.headers.get("set-cookie")).toContain("ksquad_session=opaque-token");
+    expect(res.headers.get("set-cookie")).toContain(
+      "ksquad_session=opaque-token",
+    );
     expect(res.headers.get("set-cookie")).toContain("HttpOnly");
   });
 
   it("surfaces the apiserver's opaque 401 verbatim (no cookie leaks on a failed login)", async () => {
-    globalThis.fetch = (vi.fn(async () =>
-      new Response(JSON.stringify({ error: "invalid credentials" }), {
-        status: 401,
-        headers: { "content-type": "application/json" },
-      }),
-    ) as unknown) as typeof fetch;
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ error: "invalid credentials" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as unknown as typeof fetch;
 
     const res = await sessionPOST(
       makeReq("/api/session", {
@@ -78,11 +89,12 @@ describe("POST /api/session — the login proxy", () => {
 // (there is no /api/me route; the stale path 404'd). Guards against reintroducing it.
 describe("GET /api/session — the role-summary proxy", () => {
   it("proxies apiserver GET /auth/me (never the stale /api/me)", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ globalRole: "admin" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ globalRole: "admin" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
@@ -97,15 +109,20 @@ describe("GET /api/session — the role-summary proxy", () => {
 
 describe("DELETE /api/session — the logout proxy", () => {
   it("proxies /auth/logout and relays the cookie-clearing Set-Cookie", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(null, {
-        status: 204,
-        headers: { "set-cookie": "ksquad_session=; Path=/; Max-Age=0; HttpOnly" },
-      }),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 204,
+          headers: {
+            "set-cookie": "ksquad_session=; Path=/; Max-Age=0; HttpOnly",
+          },
+        }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    const res = await sessionDELETE(makeReq("/api/session", { method: "DELETE" }));
+    const res = await sessionDELETE(
+      makeReq("/api/session", { method: "DELETE" }),
+    );
 
     expect((fetchMock.mock.calls[0] as unknown[])[0]).toContain("/auth/logout");
     expect(res.status).toBe(204);
@@ -123,7 +140,10 @@ describe("POST /api/session — login-CSRF guard (Copilot PR #215)", () => {
     const res = await sessionPOST(
       makeReq("/api/session", {
         method: "POST",
-        headers: { "content-type": "application/json", "sec-fetch-site": "cross-site" },
+        headers: {
+          "content-type": "application/json",
+          "sec-fetch-site": "cross-site",
+        },
         body: JSON.stringify({ username: "op", password: "pw" }),
       }),
     );
@@ -140,7 +160,10 @@ describe("POST /api/session — login-CSRF guard (Copilot PR #215)", () => {
     const res = await sessionPOST(
       makeReq("/api/session", {
         method: "POST",
-        headers: { "content-type": "application/json", origin: "https://evil.example" },
+        headers: {
+          "content-type": "application/json",
+          origin: "https://evil.example",
+        },
         body: JSON.stringify({ username: "op", password: "pw" }),
       }),
     );
@@ -166,21 +189,25 @@ describe("POST /api/session — login-CSRF guard (Copilot PR #215)", () => {
   });
 
   it("allows a same-origin JSON login through to the apiserver", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-          "set-cookie": "ksquad_session=t; Path=/; HttpOnly",
-        },
-      }),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "set-cookie": "ksquad_session=t; Path=/; HttpOnly",
+          },
+        }),
     );
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
     const res = await sessionPOST(
       makeReq("/api/session", {
         method: "POST",
-        headers: { "content-type": "application/json", "sec-fetch-site": "same-origin" },
+        headers: {
+          "content-type": "application/json",
+          "sec-fetch-site": "same-origin",
+        },
         body: JSON.stringify({ username: "op", password: "pw" }),
       }),
     );
@@ -211,7 +238,9 @@ describe("POST /api/session — forwards the client-address chain (Copilot PR #2
       }),
     );
 
-    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { headers: Headers };
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as {
+      headers: Headers;
+    };
     expect(init.headers.get("x-forwarded-for")).toBe("203.0.113.7");
     expect(init.headers.get("x-real-ip")).toBe("203.0.113.7");
   });

@@ -38,9 +38,10 @@ class FakeEventSource {
     this.listeners.delete(name);
   }
   emit(name: string, data: unknown, lastEventId = "evt-1") {
-    this.listeners
-      .get(name)
-      ?.({ data: JSON.stringify(data), lastEventId } as MessageEvent);
+    this.listeners.get(name)?.({
+      data: JSON.stringify(data),
+      lastEventId,
+    } as MessageEvent);
   }
   close() {
     this.closed = true;
@@ -96,7 +97,9 @@ describe("ambientRunId — the gating rule (ISI-5206)", () => {
 describe("useTicketRunStream — live tail + terminal resolve (ISI-5206)", () => {
   it("opens exactly one EventSource against the ambient run's BFF stream", () => {
     const instances = stubEventSource();
-    renderHook(() => useTicketRunStream("run-7", "in_progress", undefined, () => {}));
+    renderHook(() =>
+      useTicketRunStream("run-7", "in_progress", undefined, () => {}),
+    );
     expect(instances).toHaveLength(1);
     expect(instances[0].url).toBe("/api/runs/run-7/stream");
   });
@@ -109,7 +112,9 @@ describe("useTicketRunStream — live tail + terminal resolve (ISI-5206)", () =>
 
   it("opens NO stream when the self-dispatch ladder already owns the run", () => {
     const instances = stubEventSource();
-    renderHook(() => useTicketRunStream("run-7", "in_progress", "run-7", () => {}));
+    renderHook(() =>
+      useTicketRunStream("run-7", "in_progress", "run-7", () => {}),
+    );
     expect(instances).toHaveLength(0);
   });
 
@@ -138,7 +143,9 @@ describe("useTicketRunStream — live tail + terminal resolve (ISI-5206)", () =>
   it("fires onEnded exactly once on the run's terminal `ended` milestone", () => {
     const instances = stubEventSource();
     const onEnded = vi.fn();
-    renderHook(() => useTicketRunStream("run-7", "in_progress", undefined, onEnded));
+    renderHook(() =>
+      useTicketRunStream("run-7", "in_progress", undefined, onEnded),
+    );
     act(() => {
       instances[0].emit("ended", { run_id: "run-7", agent: "sam" });
     });

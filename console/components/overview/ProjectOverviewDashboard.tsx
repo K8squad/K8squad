@@ -25,11 +25,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { phaseTone, type SquadOverviewData } from "@/components/SquadOverview";
-import { selectProject, recentTickets, ticketStats } from "@/components/projects/ProjectLanding";
+import {
+  selectProject,
+  recentTickets,
+  ticketStats,
+} from "@/components/projects/ProjectLanding";
 import { ApiError, listWorkItems } from "@/lib/tickets/api";
 import { STATE_LABELS, type WorkItem } from "@/lib/tickets/types";
 import { encodeProjectId } from "@/lib/projectId";
-import { StatBand, StatTile, PanelCard, AgentRunCard, AgentRunCardGrid } from "@/components/overview";
+import {
+  StatBand,
+  StatTile,
+  PanelCard,
+  AgentRunCard,
+  AgentRunCardGrid,
+} from "@/components/overview";
 import {
   selectRepoStat,
   repoCount,
@@ -48,8 +58,11 @@ const TICKETS_LIMIT = 6;
 // ---------------------------------------------------------------------------
 
 /** Live-work runs for this project (phaseTone "running" is the single authority). */
-export function activeRunCount(project: ReturnType<typeof selectProject>): number {
-  return (project?.runs ?? []).filter((r) => phaseTone(r.phase) === "running").length;
+export function activeRunCount(
+  project: ReturnType<typeof selectProject>,
+): number {
+  return (project?.runs ?? []).filter((r) => phaseTone(r.phase) === "running")
+    .length;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +90,10 @@ function useSquadOverview(): OverviewState {
           );
           return;
         }
-        setState({ kind: "ready", data: (await res.json()) as SquadOverviewData });
+        setState({
+          kind: "ready",
+          data: (await res.json()) as SquadOverviewData,
+        });
       })
       .catch(() => alive && setState({ kind: "error", status: 0 }));
     return () => {
@@ -136,7 +152,10 @@ function useGithubSummary(): GithubState {
           );
           return;
         }
-        setState({ kind: "ready", summary: (await res.json()) as GithubSummary });
+        setState({
+          kind: "ready",
+          summary: (await res.json()) as GithubSummary,
+        });
       })
       .catch(() => alive && setState({ kind: "error", status: 0 }));
     return () => {
@@ -156,7 +175,9 @@ function useAgentActivity(): ActivityState {
   const [state, setState] = useState<ActivityState>({ kind: "loading" });
   useEffect(() => {
     let alive = true;
-    fetch("/api/squad/agents/activity", { headers: { accept: "application/json" } })
+    fetch("/api/squad/agents/activity", {
+      headers: { accept: "application/json" },
+    })
       .then(async (res) => {
         if (!alive) return;
         if (!res.ok) {
@@ -197,19 +218,29 @@ function GithubChip({
   const value = repoCount(stat, field);
   return (
     <div className="ov-ghstrip__chip" data-testid={`gh-chip-${String(field)}`}>
-      <span className={`ov-ghstrip__value${tone ? ` ov-tone--${tone}` : ""}`}>{value}</span>
+      <span className={`ov-ghstrip__value${tone ? ` ov-tone--${tone}` : ""}`}>
+        {value}
+      </span>
       <span className="ov-ghstrip__label">{label}</span>
     </div>
   );
 }
 
-function GithubStrip({ state, repoUrl }: { state: GithubState; repoUrl: string | null }) {
+function GithubStrip({
+  state,
+  repoUrl,
+}: {
+  state: GithubState;
+  repoUrl: string | null;
+}) {
   const stat =
     state.kind === "ready" ? selectRepoStat(state.summary, repoUrl) : null;
   return (
     <PanelCard
       title="GitHub"
-      action={repoUrl ? { label: "Open on GitHub ↗", href: repoUrl } : undefined}
+      action={
+        repoUrl ? { label: "Open on GitHub ↗", href: repoUrl } : undefined
+      }
       state={
         state.kind === "loading"
           ? "loading"
@@ -224,16 +255,30 @@ function GithubStrip({ state, repoUrl }: { state: GithubState; repoUrl: string |
     >
       {state.kind === "ready" ? (
         stat === null ? (
-          <p className="muted" style={{ margin: 0 }} data-testid="gh-strip-no-repo">
+          <p
+            className="muted"
+            style={{ margin: 0 }}
+            data-testid="gh-strip-no-repo"
+          >
             No mirrored GitHub repository for this project yet.
           </p>
         ) : (
           <div className="ov-ghstrip" data-testid="gh-strip">
             <GithubChip label="Assigned" stat={stat} field="assigned" />
             <GithubChip label="Open issues" stat={stat} field="open" />
-            <GithubChip label="Open PRs" stat={stat} field="prs" tone="running" />
+            <GithubChip
+              label="Open PRs"
+              stat={stat}
+              field="prs"
+              tone="running"
+            />
             <GithubChip label="Reviewed" stat={stat} field="reviewed" />
-            <GithubChip label="Red checks" stat={stat} field="checksRed" tone="blocked" />
+            <GithubChip
+              label="Red checks"
+              stat={stat}
+              field="checksRed"
+              tone="blocked"
+            />
           </div>
         )
       ) : null}
@@ -250,7 +295,8 @@ function AgentGridPanel({
   projectId: string;
   now?: number;
 }) {
-  const agents = state.kind === "ready" ? projectAgents(state.agents, projectId) : [];
+  const agents =
+    state.kind === "ready" ? projectAgents(state.agents, projectId) : [];
   return (
     <PanelCard
       title="Agents on this project"
@@ -294,7 +340,10 @@ function LatestTicketsPanel({
   return (
     <PanelCard
       title="Latest Tickets"
-      action={{ label: "Jump into Issues →", href: `/projects/${encoded}/issues` }}
+      action={{
+        label: "Jump into Issues →",
+        href: `/projects/${encoded}/issues`,
+      }}
       state={
         state.kind === "loading"
           ? "loading"
@@ -307,30 +356,37 @@ function LatestTicketsPanel({
       emptyLabel="Ticket read model not available yet on this deployment."
       errorLabel={`Tickets unavailable (HTTP ${state.kind === "error" ? state.status || "network error" : ""}).`}
     >
-      {state.kind === "ready" ? (
-        (() => {
-          const latest = recentTickets(state.items, TICKETS_LIMIT);
-          if (latest.length === 0)
-            return <p className="muted" style={{ margin: 0 }}>No tickets yet.</p>;
-          return (
-            <ul className="ov-list" data-testid="project-latest-tickets">
-              {latest.map((t) => (
-                <li key={t.id} className="ov-list__row">
-                  <a
-                    href={`/projects/${encoded}/issues/${encodeURIComponent(t.id)}`}
-                    data-testid="project-ticket-link"
-                  >
-                    {t.title}
-                  </a>
-                  <span className="phase-chip" data-tone={t.state === "done" ? "idle" : "running"}>
-                    {STATE_LABELS[t.state]}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          );
-        })()
-      ) : null}
+      {state.kind === "ready"
+        ? (() => {
+            const latest = recentTickets(state.items, TICKETS_LIMIT);
+            if (latest.length === 0)
+              return (
+                <p className="muted" style={{ margin: 0 }}>
+                  No tickets yet.
+                </p>
+              );
+            return (
+              <ul className="ov-list" data-testid="project-latest-tickets">
+                {latest.map((t) => (
+                  <li key={t.id} className="ov-list__row">
+                    <a
+                      href={`/projects/${encoded}/issues/${encodeURIComponent(t.id)}`}
+                      data-testid="project-ticket-link"
+                    >
+                      {t.title}
+                    </a>
+                    <span
+                      className="phase-chip"
+                      data-tone={t.state === "done" ? "idle" : "running"}
+                    >
+                      {STATE_LABELS[t.state]}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            );
+          })()
+        : null}
     </PanelCard>
   );
 }
@@ -347,7 +403,10 @@ export function ProjectOverviewDashboard({ projectId }: { projectId: string }) {
   const encoded = encodeProjectId(projectId);
 
   const project = useMemo(
-    () => (overview.kind === "ready" ? selectProject(overview.data, projectId) : null),
+    () =>
+      overview.kind === "ready"
+        ? selectProject(overview.data, projectId)
+        : null,
     [overview, projectId],
   );
   const repoUrl = project?.repoUrl ?? null;
@@ -357,7 +416,9 @@ export function ProjectOverviewDashboard({ projectId }: { projectId: string }) {
   const openIssues =
     workItems.kind === "ready" ? ticketStats(workItems.items).open : null;
   const agentCount =
-    activity.kind === "ready" ? projectAgents(activity.agents, projectId).length : null;
+    activity.kind === "ready"
+      ? projectAgents(activity.agents, projectId).length
+      : null;
 
   return (
     <div className="ov-dashboard" data-testid="project-overview">
@@ -406,14 +467,26 @@ export function ProjectOverviewDashboard({ projectId }: { projectId: string }) {
         <LatestTicketsPanel state={workItems} projectId={projectId} />
         <PanelCard title="Jump in">
           <div className="ov-cta-row" data-testid="project-cta">
-            <a className="ov-cta" href={`/projects/${encoded}/issues`} data-testid="cta-issues">
+            <a
+              className="ov-cta"
+              href={`/projects/${encoded}/issues`}
+              data-testid="cta-issues"
+            >
               Jump into Issues →
             </a>
-            <a className="ov-cta ov-cta--ghost" href={`/projects/${encoded}/runs`} data-testid="cta-runs">
+            <a
+              className="ov-cta ov-cta--ghost"
+              href={`/projects/${encoded}/runs`}
+              data-testid="cta-runs"
+            >
               View runs →
             </a>
             {repoUrl ? (
-              <a className="ov-cta ov-cta--ghost" href={repoUrl} data-testid="cta-github">
+              <a
+                className="ov-cta ov-cta--ghost"
+                href={repoUrl}
+                data-testid="cta-github"
+              >
                 Open on GitHub ↗
               </a>
             ) : null}

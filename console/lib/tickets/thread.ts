@@ -98,7 +98,9 @@ function arr(raw: Record<string, unknown>, ...keys: string[]): unknown[] {
  * rest of this boundary). Blank ids and non-objects are dropped, so a plain comment
  * (no `references`) yields an empty list and renders link-free.
  */
-export function commentReferences(o: Record<string, unknown>): TicketReference[] {
+export function commentReferences(
+  o: Record<string, unknown>,
+): TicketReference[] {
   const raw = Array.isArray(o.references)
     ? o.references
     : Array.isArray(o.References)
@@ -225,7 +227,9 @@ export async function postWorkItemComment(
   const payload: { body: string; references?: TicketReference[] } = { body };
   if (references && references.length > 0) {
     payload.references = references.map((r) =>
-      r.title ? { workItemId: r.workItemId, title: r.title } : { workItemId: r.workItemId },
+      r.title
+        ? { workItemId: r.workItemId, title: r.title }
+        : { workItemId: r.workItemId },
     );
   }
   const res = await fetch(
@@ -420,7 +424,8 @@ export function subTicketStatus(children: { state: string }[]): {
   let todo = 0;
   for (const c of children) {
     if (c.state === "done") done += 1;
-    else if (c.state === "in_progress" || c.state === "in_review") inProgress += 1;
+    else if (c.state === "in_progress" || c.state === "in_review")
+      inProgress += 1;
     else todo += 1; // backlog + todo == not-yet-started
   }
   return { done, inProgress, todo, total: children.length };

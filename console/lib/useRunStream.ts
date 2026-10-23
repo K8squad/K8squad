@@ -25,8 +25,14 @@ import { useEffect, useRef, useState } from "react";
 
 /** Server-stamped coordination-event kinds (AC7), plus the reconcile/lifecycle vocabulary. */
 export type RunEventKind =
-  | "CHECKOUT" | "COMMENT" | "HANDOFF" | "MEMORY" | "ARTIFACT"
-  | "STEP" | "LIFECYCLE" | "THINKING";
+  | "CHECKOUT"
+  | "COMMENT"
+  | "HANDOFF"
+  | "MEMORY"
+  | "ARTIFACT"
+  | "STEP"
+  | "LIFECYCLE"
+  | "THINKING";
 
 export type RunEvent = {
   id: string;
@@ -48,7 +54,13 @@ const KINDS: ReadonlySet<string> = new Set([
 
 /** Named SSE event types emitted by the outbox projector (event: line = outbox event_type). */
 const RECONCILE_EVENT = "reconcile_advanced";
-const LIFECYCLE_EVENTS = ["assigned", "scheduled", "sandbox_bound", "started", "ended"] as const;
+const LIFECYCLE_EVENTS = [
+  "assigned",
+  "scheduled",
+  "sandbox_bound",
+  "started",
+  "ended",
+] as const;
 /**
  * `event: thinking` — the operator's progress mirror echoed as a run event
  * (ISI-5193, plan ISI-5185/WS-A). Payload is the SAME triple the durable

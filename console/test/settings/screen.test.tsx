@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+  act,
+} from "@testing-library/react";
 import { ProjectSettingsScreen } from "@/components/settings/ProjectSettingsScreen";
 import type { ProjectSettings } from "@/lib/projectSettings";
 
@@ -9,37 +16,82 @@ afterEach(() => {
 });
 
 function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 function settings(over: Partial<ProjectSettings> = {}): ProjectSettings {
   return {
     project: { name: "proj-a", namespace: "squad-a" },
-    repo: { url: "https://github.com/org/repo", ref: "main", provider: "github", syncEnabled: false, pollIntervalSeconds: 0, reflectOutbound: false },
-    auth: { connected: true, credentialSecretRefName: "scm-pat", lastTest: "passed" },
+    repo: {
+      url: "https://github.com/org/repo",
+      ref: "main",
+      provider: "github",
+      syncEnabled: false,
+      pollIntervalSeconds: 0,
+      reflectOutbound: false,
+    },
+    auth: {
+      connected: true,
+      credentialSecretRefName: "scm-pat",
+      lastTest: "passed",
+    },
     canEdit: true,
     ...over,
   };
 }
 
 /** Route the screen's fetches by URL + method to canned responses. */
-function stubFetch(routes: (url: string, init?: RequestInit) => Response | Promise<Response>) {
-  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => Promise.resolve(routes(String(input), init))));
+function stubFetch(
+  routes: (url: string, init?: RequestInit) => Response | Promise<Response>,
+) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      Promise.resolve(routes(String(input), init)),
+    ),
+  );
 }
 
 describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
   it("AC1: renders repo url/ref/provider + honest tri-state badge from the S1 projection (ISI-4830: editable card pre-fills the inputs)", async () => {
-    stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings()) : jsonResponse(404, {})));
+    stubFetch((url) =>
+      url.includes("/settings")
+        ? jsonResponse(200, settings())
+        : jsonResponse(404, {}),
+    );
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
-    expect((screen.getByTestId("repo-url-input") as HTMLInputElement).value).toBe("https://github.com/org/repo");
-    expect((screen.getByTestId("repo-ref-input") as HTMLInputElement).value).toBe("main");
+    expect(
+      (screen.getByTestId("repo-url-input") as HTMLInputElement).value,
+    ).toBe("https://github.com/org/repo");
+    expect(
+      (screen.getByTestId("repo-ref-input") as HTMLInputElement).value,
+    ).toBe("main");
     expect(screen.getByTestId("repo-provider").textContent).toBe("github");
-    expect(screen.getByTestId("cred-status-badge").textContent).toBe("Connected — test passed");
+    expect(screen.getByTestId("cred-status-badge").textContent).toBe(
+      "Connected — test passed",
+    );
   });
 
   it("AC1: an empty ref shows a 'default branch' placeholder, never a blank claim of a ref", async () => {
-    stubFetch(() => jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "", provider: "github", syncEnabled: false, pollIntervalSeconds: 0, reflectOutbound: false } })));
+    stubFetch(() =>
+      jsonResponse(
+        200,
+        settings({
+          repo: {
+            url: "https://github.com/org/repo",
+            ref: "",
+            provider: "github",
+            syncEnabled: false,
+            pollIntervalSeconds: 0,
+            reflectOutbound: false,
+          },
+        }),
+      ),
+    );
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
     const refInput = screen.getByTestId("repo-ref-input") as HTMLInputElement;
@@ -51,7 +103,9 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
     stubFetch(() => jsonResponse(200, settings({ canEdit: false })));
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
-    expect(screen.getByTestId("repo-url").textContent).toBe("https://github.com/org/repo");
+    expect(screen.getByTestId("repo-url").textContent).toBe(
+      "https://github.com/org/repo",
+    );
     expect(screen.getByTestId("repo-ref").textContent).toBe("main");
     expect(screen.getByTestId("repo-provider").textContent).toBe("github");
   });
@@ -79,11 +133,32 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
   });
 
   it("AC7: a project with no repo renders the 'no repo connected' state", async () => {
-    stubFetch(() => jsonResponse(200, settings({ repo: { url: "", ref: "", provider: "github", syncEnabled: false, pollIntervalSeconds: 0, reflectOutbound: false }, auth: { connected: false, credentialSecretRefName: "", lastTest: "untested" } })));
+    stubFetch(() =>
+      jsonResponse(
+        200,
+        settings({
+          repo: {
+            url: "",
+            ref: "",
+            provider: "github",
+            syncEnabled: false,
+            pollIntervalSeconds: 0,
+            reflectOutbound: false,
+          },
+          auth: {
+            connected: false,
+            credentialSecretRefName: "",
+            lastTest: "untested",
+          },
+        }),
+      ),
+    );
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
     expect(screen.getByTestId("settings-no-repo")).toBeTruthy();
-    expect(screen.getByTestId("cred-status-badge").textContent).toBe("Not connected");
+    expect(screen.getByTestId("cred-status-badge").textContent).toBe(
+      "Not connected",
+    );
   });
 
   it("AC5: test-connection renders {ok:false, detail} VERBATIM (never rewritten to success)", async () => {
@@ -105,22 +180,41 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
   it("AC4: saving a PAT clears the token field and never echoes it back", async () => {
     const calls: Array<{ url: string; method?: string; body?: string }> = [];
     stubFetch((url, init) => {
-      calls.push({ url, method: init?.method, body: init?.body as string | undefined });
-      if (url.includes("/api/credentials") && init?.method === "POST") return jsonResponse(201, { secretRef: "secret://squad-a/fresh-pat" });
-      if (url.includes("/api/squad/projects/")) return jsonResponse(200, { name: "proj-a", repo: { url: "https://github.com/org/repo", ref: "main" }, goals: ["g1"] });
-      if (url.includes("/api/compose/projects/") && init?.method === "PUT") return jsonResponse(200, { operation: "updated" });
+      calls.push({
+        url,
+        method: init?.method,
+        body: init?.body as string | undefined,
+      });
+      if (url.includes("/api/credentials") && init?.method === "POST")
+        return jsonResponse(201, { secretRef: "secret://squad-a/fresh-pat" });
+      if (url.includes("/api/squad/projects/"))
+        return jsonResponse(200, {
+          name: "proj-a",
+          repo: { url: "https://github.com/org/repo", ref: "main" },
+          goals: ["g1"],
+        });
+      if (url.includes("/api/compose/projects/") && init?.method === "PUT")
+        return jsonResponse(200, { operation: "updated" });
       return jsonResponse(200, settings());
     });
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
-    fireEvent.change(screen.getByTestId("pat-name-input"), { target: { value: "fresh-pat" } });
-    fireEvent.change(screen.getByTestId("pat-value-input"), { target: { value: "ghp_secrettoken" } });
+    fireEvent.change(screen.getByTestId("pat-name-input"), {
+      target: { value: "fresh-pat" },
+    });
+    fireEvent.change(screen.getByTestId("pat-value-input"), {
+      target: { value: "ghp_secrettoken" },
+    });
     fireEvent.submit(screen.getByTestId("settings-pat-form"));
     await waitFor(() => screen.getByTestId("pat-msg"));
     // The token input is cleared after submit — never held in the DOM.
-    expect((screen.getByTestId("pat-value-input") as HTMLInputElement).value).toBe("");
+    expect(
+      (screen.getByTestId("pat-value-input") as HTMLInputElement).value,
+    ).toBe("");
     // The credential POST carried the token; the compose PUT body did NOT.
-    const put = calls.find((c) => c.url.includes("/api/compose/projects/") && c.method === "PUT");
+    const put = calls.find(
+      (c) => c.url.includes("/api/compose/projects/") && c.method === "PUT",
+    );
     expect(put?.body).toBeTruthy();
     expect(put!.body).not.toContain("ghp_secrettoken");
     // The PUT preserved the project's goals (full-spec round-trip).
@@ -131,28 +225,62 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
   it("S5: enabling sync + editing the poll interval writes a full-spec PUT that preserves goals + the sync passthrough", async () => {
     const calls: Array<{ url: string; method?: string; body?: string }> = [];
     stubFetch((url, init) => {
-      calls.push({ url, method: init?.method, body: init?.body as string | undefined });
+      calls.push({
+        url,
+        method: init?.method,
+        body: init?.body as string | undefined,
+      });
       if (url.includes("/api/squad/projects/")) {
         return jsonResponse(200, {
           name: "proj-a",
-          repo: { url: "https://github.com/org/repo", ref: "main", sync: { provider: "github", pollIntervalSeconds: 300, webhookSecretRef: { name: "hook" } } },
+          repo: {
+            url: "https://github.com/org/repo",
+            ref: "main",
+            sync: {
+              provider: "github",
+              pollIntervalSeconds: 300,
+              webhookSecretRef: { name: "hook" },
+            },
+          },
           goals: ["g1"],
         });
       }
-      if (url.includes("/api/compose/projects/") && init?.method === "PUT") return jsonResponse(200, { operation: "updated" });
-      return jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "main", provider: "github", syncEnabled: false, pollIntervalSeconds: 0, reflectOutbound: false } }));
+      if (url.includes("/api/compose/projects/") && init?.method === "PUT")
+        return jsonResponse(200, { operation: "updated" });
+      return jsonResponse(
+        200,
+        settings({
+          repo: {
+            url: "https://github.com/org/repo",
+            ref: "main",
+            provider: "github",
+            syncEnabled: false,
+            pollIntervalSeconds: 0,
+            reflectOutbound: false,
+          },
+        }),
+      );
     });
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
     fireEvent.click(screen.getByTestId("sync-enabled-input"));
-    fireEvent.change(screen.getByTestId("sync-poll-input"), { target: { value: "600" } });
+    fireEvent.change(screen.getByTestId("sync-poll-input"), {
+      target: { value: "600" },
+    });
     fireEvent.submit(screen.getByTestId("settings-sync-form"));
     await waitFor(() => screen.getByTestId("sync-msg"));
-    const put = calls.find((c) => c.url.includes("/api/compose/projects/") && c.method === "PUT");
+    const put = calls.find(
+      (c) => c.url.includes("/api/compose/projects/") && c.method === "PUT",
+    );
     expect(put?.body).toBeTruthy();
     const body = JSON.parse(put!.body as string);
     // The whole sync sub-spec round-trips: edited poll, preserved webhookSecretRef + provider.
-    expect(body.repo.sync).toEqual({ provider: "github", pollIntervalSeconds: 600, reflectOutbound: false, webhookSecretRef: { name: "hook" } });
+    expect(body.repo.sync).toEqual({
+      provider: "github",
+      pollIntervalSeconds: 600,
+      reflectOutbound: false,
+      webhookSecretRef: { name: "hook" },
+    });
     // Goals preserved (full-spec round-trip, no silent wipe).
     expect(body.goals).toEqual(["g1"]);
   });
@@ -161,48 +289,102 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
     const calls: Array<{ url: string; method?: string }> = [];
     stubFetch((url, init) => {
       calls.push({ url, method: init?.method });
-      return jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "main", provider: "github", syncEnabled: true, pollIntervalSeconds: 300, reflectOutbound: false } }));
+      return jsonResponse(
+        200,
+        settings({
+          repo: {
+            url: "https://github.com/org/repo",
+            ref: "main",
+            provider: "github",
+            syncEnabled: true,
+            pollIntervalSeconds: 300,
+            reflectOutbound: false,
+          },
+        }),
+      );
     });
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
-    fireEvent.change(screen.getByTestId("sync-poll-input"), { target: { value: "30" } });
+    fireEvent.change(screen.getByTestId("sync-poll-input"), {
+      target: { value: "30" },
+    });
     fireEvent.submit(screen.getByTestId("settings-sync-form"));
     await waitFor(() => screen.getByTestId("sync-msg"));
     expect(screen.getByTestId("sync-msg").textContent).toContain("at least 60");
-    expect(calls.some((c) => c.url.includes("/api/compose/projects/") && c.method === "PUT")).toBe(false);
+    expect(
+      calls.some(
+        (c) => c.url.includes("/api/compose/projects/") && c.method === "PUT",
+      ),
+    ).toBe(false);
   });
 
   it("ISI-4830 S4: the connection-health rail re-projects the S1 payload (linked + credential + last test)", async () => {
-    stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "main", provider: "github", syncEnabled: true, pollIntervalSeconds: 300, reflectOutbound: false } })) : jsonResponse(404, {})));
+    stubFetch((url) =>
+      url.includes("/settings")
+        ? jsonResponse(
+            200,
+            settings({
+              repo: {
+                url: "https://github.com/org/repo",
+                ref: "main",
+                provider: "github",
+                syncEnabled: true,
+                pollIntervalSeconds: 300,
+                reflectOutbound: false,
+              },
+            }),
+          )
+        : jsonResponse(404, {}),
+    );
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-health-rail"));
     expect(screen.getByTestId("health-repo").textContent).toContain("Linked");
-    expect(screen.getByTestId("health-cred").textContent).toContain("Connected — test passed");
+    expect(screen.getByTestId("health-cred").textContent).toContain(
+      "Connected — test passed",
+    );
     expect(screen.getByTestId("health-test").textContent).toContain("Passed");
-    expect(screen.getByTestId("health-sync").textContent).toContain("Every 300s");
-    expect(screen.getByTestId("health-provider").textContent).toContain("github");
+    expect(screen.getByTestId("health-sync").textContent).toContain(
+      "Every 300s",
+    );
+    expect(screen.getByTestId("health-provider").textContent).toContain(
+      "github",
+    );
   });
 
   it("AC3: a save validation 422 surfaces the apiserver's field error VERBATIM", async () => {
     stubFetch((url, init) => {
-      if (url.includes("/api/squad/projects/")) return jsonResponse(200, { name: "proj-a", repo: { url: "https://github.com/org/repo" } });
+      if (url.includes("/api/squad/projects/"))
+        return jsonResponse(200, {
+          name: "proj-a",
+          repo: { url: "https://github.com/org/repo" },
+        });
       if (url.includes("/api/compose/projects/") && init?.method === "PUT") {
-        return jsonResponse(422, { fields: [{ field: "repo.url", message: "must be a github.com URL" }] });
+        return jsonResponse(422, {
+          fields: [{ field: "repo.url", message: "must be a github.com URL" }],
+        });
       }
       return jsonResponse(200, settings());
     });
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
-    fireEvent.change(screen.getByTestId("repo-url-input"), { target: { value: "https://gitlab.com/org/repo" } });
+    fireEvent.change(screen.getByTestId("repo-url-input"), {
+      target: { value: "https://gitlab.com/org/repo" },
+    });
     fireEvent.submit(screen.getByTestId("settings-repo-form"));
     await waitFor(() => screen.getByTestId("repo-msg"));
-    expect(screen.getByTestId("repo-msg").textContent).toContain("repo.url: must be a github.com URL");
+    expect(screen.getByTestId("repo-msg").textContent).toContain(
+      "repo.url: must be a github.com URL",
+    );
   });
 
   it("ISI-5303: the Docs card edits conventions/archDocRefs via a full-spec PUT that preserves repo/goals", async () => {
     const calls: Array<{ url: string; method?: string; body?: string }> = [];
     stubFetch((url, init) => {
-      calls.push({ url, method: init?.method, body: init?.body as string | undefined });
+      calls.push({
+        url,
+        method: init?.method,
+        body: init?.body as string | undefined,
+      });
       if (url.includes("/api/squad/projects/")) {
         return jsonResponse(200, {
           name: "proj-a",
@@ -212,41 +394,75 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
           archDocRefs: ["old.md"],
         });
       }
-      if (url.includes("/api/compose/projects/") && init?.method === "PUT") return jsonResponse(200, { operation: "updated" });
-      return jsonResponse(200, settings({ conventions: "old", archDocRefs: ["old.md"] }));
+      if (url.includes("/api/compose/projects/") && init?.method === "PUT")
+        return jsonResponse(200, { operation: "updated" });
+      return jsonResponse(
+        200,
+        settings({ conventions: "old", archDocRefs: ["old.md"] }),
+      );
     });
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
-    fireEvent.change(screen.getByTestId("docs-conventions-input"), { target: { value: "use tabs, not spaces" } });
-    fireEvent.change(screen.getByTestId("docs-ref-input-0"), { target: { value: "docs/architecture.md" } });
+    fireEvent.change(screen.getByTestId("docs-conventions-input"), {
+      target: { value: "use tabs, not spaces" },
+    });
+    fireEvent.change(screen.getByTestId("docs-ref-input-0"), {
+      target: { value: "docs/architecture.md" },
+    });
     fireEvent.click(screen.getByTestId("docs-ref-add"));
-    fireEvent.change(screen.getByTestId("docs-ref-input-1"), { target: { value: "https://wiki/x" } });
+    fireEvent.change(screen.getByTestId("docs-ref-input-1"), {
+      target: { value: "https://wiki/x" },
+    });
     fireEvent.submit(screen.getByTestId("settings-docs-form"));
     await waitFor(() => screen.getByTestId("docs-msg"));
-    const put = calls.find((c) => c.url.includes("/api/compose/projects/") && c.method === "PUT");
+    const put = calls.find(
+      (c) => c.url.includes("/api/compose/projects/") && c.method === "PUT",
+    );
     const body = JSON.parse(put!.body as string);
     expect(body.conventions).toBe("use tabs, not spaces");
-    expect(body.archDocRefs).toEqual(["docs/architecture.md", "https://wiki/x"]);
+    expect(body.archDocRefs).toEqual([
+      "docs/architecture.md",
+      "https://wiki/x",
+    ]);
     // full-spec round-trip: unrelated fields preserved, never wiped.
     expect(body.goals).toEqual(["g1"]);
     expect(body.repo.url).toBe("https://github.com/org/repo");
   });
 
   it("ISI-5303: a read-only viewer sees docs as text (no inputs), honoring canEdit:false", async () => {
-    stubFetch(() => jsonResponse(200, settings({ canEdit: false, conventions: "house style", archDocRefs: ["docs/a.md"] })));
+    stubFetch(() =>
+      jsonResponse(
+        200,
+        settings({
+          canEdit: false,
+          conventions: "house style",
+          archDocRefs: ["docs/a.md"],
+        }),
+      ),
+    );
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
     expect(screen.queryByTestId("docs-conventions-input")).toBeNull();
     expect(screen.queryByTestId("settings-docs-form")).toBeNull();
-    expect(screen.getByTestId("docs-readonly").textContent).toContain("house style");
-    expect(screen.getByTestId("docs-readonly").textContent).toContain("docs/a.md");
+    expect(screen.getByTestId("docs-readonly").textContent).toContain(
+      "house style",
+    );
+    expect(screen.getByTestId("docs-readonly").textContent).toContain(
+      "docs/a.md",
+    );
   });
 
   it("ISI-5303: the guardrail banner is present (no secret-ref editing in the docs card)", async () => {
-    stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings()) : jsonResponse(404, {})));
+    stubFetch((url) =>
+      url.includes("/settings")
+        ? jsonResponse(200, settings())
+        : jsonResponse(404, {}),
+    );
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
-    expect(screen.getByTestId("docs-guardrail").textContent?.toLowerCase()).toContain("secret");
+    expect(
+      screen.getByTestId("docs-guardrail").textContent?.toLowerCase(),
+    ).toContain("secret");
   });
 });
 
@@ -271,15 +487,24 @@ describe("<ProjectSettingsScreen> — ISI-4839 section-nav scroll-spy", () => {
       rootMargin = "";
       thresholds = [] as number[];
     }
-    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver as unknown as typeof IntersectionObserver);
+    vi.stubGlobal(
+      "IntersectionObserver",
+      MockIntersectionObserver as unknown as typeof IntersectionObserver,
+    );
 
-    stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings()) : jsonResponse(404, {})));
+    stubFetch((url) =>
+      url.includes("/settings")
+        ? jsonResponse(200, settings())
+        : jsonResponse(404, {}),
+    );
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
 
     // On mount the first section is active, and all five section cards are observed
     // (repository, credentials, access, sync, docs — credentials added by ISI-5847).
-    expect(screen.getByTestId("settings-nav-repository").className).toContain("settings__nav-link--active");
+    expect(screen.getByTestId("settings-nav-repository").className).toContain(
+      "settings__nav-link--active",
+    );
     expect(observed.length).toBe(5);
     expect(ioCallback).not.toBeNull();
 
@@ -298,8 +523,14 @@ describe("<ProjectSettingsScreen> — ISI-4839 section-nav scroll-spy", () => {
         {} as IntersectionObserver,
       );
     });
-    expect(screen.getByTestId("settings-nav-access").className).toContain("settings__nav-link--active");
-    expect(screen.getByTestId("settings-nav-access").getAttribute("aria-current")).toBe("true");
-    expect(screen.getByTestId("settings-nav-repository").className).not.toContain("settings__nav-link--active");
+    expect(screen.getByTestId("settings-nav-access").className).toContain(
+      "settings__nav-link--active",
+    );
+    expect(
+      screen.getByTestId("settings-nav-access").getAttribute("aria-current"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("settings-nav-repository").className,
+    ).not.toContain("settings__nav-link--active");
   });
 });

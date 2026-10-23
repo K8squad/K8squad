@@ -66,13 +66,25 @@ describe("GitHubIssuesKanban pure projection", () => {
   it("derives priority from real labels only", () => {
     expect(priorityFor(issues[0])?.label).toBe("High");
     expect(priorityFor(issues[1])).toBeNull(); // no priority label ⇒ no badge
-    expect(priorityFor({ number: 1, title: "x", state: "open", labels: ["p1"] })?.label).toBe("High");
-    expect(priorityFor({ number: 2, title: "x", state: "open", labels: ["critical"] })?.label).toBe("Critical");
+    expect(
+      priorityFor({ number: 1, title: "x", state: "open", labels: ["p1"] })
+        ?.label,
+    ).toBe("High");
+    expect(
+      priorityFor({
+        number: 2,
+        title: "x",
+        state: "open",
+        labels: ["critical"],
+      })?.label,
+    ).toBe("Critical");
   });
 
   it("prefers the mirror url and falls back to issues/{n}", () => {
     expect(issueHref(issues[0])).toBe("https://gh/issues/98");
-    expect(issueHref(issues[2])).toBe("https://github.com/K8squad/K8squad/issues/91");
+    expect(issueHref(issues[2])).toBe(
+      "https://github.com/K8squad/K8squad/issues/91",
+    );
   });
 });
 
@@ -80,9 +92,13 @@ describe("GitHubIssuesKanban", () => {
   it("renders a column per issue state with honest counts", () => {
     render(<GitHubIssuesKanban issues={issues} />);
     const backlog = screen.getByTestId("gh-kanban-col-backlog");
-    expect(within(backlog).getByText(/Add authentication middleware/)).toBeTruthy();
+    expect(
+      within(backlog).getByText(/Add authentication middleware/),
+    ).toBeTruthy();
     expect(screen.getByTestId("gh-kanban-count-todo").textContent).toBe("1");
-    expect(screen.getByTestId("gh-kanban-count-in-progress").textContent).toBe("1");
+    expect(screen.getByTestId("gh-kanban-count-in-progress").textContent).toBe(
+      "1",
+    );
     expect(screen.getByTestId("gh-kanban-count-done").textContent).toBe("1");
   });
 
@@ -103,14 +119,26 @@ describe("GitHubIssuesKanban", () => {
   it("shows assignee + priority, and only when the mirror carries them", () => {
     render(<GitHubIssuesKanban issues={issues} />);
     const backlog = screen.getByTestId("gh-kanban-col-backlog");
-    const card = within(backlog).getByText(/Add authentication middleware/).closest(".gh-kanban-card")!;
-    expect(card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).toBe("auth-agent");
-    expect(card.querySelector('[data-testid="gh-issue-priority"]')?.textContent).toBe("High");
+    const card = within(backlog)
+      .getByText(/Add authentication middleware/)
+      .closest(".gh-kanban-card")!;
+    expect(
+      card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent,
+    ).toBe("auth-agent");
+    expect(
+      card.querySelector('[data-testid="gh-issue-priority"]')?.textContent,
+    ).toBe("High");
     // Unassigned card renders the honest absence, not an invented agent.
     const todo = screen.getByTestId("gh-kanban-col-todo");
-    const todoCard = within(todo).getByText(/Refactor authentication service/).closest(".gh-kanban-card")!;
-    expect(todoCard.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).toBe("Unassigned");
-    expect(todoCard.querySelector('[data-testid="gh-issue-priority"]')).toBeNull();
+    const todoCard = within(todo)
+      .getByText(/Refactor authentication service/)
+      .closest(".gh-kanban-card")!;
+    expect(
+      todoCard.querySelector('[data-testid="gh-issue-assignee"]')?.textContent,
+    ).toBe("Unassigned");
+    expect(
+      todoCard.querySelector('[data-testid="gh-issue-priority"]'),
+    ).toBeNull();
   });
 
   it("surfaces blocked + prioritised in stats and the priority queue", () => {
@@ -120,8 +148,12 @@ describe("GitHubIssuesKanban", () => {
     expect(stats).toContain("Open");
     expect(stats).toContain("Blocked");
     const queue = screen.getByTestId("gh-priority-queue");
-    expect(within(queue).getByText(/Add authentication middleware/)).toBeTruthy();
-    expect(within(queue).queryByText(/Refactor authentication service/)).toBeNull(); // unprioritised
+    expect(
+      within(queue).getByText(/Add authentication middleware/),
+    ).toBeTruthy();
+    expect(
+      within(queue).queryByText(/Refactor authentication service/),
+    ).toBeNull(); // unprioritised
   });
 
   it("renders nothing for an empty issue set (parent owns the empty state)", () => {
@@ -240,7 +272,10 @@ describe("GitHubIssuesKanban assign & dispatch (epic 3)", () => {
   }
 
   /** mount fires GET /api/squad/agents; the submit fires POST .../assign. */
-  function route(handlers: { agents?: Response; assign?: (body: any) => Response }) {
+  function route(handlers: {
+    agents?: Response;
+    assign?: (body: any) => Response;
+  }) {
     fetchMock.mockImplementation((url: string, init?: RequestInit) => {
       const u = String(url);
       if (u.includes("/api/squad/agents")) {
@@ -255,7 +290,11 @@ describe("GitHubIssuesKanban assign & dispatch (epic 3)", () => {
                 workItemId: "wi-1",
                 issueRef: "K8squad/K8squad#98",
                 created: true,
-                dispatch: { requestedAgent: body.agentId, fromState: "backlog", toState: "todo" },
+                dispatch: {
+                  requestedAgent: body.agentId,
+                  fromState: "backlog",
+                  toState: "todo",
+                },
               },
               200,
             ),
@@ -285,52 +324,74 @@ describe("GitHubIssuesKanban assign & dispatch (epic 3)", () => {
     render(<GitHubIssuesKanban issues={issues} />);
     openPopup();
     expect(screen.queryByTestId("gh-issue-assign")).toBeNull();
-    expect(screen.getByTestId("gh-issue-assign-slot").childElementCount).toBe(0);
+    expect(screen.getByTestId("gh-issue-assign-slot").childElementCount).toBe(
+      0,
+    );
   });
 
   it("AC1: populates the dropdown from the roster (value = agent name)", async () => {
     route({});
     render(<GitHubIssuesKanban issues={issues} projectId={PROJECT} />);
     openPopup();
-    const select = (await screen.findByTestId("gh-issue-assign-select")) as HTMLSelectElement;
-    await waitFor(() =>
-      expect(within(select).getByText("alice")).toBeTruthy(),
-    );
+    const select = (await screen.findByTestId(
+      "gh-issue-assign-select",
+    )) as HTMLSelectElement;
+    await waitFor(() => expect(within(select).getByText("alice")).toBeTruthy());
     const values = Array.from(select.options).map((o) => o.value);
     expect(values).toContain("alice");
     expect(values).toContain("bob");
     // Submit is disabled until an agent is chosen.
-    expect((screen.getByTestId("gh-issue-assign-submit") as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByTestId("gh-issue-assign-submit") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("AC1: an empty roster shows 'No agents available' and keeps submit disabled", async () => {
     route({ agents: jsonResponse({ agents: [] }, 200) });
     render(<GitHubIssuesKanban issues={issues} projectId={PROJECT} />);
     openPopup();
-    const select = (await screen.findByTestId("gh-issue-assign-select")) as HTMLSelectElement;
+    const select = (await screen.findByTestId(
+      "gh-issue-assign-select",
+    )) as HTMLSelectElement;
     await waitFor(() => expect(select.disabled).toBe(true));
     expect(select.textContent).toContain("No agents available");
-    expect((screen.getByTestId("gh-issue-assign-submit") as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByTestId("gh-issue-assign-submit") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("AC2/AC3: selecting an agent + confirm calls the bridge, hands the result up, and closes", async () => {
     const onAssigned = vi.fn();
     route({});
     render(
-      <GitHubIssuesKanban issues={issues} projectId={PROJECT} onAssigned={onAssigned} />,
+      <GitHubIssuesKanban
+        issues={issues}
+        projectId={PROJECT}
+        onAssigned={onAssigned}
+      />,
     );
     openPopup();
-    const select = (await screen.findByTestId("gh-issue-assign-select")) as HTMLSelectElement;
+    const select = (await screen.findByTestId(
+      "gh-issue-assign-select",
+    )) as HTMLSelectElement;
     await waitFor(() => expect(within(select).getByText("alice")).toBeTruthy());
     fireEvent.change(select, { target: { value: "alice" } });
     fireEvent.click(screen.getByTestId("gh-issue-assign-submit"));
 
     await waitFor(() => expect(onAssigned).toHaveBeenCalledTimes(1));
     expect(onAssigned).toHaveBeenCalledWith(
-      expect.objectContaining({ workItemId: "wi-1", created: true, issueRef: "K8squad/K8squad#98" }),
+      expect.objectContaining({
+        workItemId: "wi-1",
+        created: true,
+        issueRef: "K8squad/K8squad#98",
+      }),
     );
     // Popup closed on success.
-    await waitFor(() => expect(screen.queryByTestId("gh-issue-popup")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByTestId("gh-issue-popup")).toBeNull(),
+    );
     // Bridge was hit with the agent NAME + full issue url, at the project-scoped path.
     const posts = assignPosts();
     expect(posts).toHaveLength(1);
@@ -346,23 +407,31 @@ describe("GitHubIssuesKanban assign & dispatch (epic 3)", () => {
     route({ assign: () => jsonResponse({ error: "nope" }, 403) });
     render(<GitHubIssuesKanban issues={issues} projectId={PROJECT} />);
     openPopup();
-    const select = (await screen.findByTestId("gh-issue-assign-select")) as HTMLSelectElement;
+    const select = (await screen.findByTestId(
+      "gh-issue-assign-select",
+    )) as HTMLSelectElement;
     await waitFor(() => expect(within(select).getByText("bob")).toBeTruthy());
     fireEvent.change(select, { target: { value: "bob" } });
     fireEvent.click(screen.getByTestId("gh-issue-assign-submit"));
 
     const err = await screen.findByTestId("gh-issue-assign-error");
-    expect(err.textContent).toBe("You can't dispatch this agent to this issue.");
+    expect(err.textContent).toBe(
+      "You can't dispatch this agent to this issue.",
+    );
     // Popup stays open, selection preserved so the operator can retry.
     expect(screen.getByTestId("gh-issue-popup")).toBeTruthy();
-    expect((screen.getByTestId("gh-issue-assign-select") as HTMLSelectElement).value).toBe("bob");
+    expect(
+      (screen.getByTestId("gh-issue-assign-select") as HTMLSelectElement).value,
+    ).toBe("bob");
   });
 
   it("§6: a 409 is surfaced as a soft, informational 'already assigned' state", async () => {
     route({ assign: () => jsonResponse({ error: "dup" }, 409) });
     render(<GitHubIssuesKanban issues={issues} projectId={PROJECT} />);
     openPopup();
-    const select = (await screen.findByTestId("gh-issue-assign-select")) as HTMLSelectElement;
+    const select = (await screen.findByTestId(
+      "gh-issue-assign-select",
+    )) as HTMLSelectElement;
     await waitFor(() => expect(within(select).getByText("alice")).toBeTruthy());
     fireEvent.change(select, { target: { value: "alice" } });
     fireEvent.click(screen.getByTestId("gh-issue-assign-submit"));
@@ -376,7 +445,9 @@ describe("GitHubIssuesKanban assign & dispatch (epic 3)", () => {
     route({});
     render(<GitHubIssuesKanban issues={issues} projectId={PROJECT} />);
     openPopup();
-    const select = (await screen.findByTestId("gh-issue-assign-select")) as HTMLSelectElement;
+    const select = (await screen.findByTestId(
+      "gh-issue-assign-select",
+    )) as HTMLSelectElement;
     await waitFor(() => expect(within(select).getByText("alice")).toBeTruthy());
     fireEvent.change(select, { target: { value: "alice" } });
     fireEvent.click(screen.getByTestId("gh-issue-assign-submit"));
@@ -390,7 +461,9 @@ describe("GitHubIssuesKanban assign & dispatch (epic 3)", () => {
     expect(mutating).toHaveLength(1);
     const body = JSON.parse((mutating[0][1] as RequestInit).body as string);
     expect(body).not.toHaveProperty("assignees");
-    expect(fetchMock.mock.calls.some(([u]) => String(u).includes("assignees"))).toBe(false);
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes("assignees")),
+    ).toBe(false);
   });
 });
 
@@ -404,17 +477,33 @@ describe("localRunBadge — the pure local-status projection", () => {
   });
 
   it("maps runState onto an honest, agent-named chip", () => {
-    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "john", runState: "running" } }))
-      .toEqual({ label: "john working…", tone: "running" });
-    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "john", runState: "todo" } }))
-      .toEqual({ label: "john queued", tone: "queued" });
-    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "john", runState: "done" } }))
-      .toEqual({ label: "john finished", tone: "done" });
+    expect(
+      localRunBadge({
+        ...base,
+        local: { workItemId: "wi1", agent: "john", runState: "running" },
+      }),
+    ).toEqual({ label: "john working…", tone: "running" });
+    expect(
+      localRunBadge({
+        ...base,
+        local: { workItemId: "wi1", agent: "john", runState: "todo" },
+      }),
+    ).toEqual({ label: "john queued", tone: "queued" });
+    expect(
+      localRunBadge({
+        ...base,
+        local: { workItemId: "wi1", agent: "john", runState: "done" },
+      }),
+    ).toEqual({ label: "john finished", tone: "done" });
   });
 
   it("never invents a chip for a missing agent", () => {
-    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "", runState: "running" } }))
-      .toBeNull();
+    expect(
+      localRunBadge({
+        ...base,
+        local: { workItemId: "wi1", agent: "", runState: "running" },
+      }),
+    ).toBeNull();
   });
 });
 
@@ -432,7 +521,9 @@ describe("GitHubIssuesKanban local overlay (ISI-4760)", () => {
     render(<GitHubIssuesKanban issues={[bridged]} />);
     const badge = screen.getByTestId("gh-issue-local-run");
     expect(badge.textContent).toContain("sam working…");
-    expect(badge.getAttribute("aria-label")).toBe("Local Paperclip status: sam working…");
+    expect(badge.getAttribute("aria-label")).toBe(
+      "Local Paperclip status: sam working…",
+    );
   });
 
   it("AC2 (ISI-5678): the local agent is shown as OUR agent, never as the GitHub assignee", () => {
@@ -457,7 +548,12 @@ describe("GitHubIssuesKanban local overlay (ISI-4760)", () => {
   it("AC3: a terminal run shows the finished representation, not 'working…'", () => {
     render(
       <GitHubIssuesKanban
-        issues={[{ ...bridged, local: { workItemId: "wi-200", agent: "sam", runState: "done" } }]}
+        issues={[
+          {
+            ...bridged,
+            local: { workItemId: "wi-200", agent: "sam", runState: "done" },
+          },
+        ]}
       />,
     );
     const badge = screen.getByTestId("gh-issue-local-run");
@@ -483,45 +579,65 @@ describe("GitHubIssuesKanban treated-card treatment (ISI-5678)", () => {
     // ① rail, ④ ksq marker, ② status pill, ③ agent avatar — all present.
     expect(card.className).toContain("gh-kanban-card--treated");
     expect(card.querySelector(".gh-kanban-card__rail--running")).not.toBeNull();
-    expect(card.querySelector('[data-testid="gh-issue-ksq-marker"]')).not.toBeNull();
+    expect(
+      card.querySelector('[data-testid="gh-issue-ksq-marker"]'),
+    ).not.toBeNull();
     const pill = card.querySelector('[data-testid="gh-issue-local-run"]');
     expect(pill?.className).toContain("gh-local-badge--pill");
     expect(pill?.textContent).toContain("▶"); // shape icon — colourblind-safe redundancy
     expect(pill?.querySelector(".gh-local-badge__pulse")).not.toBeNull(); // running pulse
-    expect(card.querySelector('[data-testid="gh-issue-avatar"]')).not.toBeNull();
+    expect(
+      card.querySelector('[data-testid="gh-issue-avatar"]'),
+    ).not.toBeNull();
   });
 
-  it("HONESTY GUARD: a bridged-but-unclaimed card (agent=\"\") gets ZERO treatment", () => {
+  it('HONESTY GUARD: a bridged-but-unclaimed card (agent="") gets ZERO treatment', () => {
     // The backend attaches `local` for a work-item with no claim (agent == "").
     // localRunBadge returns null for it, so the card must render fully untreated —
     // no rail, no ksq marker, no pill, no avatar. (The regression this fix closes.)
     render(
       <GitHubIssuesKanban
-        issues={[{ ...running, local: { workItemId: "wi-300", agent: "", runState: "running" } }]}
+        issues={[
+          {
+            ...running,
+            local: { workItemId: "wi-300", agent: "", runState: "running" },
+          },
+        ]}
       />,
     );
     const card = screen.getByTestId("gh-issue-card");
     expect(card.className).not.toContain("gh-kanban-card--treated");
     expect(card.querySelector(".gh-kanban-card__rail")).toBeNull();
-    expect(card.querySelector('[data-testid="gh-issue-ksq-marker"]')).toBeNull();
+    expect(
+      card.querySelector('[data-testid="gh-issue-ksq-marker"]'),
+    ).toBeNull();
     expect(card.querySelector('[data-testid="gh-issue-local-run"]')).toBeNull();
     expect(card.querySelector('[data-testid="gh-issue-avatar"]')).toBeNull();
     // Falls back to the honest provider assignee line.
-    expect(card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).toBe("gh-human");
+    expect(
+      card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent,
+    ).toBe("gh-human");
   });
 
   it("a non-bridged card gets ZERO treatment", () => {
     render(<GitHubIssuesKanban issues={[{ ...running, local: undefined }]} />);
     const card = screen.getByTestId("gh-issue-card");
     expect(card.className).not.toContain("gh-kanban-card--treated");
-    expect(card.querySelector('[data-testid="gh-issue-ksq-marker"]')).toBeNull();
+    expect(
+      card.querySelector('[data-testid="gh-issue-ksq-marker"]'),
+    ).toBeNull();
     expect(card.querySelector('[data-testid="gh-issue-avatar"]')).toBeNull();
   });
 
   it("done pill drops the running pulse and uses the ✓ shape", () => {
     render(
       <GitHubIssuesKanban
-        issues={[{ ...running, local: { workItemId: "wi-300", agent: "Alfred", runState: "done" } }]}
+        issues={[
+          {
+            ...running,
+            local: { workItemId: "wi-300", agent: "Alfred", runState: "done" },
+          },
+        ]}
       />,
     );
     const pill = screen.getByTestId("gh-issue-local-run");

@@ -91,11 +91,17 @@ function dispatchErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     switch (err.status) {
       case 403:
-        return "That agent can't be assigned here (not a member of this project's team)." + tail;
+        return (
+          "That agent can't be assigned here (not a member of this project's team)." +
+          tail
+        );
       case 404:
         return "The ticket could not be found to assign the agent." + tail;
       case 409:
-        return "The ticket already moved out of the backlog, so it can't be dispatched." + tail;
+        return (
+          "The ticket already moved out of the backlog, so it can't be dispatched." +
+          tail
+        );
       case 501:
         return "Assigning agents isn't hosted on this deployment yet." + tail;
       default:
@@ -203,7 +209,11 @@ export function CreateTicketSheet({
   };
 
   return (
-    <div className="ksq-sheet-scrim" data-testid="create-ticket-scrim" onClick={onClose}>
+    <div
+      className="ksq-sheet-scrim"
+      data-testid="create-ticket-scrim"
+      onClick={onClose}
+    >
       <aside
         className="ksq-sheet"
         role="dialog"
@@ -247,7 +257,9 @@ export function CreateTicketSheet({
                 data-testid="create-ticket-title"
                 aria-label="Title"
                 value={input.title}
-                onChange={(e) => setInput((s) => ({ ...s, title: e.target.value }))}
+                onChange={(e) =>
+                  setInput((s) => ({ ...s, title: e.target.value }))
+                }
               />
             </label>
 
@@ -260,7 +272,9 @@ export function CreateTicketSheet({
                 aria-label="Description"
                 placeholder="Describe the work… Markdown supported."
                 value={input.body}
-                onChange={(e) => setInput((s) => ({ ...s, body: e.target.value }))}
+                onChange={(e) =>
+                  setInput((s) => ({ ...s, body: e.target.value }))
+                }
               />
               <span className="ksq-field__hint muted">Markdown supported</span>
             </label>
@@ -287,7 +301,10 @@ export function CreateTicketSheet({
                   aria-label="Parent issue"
                   value={input.parentId ?? ""}
                   onChange={(e) =>
-                    setInput((s) => ({ ...s, parentId: e.target.value || null }))
+                    setInput((s) => ({
+                      ...s,
+                      parentId: e.target.value || null,
+                    }))
                   }
                 >
                   <option value="">None — a top-level issue</option>
@@ -385,12 +402,17 @@ export function CreateTicketSheet({
                 }
               />
               <span className="ksq-field__hint muted">
-                Comma-separated. Freeform chips — new labels are created on the fly.
+                Comma-separated. Freeform chips — new labels are created on the
+                fly.
               </span>
             </label>
 
             {error && (
-              <p className="ksq-notice" role="alert" data-testid="create-ticket-error">
+              <p
+                className="ksq-notice"
+                role="alert"
+                data-testid="create-ticket-error"
+              >
                 {error}
               </p>
             )}

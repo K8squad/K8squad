@@ -13,7 +13,13 @@ function watch(
   phase: DispatchWatch["phase"] = "working",
   since = 1000,
 ): DispatchWatch {
-  return { key: `${messageId}:${agentName.toLowerCase()}`, agentName, messageId, phase, since };
+  return {
+    key: `${messageId}:${agentName.toLowerCase()}`,
+    agentName,
+    messageId,
+    phase,
+    since,
+  };
 }
 
 function row(author: string, body = "…", runId = "r1", seq = 1): ThinkingRow {
@@ -48,7 +54,10 @@ describe("liveThinking — correlateThinking (ISI-5208)", () => {
   });
 
   it("prefers the most recently seeded watch when several share the agent name", () => {
-    const w = [watch("m1", "john", "working", 1000), watch("m2", "john", "working", 2000)];
+    const w = [
+      watch("m1", "john", "working", 1000),
+      watch("m2", "john", "working", 2000),
+    ];
     expect(correlateThinking(w, "agent:john")).toBe("m2");
   });
 

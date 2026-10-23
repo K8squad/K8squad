@@ -14,8 +14,12 @@ import {
 
 describe("repoSlug", () => {
   it("normalizes https github urls to a lower-cased owner/repo slug", () => {
-    expect(repoSlug("https://github.com/K8squad/K8squad")).toBe("k8squad/k8squad");
-    expect(repoSlug("https://github.com/K8squad/K8squad.git")).toBe("k8squad/k8squad");
+    expect(repoSlug("https://github.com/K8squad/K8squad")).toBe(
+      "k8squad/k8squad",
+    );
+    expect(repoSlug("https://github.com/K8squad/K8squad.git")).toBe(
+      "k8squad/k8squad",
+    );
     expect(repoSlug("https://github.com/Acme/Web-App/")).toBe("acme/web-app");
   });
 
@@ -44,8 +48,22 @@ const summary: GithubSummary = {
   },
   mergeSparkline7d: [0, 1, 0, 2, 1, 0, 3],
   byRepo: [
-    { repo: "k8squad/k8squad", assigned: 2, open: 6, prs: 4, reviewed: 2, checksRed: 1 },
-    { repo: "acme/web", assigned: 1, open: 4, prs: 0, reviewed: 0, checksRed: 0 },
+    {
+      repo: "k8squad/k8squad",
+      assigned: 2,
+      open: 6,
+      prs: 4,
+      reviewed: 2,
+      checksRed: 1,
+    },
+    {
+      repo: "acme/web",
+      assigned: 1,
+      open: 4,
+      prs: 0,
+      reviewed: 0,
+      checksRed: 0,
+    },
   ],
 };
 
@@ -59,7 +77,9 @@ describe("selectRepoStat", () => {
   it("returns null when the repo is not mirrored or the url is unparseable", () => {
     expect(selectRepoStat(summary, "https://github.com/other/repo")).toBeNull();
     expect(selectRepoStat(summary, "not-a-url")).toBeNull();
-    expect(selectRepoStat(null, "https://github.com/K8squad/K8squad")).toBeNull();
+    expect(
+      selectRepoStat(null, "https://github.com/K8squad/K8squad"),
+    ).toBeNull();
   });
 });
 
@@ -76,8 +96,14 @@ describe("repoCount (FR-I3)", () => {
 // ISI-5708 WS-3: the reusable fetch client's degrade classification.
 describe("classifyGithubStatus (WS-3)", () => {
   it("treats 404/501 as degrade and everything else as a retryable error", () => {
-    expect(classifyGithubStatus(404)).toEqual({ kind: "not-available", status: 404 });
-    expect(classifyGithubStatus(501)).toEqual({ kind: "not-available", status: 501 });
+    expect(classifyGithubStatus(404)).toEqual({
+      kind: "not-available",
+      status: 404,
+    });
+    expect(classifyGithubStatus(501)).toEqual({
+      kind: "not-available",
+      status: 501,
+    });
     expect(classifyGithubStatus(500)).toEqual({ kind: "error", status: 500 });
   });
 });

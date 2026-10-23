@@ -89,7 +89,10 @@ export function selectRepoStat(
 }
 
 /** A count rendered FR-I3-honestly: a number when the stat row exists, "—" when it does not. */
-export function repoCount(stat: GithubRepoStat | null, field: keyof GithubRepoStat): number | string {
+export function repoCount(
+  stat: GithubRepoStat | null,
+  field: keyof GithubRepoStat,
+): number | string {
   if (!stat) return UNAVAILABLE;
   const v = stat[field];
   return typeof v === "number" ? v : UNAVAILABLE;
@@ -129,9 +132,14 @@ export function classifyGithubStatus(
 
 /** Fetch the fleet GitHub summary from the BFF. Degrades honestly — never throws the
  * page down (degrade-don't-blank, ISI-4229). */
-export async function fetchGithubSummary(signal?: AbortSignal): Promise<GithubSummaryState> {
+export async function fetchGithubSummary(
+  signal?: AbortSignal,
+): Promise<GithubSummaryState> {
   try {
-    const res = await fetch("/api/squad/github", { headers: { accept: "application/json" }, signal });
+    const res = await fetch("/api/squad/github", {
+      headers: { accept: "application/json" },
+      signal,
+    });
     if (!res.ok) return classifyGithubStatus(res.status);
     const body = (await res.json()) as Partial<GithubSummary>;
     return {

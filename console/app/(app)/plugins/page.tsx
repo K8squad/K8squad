@@ -12,7 +12,10 @@ export default function PluginsPage() {
   return (
     <section className="stub">
       <h1>Plugins</h1>
-      <p>Plugin management is coming. This surface will list and configure installed plugins.</p>
+      <p>
+        Plugin management is coming. This surface will list and configure
+        installed plugins.
+      </p>
     </section>
   );
 }

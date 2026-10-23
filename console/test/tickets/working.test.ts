@@ -69,7 +69,8 @@ describe("stepVerbFromThinking — current step from live thinking", () => {
   });
 
   it("truncates a long tool target to one line", () => {
-    const long = "a/very/deep/path/that/keeps/going/and/going/and/going/file.ts";
+    const long =
+      "a/very/deep/path/that/keeps/going/and/going/and/going/file.ts";
     const verb = stepVerbFromThinking([
       { summary: `[run cc83e752][tool:read/start] ${long}` },
     ]);
@@ -81,9 +82,9 @@ describe("stepVerbFromThinking — current step from live thinking", () => {
 
 describe("ticketWorkingLabel — copy per phase", () => {
   it("working with a step verb reads '{agent} is {verb}…'", () => {
-    expect(ticketWorkingLabel("Fragua", "working", "editing MessageItem.tsx")).toBe(
-      "Fragua is editing MessageItem.tsx…",
-    );
+    expect(
+      ticketWorkingLabel("Fragua", "working", "editing MessageItem.tsx"),
+    ).toBe("Fragua is editing MessageItem.tsx…");
   });
   it("working without a step verb falls back to '{agent} is working…'", () => {
     expect(ticketWorkingLabel("Fragua", "working", null)).toBe(
@@ -91,7 +92,9 @@ describe("ticketWorkingLabel — copy per phase", () => {
     );
   });
   it("mirrors the discussion copy for replied / failed", () => {
-    expect(ticketWorkingLabel("Fragua", "replied", null)).toBe("Fragua replied");
+    expect(ticketWorkingLabel("Fragua", "replied", null)).toBe(
+      "Fragua replied",
+    );
     expect(ticketWorkingLabel("Fragua", "failed", null)).toBe(
       "Fragua could not respond",
     );
@@ -119,7 +122,11 @@ describe("ticketWorkingView — composed pill", () => {
       ticketWorkingView("Fragua", "succeeded", [
         { summary: "[run cc83e752][tool:edit/start] MessageItem.tsx" },
       ]),
-    ).toEqual({ agentName: "Fragua", phase: "replied", label: "Fragua replied" });
+    ).toEqual({
+      agentName: "Fragua",
+      phase: "replied",
+      label: "Fragua replied",
+    });
 
     expect(ticketWorkingView("Fragua", "failed", undefined)).toEqual({
       agentName: "Fragua",

@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { AuditTrailScreen } from "@/components/audit/AuditTrailScreen";
 import type { AuditPage } from "@/lib/audit";
 
@@ -16,7 +22,10 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
-function page(events: AuditPage["events"], nextBefore: number | null = null): AuditPage {
+function page(
+  events: AuditPage["events"],
+  nextBefore: number | null = null,
+): AuditPage {
   return { events, nextBefore };
 }
 
@@ -25,25 +34,28 @@ describe("<AuditTrailScreen> — 2.6 ACs", () => {
     render(
       <AuditTrailScreen
         load={async () =>
-          jsonResponse(200, page([
-            {
-              id: 42,
-              workItemId: "11111111-1111-1111-1111-111111111111",
-              runId: null,
-              eventType: "state_transition",
-              principal: "user:jane",
-              fromState: "in_progress",
-              toState: "in_review",
-              createdAt: "2026-08-21T09:56:28.480Z",
-            },
-            {
-              id: 41,
-              eventType: "claim_acquired",
-              principal: "agent:coder",
-              payload: { detail: "fence 3" },
-              createdAt: "2026-08-21T09:40:00Z",
-            },
-          ]))
+          jsonResponse(
+            200,
+            page([
+              {
+                id: 42,
+                workItemId: "11111111-1111-1111-1111-111111111111",
+                runId: null,
+                eventType: "state_transition",
+                principal: "user:jane",
+                fromState: "in_progress",
+                toState: "in_review",
+                createdAt: "2026-08-21T09:56:28.480Z",
+              },
+              {
+                id: 41,
+                eventType: "claim_acquired",
+                principal: "agent:coder",
+                payload: { detail: "fence 3" },
+                createdAt: "2026-08-21T09:40:00Z",
+              },
+            ]),
+          )
         }
       />,
     );
@@ -59,11 +71,15 @@ describe("<AuditTrailScreen> — 2.6 ACs", () => {
   it("403 renders the specific self-scope explanation (admin-scoped surface)", async () => {
     render(<AuditTrailScreen load={async () => jsonResponse(403, {})} />);
     await waitFor(() => screen.getByTestId("audit-forbidden"));
-    expect(screen.getByTestId("audit-forbidden").textContent).toContain("admin-scoped");
+    expect(screen.getByTestId("audit-forbidden").textContent).toContain(
+      "admin-scoped",
+    );
   });
 
   it("deny collapse (401) renders denied; 501 renders unconfigured; 5xx renders error", async () => {
-    const { unmount } = render(<AuditTrailScreen load={async () => jsonResponse(401, {})} />);
+    const { unmount } = render(
+      <AuditTrailScreen load={async () => jsonResponse(401, {})} />,
+    );
     await waitFor(() => screen.getByTestId("audit-denied"));
     unmount();
 
@@ -94,7 +110,9 @@ describe("<AuditTrailScreen> — 2.6 ACs", () => {
     await waitFor(() => screen.getByTestId("audit-table"));
     expect(calls[0]).toBe("limit=50");
 
-    fireEvent.change(screen.getByTestId("audit-filter-actor"), { target: { value: "user:jane" } });
+    fireEvent.change(screen.getByTestId("audit-filter-actor"), {
+      target: { value: "user:jane" },
+    });
     fireEvent.click(screen.getByTestId("audit-filter-apply"));
     await waitFor(() => expect(calls[1]).toBe("actor=user%3Ajane&limit=50"));
   });
@@ -106,20 +124,41 @@ describe("<AuditTrailScreen> — 2.6 ACs", () => {
         load={async (qs) => {
           call++;
           if (call === 1) {
-            return jsonResponse(200, page([
-              { id: 20, eventType: "comment_added", principal: "user:jane", createdAt: "2026-08-21T09:00:00Z" },
-            ], 10));
+            return jsonResponse(
+              200,
+              page(
+                [
+                  {
+                    id: 20,
+                    eventType: "comment_added",
+                    principal: "user:jane",
+                    createdAt: "2026-08-21T09:00:00Z",
+                  },
+                ],
+                10,
+              ),
+            );
           }
           expect(qs).toContain("before=10");
-          return jsonResponse(200, page([
-            { id: 5, eventType: "completed", principal: "agent:coder", createdAt: "2026-08-20T09:00:00Z" },
-          ]));
+          return jsonResponse(
+            200,
+            page([
+              {
+                id: 5,
+                eventType: "completed",
+                principal: "agent:coder",
+                createdAt: "2026-08-20T09:00:00Z",
+              },
+            ]),
+          );
         }}
       />,
     );
     await waitFor(() => screen.getByTestId("audit-load-older"));
     fireEvent.click(screen.getByTestId("audit-load-older"));
-    await waitFor(() => expect(screen.getAllByTestId("audit-row")).toHaveLength(2));
+    await waitFor(() =>
+      expect(screen.getAllByTestId("audit-row")).toHaveLength(2),
+    );
     // Tail reached: the affordance swaps for the end-of-trail note.
     await waitFor(() => screen.getByTestId("audit-tail"));
   });

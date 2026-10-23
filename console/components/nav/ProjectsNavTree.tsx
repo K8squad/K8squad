@@ -68,7 +68,10 @@ const defaultLoadOverview = () =>
   });
 
 /** The active `{ projectId, section }` embedded in a /projects/{id}/{section} route. Pure, URL-only. */
-function activeProjectRoute(pathname: string): { projectId: string | null; section: string | null } {
+function activeProjectRoute(pathname: string): {
+  projectId: string | null;
+  section: string | null;
+} {
   const m = pathname.match(/^\/projects\/([^/?#]+)(?:\/([^/?#]+))?/);
   return {
     projectId: m ? decodeURIComponent(m[1]) : null,
@@ -85,9 +88,12 @@ export function ProjectsNavTree({
 }: ProjectsNavTreeProps) {
   const routerPath = usePathname();
   const pathname = pathnameProp ?? routerPath ?? "/";
-  const { projectId: activeProjectId, section: activeSection } = activeProjectRoute(pathname);
+  const { projectId: activeProjectId, section: activeSection } =
+    activeProjectRoute(pathname);
 
-  const [expanded, setExpanded] = useState<boolean>(defaultExpanded ?? activeProjectId !== null);
+  const [expanded, setExpanded] = useState<boolean>(
+    defaultExpanded ?? activeProjectId !== null,
+  );
   const [listState, setListState] = useState<ListState>("unopened");
   const [projects, setProjects] = useState<ProjectOption[]>([]);
   // The active project is auto-expanded so a deep link shows its section in context.
@@ -98,7 +104,9 @@ export function ProjectsNavTree({
   const [nonce, setNonce] = useState(0);
   // Per-project live-run counts (keyed by project CR name === ProjectOption.id), derived from the
   // squad/overview feed. Drives the discussion-room live badge (ISI-5526); empty = all idle.
-  const [liveByProject, setLiveByProject] = useState<Record<string, number>>({});
+  const [liveByProject, setLiveByProject] = useState<Record<string, number>>(
+    {},
+  );
 
   // Restore the persisted top-level expansion once, after mount (SSR-safe: the server renders from
   // the pathname alone). An explicit defaultExpanded or an active project both win over the store.
@@ -113,7 +121,8 @@ export function ProjectsNavTree({
 
   // Keep the active project expanded as the URL changes (deep-link / in-app navigation).
   useEffect(() => {
-    if (activeProjectId) setExpandedProjects((prev) => new Set(prev).add(activeProjectId));
+    if (activeProjectId)
+      setExpandedProjects((prev) => new Set(prev).add(activeProjectId));
   }, [activeProjectId]);
 
   const persistExpanded = useCallback((next: boolean) => {
@@ -136,10 +145,14 @@ export function ProjectsNavTree({
         if (res.status >= 200 && res.status < 300) {
           return res.json().then((body: unknown) => {
             if (!alive) return;
-            const rows: ProjectOption[] = Array.isArray((body as { projects?: unknown })?.projects)
-              ? ((body as { projects: ProjectOption[] }).projects)
+            const rows: ProjectOption[] = Array.isArray(
+              (body as { projects?: unknown })?.projects,
+            )
+              ? (body as { projects: ProjectOption[] }).projects
               : [];
-            const sorted = [...rows].sort((a, b) => a.name.localeCompare(b.name));
+            const sorted = [...rows].sort((a, b) =>
+              a.name.localeCompare(b.name),
+            );
             setProjects(sorted);
             setListState(sorted.length === 0 ? "empty" : "ok");
           });
@@ -237,9 +250,18 @@ export function ProjectsNavTree({
       </div>
 
       {expanded && (
-        <div className="rail__sub" id="rail-projects-subtree" role="group" aria-label="Projects">
+        <div
+          className="rail__sub"
+          id="rail-projects-subtree"
+          role="group"
+          aria-label="Projects"
+        >
           {listState === "loading" && (
-            <p className="rail__navstate" data-testid="projects-tree-loading" role="status">
+            <p
+              className="rail__navstate"
+              data-testid="projects-tree-loading"
+              role="status"
+            >
               <span className="rail__spinner" aria-hidden="true" />
               Loading projects…
             </p>
@@ -255,7 +277,10 @@ export function ProjectsNavTree({
           )}
 
           {listState === "empty" && (
-            <p className="rail__navstate rail__navstate--muted" data-testid="projects-tree-empty">
+            <p
+              className="rail__navstate rail__navstate--muted"
+              data-testid="projects-tree-empty"
+            >
               No projects
             </p>
           )}
@@ -281,7 +306,11 @@ export function ProjectsNavTree({
                       className="rail__disclosure"
                       aria-expanded={isOpen}
                       aria-controls={subId}
-                      aria-label={isOpen ? `Collapse ${project.name}` : `Expand ${project.name}`}
+                      aria-label={
+                        isOpen
+                          ? `Collapse ${project.name}`
+                          : `Expand ${project.name}`
+                      }
                       data-testid={`project-toggle-${project.name}`}
                       onClick={() => toggleProject(project.id)}
                     >
@@ -297,11 +326,14 @@ export function ProjectsNavTree({
                       aria-label={`${project.name} sections`}
                     >
                       {projectSubnav(project.id).map((s) => {
-                        const sectionActive = projectOnPath && activeSection === s.id;
+                        const sectionActive =
+                          projectOnPath && activeSection === s.id;
                         // The discussion-room entry carries a live-run presence badge (ISI-5526):
                         // per-project live runs from the overview feed. Other sections never do.
                         const liveCount =
-                          s.id === "discussion" ? liveByProject[project.id] ?? 0 : 0;
+                          s.id === "discussion"
+                            ? (liveByProject[project.id] ?? 0)
+                            : 0;
                         return (
                           <Link
                             key={s.id}

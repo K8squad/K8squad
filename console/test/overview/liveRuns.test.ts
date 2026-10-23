@@ -24,9 +24,7 @@ describe("isLiveRunPhase — ISI-5526", () => {
   });
 });
 
-function overview(
-  projects: SquadOverviewData["projects"],
-): SquadOverviewData {
+function overview(projects: SquadOverviewData["projects"]): SquadOverviewData {
   return { team: { name: "t", namespace: "t-squad", uid: "u" }, projects };
 }
 
@@ -59,7 +57,9 @@ describe("liveRunCountByProject — ISI-5526", () => {
     expect(liveRunCountByProject(overview(null))).toEqual({});
     expect(
       liveRunCountByProject(
-        overview([{ name: "alpha", namespace: "a", phaseCounts: {}, runs: null }]),
+        overview([
+          { name: "alpha", namespace: "a", phaseCounts: {}, runs: null },
+        ]),
       ),
     ).toEqual({});
   });

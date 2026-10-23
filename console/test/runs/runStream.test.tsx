@@ -35,9 +35,10 @@ class FakeEventSource {
     this.listeners.delete(name);
   }
   emit(name: string, data: unknown, lastEventId = "evt-1") {
-    this.listeners
-      .get(name)
-      ?.({ data: JSON.stringify(data), lastEventId } as MessageEvent);
+    this.listeners.get(name)?.({
+      data: JSON.stringify(data),
+      lastEventId,
+    } as MessageEvent);
   }
   close() {
     this.closed = true;
@@ -95,7 +96,12 @@ describe("RunStream onMilestone — refetch trigger (ISI-5457)", () => {
     act(() => {
       instances[0].emit(
         "thinking",
-        { runId: "run-7", author: "agent:sam", body: "working", at: "2026-09-29T10:00:00.000Z" },
+        {
+          runId: "run-7",
+          author: "agent:sam",
+          body: "working",
+          at: "2026-09-29T10:00:00.000Z",
+        },
         "evt-9",
       );
     });

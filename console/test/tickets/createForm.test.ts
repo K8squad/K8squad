@@ -26,15 +26,21 @@ describe("canCreate", () => {
 
 describe("buildCreateBody", () => {
   it("emits only the trimmed title when nothing else is set", () => {
-    expect(buildCreateBody(input({ title: "  hello  " }))).toEqual({ title: "hello" });
+    expect(buildCreateBody(input({ title: "  hello  " }))).toEqual({
+      title: "hello",
+    });
   });
 
   it("includes body only when non-empty (trimmed)", () => {
-    expect(buildCreateBody(input({ title: "t", body: "  details  " }))).toEqual({
+    expect(buildCreateBody(input({ title: "t", body: "  details  " }))).toEqual(
+      {
+        title: "t",
+        body: "details",
+      },
+    );
+    expect(buildCreateBody(input({ title: "t", body: "   " }))).toEqual({
       title: "t",
-      body: "details",
     });
-    expect(buildCreateBody(input({ title: "t", body: "   " }))).toEqual({ title: "t" });
   });
 
   it("includes parentId only when a parent is chosen", () => {
@@ -42,13 +48,17 @@ describe("buildCreateBody", () => {
       title: "t",
       parentId: "wi-9",
     });
-    expect(buildCreateBody(input({ title: "t", parentId: null }))).toEqual({ title: "t" });
+    expect(buildCreateBody(input({ title: "t", parentId: null }))).toEqual({
+      title: "t",
+    });
   });
 
   it("keeps the thin body when only title/body/parent are set (untouched optionals absent)", () => {
     // Priority / Work-mode / Labels are now accepted (ISI-4409) but stay ABSENT
     // until the user sets them — an untouched control is never a present-empty clear.
-    const body = buildCreateBody(input({ title: "t", body: "b", parentId: "wi-1" }));
+    const body = buildCreateBody(
+      input({ title: "t", body: "b", parentId: "wi-1" }),
+    );
     expect(Object.keys(body).sort()).toEqual(["body", "parentId", "title"]);
   });
 
@@ -57,15 +67,21 @@ describe("buildCreateBody", () => {
       title: "t",
       priority: "high",
     });
-    expect(buildCreateBody(input({ title: "t", priority: "" }))).toEqual({ title: "t" });
+    expect(buildCreateBody(input({ title: "t", priority: "" }))).toEqual({
+      title: "t",
+    });
   });
 
   it("includes workMode only when a value is chosen", () => {
-    expect(buildCreateBody(input({ title: "t", workMode: "planning" }))).toEqual({
+    expect(
+      buildCreateBody(input({ title: "t", workMode: "planning" })),
+    ).toEqual({
       title: "t",
       workMode: "planning",
     });
-    expect(buildCreateBody(input({ title: "t", workMode: "" }))).toEqual({ title: "t" });
+    expect(buildCreateBody(input({ title: "t", workMode: "" }))).toEqual({
+      title: "t",
+    });
   });
 
   it("parses + includes labels only when at least one chip is non-blank", () => {
@@ -73,8 +89,12 @@ describe("buildCreateBody", () => {
       buildCreateBody(input({ title: "t", labels: "backend, urgent-fix" })),
     ).toEqual({ title: "t", labels: ["backend", "urgent-fix"] });
     // whitespace-only / empty stays absent, not an empty array
-    expect(buildCreateBody(input({ title: "t", labels: "   " }))).toEqual({ title: "t" });
-    expect(buildCreateBody(input({ title: "t", labels: "" }))).toEqual({ title: "t" });
+    expect(buildCreateBody(input({ title: "t", labels: "   " }))).toEqual({
+      title: "t",
+    });
+    expect(buildCreateBody(input({ title: "t", labels: "" }))).toEqual({
+      title: "t",
+    });
   });
 
   it("carries the full-fidelity body when every field is set", () => {

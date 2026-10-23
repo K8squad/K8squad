@@ -7,7 +7,13 @@
 // guidance strip derives next-missing from the onboarding progress read-model (AC3/FR-7.2/AD-2);
 // 403/409/422/501 surfaced VERBATIM with recovery CTA (AC4/FR-7.4/NFR-5).
 
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Field } from "./fields";
@@ -58,7 +64,10 @@ type HydrationState =
   | { kind: "error" };
 
 /** Parse the apiserver error body into a message + any field-level errors (invariant 1 → 422). */
-function parseError(status: number, body: string): { message: string; fields: FieldErrors } {
+function parseError(
+  status: number,
+  body: string,
+): { message: string; fields: FieldErrors } {
   const fields: FieldErrors = {};
   let message = `Apply failed (status ${status}).`;
   try {
@@ -67,15 +76,20 @@ function parseError(status: number, body: string): { message: string; fields: Fi
       fields?: Array<{ field: string; message: string }>;
     };
     if (j.error) message = j.error;
-    if (Array.isArray(j.fields)) for (const f of j.fields) fields[f.field] = f.message;
+    if (Array.isArray(j.fields))
+      for (const f of j.fields) fields[f.field] = f.message;
   } catch {
     /* non-JSON (e.g. a bare 501 text) — keep the status message */
   }
   if (status === 401) message = "You must sign in to compose.";
-  else if (status === 403) message = message || "You don't have write access here.";
-  else if (status === 404) message = "No such project / team scope for this caller.";
-  else if (status === 409) message = message || "That name already exists in this team.";
-  else if (status === 501) message = "Compose is not available on this deployment yet.";
+  else if (status === 403)
+    message = message || "You don't have write access here.";
+  else if (status === 404)
+    message = "No such project / team scope for this caller.";
+  else if (status === 409)
+    message = message || "That name already exists in this team.";
+  else if (status === 501)
+    message = "Compose is not available on this deployment yet.";
   return { message, fields };
 }
 
@@ -94,7 +108,9 @@ function yamlStringify(obj: unknown, indent = 0): string {
   }
   if (Array.isArray(obj)) {
     if (obj.length === 0) return "[]";
-    return obj.map((v) => `${pad}- ${yamlStringify(v, indent + 1).trimStart()}`).join("\n");
+    return obj
+      .map((v) => `${pad}- ${yamlStringify(v, indent + 1).trimStart()}`)
+      .join("\n");
   }
   if (typeof obj === "object") {
     const entries = Object.entries(obj as Record<string, unknown>).filter(
@@ -144,7 +160,10 @@ function deriveGuidance(progress: OnboardingProgress | null): string | null {
 }
 
 /** Derive a dependency nudge for the selected kind (AC3). */
-function deriveNudge(kind: ComposeKind, progress: OnboardingProgress | null): string | null {
+function deriveNudge(
+  kind: ComposeKind,
+  progress: OnboardingProgress | null,
+): string | null {
   if (!progress) return null;
   if (kind === "agents" && progress.nextMilestone === "team") {
     return "Create a Team first — agents require a team namespace.";
@@ -152,7 +171,10 @@ function deriveNudge(kind: ComposeKind, progress: OnboardingProgress | null): st
   if (kind === "projects" && progress.done < 2) {
     return "Set up your agents and credentials before adding a Project.";
   }
-  if ((kind === "roles" || kind === "skills") && progress.nextMilestone === "team") {
+  if (
+    (kind === "roles" || kind === "skills") &&
+    progress.nextMilestone === "team"
+  ) {
     return "Create a Team before adding Roles or Skills.";
   }
   return null;
@@ -166,7 +188,10 @@ interface ListEntry {
 }
 
 // `reloadNonce` lets the caller force a refetch (e.g. after a delete) without changing `kind`.
-function useOrgList(kind: ComposeKind, reloadNonce: number): { entries: ListEntry[]; loading: boolean } {
+function useOrgList(
+  kind: ComposeKind,
+  reloadNonce: number,
+): { entries: ListEntry[]; loading: boolean } {
   const [entries, setEntries] = useState<ListEntry[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -187,7 +212,11 @@ function useOrgList(kind: ComposeKind, reloadNonce: number): { entries: ListEntr
           const res = await fetch("/api/squad/agents", { cache: "no-store" });
           if (res.ok) {
             const data = (await res.json()) as {
-              agents?: Array<{ name: string; runtime?: string; skillCount?: number }> | null;
+              agents?: Array<{
+                name: string;
+                runtime?: string;
+                skillCount?: number;
+              }> | null;
             };
             if (!cancelled) {
               setEntries(
@@ -204,7 +233,10 @@ function useOrgList(kind: ComposeKind, reloadNonce: number): { entries: ListEntr
         } else if (kind === "projects") {
           const res = await fetch("/api/projects", { cache: "no-store" });
           if (res.ok) {
-            const data = (await res.json()) as Array<{ name?: string; metadata?: { name?: string } }>;
+            const data = (await res.json()) as Array<{
+              name?: string;
+              metadata?: { name?: string };
+            }>;
             if (!cancelled) {
               setEntries(
                 (Array.isArray(data) ? data : []).map((p) => ({
@@ -222,7 +254,10 @@ function useOrgList(kind: ComposeKind, reloadNonce: number): { entries: ListEntr
             };
             if (!cancelled) {
               setEntries(
-                (data.teams ?? []).map((t) => ({ name: t.name, subtitle: t.namespace })),
+                (data.teams ?? []).map((t) => ({
+                  name: t.name,
+                  subtitle: t.namespace,
+                })),
               );
             }
           }
@@ -230,7 +265,11 @@ function useOrgList(kind: ComposeKind, reloadNonce: number): { entries: ListEntr
           const res = await fetch("/api/squad/skills", { cache: "no-store" });
           if (res.ok) {
             const data = (await res.json()) as {
-              skills?: Array<{ name: string; namespace?: string; sourceType?: string }> | null;
+              skills?: Array<{
+                name: string;
+                namespace?: string;
+                sourceType?: string;
+              }> | null;
             };
             if (!cancelled) {
               setEntries(
@@ -245,7 +284,11 @@ function useOrgList(kind: ComposeKind, reloadNonce: number): { entries: ListEntr
           const res = await fetch("/api/squad/roles", { cache: "no-store" });
           if (res.ok) {
             const data = (await res.json()) as {
-              roles?: Array<{ name: string; namespace?: string; prompt?: string }> | null;
+              roles?: Array<{
+                name: string;
+                namespace?: string;
+                prompt?: string;
+              }> | null;
             };
             if (!cancelled) {
               setEntries(
@@ -306,7 +349,11 @@ function useCallerScope(): CallerScope {
         const fleet = data.fleet ?? false;
         const count = (data.teams ?? []).length;
         if (!cancelled) {
-          setScope({ kind: "resolved", fleet, hasOwnTeam: !fleet && count >= 1 });
+          setScope({
+            kind: "resolved",
+            fleet,
+            hasOwnTeam: !fleet && count >= 1,
+          });
         }
       } catch {
         if (!cancelled) setScope({ kind: "unknown" });
@@ -368,7 +415,9 @@ function GuidanceStrip({
   if (!msg) return null;
   return (
     <div className="compose__guidance" role="note" aria-label="Setup guidance">
-      <span className="compose__guidance-icon" aria-hidden>ℹ</span>
+      <span className="compose__guidance-icon" aria-hidden>
+        ℹ
+      </span>
       <span>{msg}</span>
     </div>
   );
@@ -449,7 +498,9 @@ function ConfirmDeleteDialog({
       return;
     }
     if (e.key === "Tab") {
-      const focusables = dialogRef.current?.querySelectorAll<HTMLElement>("button:not([disabled])");
+      const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
+        "button:not([disabled])",
+      );
       if (!focusables || focusables.length === 0) return;
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
@@ -485,7 +536,8 @@ function ConfirmDeleteDialog({
           Delete {KIND_LABEL[kind]}?
         </h2>
         <p id="compose-confirm-body" className="compose__confirm-body">
-          This permanently deletes <strong>{name}</strong>. This can’t be undone.
+          This permanently deletes <strong>{name}</strong>. This can’t be
+          undone.
         </p>
         <div className="compose__confirm-actions">
           <button
@@ -533,7 +585,10 @@ export function ComposeScreen() {
   const [cf, setCf] = useState<ComposeForm>(() => {
     const base = emptyForm(seed.kind);
     return seed.name
-      ? ({ kind: base.kind, form: { ...base.form, name: seed.name } } as ComposeForm)
+      ? ({
+          kind: base.kind,
+          form: { ...base.form, name: seed.name },
+        } as ComposeForm)
       : base;
   });
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
@@ -551,8 +606,13 @@ export function ComposeScreen() {
   // opens an existing object to edit. A name TYPED by hand is deliberately NOT a
   // target (null), so we never fetch on every keystroke. `team` scopes an admin's
   // cross-squad read (seed only); a clicked entry is always the caller's own squad.
-  const [editTarget, setEditTarget] = useState<{ name: string; team: string } | null>(() =>
-    seed.mode === "edit" && seed.name ? { name: seed.name, team: seedTeam } : null,
+  const [editTarget, setEditTarget] = useState<{
+    name: string;
+    team: string;
+  } | null>(() =>
+    seed.mode === "edit" && seed.name
+      ? { name: seed.name, team: seedTeam }
+      : null,
   );
   // Bumped after a successful delete to force the left-pane list to refetch (ISI-4108).
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -563,7 +623,9 @@ export function ComposeScreen() {
   useEffect(() => {
     fetch("/api/onboarding/progress", { cache: "no-store" })
       .then((r) => (r.ok ? (r.json() as Promise<OnboardingProgress>) : null))
-      .then((p) => { if (p) setProgress(p); })
+      .then((p) => {
+        if (p) setProgress(p);
+      })
       .catch(() => {});
   }, []);
 
@@ -587,7 +649,9 @@ export function ComposeScreen() {
     }
     let cancelled = false;
     setHydration({ kind: "loading" });
-    const teamQS = editTarget.team ? `?team=${encodeURIComponent(editTarget.team)}` : "";
+    const teamQS = editTarget.team
+      ? `?team=${encodeURIComponent(editTarget.team)}`
+      : "";
     const path =
       kind === "teams"
         ? `/api/squad/teams/${encodeURIComponent(name)}${teamQS}`
@@ -632,7 +696,10 @@ export function ComposeScreen() {
     }
   }, [cf]);
 
-  const { entries: listEntries, loading: listLoading } = useOrgList(kind, reloadNonce);
+  const { entries: listEntries, loading: listLoading } = useOrgList(
+    kind,
+    reloadNonce,
+  );
   const callerScope = useCallerScope();
 
   // Gate every team-scoped kind (agents/projects/roles/skills) behind a resolvable OWN team: a
@@ -678,7 +745,10 @@ export function ComposeScreen() {
   }
 
   function patch(p: Record<string, unknown>) {
-    setCf((prev) => ({ kind: prev.kind, form: { ...prev.form, ...p } }) as ComposeForm);
+    setCf(
+      (prev) =>
+        ({ kind: prev.kind, form: { ...prev.form, ...p } }) as ComposeForm,
+    );
     setSubmit({ kind: "idle" });
   }
 
@@ -719,7 +789,8 @@ export function ComposeScreen() {
     const qs = new URLSearchParams();
     // Agent RBAC is project-scoped; forward the agent's project context. Project delete needs no
     // query (scope IS its own name). Admins compose fleet-wide via ?team= (the edit-hydration seed).
-    if (cf.kind === "agents" && cf.form.project.trim()) qs.set("project", cf.form.project.trim());
+    if (cf.kind === "agents" && cf.form.project.trim())
+      qs.set("project", cf.form.project.trim());
     if (seedTeam) qs.set("team", seedTeam);
     const query = qs.toString();
     const url = `/api/compose/${kind}/${encodeURIComponent(name)}${query ? `?${query}` : ""}`;
@@ -740,7 +811,12 @@ export function ComposeScreen() {
       }
     } catch {
       setDel({ kind: "idle" });
-      setSubmit({ kind: "error", status: 0, message: "Delete request failed — check your connection.", fields: {} });
+      setSubmit({
+        kind: "error",
+        status: 0,
+        message: "Delete request failed — check your connection.",
+        fields: {},
+      });
     }
   }
 
@@ -748,8 +824,9 @@ export function ComposeScreen() {
     <div className="compose">
       <h1>Compose</h1>
       <p className="muted">
-        Author a Team, Project, Agent, Role, or Skill — no raw YAML. Each apply is validated
-        server-side; an edit creates a new revision. Team creation is admin-only.
+        Author a Team, Project, Agent, Role, or Skill — no raw YAML. Each apply
+        is validated server-side; an edit creates a new revision. Team creation
+        is admin-only.
       </p>
 
       {/* AC1: Tab bar replaces kind <select> */}
@@ -759,7 +836,11 @@ export function ComposeScreen() {
       <GuidanceStrip progress={progress} kind={kind} />
 
       {/* Mode toggle */}
-      <div className="compose__mode" role="radiogroup" aria-label="Compose mode">
+      <div
+        className="compose__mode"
+        role="radiogroup"
+        aria-label="Compose mode"
+      >
         <button
           type="button"
           className={`btn ${mode === "create" ? "btn--primary" : ""}`}
@@ -781,10 +862,11 @@ export function ComposeScreen() {
       {/* AC2: Three-pane layout */}
       <div className="compose__panes">
         {/* Left pane: object list from org read-model */}
-        <aside className="compose__list-pane" aria-label={`Existing ${KIND_LABEL[kind]}s`}>
-          <h2 className="compose__pane-heading">
-            {KIND_LABEL[kind]}s
-          </h2>
+        <aside
+          className="compose__list-pane"
+          aria-label={`Existing ${KIND_LABEL[kind]}s`}
+        >
+          <h2 className="compose__pane-heading">{KIND_LABEL[kind]}s</h2>
           {/* ISI-3962 S2 AC4: the Compose left pane lists skills inline (ISI-3964), but the full
               read-only capability envelope lives on the dedicated /skills surface. Link there so an
               operator can inspect a skill's detail without leaving via the rail. */}
@@ -814,7 +896,9 @@ export function ComposeScreen() {
                   >
                     <span className="compose__list-name">{e.name}</span>
                     {e.subtitle && (
-                      <span className="compose__list-sub muted">{e.subtitle}</span>
+                      <span className="compose__list-sub muted">
+                        {e.subtitle}
+                      </span>
                     )}
                   </button>
                 </li>
@@ -826,7 +910,10 @@ export function ComposeScreen() {
         {/* Center pane: form (or the no-own-team gate, ISI-3964) */}
         <main className="compose__form-pane">
           {composeGated ? (
-            <div className="card compose__gate" data-testid="compose-no-team-gate">
+            <div
+              className="card compose__gate"
+              data-testid="compose-no-team-gate"
+            >
               <h2>Create your team first</h2>
               <p className="muted">
                 {callerScope.kind === "resolved" && callerScope.fleet
@@ -843,86 +930,120 @@ export function ComposeScreen() {
               </button>
             </div>
           ) : (
-          <form
-            className="card compose__form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (valid && submit.kind !== "saving" && hydration.kind !== "loading") void apply();
-            }}
-          >
-            {mode === "edit" && hydration.kind === "loading" && (
-              <p className="compose__hydrating muted" role="status" data-testid="compose-hydrating">
-                Loading current values for <strong>{cf.form.name}</strong>…
-              </p>
-            )}
-            {mode === "edit" && hydration.kind === "notfound" && (
-              <div className="compose__hydrate-miss" role="alert" data-testid="compose-hydrate-notfound">
-                <strong>{hydration.name}</strong> was not found in your squad. It may have been
-                renamed or removed, or belong to another squad. You can still create it below.
-              </div>
-            )}
-            {mode === "edit" && hydration.kind === "error" && (
-              <div className="compose__hydrate-error" role="alert" data-testid="compose-hydrate-error">
-                <span>Couldn’t load the current values.</span>
-                <button
-                  type="button"
-                  className="btn btn--ghost"
-                  onClick={() => setHydrateNonce((n) => n + 1)}
-                  data-testid="compose-hydrate-retry"
+            <form
+              className="card compose__form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (
+                  valid &&
+                  submit.kind !== "saving" &&
+                  hydration.kind !== "loading"
+                )
+                  void apply();
+              }}
+            >
+              {mode === "edit" && hydration.kind === "loading" && (
+                <p
+                  className="compose__hydrating muted"
+                  role="status"
+                  data-testid="compose-hydrating"
                 >
-                  Retry
-                </button>
-              </div>
-            )}
-            <fieldset className="compose__fieldset" disabled={hydration.kind === "loading"}>
-              <KindFields
-                cf={cf}
-                errors={errors}
-                patch={patch}
-                effectiveModelName={mode === "edit" ? editTarget?.name : undefined}
-                effectiveModelTeam={mode === "edit" ? editTarget?.team : undefined}
-              />
-            </fieldset>
-
-            <div className="compose__actions">
-              <button
-                type="submit"
-                className="btn btn--primary"
-                disabled={!valid || submit.kind === "saving" || hydration.kind === "loading"}
+                  Loading current values for <strong>{cf.form.name}</strong>…
+                </p>
+              )}
+              {mode === "edit" && hydration.kind === "notfound" && (
+                <div
+                  className="compose__hydrate-miss"
+                  role="alert"
+                  data-testid="compose-hydrate-notfound"
+                >
+                  <strong>{hydration.name}</strong> was not found in your squad.
+                  It may have been renamed or removed, or belong to another
+                  squad. You can still create it below.
+                </div>
+              )}
+              {mode === "edit" && hydration.kind === "error" && (
+                <div
+                  className="compose__hydrate-error"
+                  role="alert"
+                  data-testid="compose-hydrate-error"
+                >
+                  <span>Couldn’t load the current values.</span>
+                  <button
+                    type="button"
+                    className="btn btn--ghost"
+                    onClick={() => setHydrateNonce((n) => n + 1)}
+                    data-testid="compose-hydrate-retry"
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+              <fieldset
+                className="compose__fieldset"
+                disabled={hydration.kind === "loading"}
               >
-                {submit.kind === "saving"
-                  ? "Applying…"
-                  : mode === "edit"
-                    ? `Save ${KIND_LABEL[kind]} (new revision)`
-                    : `Create ${KIND_LABEL[kind]}`}
-              </button>
-
-              {/* ISI-4108: destructive Delete, edit mode only, Agent + Project only. */}
-              {mode === "edit" && deletableKind && (
-                <button
-                  type="button"
-                  className="btn btn--danger"
-                  disabled={
-                    !cf.form.name.trim() ||
-                    hydration.kind === "loading" ||
-                    del.kind === "deleting"
+                <KindFields
+                  cf={cf}
+                  errors={errors}
+                  patch={patch}
+                  effectiveModelName={
+                    mode === "edit" ? editTarget?.name : undefined
                   }
-                  onClick={() => setDel({ kind: "confirming", name: cf.form.name.trim() })}
-                  data-testid="compose-delete-open"
-                >
-                  Delete {KIND_LABEL[kind]}
-                </button>
-              )}
+                  effectiveModelTeam={
+                    mode === "edit" ? editTarget?.team : undefined
+                  }
+                />
+              </fieldset>
 
-              {submit.kind === "ok" && (
-                <span className="state state--ok" role="status">
-                  {submit.result.operation === "created" ? "Created" : "Updated"}{" "}
-                  {submit.result.kind} <strong>{submit.result.name}</strong> — revision{" "}
-                  {submit.result.revision} in {submit.result.namespace}.
-                </span>
-              )}
-            </div>
-          </form>
+              <div className="compose__actions">
+                <button
+                  type="submit"
+                  className="btn btn--primary"
+                  disabled={
+                    !valid ||
+                    submit.kind === "saving" ||
+                    hydration.kind === "loading"
+                  }
+                >
+                  {submit.kind === "saving"
+                    ? "Applying…"
+                    : mode === "edit"
+                      ? `Save ${KIND_LABEL[kind]} (new revision)`
+                      : `Create ${KIND_LABEL[kind]}`}
+                </button>
+
+                {/* ISI-4108: destructive Delete, edit mode only, Agent + Project only. */}
+                {mode === "edit" && deletableKind && (
+                  <button
+                    type="button"
+                    className="btn btn--danger"
+                    disabled={
+                      !cf.form.name.trim() ||
+                      hydration.kind === "loading" ||
+                      del.kind === "deleting"
+                    }
+                    onClick={() =>
+                      setDel({ kind: "confirming", name: cf.form.name.trim() })
+                    }
+                    data-testid="compose-delete-open"
+                  >
+                    Delete {KIND_LABEL[kind]}
+                  </button>
+                )}
+
+                {submit.kind === "ok" && (
+                  <span className="state state--ok" role="status">
+                    {submit.result.operation === "created"
+                      ? "Created"
+                      : "Updated"}{" "}
+                    {submit.result.kind} <strong>{submit.result.name}</strong> —
+                    revision {submit.result.revision} in{" "}
+                    {submit.result.namespace}.
+                  </span>
+                )}
+              </div>
+            </form>
           )}
 
           {/* AC4: Verbatim error with recovery CTA */}
@@ -931,7 +1052,9 @@ export function ComposeScreen() {
               status={submit.status}
               message={submit.message}
               onDismiss={() => setSubmit({ kind: "idle" })}
-              onRetry={() => { void apply(); }}
+              onRetry={() => {
+                void apply();
+              }}
             />
           )}
 
@@ -942,18 +1065,25 @@ export function ComposeScreen() {
               name={del.name}
               busy={del.kind === "deleting"}
               onCancel={() => setDel({ kind: "idle" })}
-              onConfirm={() => { void confirmDelete(); }}
+              onConfirm={() => {
+                void confirmDelete();
+              }}
             />
           )}
         </main>
 
         {/* Right pane: live CRD YAML preview */}
-        <aside className="compose__yaml-pane" aria-label="Live CRD YAML preview">
+        <aside
+          className="compose__yaml-pane"
+          aria-label="Live CRD YAML preview"
+        >
           <h2 className="compose__pane-heading">
             YAML preview
             <span className="compose__pane-note muted"> (live)</span>
           </h2>
-          <pre className="compose__yaml"><code>{yamlPreview}</code></pre>
+          <pre className="compose__yaml">
+            <code>{yamlPreview}</code>
+          </pre>
         </aside>
       </div>
     </div>
@@ -1003,7 +1133,11 @@ function KindFields({
               aria-invalid={!!errors["project"]}
             />
           </Field>
-          <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+          <Field
+            label="Name"
+            hint="DNS-1123 label (lowercase, digits, '-')"
+            error={errors["name"]}
+          >
             <input
               value={f.name}
               onChange={(e) => patch({ name: e.target.value })}
@@ -1019,7 +1153,11 @@ function KindFields({
               placeholder="name or namespace/name"
             />
           </Field>
-          <Field label="Runtime class hint" hint="optional" error={errors["runtimeClassHint"]}>
+          <Field
+            label="Runtime class hint"
+            hint="optional"
+            error={errors["runtimeClassHint"]}
+          >
             <select
               value={f.runtimeClassHint}
               onChange={(e) => patch({ runtimeClassHint: e.target.value })}
@@ -1031,7 +1169,10 @@ function KindFields({
               ))}
             </select>
           </Field>
-          <Field label="Default skills" hint="optional — one name (or namespace/name) per line">
+          <Field
+            label="Default skills"
+            hint="optional — one name (or namespace/name) per line"
+          >
             <textarea
               rows={3}
               value={f.defaultSkills}
@@ -1094,7 +1235,8 @@ function KindFields({
               <em className="field-error">{errors["activePhases"]}</em>
             ) : (
               <em className="field-hint">
-                optional — phases this role is dispatched in; none ⇒ eligible in every phase
+                optional — phases this role is dispatched in; none ⇒ eligible in
+                every phase
               </em>
             )}
           </fieldset>
@@ -1120,7 +1262,9 @@ function KindFields({
               />
               <span>This role coordinates the team’s phase lifecycle</span>
             </label>
-            <em className="field-hint">at most one coordinator per team (enforced on Team apply)</em>
+            <em className="field-hint">
+              at most one coordinator per team (enforced on Team apply)
+            </em>
             {f.coordinator && (
               <div
                 className="compose__radios"
@@ -1161,7 +1305,11 @@ function KindFields({
               aria-invalid={!!errors["project"]}
             />
           </Field>
-          <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+          <Field
+            label="Name"
+            hint="DNS-1123 label (lowercase, digits, '-')"
+            error={errors["name"]}
+          >
             <input
               value={f.name}
               onChange={(e) => patch({ name: e.target.value })}
@@ -1197,7 +1345,11 @@ function KindFields({
                   aria-invalid={!!errors["source.git.repoRef"]}
                 />
               </Field>
-              <Field label="Git ref" hint="branch / tag / SHA" error={errors["source.git.ref"]}>
+              <Field
+                label="Git ref"
+                hint="branch / tag / SHA"
+                error={errors["source.git.ref"]}
+              >
                 <input
                   value={f.gitRef}
                   onChange={(e) => patch({ gitRef: e.target.value })}
@@ -1205,7 +1357,10 @@ function KindFields({
                 />
               </Field>
               <Field label="Git path" hint="optional — path within the repo">
-                <input value={f.gitPath} onChange={(e) => patch({ gitPath: e.target.value })} />
+                <input
+                  value={f.gitPath}
+                  onChange={(e) => patch({ gitPath: e.target.value })}
+                />
               </Field>
             </>
           )}

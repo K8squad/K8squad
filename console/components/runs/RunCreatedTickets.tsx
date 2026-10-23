@@ -49,7 +49,11 @@ export function RunCreatedTickets({
               const label = it.title || "(untitled)";
               const href = hrefFor?.(it.id);
               return (
-                <li key={it.id} className="run-created__item" data-testid="run-created-item">
+                <li
+                  key={it.id}
+                  className="run-created__item"
+                  data-testid="run-created-item"
+                >
                   {href ? (
                     <a className="run-created__link" href={href}>
                       {label}

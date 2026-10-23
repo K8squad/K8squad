@@ -125,7 +125,10 @@ export function useActiveRunDiscovery(
       // Don't poll a backgrounded tab — the user can't see it. The loop keeps ticking
       // (cheap bare timer) and resumes fetching the moment the tab is foregrounded, so
       // no visibilitychange listener is needed.
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
         schedule();
         return;
       }

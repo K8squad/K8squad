@@ -44,9 +44,10 @@ vi.mock("@/lib/github-status", async () => {
 });
 
 vi.mock("@/lib/tickets/api", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/tickets/api")>(
-    "@/lib/tickets/api",
-  );
+  const actual =
+    await vi.importActual<typeof import("@/lib/tickets/api")>(
+      "@/lib/tickets/api",
+    );
   return {
     ...actual,
     listSquadAgents: vi.fn(),
@@ -61,10 +62,7 @@ import {
   type CiFailureSaveResult,
   type CiFailureView,
 } from "@/lib/github-status";
-import {
-  listSquadAgents,
-  type AgentOption,
-} from "@/lib/tickets/api";
+import { listSquadAgents, type AgentOption } from "@/lib/tickets/api";
 
 const fetchMock = vi.mocked(fetchCiFailure);
 const saveMock = vi.mocked(saveCiFailure);
@@ -117,7 +115,9 @@ describe("CiFailureDialog", () => {
     render(<CiFailureDialog projectId={PROJECT} onClose={vi.fn()} />);
 
     await screen.findByTestId("gh-cf-form");
-    expect((screen.getByTestId("cf-enable") as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId("cf-enable") as HTMLInputElement).checked).toBe(
+      false,
+    );
 
     const agent = screen.getByTestId("cf-agent") as HTMLSelectElement;
     await waitFor(() => expect(agent.value).toBe("ci-bot"));
@@ -130,10 +130,12 @@ describe("CiFailureDialog", () => {
       (screen.getByTestId("cf-conclusion-failure") as HTMLInputElement).checked,
     ).toBe(true);
     expect(
-      (screen.getByTestId("cf-conclusion-timed_out") as HTMLInputElement).checked,
+      (screen.getByTestId("cf-conclusion-timed_out") as HTMLInputElement)
+        .checked,
     ).toBe(false);
     expect(
-      (screen.getByTestId("cf-conclusion-cancelled") as HTMLInputElement).checked,
+      (screen.getByTestId("cf-conclusion-cancelled") as HTMLInputElement)
+        .checked,
     ).toBe(false);
   });
 
@@ -149,7 +151,10 @@ describe("CiFailureDialog", () => {
   });
 
   it("renders the honest error state on a non-classified status", async () => {
-    fetchMock.mockResolvedValue({ kind: "error", status: 500 } as CiFailureState);
+    fetchMock.mockResolvedValue({
+      kind: "error",
+      status: 500,
+    } as CiFailureState);
     render(<CiFailureDialog projectId={PROJECT} onClose={vi.fn()} />);
     const err = await screen.findByTestId("gh-cf-error");
     expect(err.textContent).toMatch(/500/);
@@ -162,11 +167,18 @@ describe("CiFailureDialog", () => {
     await screen.findByTestId("gh-cf-form");
 
     expect(screen.getByTestId("gh-cf-readonly")).toBeTruthy();
-    expect((screen.getByTestId("cf-save") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId("cf-enable") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByTestId("cf-agent") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByTestId("cf-save") as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByTestId("cf-enable") as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByTestId("cf-agent") as HTMLSelectElement).disabled).toBe(
+      true,
+    );
     expect(
-      (screen.getByTestId("cf-conclusion-failure") as HTMLInputElement).disabled,
+      (screen.getByTestId("cf-conclusion-failure") as HTMLInputElement)
+        .disabled,
     ).toBe(true);
   });
 

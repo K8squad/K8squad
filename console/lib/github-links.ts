@@ -52,7 +52,10 @@ export function githubRunHref(id: string | number, mirrored?: string): string {
  * console (the ticket/overview surface, ISI-4707 path route), so a PR-card review
  * badge can jump straight to the review work item. Returns "" when either id is
  * missing so the caller can render presence-only text rather than a dead link. */
-export function reviewWorkItemHref(projectId: string, workItemId: string): string {
+export function reviewWorkItemHref(
+  projectId: string,
+  workItemId: string,
+): string {
   if (!projectId || !workItemId) return "";
   return `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(workItemId)}`;
 }

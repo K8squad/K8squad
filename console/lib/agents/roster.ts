@@ -209,7 +209,10 @@ export interface TeamSkillRollup {
   roles: string[];
 }
 
-export function teamSkillSummary(roster: Roster, team: RosterTeam): TeamSkillRollup[] {
+export function teamSkillSummary(
+  roster: Roster,
+  team: RosterTeam,
+): TeamSkillRollup[] {
   const bySkill = new Map<string, Set<string>>();
   for (const role of roster.roles) {
     if (role.namespace !== team.namespace) continue;
@@ -220,7 +223,10 @@ export function teamSkillSummary(roster: Roster, team: RosterTeam): TeamSkillRol
     }
   }
   return [...bySkill.entries()]
-    .map(([skill, roles]) => ({ skill, roles: [...roles].sort((a, b) => a.localeCompare(b)) }))
+    .map(([skill, roles]) => ({
+      skill,
+      roles: [...roles].sort((a, b) => a.localeCompare(b)),
+    }))
     .sort((a, b) => a.skill.localeCompare(b.skill));
 }
 
@@ -235,7 +241,10 @@ export function teamSkillSummary(roster: Roster, team: RosterTeam): TeamSkillRol
  * without a picker. Returns undefined for a namespace no listed Team occupies (projection skew —
  * the caller falls back to the URL selector, if any). Pure.
  */
-export function teamUidForNamespace(roster: Roster, namespace: string): string | undefined {
+export function teamUidForNamespace(
+  roster: Roster,
+  namespace: string,
+): string | undefined {
   return roster.teams.find((t) => t.namespace === namespace)?.uid;
 }
 
@@ -304,7 +313,10 @@ async function getJson<T>(path: string, signal: AbortSignal): Promise<T> {
  * admin's cross-squad read (the ?team= act-as-team selector the squad reads already honour); a
  * tenant omits it. Rejects if ANY list fails — a partial roster would silently hide a whole axis.
  */
-export async function loadRoster(signal: AbortSignal, team?: string): Promise<Roster> {
+export async function loadRoster(
+  signal: AbortSignal,
+  team?: string,
+): Promise<Roster> {
   const qs = team ? `?team=${encodeURIComponent(team)}` : "";
   const [t, a, r, s] = await Promise.all([
     getJson<{ teams?: TeamWire[] }>(`${LIST_PATHS[0]}${qs}`, signal),
@@ -312,5 +324,10 @@ export async function loadRoster(signal: AbortSignal, team?: string): Promise<Ro
     getJson<{ roles?: RoleWire[] }>(`${LIST_PATHS[2]}${qs}`, signal),
     getJson<{ skills?: SkillWire[] }>(`${LIST_PATHS[3]}${qs}`, signal),
   ]);
-  return buildRoster(t.teams ?? [], a.agents ?? [], r.roles ?? [], s.skills ?? []);
+  return buildRoster(
+    t.teams ?? [],
+    a.agents ?? [],
+    r.roles ?? [],
+    s.skills ?? [],
+  );
 }

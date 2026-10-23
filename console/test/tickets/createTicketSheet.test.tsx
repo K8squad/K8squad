@@ -63,9 +63,7 @@ function route(handlers: {
     }
     // create — POST /api/projects/{id}/work-items
     const body = init?.body ? JSON.parse(init.body as string) : {};
-    return Promise.resolve(
-      handlers.create?.(body) ?? jsonResponse({}, 201),
-    );
+    return Promise.resolve(handlers.create?.(body) ?? jsonResponse({}, 201));
   });
 }
 
@@ -104,7 +102,9 @@ describe("CreateTicketSheet", () => {
         onClose={vi.fn()}
       />,
     );
-    const submit = screen.getByTestId("create-ticket-submit") as HTMLButtonElement;
+    const submit = screen.getByTestId(
+      "create-ticket-submit",
+    ) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
     fireEvent.change(screen.getByTestId("create-ticket-title"), {
       target: { value: "ship it" },
@@ -122,7 +122,9 @@ describe("CreateTicketSheet", () => {
         onClose={vi.fn()}
       />,
     );
-    const select = screen.getByTestId("create-ticket-assignee") as HTMLSelectElement;
+    const select = screen.getByTestId(
+      "create-ticket-assignee",
+    ) as HTMLSelectElement;
     // Default option is present synchronously; agents arrive after the mount fetch.
     expect(select.value).toBe("");
     await waitFor(() => expect(select.options.length).toBeGreaterThan(1));
@@ -274,7 +276,9 @@ describe("CreateTicketSheet", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
 
     // Exactly one create + exactly one dispatch, dispatch carries {agentId: name}.
-    expect(postsTo("/work-items").filter(([u]) => !String(u).includes("/dispatch"))).toHaveLength(1);
+    expect(
+      postsTo("/work-items").filter(([u]) => !String(u).includes("/dispatch")),
+    ).toHaveLength(1);
     const dispatches = postsTo("/dispatch");
     expect(dispatches).toHaveLength(1);
     const [durl, dopts] = dispatches[0] as [string, RequestInit];
@@ -341,10 +345,14 @@ describe("CreateTicketSheet", () => {
     );
 
     // A retry re-uses the created item — no second create, one more dispatch.
-    expect(postsTo("/work-items").filter(([u]) => !String(u).includes("/dispatch"))).toHaveLength(1);
+    expect(
+      postsTo("/work-items").filter(([u]) => !String(u).includes("/dispatch")),
+    ).toHaveLength(1);
     fireEvent.click(screen.getByTestId("create-ticket-submit"));
     await waitFor(() => expect(postsTo("/dispatch")).toHaveLength(2));
-    expect(postsTo("/work-items").filter(([u]) => !String(u).includes("/dispatch"))).toHaveLength(1);
+    expect(
+      postsTo("/work-items").filter(([u]) => !String(u).includes("/dispatch")),
+    ).toHaveLength(1);
   });
 
   it("surfaces a server refusal instead of faking a create", async () => {

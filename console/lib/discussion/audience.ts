@@ -52,7 +52,7 @@ export type AudienceLike = Audience | string | null | undefined;
  */
 export function audienceWire(audience: AudienceLike): string | undefined {
   const parsed =
-    typeof audience === "string" ? parseAudience(audience) : audience ?? null;
+    typeof audience === "string" ? parseAudience(audience) : (audience ?? null);
   if (!parsed || parsed.kind === "party") return undefined;
   return directAudience(parsed.agentId);
 }

@@ -44,11 +44,18 @@ export function HBarChart({
   }
 
   // The scale ignores unavailable (null) buckets — they contribute no bar, only an em-dash.
-  const max = Math.max(0, ...items.map((it) => (it.value == null ? 0 : Math.max(0, it.value))));
+  const max = Math.max(
+    0,
+    ...items.map((it) => (it.value == null ? 0 : Math.max(0, it.value))),
+  );
 
   if (items.length === 0 || max === 0) {
     return (
-      <div className="ov-chart__state" role="img" aria-label={ariaLabel ?? "No data"}>
+      <div
+        className="ov-chart__state"
+        role="img"
+        aria-label={ariaLabel ?? "No data"}
+      >
         <span>No data in this window.</span>
       </div>
     );
@@ -57,7 +64,10 @@ export function HBarChart({
   const desc =
     ariaLabel ??
     `Horizontal bar chart: ${items
-      .map((it) => `${it.label} ${it.value == null ? "unavailable" : formatValue(it.value)}`)
+      .map(
+        (it) =>
+          `${it.label} ${it.value == null ? "unavailable" : formatValue(it.value)}`,
+      )
       .join(", ")}`;
 
   return (
@@ -86,7 +96,12 @@ export function HBarChart({
                 />
               )}
             </span>
-            <span className="ov-hbar__value" title={unavailable ? "Not available on this deployment" : undefined}>
+            <span
+              className="ov-hbar__value"
+              title={
+                unavailable ? "Not available on this deployment" : undefined
+              }
+            >
               {unavailable ? "—" : formatValue(it.value as number)}
             </span>
           </div>

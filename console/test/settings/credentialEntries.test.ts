@@ -45,8 +45,12 @@ describe("RUNTIME_CREDENTIAL_ENTRIES — the injection-contract mirror (ISI-6158
   it("keeps the credinject rows verbatim — claude-code/openclaw/hermes → ANTHROPIC_API_KEY, codex/opencode → OPENAI_API_KEY", () => {
     // Env-var names are copied from pkg/credinject's reviewed table, never invented here. If the
     // table changes upstream, this lock forces a deliberate mirror update.
-    expect(runtimeCredentialEntry("claude-code")?.injects).toBe("ANTHROPIC_API_KEY");
-    expect(runtimeCredentialEntry("openclaw")?.injects).toBe("ANTHROPIC_API_KEY");
+    expect(runtimeCredentialEntry("claude-code")?.injects).toBe(
+      "ANTHROPIC_API_KEY",
+    );
+    expect(runtimeCredentialEntry("openclaw")?.injects).toBe(
+      "ANTHROPIC_API_KEY",
+    );
     expect(runtimeCredentialEntry("hermes")?.injects).toBe("ANTHROPIC_API_KEY");
     expect(runtimeCredentialEntry("codex")?.injects).toBe("OPENAI_API_KEY");
     expect(runtimeCredentialEntry("opencode")?.injects).toBe("OPENAI_API_KEY");
@@ -77,7 +81,11 @@ describe("vibe credential display derivations", () => {
 
   it("a vibe paste rides the service-account lane: name trimmed, value verbatim, class pinned", () => {
     expect(
-      credentialCreateBody({ name: "  vibe-team  ", runtime: "vibe", value: "mist-key" }),
+      credentialCreateBody({
+        name: "  vibe-team  ",
+        runtime: "vibe",
+        value: "mist-key",
+      }),
     ).toEqual({
       name: "vibe-team",
       runtime: "vibe",

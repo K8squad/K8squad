@@ -118,7 +118,10 @@ function escapeHtml(s: string): string {
 }
 
 /** State badge tone: mirrors the work-item lifecycle palette used across the console. */
-export type SearchStateBadge = { label: string; tone: "idle" | "info" | "warn" | "ok" };
+export type SearchStateBadge = {
+  label: string;
+  tone: "idle" | "info" | "warn" | "ok";
+};
 
 const STATE_BADGES: Record<string, SearchStateBadge> = {
   backlog: { label: "Backlog", tone: "idle" },
