@@ -58,6 +58,9 @@ func RuntimeImagesFromEnv(getenv func(string) string) RuntimeImages {
 	for _, t := range []string{
 		api.RuntimeTypeOpenClaw, api.RuntimeTypeClaudeCode, api.RuntimeTypeOpenCode,
 		api.RuntimeTypeHermes, api.RuntimeTypeCodex,
+		// CrewAI (ISI-6569): dedicated python+uv+crewai[a2a] sandbox image
+		// for its always-on mesh pool (KSQUAD_SANDBOX_IMAGE_CREWAI).
+		api.RuntimeTypeCrewAI,
 	} {
 		if v := getenv(envImageKey(t)); v != "" {
 			imgs.ByType[t] = v

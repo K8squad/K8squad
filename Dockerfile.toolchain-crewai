@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# crewai toolchain image (ISI-6569, P4.3). CrewAI's [a2a] extra drags
+# a2a-sdk ~=0.3.10 (Google A2A 0.3.0) onto litellm-heavy wheels that ship
+# manylinux builds, so unlike the alpine-based toolchains this image rides
+# the official python:3.12-slim (Debian) base. The standing process is the
+# crew project's A2A server (JSON-RPC at /a2a behind SimpleTokenAuth reading
+# AUTH_TOKEN); uv lets crew projects materialize their own dependencies, and
+# pinning crewai[a2a]==1.15.28 here satisfies ADR-017 reproducibility for
+# the host half (module wire contract: ISI-6547 docs/crewai-integration.md).
+ARG PYTHON_IMAGE=python:3.12-slim
+ARG UV_VERSION=0.5.31
+ARG CREWAI_VERSION=1.15.28
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+FROM ${PYTHON_IMAGE}
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: crewai"
+
+# Security upgrades + git for crew projects cloned into the workdir.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Stage uv binaries from the upstream scratch-based image.
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# Install the pinned crewai[a2a] extra into the system Python so the crew
+# A2A server imports resolve without activating a virtual environment.
+RUN uv pip install --system "crewai[a2a]==${CREWAI_VERSION}"
+
+ENTRYPOINT ["python3"]
