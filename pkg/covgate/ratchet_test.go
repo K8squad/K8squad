@@ -14,6 +14,8 @@ import (
 //   - stop failing on a below-baseline package → ratchet_below_baseline flips GREEN.
 //   - let unknown packages pass silently → ratchet_unbaselined_package flips GREEN.
 //   - make the boundary exclusive → ratchet_at_baseline_exact flips RED.
+//   - compare raw floats instead of the 1dp quantum → ratchet_within_display_quantum
+//     flips RED (the ISI-6539 false-RED: "74.9% < 74.9%" on identical code).
 //   - drop the ErrNoProfile guard in EvaluateRatchet → ratchet_empty_profile stops failing.
 //   - round floors UP in WriteRatchetBaseline → ratchet_write_floors_down fails
 //     (a display-rounded 89.6 measured as 89.55 would false-RED the next run).
@@ -51,6 +53,40 @@ func TestCovGateRatchet(t *testing.T) {
 		}
 		if len(fails) != 1 || fails[0].Package != mod+"pkg/warmpool" || fails[0].Floor != 89.5 {
 			t.Fatalf("expected warmpool@89.5 failure, got %v", fails)
+		}
+	})
+
+	// -- the ISI-6539 tooth: a package measured within a half-quantum BELOW
+	//    its floor (74.87 vs 74.9 — both display "74.9%") must PASS: baseline
+	//    floors are 1dp pins of a single runner measurement, and per-statement
+	//    wobble between identical runs is measurement noise, not regression.
+	//    A raw float compare false-REDs this exact shape (L5 run 39963772528,
+	//    internal/apiserver "74.9% < 74.9%"). --
+	t.Run("ratchet_within_display_quantum", func(t *testing.T) {
+		b := RatchetBaseline{mod + "internal/apiserver": 74.9}
+		pkgs := []PackageCoverage{
+			{Package: mod + "internal/apiserver", Percent: 74.87, Statements: 1000},
+		}
+		ok, fails, _, err := EvaluateRatchet(pkgs, b)
+		if err != nil || !ok {
+			t.Fatalf("expected GREEN inside the display quantum, got ok=%v err=%v fails=%v", ok, err, fails)
+		}
+	})
+
+	// -- ...but a dip beyond the quantum is still a real regression -> RED,
+	//    and the failure text must show the raw measurement (74.84), never
+	//    the self-contradictory "74.9% < 74.9%" --
+	t.Run("ratchet_below_display_quantum", func(t *testing.T) {
+		b := RatchetBaseline{mod + "internal/apiserver": 74.9}
+		pkgs := []PackageCoverage{
+			{Package: mod + "internal/apiserver", Percent: 74.84, Statements: 1000},
+		}
+		ok, fails, _, err := EvaluateRatchet(pkgs, b)
+		if err != nil || ok {
+			t.Fatalf("expected RED beyond the display quantum, got ok=%v err=%v", ok, err)
+		}
+		if msg := fails[0].String(); !strings.Contains(msg, "74.84% < 74.9%") {
+			t.Fatalf("failure text must show the raw 2dp measurement, got: %s", msg)
 		}
 	})
 
