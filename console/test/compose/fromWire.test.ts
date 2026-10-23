@@ -1,10 +1,5 @@
 import { describe, it, expect } from "vitest";
-import {
-  fromWire,
-  toWire,
-  emptyForm,
-  type ComposeForm,
-} from "@/lib/compose";
+import { fromWire, toWire, emptyForm, type ComposeForm } from "@/lib/compose";
 
 // fromWire is the exact inverse of toWire (ADR-0016 / ISI-4002): the Compose EDIT
 // form hydrates from GET /api/squad/{kind}/{name}, whose body is the compose WRITE
@@ -131,8 +126,14 @@ describe("fromWire ∘ toWire round-trip", () => {
   });
 
   it("teams — name + namespace strategy (TeamDetail shape)", () => {
-    const back = fromWire("teams", { name: "alpha", namespaceStrategy: "perTeam" });
-    expect(back).toEqual({ kind: "teams", form: { name: "alpha", namespaceStrategy: "perTeam" } });
+    const back = fromWire("teams", {
+      name: "alpha",
+      namespaceStrategy: "perTeam",
+    });
+    expect(back).toEqual({
+      kind: "teams",
+      form: { name: "alpha", namespaceStrategy: "perTeam" },
+    });
   });
 
   it("skills — inline body (SkillView flat shape, ISI-3961 + inline)", () => {

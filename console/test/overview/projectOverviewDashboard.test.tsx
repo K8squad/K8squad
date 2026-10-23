@@ -6,8 +6,17 @@
 // Route-aware fetch stub, same discipline as fleetOverview.test.tsx.
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
-import { ProjectOverviewDashboard, activeRunCount } from "@/components/overview/ProjectOverviewDashboard";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import {
+  ProjectOverviewDashboard,
+  activeRunCount,
+} from "@/components/overview/ProjectOverviewDashboard";
 import type { SquadOverviewData } from "@/components/SquadOverview";
 
 afterEach(() => {
@@ -27,8 +36,18 @@ const overview: SquadOverviewData = {
       namespace: "squad-alpha",
       repoUrl: "https://github.com/K8squad/K8squad",
       runs: [
-        { name: "run-live", workItem: "wi-1", phase: "Running", claimedAt: "2026-09-16T10:00:00Z" },
-        { name: "run-done", workItem: "wi-2", phase: "Succeeded", claimedAt: "2026-09-15T10:00:00Z" },
+        {
+          name: "run-live",
+          workItem: "wi-1",
+          phase: "Running",
+          claimedAt: "2026-09-16T10:00:00Z",
+        },
+        {
+          name: "run-done",
+          workItem: "wi-2",
+          phase: "Succeeded",
+          claimedAt: "2026-09-15T10:00:00Z",
+        },
       ],
       phaseCounts: { Running: 1, Succeeded: 1 },
     },
@@ -36,9 +55,25 @@ const overview: SquadOverviewData = {
 };
 
 const githubSummary = {
-  totals: { issuesAssigned: 2, issuesOpen: 6, prsOpened: 4, prsReviewed: 2, prsMerged: 7, checksRed: 1 },
+  totals: {
+    issuesAssigned: 2,
+    issuesOpen: 6,
+    prsOpened: 4,
+    prsReviewed: 2,
+    prsMerged: 7,
+    checksRed: 1,
+  },
   mergeSparkline7d: [0, 1, 0, 2, 1, 0, 3],
-  byRepo: [{ repo: "k8squad/k8squad", assigned: 2, open: 6, prs: 4, reviewed: 2, checksRed: 1 }],
+  byRepo: [
+    {
+      repo: "k8squad/k8squad",
+      assigned: 2,
+      open: 6,
+      prs: 4,
+      reviewed: 2,
+      checksRed: 1,
+    },
+  ],
 };
 
 const activity = {
@@ -73,12 +108,25 @@ const activity = {
 };
 
 const workItems = [
-  { id: "ISI-1", title: "First ticket", state: "in_progress", updatedAt: "2026-09-16T09:00:00Z" },
-  { id: "ISI-2", title: "Done ticket", state: "done", updatedAt: "2026-09-15T09:00:00Z" },
+  {
+    id: "ISI-1",
+    title: "First ticket",
+    state: "in_progress",
+    updatedAt: "2026-09-16T09:00:00Z",
+  },
+  {
+    id: "ISI-2",
+    title: "Done ticket",
+    state: "done",
+    updatedAt: "2026-09-15T09:00:00Z",
+  },
 ];
 
 function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 type StubResponse = { status: number; body?: unknown };
@@ -133,8 +181,12 @@ describe("ProjectOverviewDashboard — Mock D", () => {
     // GitHub strip renders every chip, keyed off the matched byRepo row.
     const strip = await screen.findByTestId("gh-strip");
     expect(within(strip).getByTestId("gh-chip-prs")).toHaveTextContent("4");
-    expect(within(strip).getByTestId("gh-chip-checksRed")).toHaveTextContent("1");
-    expect(within(strip).getByTestId("gh-chip-reviewed")).toHaveTextContent("2");
+    expect(within(strip).getByTestId("gh-chip-checksRed")).toHaveTextContent(
+      "1",
+    );
+    expect(within(strip).getByTestId("gh-chip-reviewed")).toHaveTextContent(
+      "2",
+    );
   });
 
   it("renders only the agents attributed to THIS project, with classified thinking", async () => {
@@ -156,7 +208,10 @@ describe("ProjectOverviewDashboard — Mock D", () => {
     stubRoutes({});
     render(<ProjectOverviewDashboard projectId={PROJECT} />);
     const cta = await screen.findByTestId("cta-issues");
-    expect(cta).toHaveAttribute("href", "/projects/squad-alpha%2Fwebapp/issues");
+    expect(cta).toHaveAttribute(
+      "href",
+      "/projects/squad-alpha%2Fwebapp/issues",
+    );
   });
 
   it("degrades the GitHub panel + Open-PRs tile to '—' when the summary is unavailable (FR-I3)", async () => {
@@ -164,7 +219,11 @@ describe("ProjectOverviewDashboard — Mock D", () => {
     render(<ProjectOverviewDashboard projectId={PROJECT} />);
 
     await waitFor(() => {
-      expect(screen.getByText("GitHub summary not available yet on this deployment.")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "GitHub summary not available yet on this deployment.",
+        ),
+      ).toBeInTheDocument();
     });
     const openPrs = screen.getByLabelText("Open PRs");
     expect(within(openPrs).getByText("—")).toBeInTheDocument();
@@ -172,16 +231,32 @@ describe("ProjectOverviewDashboard — Mock D", () => {
   });
 
   it("shows an honest empty agent grid when no agent works this project", async () => {
-    stubRoutes({ activity: { status: 200, body: { counts: { running: 0, idle: 0, blocked: 0 }, agents: [] } } });
+    stubRoutes({
+      activity: {
+        status: 200,
+        body: { counts: { running: 0, idle: 0, blocked: 0 }, agents: [] },
+      },
+    });
     render(<ProjectOverviewDashboard projectId={PROJECT} />);
     await waitFor(() => {
-      expect(screen.getByText("No agents are working on this project right now.")).toBeInTheDocument();
+      expect(
+        screen.getByText("No agents are working on this project right now."),
+      ).toBeInTheDocument();
     });
     expect(screen.queryByTestId("agent-run-card")).not.toBeInTheDocument();
   });
 
   it("surfaces 'no mirrored repo' instead of fabricating counts when the repo is absent", async () => {
-    stubRoutes({ github: { status: 200, body: { totals: githubSummary.totals, mergeSparkline7d: [], byRepo: [] } } });
+    stubRoutes({
+      github: {
+        status: 200,
+        body: {
+          totals: githubSummary.totals,
+          mergeSparkline7d: [],
+          byRepo: [],
+        },
+      },
+    });
     render(<ProjectOverviewDashboard projectId={PROJECT} />);
     await waitFor(() => {
       expect(screen.getByTestId("gh-strip-no-repo")).toBeInTheDocument();

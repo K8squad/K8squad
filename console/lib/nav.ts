@@ -156,7 +156,13 @@ export function navTree(): NavNode[] {
     // lazy-loading <ProjectsNavTree/> island (project(s) → that project's Build/Tickets/Runs/
     // Discussion/GitHub sections) as its expandable children. navTree() stays pure — the projects
     // are fetched by the island, never by this function.
-    { id: "projects", label: "Projects", href: "/projects", scope: "global", dynamicChildren: "projects" },
+    {
+      id: "projects",
+      label: "Projects",
+      href: "/projects",
+      scope: "global",
+      dynamicChildren: "projects",
+    },
     { id: "runs", label: "Runs", href: "/runs", scope: "global" },
     {
       // SETTINGS — a non-navigating section header (see NavNode.section), NOT the old
@@ -167,9 +173,24 @@ export function navTree(): NavNode[] {
       href: "",
       section: true,
       children: [
-        { id: "llm", label: "LLM Settings", href: "/settings/llm", scope: "global" },
-        { id: "otel", label: "OTel", href: "/settings/configuration", scope: "global" },
-        { id: "credentials", label: "Credentials", href: "/credentials", scope: "global" },
+        {
+          id: "llm",
+          label: "LLM Settings",
+          href: "/settings/llm",
+          scope: "global",
+        },
+        {
+          id: "otel",
+          label: "OTel",
+          href: "/settings/configuration",
+          scope: "global",
+        },
+        {
+          id: "credentials",
+          label: "Credentials",
+          href: "/credentials",
+          scope: "global",
+        },
         { id: "plugins", label: "Plugins", href: "/plugins", scope: "global" },
         {
           // Users & Roles (stories 8.15 + 8.16): the admin identity surface. requiredAccess "admin"
@@ -419,13 +440,18 @@ const LOCKED_UNTIL_TEAM: ReadonlySet<string> = new Set([
  * visible-but-disabled. When `teamExists` is true the tree is returned untouched (4/4 or
  * any Team → everything unlocked, AC4). Pure: the input tree is never mutated.
  */
-export function withOnboardingLock(tree: NavNode[], teamExists: boolean): NavNode[] {
+export function withOnboardingLock(
+  tree: NavNode[],
+  teamExists: boolean,
+): NavNode[] {
   if (teamExists) return tree;
   const lock = (nodes: NavNode[], inherited: boolean): NavNode[] =>
     nodes.map((node) => {
       const locked = inherited || LOCKED_UNTIL_TEAM.has(node.id);
       const children = node.children ? lock(node.children, locked) : undefined;
-      return locked || children ? { ...node, locked, ...(children ? { children } : {}) } : node;
+      return locked || children
+        ? { ...node, locked, ...(children ? { children } : {}) }
+        : node;
     });
   return lock(tree, false);
 }

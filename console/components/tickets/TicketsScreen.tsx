@@ -87,7 +87,9 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
   // for (coord.workitemread BoardItem doc). The `?parentId=` lazy-load stays as a
   // fallback for the rare parent whose children fell outside the first page.
   const [items, setItems] = useState<WorkItem[]>([]);
-  const [childrenCache, setChildrenCache] = useState<Record<string, WorkItem[]>>({});
+  const [childrenCache, setChildrenCache] = useState<
+    Record<string, WorkItem[]>
+  >({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [view, setView] = useState<TicketsView>("kanban");
   const [filters, setFilters] = useState<TicketFilters>(EMPTY_FILTERS);
@@ -160,7 +162,10 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
 
   const persistExpanded = useCallback((next: ReadonlySet<string>) => {
     try {
-      window.localStorage.setItem(EXPANDED_STORAGE_KEY, JSON.stringify([...next]));
+      window.localStorage.setItem(
+        EXPANDED_STORAGE_KEY,
+        JSON.stringify([...next]),
+      );
     } catch {
       /* best-effort view state only */
     }
@@ -186,7 +191,10 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           // (childrenByParent, from the full board read) has them. For the common
           // case the children are already in hand, so expanding is instant and
           // issues no network request (ISI-5547).
-          if (childrenCache[parentId] == null && !childrenByParent.has(parentId)) {
+          if (
+            childrenCache[parentId] == null &&
+            !childrenByParent.has(parentId)
+          ) {
             void loadChildren(parentId);
           }
           next.add(parentId);
@@ -203,7 +211,8 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
       // A freshly re-fetched cache wins over the derived index (it reflects the
       // latest server truth after a create/expand); otherwise fall back to the
       // children derived from the full board read (ISI-5547).
-      childrenOf: (parentId) => childrenCache[parentId] ?? childrenByParent.get(parentId),
+      childrenOf: (parentId) =>
+        childrenCache[parentId] ?? childrenByParent.get(parentId),
       childCountOf: (item) =>
         item.childCount ??
         childrenCache[item.id]?.length ??
@@ -218,39 +227,40 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
   const treeKeyDown = useTreeKeyboardNav();
 
   /** 200 ⇒ the card lands in the target column; 409/any failure ⇒ re-sync to server truth. */
-  const onTransition = useCallback(
-    async (item: WorkItem, to: PhaseStatus) => {
-      try {
-        await patchWorkItemState(item.id, {
-          toState: to,
-          fromState: item.state,
-        });
-        setNotice(null);
-        // `to` is a ten-status PhaseStatus (ISI-4455 enum); the read-model type
-        // is still the legacy 5-value WorkItemState (ISI-4456 kept it narrow and
-        // folds via statusColor), so assert at this one optimistic-write seam.
-        const optimistic = to as unknown as WorkItemState;
-        setItems((prev) =>
-          prev.map((it) => (it.id === item.id ? { ...it, state: optimistic } : it)),
-        );
-        setChildrenCache((prev) => {
-          const next: Record<string, WorkItem[]> = {};
-          for (const [pid, kids] of Object.entries(prev)) {
-            next[pid] = kids.map((it) => (it.id === item.id ? { ...it, state: optimistic } : it));
-          }
-          return next;
-        });
-      } catch (err) {
-        setNotice(
-          err instanceof ApiError && err.status === 409
-            ? "Ticket changed under you (409) — re-synced to server state."
-            : "Could not move the ticket — re-synced to server state.",
-        );
-        setReloadKey((k) => k + 1);
-      }
-    },
-    [],
-  );
+  const onTransition = useCallback(async (item: WorkItem, to: PhaseStatus) => {
+    try {
+      await patchWorkItemState(item.id, {
+        toState: to,
+        fromState: item.state,
+      });
+      setNotice(null);
+      // `to` is a ten-status PhaseStatus (ISI-4455 enum); the read-model type
+      // is still the legacy 5-value WorkItemState (ISI-4456 kept it narrow and
+      // folds via statusColor), so assert at this one optimistic-write seam.
+      const optimistic = to as unknown as WorkItemState;
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === item.id ? { ...it, state: optimistic } : it,
+        ),
+      );
+      setChildrenCache((prev) => {
+        const next: Record<string, WorkItem[]> = {};
+        for (const [pid, kids] of Object.entries(prev)) {
+          next[pid] = kids.map((it) =>
+            it.id === item.id ? { ...it, state: optimistic } : it,
+          );
+        }
+        return next;
+      });
+    } catch (err) {
+      setNotice(
+        err instanceof ApiError && err.status === 409
+          ? "Ticket changed under you (409) — re-synced to server state."
+          : "Could not move the ticket — re-synced to server state.",
+      );
+      setReloadKey((k) => k + 1);
+    }
+  }, []);
 
   /**
    * Land a freshly-created item (design §2 optimistic insert). A root item is
@@ -347,13 +357,17 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           aria-label="Search tickets"
           data-testid="filter-query"
           value={filters.query}
-          onChange={(evt) => setFilters((f) => ({ ...f, query: evt.target.value }))}
+          onChange={(evt) =>
+            setFilters((f) => ({ ...f, query: evt.target.value }))
+          }
         />
         <select
           aria-label="Filter by priority"
           data-testid="filter-priority"
           value={filters.priority}
-          onChange={(evt) => setFilters((f) => ({ ...f, priority: evt.target.value }))}
+          onChange={(evt) =>
+            setFilters((f) => ({ ...f, priority: evt.target.value }))
+          }
         >
           <option value="">Priority: any</option>
           {priorities.map((p) => (
@@ -366,7 +380,9 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           aria-label="Filter by assignee"
           data-testid="filter-assignee"
           value={filters.assignee}
-          onChange={(evt) => setFilters((f) => ({ ...f, assignee: evt.target.value }))}
+          onChange={(evt) =>
+            setFilters((f) => ({ ...f, assignee: evt.target.value }))
+          }
         >
           <option value="">Assignee: any</option>
           {assignees.map((a) => (
@@ -379,7 +395,9 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           aria-label="Filter by label"
           data-testid="filter-label"
           value={filters.label}
-          onChange={(evt) => setFilters((f) => ({ ...f, label: evt.target.value }))}
+          onChange={(evt) =>
+            setFilters((f) => ({ ...f, label: evt.target.value }))
+          }
         >
           <option value="">Label: any</option>
           {labels.map((l) => (
@@ -418,15 +436,20 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           <span className="ksq-sr-only">Loading tickets…</span>
         </div>
       ) : unavailable ? (
-        <div className="ksq-empty-state ksq-empty-state--notice" data-testid="tickets-unavailable">
+        <div
+          className="ksq-empty-state ksq-empty-state--notice"
+          data-testid="tickets-unavailable"
+        >
           <p className="ksq-empty-state__icon" aria-hidden="true">
             ⏳
           </p>
-          <p className="ksq-empty-state__title">Tickets are not available yet.</p>
+          <p className="ksq-empty-state__title">
+            Tickets are not available yet.
+          </p>
           <p className="muted">
-            The work-items read model is not hosted by the apiserver yet — nothing
-            is fabricated here (FR-I3). Once the backend lands, this view fills in
-            from the coordination record.
+            The work-items read model is not hosted by the apiserver yet —
+            nothing is fabricated here (FR-I3). Once the backend lands, this
+            view fills in from the coordination record.
           </p>
         </div>
       ) : visible.length === 0 ? (
@@ -435,7 +458,9 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
             {roots.length === 0 ? "🗂️" : "🔍"}
           </p>
           <p className="ksq-empty-state__title">
-            {roots.length === 0 ? "No tickets in this Project." : "No tickets match."}
+            {roots.length === 0
+              ? "No tickets in this Project."
+              : "No tickets match."}
           </p>
           <p className="muted">
             {roots.length === 0
@@ -463,7 +488,9 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
         />
       )}
 
-      <p className="ksq-sr-only">States: {Object.values(STATE_LABELS).join(", ")}</p>
+      <p className="ksq-sr-only">
+        States: {Object.values(STATE_LABELS).join(", ")}
+      </p>
 
       {creating && (
         <CreateTicketSheet

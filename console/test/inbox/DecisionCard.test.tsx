@@ -1,7 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { DecisionCard, decisionModeChip, type DecisionAnswerInput } from "@/components/inbox/DecisionCard";
-import type { DecisionRequest, DecisionRequestPayload, Message } from "@/lib/discussion/types";
+import {
+  DecisionCard,
+  decisionModeChip,
+  type DecisionAnswerInput,
+} from "@/components/inbox/DecisionCard";
+import type {
+  DecisionRequest,
+  DecisionRequestPayload,
+  Message,
+} from "@/lib/discussion/types";
 
 afterEach(cleanup);
 
@@ -19,7 +27,10 @@ function msg(over: Partial<Message> = {}): Message {
   };
 }
 
-function decision(payload: DecisionRequestPayload, over: Partial<DecisionRequest> = {}): DecisionRequest {
+function decision(
+  payload: DecisionRequestPayload,
+  over: Partial<DecisionRequest> = {},
+): DecisionRequest {
   return {
     Message: msg({ kind: "decision_request", payload }),
     TeamID: "team-1",
@@ -37,7 +48,12 @@ const chooseOne: DecisionRequestPayload = {
   mode: "choose_one",
   title: "Which HTTP client should the service use?",
   options: [
-    { id: "reqwest", label: "reqwest", description: "async", recommended: true },
+    {
+      id: "reqwest",
+      label: "reqwest",
+      description: "async",
+      recommended: true,
+    },
     { id: "hyper", label: "hyper" },
     { id: "ureq", label: "ureq" },
   ],
@@ -58,7 +74,12 @@ describe("decisionModeChip — mode → label + hue (ADR-0026 §3.4)", () => {
 describe("<DecisionCard> — choose_one", () => {
   it("pre-selects the recommended option and submits it", () => {
     let got: DecisionAnswerInput | null = null;
-    render(<DecisionCard decision={decision(chooseOne)} onAnswer={(_, a) => (got = a)} />);
+    render(
+      <DecisionCard
+        decision={decision(chooseOne)}
+        onAnswer={(_, a) => (got = a)}
+      />,
+    );
     // Recommended badge present; submit without changing the selection.
     expect(screen.getByTestId("decision-recommended")).toBeTruthy();
     screen.getByTestId("decision-submit").click();
@@ -67,7 +88,12 @@ describe("<DecisionCard> — choose_one", () => {
 
   it("switches the selection when another option is chosen", () => {
     let got: DecisionAnswerInput | null = null;
-    render(<DecisionCard decision={decision(chooseOne)} onAnswer={(_, a) => (got = a)} />);
+    render(
+      <DecisionCard
+        decision={decision(chooseOne)}
+        onAnswer={(_, a) => (got = a)}
+      />,
+    );
     const radios = screen.getAllByRole("radio");
     fireEvent.click(radios[1]); // hyper
     screen.getByTestId("decision-submit").click();
@@ -76,9 +102,16 @@ describe("<DecisionCard> — choose_one", () => {
 
   it("routes the free-text escape to a freeText answer", () => {
     let got: DecisionAnswerInput | null = null;
-    render(<DecisionCard decision={decision(chooseOne)} onAnswer={(_, a) => (got = a)} />);
+    render(
+      <DecisionCard
+        decision={decision(chooseOne)}
+        onAnswer={(_, a) => (got = a)}
+      />,
+    );
     fireEvent.click(screen.getByTestId("decision-freetext-toggle"));
-    fireEvent.change(screen.getByTestId("decision-freetext"), { target: { value: "use httpx wrapper" } });
+    fireEvent.change(screen.getByTestId("decision-freetext"), {
+      target: { value: "use httpx wrapper" },
+    });
     screen.getByTestId("decision-submit").click();
     expect(got).toEqual({ freeText: "use httpx wrapper" });
   });
@@ -95,7 +128,12 @@ describe("<DecisionCard> — approve", () => {
 
   it("Approve submits an empty (acceptance) answer", () => {
     let got: DecisionAnswerInput | null = null;
-    render(<DecisionCard decision={decision(approve)} onAnswer={(_, a) => (got = a)} />);
+    render(
+      <DecisionCard
+        decision={decision(approve)}
+        onAnswer={(_, a) => (got = a)}
+      />,
+    );
     screen.getByTestId("decision-approve").click();
     expect(got).toEqual({});
   });
@@ -127,9 +165,16 @@ describe("<DecisionCard> — choose_many respects min/max", () => {
 describe("<DecisionCard> — reject-with-reason", () => {
   it("requires a reason when the card demands it, then fires onReject", () => {
     let reason: string | undefined = "UNSET";
-    render(<DecisionCard decision={decision(chooseOne)} onReject={(_, r) => (reason = r)} />);
+    render(
+      <DecisionCard
+        decision={decision(chooseOne)}
+        onReject={(_, r) => (reason = r)}
+      />,
+    );
     fireEvent.click(screen.getByTestId("decision-reject-open"));
-    const confirm = screen.getByTestId("decision-reject-confirm") as HTMLButtonElement;
+    const confirm = screen.getByTestId(
+      "decision-reject-confirm",
+    ) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true); // rejectRequiresReason, empty
     fireEvent.change(screen.getByTestId("decision-reject-reason-input"), {
       target: { value: "none of these fit" },
@@ -144,10 +189,16 @@ describe("<DecisionCard> — decided state is read-only", () => {
   it("renders the phase + answerer and no form once answered", () => {
     render(
       <DecisionCard
-        decision={decision(chooseOne, { phase: "answered", answeredBy: "alice" })}
+        decision={decision(chooseOne, {
+          phase: "answered",
+          answeredBy: "alice",
+        })}
       />,
     );
-    expect(screen.getByTestId("decision-card")).toHaveAttribute("data-phase", "answered");
+    expect(screen.getByTestId("decision-card")).toHaveAttribute(
+      "data-phase",
+      "answered",
+    );
     expect(screen.getByTestId("decision-decided")).toBeTruthy();
     expect(screen.queryByTestId("decision-form")).toBeNull();
   });

@@ -58,7 +58,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     // One structured line → console pod stderr → the shared log pipeline.
     // eslint-disable-next-line no-console
     console.error(
-      JSON.stringify({ tag: "client-crash", receivedAt: new Date().toISOString(), report }),
+      JSON.stringify({
+        tag: "client-crash",
+        receivedAt: new Date().toISOString(),
+        report,
+      }),
     );
   } catch {
     // Never surface a 5xx to the beacon path — a crash reporter that itself

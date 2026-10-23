@@ -75,14 +75,14 @@ describe("replaceTriggerFragment (ISI-5167)", () => {
     );
   });
   it("work_item → `#Title ` token", () => {
-    expect(replaceTriggerFragment("see #fl", "Fix flaky test", "work_item")).toBe(
-      "see #Fix flaky test ",
-    );
+    expect(
+      replaceTriggerFragment("see #fl", "Fix flaky test", "work_item"),
+    ).toBe("see #Fix flaky test ");
   });
   it("normalizes a work_item picked from the `@` list to a `#` prefix (bug fix)", () => {
-    expect(replaceTriggerFragment("see @fl", "Fix flaky test", "work_item")).toBe(
-      "see #Fix flaky test ",
-    );
+    expect(
+      replaceTriggerFragment("see @fl", "Fix flaky test", "work_item"),
+    ).toBe("see #Fix flaky test ");
   });
 });
 
@@ -127,9 +127,9 @@ describe("resolveBodyMentions (ISI-5281 — dispatch from typed @-body)", () => 
     expect(resolveBodyMentions("mail builder@reviewer.io", ROSTER)).toEqual([]);
   });
   it("de-dupes a repeated mention to a single canonical name", () => {
-    expect(resolveBodyMentions("@reviewer and again @reviewer", ROSTER)).toEqual(
-      ["reviewer"],
-    );
+    expect(
+      resolveBodyMentions("@reviewer and again @reviewer", ROSTER),
+    ).toEqual(["reviewer"]);
   });
   it("returns all distinct resolvable names in first-seen order (2+ is ambiguous for WS-1)", () => {
     expect(

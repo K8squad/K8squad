@@ -40,7 +40,7 @@ describe("GFM — task lists", () => {
 
 describe("code fences", () => {
   it("renders a fenced code block in a <pre><code>", () => {
-    const md = "```go\nfmt.Println(\"hello\")\n```";
+    const md = '```go\nfmt.Println("hello")\n```';
     render(<Markdown>{md}</Markdown>);
     const pre = document.querySelector("pre");
     expect(pre).toBeTruthy();
@@ -81,14 +81,18 @@ describe("XSS hardening", () => {
     render(<Markdown>{md}</Markdown>);
     // No rehype-raw → raw HTML is treated as escaped text, never as DOM nodes.
     expect(document.querySelector("script")).toBeNull();
-    expect((window as unknown as Record<string, unknown>).__xss).toBeUndefined();
+    expect(
+      (window as unknown as Record<string, unknown>).__xss,
+    ).toBeUndefined();
   });
 
   it("does not render an <img onerror> as a live element", () => {
     const md = '<img src="x" onerror="window.__xss2=1">';
     render(<Markdown>{md}</Markdown>);
     expect(document.querySelector("img")).toBeNull();
-    expect((window as unknown as Record<string, unknown>).__xss2).toBeUndefined();
+    expect(
+      (window as unknown as Record<string, unknown>).__xss2,
+    ).toBeUndefined();
   });
 
   it("renders javascript: href as inert text, not a live anchor", () => {

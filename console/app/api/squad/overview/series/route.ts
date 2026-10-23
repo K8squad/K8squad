@@ -17,5 +17,8 @@ export const fetchCache = "force-no-store";
 export async function GET(req: NextRequest): Promise<Response> {
   // proxyJson forwards only the path, so carry the trailing query (?window=30d
   // or ?from=&to=) across to the apiserver explicitly.
-  return proxyJson(req, "/api/squad/overview/series" + (req.nextUrl.search || ""));
+  return proxyJson(
+    req,
+    "/api/squad/overview/series" + (req.nextUrl.search || ""),
+  );
 }

@@ -73,8 +73,16 @@ async function getJson<T>(path: string, signal: AbortSignal): Promise<T> {
     cache: "no-store",
     signal,
   });
-  if (res.status === 404) throw new RosterEditError("not-found", "That item is no longer in the roster.");
-  if (!res.ok) throw new RosterEditError("read-failed", `Could not load ${path} (${res.status}).`);
+  if (res.status === 404)
+    throw new RosterEditError(
+      "not-found",
+      "That item is no longer in the roster.",
+    );
+  if (!res.ok)
+    throw new RosterEditError(
+      "read-failed",
+      `Could not load ${path} (${res.status}).`,
+    );
   return (await res.json()) as T;
 }
 
@@ -83,13 +91,27 @@ function teamQS(team?: string): string {
 }
 
 /** Fetch one agent's full authoring spec — the required-field round-trip source for edits. */
-export function fetchAgentDetail(name: string, signal: AbortSignal, team?: string): Promise<AgentDetailWire> {
-  return getJson<AgentDetailWire>(`/api/squad/agents/${encodeURIComponent(name)}${teamQS(team)}`, signal);
+export function fetchAgentDetail(
+  name: string,
+  signal: AbortSignal,
+  team?: string,
+): Promise<AgentDetailWire> {
+  return getJson<AgentDetailWire>(
+    `/api/squad/agents/${encodeURIComponent(name)}${teamQS(team)}`,
+    signal,
+  );
 }
 
 /** Fetch one role's full authoring spec (model, fallback, usedBy, resourceVersion). */
-export function fetchRoleDetail(name: string, signal: AbortSignal, team?: string): Promise<RoleDetailWire> {
-  return getJson<RoleDetailWire>(`/api/squad/roles/${encodeURIComponent(name)}${teamQS(team)}`, signal);
+export function fetchRoleDetail(
+  name: string,
+  signal: AbortSignal,
+  team?: string,
+): Promise<RoleDetailWire> {
+  return getJson<RoleDetailWire>(
+    `/api/squad/roles/${encodeURIComponent(name)}${teamQS(team)}`,
+    signal,
+  );
 }
 
 // ── Save ladder (Frame 04: Idle → Editing → Saving → Saved / Error) ──────────
@@ -102,7 +124,8 @@ export type SaveState =
 
 /** A structured save failure: `status` carries the HTTP code for the 409 staleness copy. */
 export class RosterEditError extends Error {
-  readonly code: "not-found" | "read-failed" | "conflict" | "rejected" | "scope";
+  readonly code:
+    "not-found" | "read-failed" | "conflict" | "rejected" | "scope";
   readonly status: number;
   constructor(code: RosterEditError["code"], message: string, status = 0) {
     super(message);
@@ -126,15 +149,21 @@ export async function putCompose(
   // The act-as-team selector (ISI-5419) the roster surface already uses on its
   // reads, carried onto the write so a fleet admin's inline save lands in the
   // squad whose node they edited (resolved admin-only, by Team UID, server-side).
-  const res = await fetch(`/api/compose/${kind}/${encodeURIComponent(name)}${teamQS(team)}`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const res = await fetch(
+    `/api/compose/${kind}/${encodeURIComponent(name)}${teamQS(team)}`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
   if (res.ok) return;
   let message = `Save failed (status ${res.status}).`;
   try {
-    const j = JSON.parse(await res.text()) as { error?: string; fields?: Array<{ field: string; message: string }> };
+    const j = JSON.parse(await res.text()) as {
+      error?: string;
+      fields?: Array<{ field: string; message: string }>;
+    };
     if (j.error) message = j.error;
     if (Array.isArray(j.fields) && j.fields.length) {
       message = `${message} (${j.fields.map((f) => `${f.field}: ${f.message}`).join("; ")})`;
@@ -142,7 +171,12 @@ export async function putCompose(
   } catch {
     /* non-JSON body — keep the status line */
   }
-  if (res.status === 409) throw new RosterEditError("conflict", "Changed since you opened — reload and retry.", 409);
+  if (res.status === 409)
+    throw new RosterEditError(
+      "conflict",
+      "Changed since you opened — reload and retry.",
+      409,
+    );
   if (res.status === 400 && /project scope/i.test(message)) {
     throw new RosterEditError(
       "scope",
@@ -194,17 +228,25 @@ export interface RoleModelEdit {
 }
 
 /** Role → Model tab commit: sets/clears the role-tier model (and optional fallback). */
-export function roleModelPut(detail: RoleDetailWire, edit: RoleModelEdit): Record<string, unknown> {
+export function roleModelPut(
+  detail: RoleDetailWire,
+  edit: RoleModelEdit,
+): Record<string, unknown> {
   const body = roleBase(detail);
   body.model = edit.model.trim() ? edit.model.trim() : null; // null ⇒ RFC 7386 delete ⇒ inherit
   if (edit.fallbackModel !== undefined) {
-    body.fallbackModel = edit.fallbackModel.trim() ? { model: edit.fallbackModel.trim() } : null;
+    body.fallbackModel = edit.fallbackModel.trim()
+      ? { model: edit.fallbackModel.trim() }
+      : null;
   }
   return body;
 }
 
 /** Role → Default Skills commit: the full replacement array ([] ⇒ JSON-null clear). */
-export function roleSkillsPut(detail: RoleDetailWire, skills: string[]): Record<string, unknown> {
+export function roleSkillsPut(
+  detail: RoleDetailWire,
+  skills: string[],
+): Record<string, unknown> {
   const body = roleBase(detail);
   const unique = [...new Set(skills.map((s) => s.trim()).filter(Boolean))];
   // An empty array must be the null sentinel: planRole omits an empty DefaultSkills on the
@@ -214,14 +256,20 @@ export function roleSkillsPut(detail: RoleDetailWire, skills: string[]): Record<
 }
 
 /** Agent → Model tab commit: sets the agent-tier override, or clears it (null ⇒ inherit). */
-export function agentModelPut(detail: AgentDetailWire, model: string): Record<string, unknown> {
+export function agentModelPut(
+  detail: AgentDetailWire,
+  model: string,
+): Record<string, unknown> {
   const body = agentBase(detail);
   body.model = model.trim() ? model.trim() : null;
   return body;
 }
 
 /** Agent → Skills tab commit: the full replacement skillRefs array ([] ⇒ JSON-null clear). */
-export function agentSkillsPut(detail: AgentDetailWire, skills: string[]): Record<string, unknown> {
+export function agentSkillsPut(
+  detail: AgentDetailWire,
+  skills: string[],
+): Record<string, unknown> {
   const body = agentBase(detail);
   const unique = [...new Set(skills.map((s) => s.trim()).filter(Boolean))];
   body.skillRefs = unique.length ? unique.map((name) => ({ name })) : null;
@@ -237,10 +285,14 @@ export function partitionAgentSkills(
   agentDetail: AgentDetailWire,
   roleDefaultSkills: string[],
 ): { fromRole: string[]; addedToAgent: string[] } {
-  const fromRole = [...new Set(roleDefaultSkills.map((s) => s.trim()).filter(Boolean))];
+  const fromRole = [
+    ...new Set(roleDefaultSkills.map((s) => s.trim()).filter(Boolean)),
+  ];
   const fromRoleSet = new Set(fromRole);
   const addedToAgent = [
-    ...new Set((agentDetail.skillRefs ?? []).map((r) => r.name.trim()).filter(Boolean)),
+    ...new Set(
+      (agentDetail.skillRefs ?? []).map((r) => r.name.trim()).filter(Boolean),
+    ),
   ].filter((s) => !fromRoleSet.has(s));
   return { fromRole, addedToAgent };
 }

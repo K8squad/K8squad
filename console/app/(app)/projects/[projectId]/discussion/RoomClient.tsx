@@ -21,12 +21,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { createDiscussionClient, type DiscussionClient } from "@/lib/discussion/api";
+import {
+  createDiscussionClient,
+  type DiscussionClient,
+} from "@/lib/discussion/api";
 import { subscribeRoom, type EventSourceFactory } from "@/lib/discussion/sse";
 import type { RoomStreamEvent } from "@/lib/discussion/liveFeed";
 import type { RosterAgent } from "@/components/discussion/Roster";
 import { DiscussionRoom } from "@/components/discussion/DiscussionRoom";
-import { DiscussionsPanel, type PanelListState } from "@/components/discussion/DiscussionsPanel";
+import {
+  DiscussionsPanel,
+  type PanelListState,
+} from "@/components/discussion/DiscussionsPanel";
 import type { Thread } from "@/lib/discussion/types";
 import {
   resolveActiveThreadId,
@@ -34,7 +40,10 @@ import {
   upsertThread,
 } from "@/lib/discussion/threadList";
 import type { SquadOverviewData } from "@/components/SquadOverview";
-import { liveRunsByAgent, type AgentRunPresence } from "@/lib/overview/liveRuns";
+import {
+  liveRunsByAgent,
+  type AgentRunPresence,
+} from "@/lib/overview/liveRuns";
 
 // R1 empty-room bootstrap: a fresh Project has no threads, and nothing else in
 // the UI can open the first one — without this the route sat on "Loading…"

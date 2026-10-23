@@ -71,7 +71,10 @@ vi.mock("@/lib/bff", () => ({
   proxyEventStream: (...a: unknown[]) => proxyEventStream(...(a as [])),
 }));
 
-import { GET as workItemsGET, POST as workItemsPOST } from "@/app/api/projects/[projectId]/work-items/route";
+import {
+  GET as workItemsGET,
+  POST as workItemsPOST,
+} from "@/app/api/projects/[projectId]/work-items/route";
 import { GET as workItemThreadGET } from "@/app/api/work-items/[workItemId]/route";
 import { GET as threadsGET } from "@/app/api/projects/[projectId]/discussion/threads/route";
 import { GET as rosterGET } from "@/app/api/projects/[projectId]/discussion/roster/route";
@@ -88,7 +91,9 @@ import {
 
 // Minimal NextRequest stand-in — the routes read only `nextUrl.search`.
 function fakeReq(search = ""): import("next/server").NextRequest {
-  return { nextUrl: { search } } as unknown as import("next/server").NextRequest;
+  return {
+    nextUrl: { search },
+  } as unknown as import("next/server").NextRequest;
 }
 
 /** The upstream path passed to the proxy (2nd positional arg). */
@@ -132,14 +137,18 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
     ["decoded", NS_NAME],
   ] as const) {
     it(`github GET forwards ns%2Fname once (${shape})`, async () => {
-      await githubGET(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      await githubGET(fakeReq(), {
+        params: Promise.resolve({ projectId: param }),
+      });
       const p = pathOf(proxyJson);
       expect(p).toBe(`/api/projects/${ENCODED}/github`);
       expect(p).not.toContain("%252F");
     });
 
     it(`github sync POST forwards ns%2Fname once (${shape})`, async () => {
-      await githubSyncPOST(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      await githubSyncPOST(fakeReq(), {
+        params: Promise.resolve({ projectId: param }),
+      });
       const p = pathOf(proxyJsonWrite);
       expect(p).toBe(`/api/projects/${ENCODED}/github/sync`);
       expect(p).not.toContain("%252F");
@@ -154,21 +163,27 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
     ["decoded", NS_NAME],
   ] as const) {
     it(`review-automation GET forwards ns%2Fname once (${shape})`, async () => {
-      await reviewAutoGET(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      await reviewAutoGET(fakeReq(), {
+        params: Promise.resolve({ projectId: param }),
+      });
       const p = pathOf(proxyJson);
       expect(p).toBe(`/api/projects/${ENCODED}/repo/review-automation`);
       expect(p).not.toContain("%252F");
     });
 
     it(`review-automation PUT forwards ns%2Fname once (${shape})`, async () => {
-      await reviewAutoPUT(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      await reviewAutoPUT(fakeReq(), {
+        params: Promise.resolve({ projectId: param }),
+      });
       const p = pathOf(proxyJsonWrite);
       expect(p).toBe(`/api/projects/${ENCODED}/repo/review-automation`);
       expect(p).not.toContain("%252F");
     });
 
     it(`review-automation PATCH forwards ns%2Fname once (${shape})`, async () => {
-      await reviewAutoPATCH(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      await reviewAutoPATCH(fakeReq(), {
+        params: Promise.resolve({ projectId: param }),
+      });
       const p = pathOf(proxyJsonWrite);
       expect(p).toBe(`/api/projects/${ENCODED}/repo/review-automation`);
       expect(p).not.toContain("%252F");
@@ -183,7 +198,9 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
   });
 
   it("discussion threads GET forwards ns%2Fname once", async () => {
-    await threadsGET(fakeReq(), { params: Promise.resolve({ projectId: ENCODED }) });
+    await threadsGET(fakeReq(), {
+      params: Promise.resolve({ projectId: ENCODED }),
+    });
     const p = pathOf(proxyJson);
     expect(p).toBe(`/api/projects/${ENCODED}/discussion/threads`);
     expect(p).not.toContain("%252F");
@@ -199,7 +216,9 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
     ["decoded", NS_NAME],
   ] as const) {
     it(`discussion roster GET forwards ns%2Fname once (${shape})`, async () => {
-      await rosterGET(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      await rosterGET(fakeReq(), {
+        params: Promise.resolve({ projectId: param }),
+      });
       const p = pathOf(proxyJson);
       expect(p).toBe(`/api/projects/${ENCODED}/discussion/roster`);
       expect(p).not.toContain("%252F");
@@ -207,7 +226,9 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
   }
 
   it("stream GET forwards ns%2Fname once", async () => {
-    await streamGET(fakeReq(), { params: Promise.resolve({ projectId: ENCODED }) });
+    await streamGET(fakeReq(), {
+      params: Promise.resolve({ projectId: ENCODED }),
+    });
     expect(pathOf(proxyEventStream)).toBe(`/api/projects/${ENCODED}/stream`);
   });
 
@@ -234,7 +255,9 @@ describe("work-item thread BFF (ISI-4131/ISI-4132)", () => {
   it("GET forwards the ticket id to the M1.5 thread read", async () => {
     proxyJson.mockClear();
     await workItemThreadGET(fakeReq(), {
-      params: Promise.resolve({ workItemId: "150aef38-b5dd-422b-9eb6-0eef91c50144" }),
+      params: Promise.resolve({
+        workItemId: "150aef38-b5dd-422b-9eb6-0eef91c50144",
+      }),
     });
     expect(pathOf(proxyJson)).toBe(
       "/api/work-items/150aef38-b5dd-422b-9eb6-0eef91c50144",

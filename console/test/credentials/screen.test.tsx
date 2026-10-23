@@ -1,7 +1,16 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { CredentialsScreen } from "@/components/credentials/CredentialsScreen";
-import type { AgentCredentialRow, CredentialsOverview } from "@/lib/credentials";
+import type {
+  AgentCredentialRow,
+  CredentialsOverview,
+} from "@/lib/credentials";
 
 afterEach(cleanup);
 
@@ -42,7 +51,18 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     render(
       <CredentialsScreen
         load={async () =>
-          jsonResponse(200, overview([row(), row({ agent: "reviewer-openclaw", runtime: "OpenClaw", credentialRef: "squad-a/sam-openclaw-key", credentialClass: "api_key" })]))
+          jsonResponse(
+            200,
+            overview([
+              row(),
+              row({
+                agent: "reviewer-openclaw",
+                runtime: "OpenClaw",
+                credentialRef: "squad-a/sam-openclaw-key",
+                credentialClass: "api_key",
+              }),
+            ]),
+          )
         }
         now={clock}
       />,
@@ -53,7 +73,9 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     expect(screen.getByText("API key")).toBeTruthy();
     expect(screen.getByText("— (static)")).toBeTruthy();
     // FR-G1 footer fact is on the screen.
-    expect(screen.getByText(/KSquad never stores a shared master credential/)).toBeTruthy();
+    expect(
+      screen.getByText(/KSquad never stores a shared master credential/),
+    ).toBeTruthy();
   });
 
   it("shows the clear paused-on-expiry banner + expired·paused badge (S10 / 7.4)", async () => {
@@ -61,7 +83,17 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     render(
       <CredentialsScreen
         load={async () =>
-          jsonResponse(200, overview([row({ health: "expired", pausedRuns: [{ name: "run-139", reason: "credential_expired", since }] })]))
+          jsonResponse(
+            200,
+            overview([
+              row({
+                health: "expired",
+                pausedRuns: [
+                  { name: "run-139", reason: "credential_expired", since },
+                ],
+              }),
+            ]),
+          )
         }
         now={clock}
       />,
@@ -69,19 +101,28 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     await waitFor(() => screen.getByTestId("paused-banner"));
     expect(screen.getAllByText(/run-139/).length).toBeGreaterThan(0);
     expect(screen.getByText(/token expired/)).toBeTruthy();
-    expect(screen.getByTestId("health-badge").textContent).toBe("Expired · paused");
-    const link = screen.getByRole("link", { name: "#run-139" }) as HTMLAnchorElement;
+    expect(screen.getByTestId("health-badge").textContent).toBe(
+      "Expired · paused",
+    );
+    const link = screen.getByRole("link", {
+      name: "#run-139",
+    }) as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/runs/run-139");
   });
 
   it("renders Unknown + honest — expiry for zero-knowledge rows (no fabricated green badge)", async () => {
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([row()]))} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([row()]))}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
     // Zero credential knowledge ⇒ Unknown (idle tone), never a fabricated Valid badge (PR #87
     // review: absence of a paused Run is not evidence a credential works).
-    expect(screen.getAllByTestId("health-badge")[0].textContent).toBe("Unknown");
+    expect(screen.getAllByTestId("health-badge")[0].textContent).toBe(
+      "Unknown",
+    );
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("paused-banner")).toBeNull();
   });
@@ -99,21 +140,30 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
 
   it("renders the deny-collapsed not-found state (401/403/404 indistinguishable)", async () => {
     render(
-      <CredentialsScreen load={async () => jsonResponse(403, {})} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(403, {})}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-not-found"));
   });
 
   it("renders the error state on 5xx", async () => {
     render(
-      <CredentialsScreen load={async () => jsonResponse(502, {})} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(502, {})}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-error"));
   });
 
   it("empty squad renders an explicit empty row, never a blank table", async () => {
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([]))}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
     expect(screen.getByText(/No agents with credentials/)).toBeTruthy();
@@ -124,7 +174,10 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     // decision (ISI-3661), NOT the done backend ticket ISI-2899. Per John's directive the button
     // MUST NOT be a live affordance that hits it: it renders disabled, citing the board gate.
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([]))}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
     const btn = screen.getByTestId("connect-claude") as HTMLButtonElement;
@@ -139,7 +192,10 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
 
   it("Connect Claude hint is honest — states no CLI ships, offers no fake command (ISI-3945)", async () => {
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([]))}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
     const btn = screen.getByTestId("connect-claude");
@@ -167,85 +223,166 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
 
 // ── ISI-3983: the BYO write UX (paste form + fleet-admin team picker) ────────────
 
-function teamsResponse(teams: { name: string; namespace: string; uid: string }[], fleet = true): Response {
+function teamsResponse(
+  teams: { name: string; namespace: string; uid: string }[],
+  fleet = true,
+): Response {
   return jsonResponse(200, { teams, fleet });
 }
 
 describe("<CredentialsScreen> — BYO create form (ISI-3983)", () => {
   it("renders the paste form with the credinject runtimes and stores a key (write-only)", async () => {
     const create = vi.fn(async () =>
-      jsonResponse(201, { secretRef: "secret://ksquad-team-x/team-anthropic", name: "team-anthropic", namespace: "ksquad-team-x", class: "service-account" }),
+      jsonResponse(201, {
+        secretRef: "secret://ksquad-team-x/team-anthropic",
+        name: "team-anthropic",
+        namespace: "ksquad-team-x",
+        class: "service-account",
+      }),
     );
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} create={create} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([]))}
+        create={create}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-create-form"));
 
     // Runtime options mirror the injection table (claude-code/openclaw/hermes/vibe).
     const runtime = screen.getByTestId("creds-runtime") as HTMLSelectElement;
-    expect([...runtime.options].map((o) => o.value)).toEqual(["claude-code", "openclaw", "hermes", "vibe"]);
+    expect([...runtime.options].map((o) => o.value)).toEqual([
+      "claude-code",
+      "openclaw",
+      "hermes",
+      "vibe",
+    ]);
 
-    fireEvent.change(screen.getByTestId("creds-name"), { target: { value: "team-anthropic" } });
-    fireEvent.change(screen.getByTestId("creds-value"), { target: { value: "sk-secret-key" } });
+    fireEvent.change(screen.getByTestId("creds-name"), {
+      target: { value: "team-anthropic" },
+    });
+    fireEvent.change(screen.getByTestId("creds-value"), {
+      target: { value: "sk-secret-key" },
+    });
     // The key input is a password field — never a visible token string on the page (FR-G2).
-    expect((screen.getByTestId("creds-value") as HTMLInputElement).type).toBe("password");
+    expect((screen.getByTestId("creds-value") as HTMLInputElement).type).toBe(
+      "password",
+    );
 
     fireEvent.click(screen.getByTestId("creds-submit"));
     await waitFor(() => screen.getByTestId("creds-create-msg"));
 
     expect(create).toHaveBeenCalledTimes(1);
-    const body = (create.mock.calls[0] as unknown[])[0] as Record<string, string>;
-    expect(body).toMatchObject({ name: "team-anthropic", runtime: "claude-code", class: "service-account", value: "sk-secret-key" });
+    const body = (create.mock.calls[0] as unknown[])[0] as Record<
+      string,
+      string
+    >;
+    expect(body).toMatchObject({
+      name: "team-anthropic",
+      runtime: "claude-code",
+      class: "service-account",
+      value: "sk-secret-key",
+    });
     // Success shows the returned ref, never the pasted value; the value field is cleared.
     const msg = screen.getByTestId("creds-create-msg").textContent ?? "";
     expect(msg).toContain("secret://ksquad-team-x/team-anthropic");
     expect(msg).not.toContain("sk-secret-key");
-    expect((screen.getByTestId("creds-value") as HTMLInputElement).value).toBe("");
+    expect((screen.getByTestId("creds-value") as HTMLInputElement).value).toBe(
+      "",
+    );
   });
 
   it("surfaces the apiserver's 422 field errors honestly (never echoes the value)", async () => {
     const create = vi.fn(async () =>
-      jsonResponse(422, { error: "validation failed", fields: [{ field: "name", message: "name must be a DNS-1123 subdomain" }] }),
+      jsonResponse(422, {
+        error: "validation failed",
+        fields: [
+          { field: "name", message: "name must be a DNS-1123 subdomain" },
+        ],
+      }),
     );
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} create={create} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([]))}
+        create={create}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-create-form"));
-    fireEvent.change(screen.getByTestId("creds-name"), { target: { value: "BAD_NAME" } });
-    fireEvent.change(screen.getByTestId("creds-value"), { target: { value: "k" } });
+    fireEvent.change(screen.getByTestId("creds-name"), {
+      target: { value: "BAD_NAME" },
+    });
+    fireEvent.change(screen.getByTestId("creds-value"), {
+      target: { value: "k" },
+    });
     fireEvent.click(screen.getByTestId("creds-submit"));
     await waitFor(() => screen.getByTestId("creds-create-msg"));
-    expect(screen.getByTestId("creds-create-msg").textContent).toContain("DNS-1123");
+    expect(screen.getByTestId("creds-create-msg").textContent).toContain(
+      "DNS-1123",
+    );
   });
 
   it("Test connection after create posts the teamId hint and shows the honest probe result", async () => {
-    const create = vi.fn(async () => jsonResponse(201, { secretRef: "secret://ns/team-anthropic", name: "team-anthropic", namespace: "ns", class: "service-account" }));
-    const test = vi.fn(async () => jsonResponse(200, { ok: false, detail: "Rejected — the endpoint declined the credential (HTTP 401)" }));
+    const create = vi.fn(async () =>
+      jsonResponse(201, {
+        secretRef: "secret://ns/team-anthropic",
+        name: "team-anthropic",
+        namespace: "ns",
+        class: "service-account",
+      }),
+    );
+    const test = vi.fn(async () =>
+      jsonResponse(200, {
+        ok: false,
+        detail: "Rejected — the endpoint declined the credential (HTTP 401)",
+      }),
+    );
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} create={create} test={test} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([]))}
+        create={create}
+        test={test}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-create-form"));
-    fireEvent.change(screen.getByTestId("creds-name"), { target: { value: "team-anthropic" } });
-    fireEvent.change(screen.getByTestId("creds-value"), { target: { value: "sk-x" } });
+    fireEvent.change(screen.getByTestId("creds-name"), {
+      target: { value: "team-anthropic" },
+    });
+    fireEvent.change(screen.getByTestId("creds-value"), {
+      target: { value: "sk-x" },
+    });
     fireEvent.click(screen.getByTestId("creds-submit"));
     await waitFor(() => screen.getByTestId("creds-test"));
     fireEvent.click(screen.getByTestId("creds-test"));
     await waitFor(() => screen.getByTestId("creds-test-msg"));
-    expect(test).toHaveBeenCalledWith("team-anthropic", { runtime: "claude-code", teamId: undefined });
-    expect(screen.getByTestId("creds-test-msg").textContent).toContain("declined the credential");
+    expect(test).toHaveBeenCalledWith("team-anthropic", {
+      runtime: "claude-code",
+      teamId: undefined,
+    });
+    expect(screen.getByTestId("creds-test-msg").textContent).toContain(
+      "declined the credential",
+    );
   });
 
   it("routes the operator to the BYO paste form as the v1 path — the form is the live CTA, OAuth is demoted", async () => {
     render(
-      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
+      <CredentialsScreen
+        load={async () => jsonResponse(200, overview([]))}
+        now={clock}
+      />,
     );
     await waitFor(() => screen.getByTestId("creds-create-form"));
     // The paste form anchors #creds-add so the paused-banner "Re-paste key" recovery link targets it.
-    expect(screen.getByTestId("creds-create-form").getAttribute("id")).toBe("creds-add");
+    expect(screen.getByTestId("creds-create-form").getAttribute("id")).toBe(
+      "creds-add",
+    );
     // The header hint names the v1 path and cites the board ToS gate, no false present-tense claim
     // and no misleading citation of the done backend ticket ISI-2899.
     const hint = screen.getByText(/requires OAuth/);
-    expect(hint.textContent).toMatch(/pending a board Terms-of-Service decision/i);
+    expect(hint.textContent).toMatch(
+      /pending a board Terms-of-Service decision/i,
+    );
     expect(hint.textContent).toContain("ISI-3661");
     expect(hint.textContent).not.toContain("ISI-2899");
     expect(hint.textContent).toContain("Add a credential");
@@ -258,7 +395,17 @@ describe("<CredentialsScreen> — BYO create form (ISI-3983)", () => {
     render(
       <CredentialsScreen
         load={async () =>
-          jsonResponse(200, overview([row({ health: "expired", pausedRuns: [{ name: "run-139", reason: "credential_expired", since }] })]))
+          jsonResponse(
+            200,
+            overview([
+              row({
+                health: "expired",
+                pausedRuns: [
+                  { name: "run-139", reason: "credential_expired", since },
+                ],
+              }),
+            ]),
+          )
         }
         now={clock}
       />,
@@ -274,7 +421,9 @@ describe("<CredentialsScreen> — BYO create form (ISI-3983)", () => {
 describe("<CredentialsScreen> — fleet-admin team picker (ISI-3937/ISI-3983)", () => {
   it("400 'select a team' shows the picker; choosing a team re-fetches with teamId", async () => {
     const load = vi.fn(async (teamId?: string) =>
-      teamId ? jsonResponse(200, overview([row({ agent: "a" })])) : jsonResponse(400, { error: "select a team for this credential" }),
+      teamId
+        ? jsonResponse(200, overview([row({ agent: "a" })]))
+        : jsonResponse(400, { error: "select a team for this credential" }),
     );
     const loadTeams = vi.fn(async () =>
       teamsResponse([
@@ -286,19 +435,31 @@ describe("<CredentialsScreen> — fleet-admin team picker (ISI-3937/ISI-3983)", 
 
     await waitFor(() => screen.getByTestId("creds-team-prompt"));
     // The write form waits for a team selection.
-    expect((screen.getByTestId("creds-submit") as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByTestId("creds-submit") as HTMLButtonElement).disabled,
+    ).toBe(true);
 
-    fireEvent.change(screen.getByTestId("creds-team-select"), { target: { value: "uid-beta" } });
+    fireEvent.change(screen.getByTestId("creds-team-select"), {
+      target: { value: "uid-beta" },
+    });
     await waitFor(() => screen.getByTestId("creds-table"));
     expect(load).toHaveBeenLastCalledWith("uid-beta");
-    expect((screen.getByTestId("creds-submit") as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      (screen.getByTestId("creds-submit") as HTMLButtonElement).disabled,
+    ).toBe(false);
   });
 
   it("single-team fleet falls back to that team automatically — no prompt (issue's default)", async () => {
     const load = vi.fn(async (teamId?: string) =>
-      teamId ? jsonResponse(200, overview([])) : jsonResponse(400, { error: "select a team for this credential" }),
+      teamId
+        ? jsonResponse(200, overview([]))
+        : jsonResponse(400, { error: "select a team for this credential" }),
     );
-    const loadTeams = vi.fn(async () => teamsResponse([{ name: "solo", namespace: "ksquad-team-solo", uid: "uid-solo" }]));
+    const loadTeams = vi.fn(async () =>
+      teamsResponse([
+        { name: "solo", namespace: "ksquad-team-solo", uid: "uid-solo" },
+      ]),
+    );
     render(<CredentialsScreen load={load} loadTeams={loadTeams} now={clock} />);
 
     await waitFor(() => screen.getByTestId("creds-table"));

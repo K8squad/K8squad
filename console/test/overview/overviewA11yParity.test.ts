@@ -28,7 +28,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createElement } from "react";
 import { RunStatusMixBar } from "@/components/overview/RunStatusMixBar";
-import { StackedAreaChart, type AreaSeries } from "@/components/overview/StackedAreaChart";
+import {
+  StackedAreaChart,
+  type AreaSeries,
+} from "@/components/overview/StackedAreaChart";
 import { MIX_STATES } from "@/components/overview/tone";
 
 afterEach(cleanup);
@@ -38,7 +41,8 @@ const hex2srgb = (h: string) => {
   const s = h.trim().replace(/^#/, "");
   return [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16) / 255);
 };
-const s2lin = (c: number) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+const s2lin = (c: number) =>
+  c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 const lin = (h: string) => hex2srgb(h).map(s2lin);
 const relLum = (h: string) => {
   const [r, g, b] = lin(h);
@@ -131,7 +135,11 @@ const GRAPHICAL_MIN = 3.0; // WCAG 1.4.11 non-text contrast
 const CVD_FLOOR = 6.0; // OKLab ΔE×100, min(protan,deutan), adjacent — skill WARN floor
 const NORMAL_FLOOR = 15.0; // OKLab ΔE×100, unsimulated — skill hard gate
 
-const ALL_FILLS: Record<string, string> = { ...STATUS_HEX, run: RUN_HEX, accent: ACCENT_HEX };
+const ALL_FILLS: Record<string, string> = {
+  ...STATUS_HEX,
+  run: RUN_HEX,
+  accent: ACCENT_HEX,
+};
 
 describe("overview color system — token hygiene", () => {
   it("resolves every status/brand hue from :root as a concrete hex", () => {
@@ -151,8 +159,14 @@ describe("overview color system — token hygiene", () => {
       "--ksq-run",
       "--accent",
     ]) {
-      expect(DARK[token], `${token} must not be redefined in dark`).toBeUndefined();
-      expect(LIGHT[token], `${token} must not be redefined in light`).toBeUndefined();
+      expect(
+        DARK[token],
+        `${token} must not be redefined in dark`,
+      ).toBeUndefined();
+      expect(
+        LIGHT[token],
+        `${token} must not be redefined in light`,
+      ).toBeUndefined();
       expect(ROOT[token]).toBeDefined();
     }
   });
@@ -187,9 +201,10 @@ describe("WCAG color-channel safety per dataviz skill", () => {
     for (const [name, hex] of Object.entries(ALL_FILLS)) {
       for (const [canvas, surf] of Object.entries(SURFACES.dark)) {
         const r = contrast(hex, surf);
-        expect(r, `${name} vs dark/${canvas} = ${r.toFixed(2)}:1`).toBeGreaterThanOrEqual(
-          GRAPHICAL_MIN,
-        );
+        expect(
+          r,
+          `${name} vs dark/${canvas} = ${r.toFixed(2)}:1`,
+        ).toBeGreaterThanOrEqual(GRAPHICAL_MIN);
       }
     }
   });
@@ -202,7 +217,9 @@ describe("WCAG color-channel safety per dataviz skill", () => {
     for (const [name, hex] of Object.entries(ALL_FILLS)) {
       const r = contrast(hex, SURFACES.light.surface);
       // Never collapse to invisibility: even a relief-band fill must stay perceptibly off-surface.
-      expect(r, `${name} vs light/surface = ${r.toFixed(2)}:1`).toBeGreaterThan(1.3);
+      expect(r, `${name} vs light/surface = ${r.toFixed(2)}:1`).toBeGreaterThan(
+        1.3,
+      );
     }
   });
 
@@ -212,9 +229,10 @@ describe("WCAG color-channel safety per dataviz skill", () => {
       const [a, b] = [pal[i], pal[i + 1]];
       const cvd = Math.min(deltaE(a, b, "protan"), deltaE(a, b, "deutan"));
       const normal = deltaE(a, b);
-      expect(cvd, `CVD ΔE ${MIX_STATES[i]}↔${MIX_STATES[i + 1]} = ${cvd.toFixed(1)}`).toBeGreaterThanOrEqual(
-        CVD_FLOOR,
-      );
+      expect(
+        cvd,
+        `CVD ΔE ${MIX_STATES[i]}↔${MIX_STATES[i + 1]} = ${cvd.toFixed(1)}`,
+      ).toBeGreaterThanOrEqual(CVD_FLOOR);
       expect(
         normal,
         `normal ΔE ${MIX_STATES[i]}↔${MIX_STATES[i + 1]} = ${normal.toFixed(1)}`,
@@ -225,7 +243,11 @@ describe("WCAG color-channel safety per dataviz skill", () => {
 
 describe("identity is never color-alone (WCAG 1.4.1 — the relief encoding)", () => {
   it("RunStatusMixBar carries an enumerating aria-label for every state, not color only", () => {
-    render(createElement(RunStatusMixBar, { counts: { running: 3, paused: 1, blocked: 0, idle: 2 } }));
+    render(
+      createElement(RunStatusMixBar, {
+        counts: { running: 3, paused: 1, blocked: 0, idle: 2 },
+      }),
+    );
     const bar = screen.getByRole("img");
     const label = bar.getAttribute("aria-label") ?? "";
     for (const s of MIX_STATES) expect(label).toContain(s);
@@ -239,10 +261,22 @@ describe("identity is never color-alone (WCAG 1.4.1 — the relief encoding)", (
 
   it("StackedAreaChart labels each series in text + describes the plot for SR (not hue-only)", () => {
     const series: AreaSeries[] = [
-      { key: "running", label: "Running", color: "var(--status-running)", values: [1, 2, 3] },
-      { key: "blocked", label: "Blocked", color: "var(--status-blocked)", values: [0, 1, 0] },
+      {
+        key: "running",
+        label: "Running",
+        color: "var(--status-running)",
+        values: [1, 2, 3],
+      },
+      {
+        key: "blocked",
+        label: "Blocked",
+        color: "var(--status-blocked)",
+        values: [0, 1, 0],
+      },
     ];
-    render(createElement(StackedAreaChart, { series, caption: "runs over time" }));
+    render(
+      createElement(StackedAreaChart, { series, caption: "runs over time" }),
+    );
     // Text label beside each swatch — identity does not rely on the swatch color.
     expect(screen.getByText("Running")).toBeInTheDocument();
     expect(screen.getByText("Blocked")).toBeInTheDocument();

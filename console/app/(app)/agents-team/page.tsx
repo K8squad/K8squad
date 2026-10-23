@@ -33,9 +33,10 @@ export default async function AgentsTeamPage({
       <header className="agents-team-page__head">
         <h1>Agents &amp; Team</h1>
         <p className="muted">
-          Your org, roles and skills in one place — Teams ▸ Agents, the shared Roles/Skills library,
-          and the org default model. Open any node to read its detail; the Model and Skills tabs
-          edit inline (shared-role changes show their blast radius first).
+          Your org, roles and skills in one place — Teams ▸ Agents, the shared
+          Roles/Skills library, and the org default model. Open any node to read
+          its detail; the Model and Skills tabs edit inline (shared-role changes
+          show their blast radius first).
         </p>
       </header>
       <AgentsTeamWorkspace team={scopedTeam} />

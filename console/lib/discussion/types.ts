@@ -212,15 +212,12 @@ export interface ProposalDismissResponse {
 // ---------------------------------------------------------------------------
 
 /** The four answer modes a decision card can take (ADR-0026 §4.1). */
-export type DecisionMode = "approve" | "choose_one" | "choose_many" | "free_form";
+export type DecisionMode =
+  "approve" | "choose_one" | "choose_many" | "free_form";
 
 /** The decision lifecycle of a card (open → answered|rejected|expired|superseded). */
 export type DecisionPhase =
-  | "open"
-  | "answered"
-  | "rejected"
-  | "expired"
-  | "superseded";
+  "open" | "answered" | "rejected" | "expired" | "superseded";
 
 /** One structured choice offered to the human (`DecisionOption`). */
 export interface DecisionOption {

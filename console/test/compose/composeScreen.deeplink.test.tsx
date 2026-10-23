@@ -36,23 +36,30 @@ describe("ComposeScreen deep-link seeding", () => {
   it("?kind=agents pre-selects the Agent kind in create mode (AC2)", () => {
     renderWith("kind=agents");
     expect(activeTab()).toHaveTextContent("Agent");
-    expect(screen.getByRole("button", { name: "Create" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("?kind=agents&mode=edit&name=<n> seeds edit mode with the name pre-filled (AC3)", () => {
     renderWith("kind=agents&mode=edit&name=reviewer");
     expect(activeTab()).toHaveTextContent("Agent");
-    expect(screen.getByRole("button", { name: "Edit by name" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect((screen.getByPlaceholderText("my-resource") as HTMLInputElement).value).toBe("reviewer");
+    expect(
+      screen.getByRole("button", { name: "Edit by name" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      (screen.getByPlaceholderText("my-resource") as HTMLInputElement).value,
+    ).toBe("reviewer");
   });
 
   it("a bare mount with no params is unchanged — projects / create (AC4)", () => {
     renderWith("");
     expect(activeTab()).toHaveTextContent("Project");
-    expect(screen.getByRole("button", { name: "Create" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Create" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   it("an unrecognized ?kind falls back to the default (AC4)", () => {
@@ -65,6 +72,8 @@ describe("ComposeScreen deep-link seeding", () => {
   // because nothing asserted the picker actually renders inside the mounted AgentForm.
   it("?kind=agents mounts the guided ModelSelector (ISI-3555), not a raw model field", () => {
     renderWith("kind=agents");
-    expect(screen.getByRole("button", { name: /bring your own endpoint/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /bring your own endpoint/i }),
+    ).toBeInTheDocument();
   });
 });

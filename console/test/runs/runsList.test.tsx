@@ -6,7 +6,13 @@
 // discipline as test/overview/fleetOverview.test.tsx.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import {
   RunsList,
   RUNS_PAGE_SIZE,
@@ -166,9 +172,7 @@ describe("RunsList — filters", () => {
     fireEvent.change(screen.getByTestId("runs-filter-phase"), {
       target: { value: "Failed" },
     });
-    await waitFor(() =>
-      expect(calls[calls.length - 1]).toContain("offset=0"),
-    );
+    await waitFor(() => expect(calls[calls.length - 1]).toContain("offset=0"));
   });
 
   it("clear-all restores the unfiltered query", async () => {
@@ -192,8 +196,12 @@ describe("RunsList — pagination", () => {
     stubFetch(() => jsonResponse(200, [run()]));
     render(<RunsList />);
     await screen.findByTestId("runs-pagination");
-    expect((screen.getByTestId("runs-prev") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId("runs-next") as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      (screen.getByTestId("runs-prev") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("runs-next") as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 
   it("Next advances the offset on a full page; Previous goes back", async () => {
@@ -203,19 +211,21 @@ describe("RunsList — pagination", () => {
     const calls = stubFetch(() => jsonResponse(200, full));
     render(<RunsList />);
     await screen.findByTestId("runs-pagination");
-    expect((screen.getByTestId("runs-next") as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      (screen.getByTestId("runs-next") as HTMLButtonElement).disabled,
+    ).toBe(false);
 
     fireEvent.click(screen.getByTestId("runs-next"));
     await waitFor(() =>
       expect(calls[calls.length - 1]).toContain(`offset=${RUNS_PAGE_SIZE}`),
     );
     await screen.findByTestId("runs-table");
-    expect((screen.getByTestId("runs-prev") as HTMLButtonElement).disabled).toBe(false);
+    expect(
+      (screen.getByTestId("runs-prev") as HTMLButtonElement).disabled,
+    ).toBe(false);
 
     fireEvent.click(screen.getByTestId("runs-prev"));
-    await waitFor(() =>
-      expect(calls[calls.length - 1]).toContain("offset=0"),
-    );
+    await waitFor(() => expect(calls[calls.length - 1]).toContain("offset=0"));
   });
 });
 
@@ -230,7 +240,9 @@ describe("RunsList — degrade and empty states", () => {
   it("5xx renders the error card and Retry refetches", async () => {
     let ok = false;
     const calls = stubFetch(() =>
-      ok ? jsonResponse(200, [run()]) : jsonResponse(502, { error: "bad gateway" }),
+      ok
+        ? jsonResponse(200, [run()])
+        : jsonResponse(502, { error: "bad gateway" }),
     );
     render(<RunsList />);
     await screen.findByTestId("runs-error");
@@ -341,8 +353,12 @@ describe("RunsList — pure helpers", () => {
   it("formatAge renders relative ages and — for missing/zero dates", () => {
     expect(formatAge(null)).toBe("—");
     expect(formatAge("0001-01-01T00:00:00Z")).toBe("—");
-    expect(formatAge(new Date(Date.now() - 90_000).toISOString())).toBe("1m ago");
-    expect(formatAge(new Date(Date.now() - 3 * 3_600_000).toISOString())).toBe("3h ago");
+    expect(formatAge(new Date(Date.now() - 90_000).toISOString())).toBe(
+      "1m ago",
+    );
+    expect(formatAge(new Date(Date.now() - 3 * 3_600_000).toISOString())).toBe(
+      "3h ago",
+    );
   });
 
   it("formatDuration renders compact durations and — for absent values", () => {

@@ -170,7 +170,10 @@ export function durableHealthLabel(
           : "neutral";
 
   const label = health.charAt(0).toUpperCase() + health.slice(1);
-  return { tone, text: `Mirror on disk: ${label}${ago ? ` · ${ago}` : ""}${cadence}` };
+  return {
+    tone,
+    text: `Mirror on disk: ${label}${ago ? ` · ${ago}` : ""}${cadence}`,
+  };
 }
 
 /** The reposync SyncReady reason taxonomy (repo_sync.go:70-76), surfaced 1:1 on
@@ -213,7 +216,10 @@ export function chipState(sync: GithubSync | undefined): ChipState {
     case SyncReason.ProviderError:
     case SyncReason.MirrorWriteError:
     case SyncReason.IssueSyncError:
-      return { tone: "paused", text: ago ? `Retrying · last good ${ago}` : "Retrying" };
+      return {
+        tone: "paused",
+        text: ago ? `Retrying · last good ${ago}` : "Retrying",
+      };
     case SyncReason.Synced:
     default:
       if (age !== undefined && age >= MIRROR_SLO_SECONDS) {
@@ -426,7 +432,8 @@ async function readRejection(
 ): Promise<{ message: string; fields: string[] }> {
   try {
     const body = (await res.json()) as { error?: unknown; fields?: unknown };
-    const message = typeof body.error === "string" && body.error ? body.error : "";
+    const message =
+      typeof body.error === "string" && body.error ? body.error : "";
     const fields = Array.isArray(body.fields)
       ? body.fields.filter((f): f is string => typeof f === "string")
       : [];
@@ -614,11 +621,12 @@ export const CI_FAILURE_CONCLUSIONS: CiFailureConclusion[] = [
   "timed_out",
   "cancelled",
 ];
-export const CI_FAILURE_CONCLUSION_LABEL: Record<CiFailureConclusion, string> = {
-  failure: "Failed",
-  timed_out: "Timed out",
-  cancelled: "Cancelled",
-};
+export const CI_FAILURE_CONCLUSION_LABEL: Record<CiFailureConclusion, string> =
+  {
+    failure: "Failed",
+    timed_out: "Timed out",
+    cancelled: "Cancelled",
+  };
 
 /** The GET read model + the 200 write-response body (cifailure.go CiFailureView).
  * `branchFilter` is always an array; `conclusions` carries its resolved default

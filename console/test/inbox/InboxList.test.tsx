@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { InboxList } from "@/components/inbox/InboxList";
 import type { DiscussionClient } from "@/lib/discussion/api";
 
@@ -27,11 +33,19 @@ function stubFetch(items: InboxItemLike[], extra?: { fleet?: boolean }) {
   const fetchMock = vi.fn((url: string, init?: RequestInit) => {
     if (url === "/api/inbox/seen") {
       seen.push(JSON.parse(String(init?.body ?? "{}")));
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true }),
+      });
     }
     if (url === "/api/inbox/unseen") {
       unseen.push(JSON.parse(String(init?.body ?? "{}")));
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true }),
+      });
     }
     inboxCalls.push(url);
     return Promise.resolve({
@@ -49,17 +63,29 @@ function stubClient(): DiscussionClient & {
   answered: Array<{ projectId: string; messageId: string; body: unknown }>;
   rejected: Array<{ projectId: string; messageId: string; reason?: string }>;
 } {
-  const answered: Array<{ projectId: string; messageId: string; body: unknown }> = [];
-  const rejected: Array<{ projectId: string; messageId: string; reason?: string }> = [];
+  const answered: Array<{
+    projectId: string;
+    messageId: string;
+    body: unknown;
+  }> = [];
+  const rejected: Array<{
+    projectId: string;
+    messageId: string;
+    reason?: string;
+  }> = [];
   const client = {
-    answerDecisionRequest: vi.fn((projectId: string, messageId: string, body: unknown) => {
-      answered.push({ projectId, messageId, body });
-      return Promise.resolve({ status: "answered" });
-    }),
-    rejectDecisionRequest: vi.fn((projectId: string, messageId: string, reason?: string) => {
-      rejected.push({ projectId, messageId, reason });
-      return Promise.resolve({ status: "rejected" });
-    }),
+    answerDecisionRequest: vi.fn(
+      (projectId: string, messageId: string, body: unknown) => {
+        answered.push({ projectId, messageId, body });
+        return Promise.resolve({ status: "answered" });
+      },
+    ),
+    rejectDecisionRequest: vi.fn(
+      (projectId: string, messageId: string, reason?: string) => {
+        rejected.push({ projectId, messageId, reason });
+        return Promise.resolve({ status: "rejected" });
+      },
+    ),
   } as unknown as DiscussionClient;
   return Object.assign(client, { answered, rejected }) as never;
 }
@@ -102,8 +128,20 @@ const freeItem = {
 describe("InboxList mark-seen (F1, E1 regression)", () => {
   it("POSTs the unread keys to /api/inbox/seen once on open", async () => {
     const { seen } = stubFetch([
-      { key: "proposal:m-1", projectId: "squad-a/web", title: "Needs approval", decisionType: "proposal", unread: true },
-      { key: "inReview:wi-9", projectId: "squad-a/web", title: "Already read", decisionType: "review", unread: false },
+      {
+        key: "proposal:m-1",
+        projectId: "squad-a/web",
+        title: "Needs approval",
+        decisionType: "proposal",
+        unread: true,
+      },
+      {
+        key: "inReview:wi-9",
+        projectId: "squad-a/web",
+        title: "Already read",
+        decisionType: "review",
+        unread: false,
+      },
     ]);
     render(<InboxList />);
     await screen.findByText("Needs approval");
@@ -120,9 +158,15 @@ describe("InboxList inline answer (E3)", () => {
     const btn = await screen.findByTestId("inline-approve-btn");
     fireEvent.click(btn);
     await waitFor(() => expect(client.answered.length).toBe(1));
-    expect(client.answered[0]).toEqual({ projectId: "squad-a/web", messageId: "dm-approve", body: {} });
+    expect(client.answered[0]).toEqual({
+      projectId: "squad-a/web",
+      messageId: "dm-approve",
+      body: {},
+    });
     // The answered row leaves the list immediately.
-    await waitFor(() => expect(screen.queryByText("Approve migration 0006")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByText("Approve migration 0006")).toBeNull(),
+    );
   });
 
   it("choose_one row → clicking an option answers with that option id", async () => {
@@ -191,8 +235,12 @@ describe("InboxList filters (E3)", () => {
     render(<InboxList />);
     await screen.findByText("Approve migration 0006");
     expect(screen.getByText("Which vault path?")).toBeTruthy();
-    fireEvent.change(screen.getByTestId("filter-project"), { target: { value: "squad-b/api" } });
-    await waitFor(() => expect(screen.queryByText("Approve migration 0006")).toBeNull());
+    fireEvent.change(screen.getByTestId("filter-project"), {
+      target: { value: "squad-b/api" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Approve migration 0006")).toBeNull(),
+    );
     expect(screen.getByText("Which vault path?")).toBeTruthy();
   });
 
@@ -200,8 +248,12 @@ describe("InboxList filters (E3)", () => {
     stubFetch([approveItem, chooseItem]);
     render(<InboxList />);
     await screen.findByText("Approve migration 0006");
-    fireEvent.change(screen.getByTestId("filter-type"), { target: { value: "choose_one" } });
-    await waitFor(() => expect(screen.queryByText("Approve migration 0006")).toBeNull());
+    fireEvent.change(screen.getByTestId("filter-type"), {
+      target: { value: "choose_one" },
+    });
+    await waitFor(() =>
+      expect(screen.queryByText("Approve migration 0006")).toBeNull(),
+    );
     expect(screen.getByText("Which HTTP client?")).toBeTruthy();
   });
 
@@ -210,6 +262,8 @@ describe("InboxList filters (E3)", () => {
     render(<InboxList />);
     const mine = await screen.findByTestId("filter-mine");
     fireEvent.click(mine);
-    await waitFor(() => expect(inboxCalls.some((u) => u.includes("scope=mine"))).toBe(true));
+    await waitFor(() =>
+      expect(inboxCalls.some((u) => u.includes("scope=mine"))).toBe(true),
+    );
   });
 });

@@ -15,9 +15,9 @@ export default async function BuildPage({
     <div>
       <h1>Build</h1>
       <p className="muted">
-        Build snapshots for <strong>{decodeProjectId(projectId)}</strong>.
-        Open a Run to inspect its build workspace — the per-Run file tree, diffs,
-        and code views.
+        Build snapshots for <strong>{decodeProjectId(projectId)}</strong>. Open
+        a Run to inspect its build workspace — the per-Run file tree, diffs, and
+        code views.
       </p>
     </div>
   );

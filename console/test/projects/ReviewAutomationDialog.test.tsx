@@ -56,11 +56,13 @@ const VIEW = {
 /** Route fetch by request: mount fires GET config + GET eligible-agents
  * (ISI-4779); Save fires PUT config. The eligible-agents check MUST precede the
  * config check — its URL contains the "/repo/review-automation" substring. */
-function route(handlers: {
-  get?: Response;
-  agents?: Response;
-  put?: (body: unknown) => Response;
-} = {}) {
+function route(
+  handlers: {
+    get?: Response;
+    agents?: Response;
+    put?: (body: unknown) => Response;
+  } = {},
+) {
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     const u = String(url);
     if (u.includes("/eligible-agents")) {
@@ -101,7 +103,9 @@ describe("ReviewAutomationDialog", () => {
     render(<ReviewAutomationDialog projectId={PROJECT} onClose={vi.fn()} />);
 
     await screen.findByTestId("gh-ra-form");
-    expect((screen.getByTestId("ra-enable") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId("ra-enable") as HTMLInputElement).checked).toBe(
+      true,
+    );
     const reviewer = screen.getByTestId("ra-reviewer") as HTMLSelectElement;
     await waitFor(() => expect(reviewer.value).toBe("reviewer-bot"));
 
@@ -110,14 +114,17 @@ describe("ReviewAutomationDialog", () => {
     const checkedScope = scope.querySelector<HTMLInputElement>("input:checked");
     expect(checkedScope?.value).toBe("team_authored");
     const trigger = screen.getByTestId("ra-trigger");
-    const checkedTrigger = trigger.querySelector<HTMLInputElement>("input:checked");
+    const checkedTrigger =
+      trigger.querySelector<HTMLInputElement>("input:checked");
     expect(checkedTrigger?.value).toBe("on_new_commits");
   });
 
   it("lists the eligible (code_review-capable) agents in the reviewer dropdown (AC2/ISI-4779)", async () => {
     route();
     render(<ReviewAutomationDialog projectId={PROJECT} onClose={vi.fn()} />);
-    const reviewer = (await screen.findByTestId("ra-reviewer")) as HTMLSelectElement;
+    const reviewer = (await screen.findByTestId(
+      "ra-reviewer",
+    )) as HTMLSelectElement;
     await waitFor(() => expect(reviewer.options.length).toBeGreaterThan(2));
     const names = Array.from(reviewer.options).map((o) => o.value);
     expect(names).toContain("reviewer-bot");
@@ -158,7 +165,10 @@ describe("ReviewAutomationDialog", () => {
     route({
       put: () =>
         jsonResponse(
-          { error: "reviewer agent lacks the code_review capability", fields: ["reviewerAgentId"] },
+          {
+            error: "reviewer agent lacks the code_review capability",
+            fields: ["reviewerAgentId"],
+          },
           422,
         ),
     });
@@ -170,7 +180,11 @@ describe("ReviewAutomationDialog", () => {
     const err = await screen.findByTestId("gh-ra-save-error");
     expect(err.textContent).toMatch(/code_review/);
     // The offending field is marked invalid, the dialog is still open, no close.
-    expect((screen.getByTestId("ra-reviewer") as HTMLSelectElement).getAttribute("aria-invalid")).toBe("true");
+    expect(
+      (screen.getByTestId("ra-reviewer") as HTMLSelectElement).getAttribute(
+        "aria-invalid",
+      ),
+    ).toBe("true");
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -180,9 +194,15 @@ describe("ReviewAutomationDialog", () => {
     await screen.findByTestId("gh-ra-form");
 
     expect(screen.getByTestId("gh-ra-readonly")).toBeTruthy();
-    expect((screen.getByTestId("ra-save") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId("ra-enable") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByTestId("ra-reviewer") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByTestId("ra-save") as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByTestId("ra-enable") as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect(
+      (screen.getByTestId("ra-reviewer") as HTMLSelectElement).disabled,
+    ).toBe(true);
   });
 
   it("renders the honest not-wired state on a 501 (AC6)", async () => {

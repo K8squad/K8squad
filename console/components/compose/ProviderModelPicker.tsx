@@ -61,11 +61,20 @@ function seedFromProps(
 ): { provider: string; url: string } {
   const name = parseSecretRef(modelEndpointRef).name;
   const ep = name ? existingEndpoints.find((e) => e.name === name) : undefined;
-  const known = ep && LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider) ? ep : undefined;
+  const known =
+    ep && LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider)
+      ? ep
+      : undefined;
   if (!known) {
-    return { provider: LLM_PROVIDER_OPTIONS[0].id, url: LLM_PROVIDER_OPTIONS[0].defaultUrl ?? "" };
+    return {
+      provider: LLM_PROVIDER_OPTIONS[0].id,
+      url: LLM_PROVIDER_OPTIONS[0].defaultUrl ?? "",
+    };
   }
-  return { provider: known.provider, url: known.url || (llmProviderById(known.provider)?.defaultUrl ?? "") };
+  return {
+    provider: known.provider,
+    url: known.url || (llmProviderById(known.provider)?.defaultUrl ?? ""),
+  };
 }
 
 type FetchState =
@@ -84,8 +93,11 @@ type CreateState =
 /** Pull the apiserver 422 `{fields:[{field,message}]}` into a keyed map. */
 function fieldErrorsFrom(body: unknown): FieldErrors {
   const out: FieldErrors = {};
-  const fields = (body as { fields?: Array<{ field?: string; message?: string }> } | null)?.fields;
-  if (Array.isArray(fields)) for (const f of fields) if (f?.field) out[f.field] = f.message ?? "invalid";
+  const fields = (
+    body as { fields?: Array<{ field?: string; message?: string }> } | null
+  )?.fields;
+  if (Array.isArray(fields))
+    for (const f of fields) if (f?.field) out[f.field] = f.message ?? "invalid";
   return out;
 }
 
@@ -135,7 +147,10 @@ export function ProviderModelPicker({
       // Keep the bound endpoint's BYO URL (ISI-5302); only force the provider.
       return s.provider === fixedProvider
         ? { ...s, provider: fixedProvider }
-        : { provider: fixedProvider, url: llmProviderById(fixedProvider)?.defaultUrl ?? "" };
+        : {
+            provider: fixedProvider,
+            url: llmProviderById(fixedProvider)?.defaultUrl ?? "",
+          };
     },
     // Intentionally mount-time-only: the props are stable at first render (see above).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -156,7 +171,9 @@ export function ProviderModelPicker({
   const [name, setName] = useState<string>("");
   // Seed the dropdown with the saved model so it renders selected before the admin
   // re-runs "List models" (ISI-5302); a live list replaces this on fetch.
-  const [models, setModels] = useState<ListedModel[]>(() => (model.trim() ? [{ id: model.trim() }] : []));
+  const [models, setModels] = useState<ListedModel[]>(() =>
+    model.trim() ? [{ id: model.trim() }] : [],
+  );
   const [fetchState, setFetchState] = useState<FetchState>({ kind: "idle" });
   const [createState, setCreateState] = useState<CreateState>({ kind: "idle" });
   const [customModel, setCustomModel] = useState<boolean>(false);
@@ -173,7 +190,8 @@ export function ProviderModelPicker({
 
   // Credential completeness for the fetch/save affordances (mirrors the apiserver resolveTarget:
   // url-mode needs a URL; apiKey-mode needs a key).
-  const hasCredential = spec?.mode === "url" ? url.trim() !== "" : apiKey.trim() !== "";
+  const hasCredential =
+    spec?.mode === "url" ? url.trim() !== "" : apiKey.trim() !== "";
 
   async function onListModels() {
     if (!spec) return;
@@ -181,7 +199,9 @@ export function ProviderModelPicker({
     setModels([]);
     const req: ListModelsRequest = {
       provider,
-      ...(spec.mode === "url" || (spec.allowUrl && url.trim() !== "") ? { url: url.trim() } : {}),
+      ...(spec.mode === "url" || (spec.allowUrl && url.trim() !== "")
+        ? { url: url.trim() }
+        : {}),
       ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
     };
     try {
@@ -192,28 +212,48 @@ export function ProviderModelPicker({
       });
       const body = await res.json().catch(() => null);
       if (res.ok) {
-        const list: ListedModel[] = Array.isArray((body as { models?: ListedModel[] })?.models)
+        const list: ListedModel[] = Array.isArray(
+          (body as { models?: ListedModel[] })?.models,
+        )
           ? (body as { models: ListedModel[] }).models
           : [];
         setModels(list);
-        setFetchState(list.length ? { kind: "ok", count: list.length } : { kind: "empty" });
+        setFetchState(
+          list.length ? { kind: "ok", count: list.length } : { kind: "empty" },
+        );
         return;
       }
       if (res.status === 422) {
         const fe = fieldErrorsFrom(body);
-        setFetchState({ kind: "error", message: fe.url || fe.apiKey || fe.provider || "Check the endpoint and credential." });
+        setFetchState({
+          kind: "error",
+          message:
+            fe.url ||
+            fe.apiKey ||
+            fe.provider ||
+            "Check the endpoint and credential.",
+        });
         return;
       }
       if (res.status === 401 || res.status === 403) {
-        setFetchState({ kind: "error", message: "Not authorized to list models (admin only)." });
+        setFetchState({
+          kind: "error",
+          message: "Not authorized to list models (admin only).",
+        });
         return;
       }
       setFetchState({
         kind: "error",
-        message: messageFrom(body, "Could not reach the provider — check the URL/key and try again."),
+        message: messageFrom(
+          body,
+          "Could not reach the provider — check the URL/key and try again.",
+        ),
       });
     } catch {
-      setFetchState({ kind: "error", message: "Network error while listing models — try again." });
+      setFetchState({
+        kind: "error",
+        message: "Network error while listing models — try again.",
+      });
     }
   }
 
@@ -223,7 +263,9 @@ export function ProviderModelPicker({
     const req: CreateEndpointRequest = {
       provider,
       ...(name.trim() ? { name: name.trim() } : {}),
-      ...(spec.mode === "url" || (spec.allowUrl && url.trim() !== "") ? { url: url.trim() } : {}),
+      ...(spec.mode === "url" || (spec.allowUrl && url.trim() !== "")
+        ? { url: url.trim() }
+        : {}),
       ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
     };
     try {
@@ -234,8 +276,10 @@ export function ProviderModelPicker({
       });
       const body = await res.json().catch(() => null);
       if (res.ok) {
-        const savedName = (body as { name?: string })?.name || name.trim() || provider;
-        const operation = (body as { operation?: string })?.operation || "saved";
+        const savedName =
+          (body as { name?: string })?.name || name.trim() || provider;
+        const operation =
+          (body as { operation?: string })?.operation || "saved";
         setCreateState({ kind: "ok", name: savedName, operation });
         // Bind the auto-created Secret into the ModelConfig form.
         onChange({ modelEndpointRef: savedName });
@@ -245,25 +289,46 @@ export function ProviderModelPicker({
         const fe = fieldErrorsFrom(body);
         setCreateState({
           kind: "error",
-          message: fe.name || fe.url || fe.apiKey || fe.provider || "Check the endpoint fields.",
+          message:
+            fe.name ||
+            fe.url ||
+            fe.apiKey ||
+            fe.provider ||
+            "Check the endpoint fields.",
         });
         return;
       }
       if (res.status === 401 || res.status === 403) {
-        setCreateState({ kind: "error", message: "Not authorized to create endpoints (admin only)." });
+        setCreateState({
+          kind: "error",
+          message: "Not authorized to create endpoints (admin only).",
+        });
         return;
       }
       if (res.status === 501) {
-        setCreateState({ kind: "error", message: "Endpoint creation isn’t available on this cluster yet." });
+        setCreateState({
+          kind: "error",
+          message: "Endpoint creation isn’t available on this cluster yet.",
+        });
         return;
       }
-      setCreateState({ kind: "error", message: messageFrom(body, "Could not save the endpoint — try again.") });
+      setCreateState({
+        kind: "error",
+        message: messageFrom(body, "Could not save the endpoint — try again."),
+      });
     } catch {
-      setCreateState({ kind: "error", message: "Network error while saving the endpoint — try again." });
+      setCreateState({
+        kind: "error",
+        message: "Network error while saving the endpoint — try again.",
+      });
     }
   }
 
-  const modelSelectValue = customModel ? CUSTOM_MODEL : model.trim() && models.some((m) => m.id === model.trim()) ? model.trim() : "";
+  const modelSelectValue = customModel
+    ? CUSTOM_MODEL
+    : model.trim() && models.some((m) => m.id === model.trim())
+      ? model.trim()
+      : "";
 
   function onSelectModel(next: string) {
     if (next === CUSTOM_MODEL) {
@@ -277,7 +342,10 @@ export function ProviderModelPicker({
   const credField = `${idPrefix}-url`;
 
   return (
-    <div className="provider-picker" data-testid={`provider-picker-${idPrefix}`}>
+    <div
+      className="provider-picker"
+      data-testid={`provider-picker-${idPrefix}`}
+    >
       <Field
         label="Backend"
         hint={
@@ -308,7 +376,11 @@ export function ProviderModelPicker({
       {(spec?.mode === "url" || spec?.allowUrl) && (
         <Field
           label={
-            spec?.mode === "url" ? (provider === "ollama" ? "Ollama URL" : "Base URL") : "Base URL (optional)"
+            spec?.mode === "url"
+              ? provider === "ollama"
+                ? "Ollama URL"
+                : "Base URL"
+              : "Base URL (optional)"
           }
           hint={
             spec?.mode === "url"
@@ -324,7 +396,11 @@ export function ProviderModelPicker({
             onChange={(e) => setUrl(e.target.value)}
             aria-label={`${label} endpoint URL`}
             data-testid={`${idPrefix}-url`}
-            placeholder={spec?.mode === "url" ? "http://localhost:11434" : "http://my-ollama:11434/v1"}
+            placeholder={
+              spec?.mode === "url"
+                ? "http://localhost:11434"
+                : "http://my-ollama:11434/v1"
+            }
             inputMode="url"
           />
         </Field>
@@ -360,17 +436,29 @@ export function ProviderModelPicker({
           {fetchState.kind === "loading" ? "Listing…" : "List models"}
         </button>
         {fetchState.kind === "ok" && (
-          <span className="state state--ok" role="status" data-testid={`${idPrefix}-list-ok`}>
+          <span
+            className="state state--ok"
+            role="status"
+            data-testid={`${idPrefix}-list-ok`}
+          >
             {fetchState.count} model{fetchState.count === 1 ? "" : "s"} found.
           </span>
         )}
         {fetchState.kind === "empty" && (
-          <span className="state" role="status" data-testid={`${idPrefix}-list-empty`}>
+          <span
+            className="state"
+            role="status"
+            data-testid={`${idPrefix}-list-empty`}
+          >
             No models returned by this backend.
           </span>
         )}
         {fetchState.kind === "error" && (
-          <span className="state state--error" role="alert" data-testid={`${idPrefix}-list-error`}>
+          <span
+            className="state state--error"
+            role="alert"
+            data-testid={`${idPrefix}-list-error`}
+          >
             {fetchState.message}
           </span>
         )}
@@ -379,7 +467,11 @@ export function ProviderModelPicker({
       {/* Model dropdown — populated from the live list; a "type it in" escape hatch always works. */}
       <Field
         label={label}
-        hint={customModel ? "Any model id — written verbatim." : "Pick from the listed models, or “Type a model id…”."}
+        hint={
+          customModel
+            ? "Any model id — written verbatim."
+            : "Pick from the listed models, or “Type a model id…”."
+        }
         error={errors[`${idPrefix}-model`] || errors["model"]}
       >
         {customModel ? (
@@ -398,7 +490,11 @@ export function ProviderModelPicker({
             aria-label={label}
             data-testid={`${idPrefix}-model`}
           >
-            <option value="">{models.length ? "— Select a model —" : "— List models, or type an id —"}</option>
+            <option value="">
+              {models.length
+                ? "— Select a model —"
+                : "— List models, or type an id —"}
+            </option>
             {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.label ? `${m.label} (${m.id})` : m.id}
@@ -423,7 +519,11 @@ export function ProviderModelPicker({
       )}
 
       {/* Optional custom Secret name (defaults to the provider id server-side). */}
-      <Field label="Endpoint name (optional)" hint="Secret name for this endpoint — defaults to the backend id." error={errors[`${idPrefix}-name`]}>
+      <Field
+        label="Endpoint name (optional)"
+        hint="Secret name for this endpoint — defaults to the backend id."
+        error={errors[`${idPrefix}-name`]}
+      >
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -438,26 +538,42 @@ export function ProviderModelPicker({
           type="button"
           className="btn btn--primary"
           onClick={onSaveEndpoint}
-          disabled={!hasCredential || !model.trim() || createState.kind === "saving"}
-          aria-disabled={!hasCredential || !model.trim() || createState.kind === "saving"}
+          disabled={
+            !hasCredential || !model.trim() || createState.kind === "saving"
+          }
+          aria-disabled={
+            !hasCredential || !model.trim() || createState.kind === "saving"
+          }
           data-testid={`${idPrefix}-save-endpoint`}
         >
           {createState.kind === "saving" ? "Saving endpoint…" : "Save endpoint"}
         </button>
         {createState.kind === "ok" && (
-          <span className="state state--ok" role="status" data-testid={`${idPrefix}-save-ok`}>
-            Endpoint “{createState.name}” {createState.operation}. It will be bound on Save.
+          <span
+            className="state state--ok"
+            role="status"
+            data-testid={`${idPrefix}-save-ok`}
+          >
+            Endpoint “{createState.name}” {createState.operation}. It will be
+            bound on Save.
           </span>
         )}
         {createState.kind === "error" && (
-          <span className="state state--error" role="alert" data-testid={`${idPrefix}-save-error`}>
+          <span
+            className="state state--error"
+            role="alert"
+            data-testid={`${idPrefix}-save-error`}
+          >
             {createState.message}
           </span>
         )}
       </div>
 
       {modelEndpointRef.trim() && (
-        <p className="muted provider-picker__bound" data-testid={`${idPrefix}-bound`}>
+        <p
+          className="muted provider-picker__bound"
+          data-testid={`${idPrefix}-bound`}
+        >
           Bound endpoint: <code>{modelEndpointRef}</code>
         </p>
       )}
@@ -467,9 +583,18 @@ export function ProviderModelPicker({
       {selectableEndpoints.length > 0 && (
         <details className="provider-picker__advanced">
           <summary>Use an existing endpoint instead</summary>
-          <Field label="Existing endpoint" hint="Bind a Secret you already created.">
+          <Field
+            label="Existing endpoint"
+            hint="Bind a Secret you already created."
+          >
             <select
-              value={selectableEndpoints.some((e) => e.name === modelEndpointRef.trim()) ? modelEndpointRef.trim() : ""}
+              value={
+                selectableEndpoints.some(
+                  (e) => e.name === modelEndpointRef.trim(),
+                )
+                  ? modelEndpointRef.trim()
+                  : ""
+              }
               onChange={(e) => onChange({ modelEndpointRef: e.target.value })}
               aria-label={`${label} existing endpoint`}
               data-testid={`${idPrefix}-existing`}

@@ -46,9 +46,10 @@ vi.mock("@/lib/github-status", async () => {
 // Keep agentOptionLabel real (the dialog renders its exact label); override the
 // roster fetch so the dropdown is deterministic.
 vi.mock("@/lib/tickets/api", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/tickets/api")>(
-    "@/lib/tickets/api",
-  );
+  const actual =
+    await vi.importActual<typeof import("@/lib/tickets/api")>(
+      "@/lib/tickets/api",
+    );
   return {
     ...actual,
     listSquadAgents: vi.fn(),
@@ -63,10 +64,7 @@ import {
   type IssueTriageSaveResult,
   type IssueTriageView,
 } from "@/lib/github-status";
-import {
-  listSquadAgents,
-  type AgentOption,
-} from "@/lib/tickets/api";
+import { listSquadAgents, type AgentOption } from "@/lib/tickets/api";
 
 const fetchMock = vi.mocked(fetchIssueTriage);
 const saveMock = vi.mocked(saveIssueTriage);
@@ -107,7 +105,9 @@ beforeEach(() => {
 
 describe("IssueTriageDialog", () => {
   it("renders the loading state before the GET resolves", () => {
-    fetchMock.mockReturnValue(new Promise(() => {}) as Promise<IssueTriageState>);
+    fetchMock.mockReturnValue(
+      new Promise(() => {}) as Promise<IssueTriageState>,
+    );
     agentsMock.mockReturnValue(new Promise(() => {}) as Promise<AgentOption[]>);
     render(<IssueTriageDialog projectId={PROJECT} onClose={vi.fn()} />);
     expect(screen.getByTestId("gh-it-loading")).toBeTruthy();
@@ -119,7 +119,9 @@ describe("IssueTriageDialog", () => {
     render(<IssueTriageDialog projectId={PROJECT} onClose={vi.fn()} />);
 
     await screen.findByTestId("gh-it-form");
-    expect((screen.getByTestId("it-enable") as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId("it-enable") as HTMLInputElement).checked).toBe(
+      false,
+    );
 
     const agent = screen.getByTestId("it-agent") as HTMLSelectElement;
     await waitFor(() => expect(agent.value).toBe("triage-bot"));
@@ -144,7 +146,10 @@ describe("IssueTriageDialog", () => {
   });
 
   it("renders the honest error state on a non-classified status", async () => {
-    fetchMock.mockResolvedValue({ kind: "error", status: 500 } as IssueTriageState);
+    fetchMock.mockResolvedValue({
+      kind: "error",
+      status: 500,
+    } as IssueTriageState);
     render(<IssueTriageDialog projectId={PROJECT} onClose={vi.fn()} />);
     const err = await screen.findByTestId("gh-it-error");
     expect(err.textContent).toMatch(/500/);
@@ -157,9 +162,15 @@ describe("IssueTriageDialog", () => {
     await screen.findByTestId("gh-it-form");
 
     expect(screen.getByTestId("gh-it-readonly")).toBeTruthy();
-    expect((screen.getByTestId("it-save") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId("it-enable") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByTestId("it-agent") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByTestId("it-save") as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByTestId("it-enable") as HTMLInputElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByTestId("it-agent") as HTMLSelectElement).disabled).toBe(
+      true,
+    );
   });
 
   it("saves the write-input subset and closes on success", async () => {

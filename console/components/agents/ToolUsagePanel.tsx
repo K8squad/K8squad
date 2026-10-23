@@ -80,8 +80,7 @@ export function ToolUsagePanel({ agentId }: { agentId: string }) {
         <h2>Tool usage</h2>
         <p className="muted">
           Tool-usage instrumentation is not reporting on the operator metrics
-          surface. Counts may be missing or stale — this is not “no
-          activity”.
+          surface. Counts may be missing or stale — this is not “no activity”.
         </p>
       </section>
     );
@@ -92,9 +91,7 @@ export function ToolUsagePanel({ agentId }: { agentId: string }) {
     return (
       <section className="card tool-usage" aria-label="Tool usage">
         <h2>Tool usage</h2>
-        <p className="muted">
-          No tool activity recorded for this agent yet.
-        </p>
+        <p className="muted">No tool activity recorded for this agent yet.</p>
       </section>
     );
 
@@ -128,7 +125,9 @@ export function ToolUsagePanel({ agentId }: { agentId: string }) {
             <tr>
               <th scope="col">Tool</th>
               <th scope="col">Skill</th>
-              <th scope="col" className="num">Calls</th>
+              <th scope="col" className="num">
+                Calls
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -149,7 +148,9 @@ export function ToolUsagePanel({ agentId }: { agentId: string }) {
           <thead>
             <tr>
               <th scope="col">Skill</th>
-              <th scope="col" className="num">Loads</th>
+              <th scope="col" className="num">
+                Loads
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -174,8 +175,12 @@ export function ToolUsagePanel({ agentId }: { agentId: string }) {
               <tr>
                 <th scope="col">Server</th>
                 <th scope="col">Tool</th>
-                <th scope="col" className="num">Calls</th>
-                <th scope="col" className="num">Avg</th>
+                <th scope="col" className="num">
+                  Calls
+                </th>
+                <th scope="col" className="num">
+                  Avg
+                </th>
               </tr>
             </thead>
             <tbody>

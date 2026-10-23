@@ -194,8 +194,10 @@ function exportHealth(
     if (state === "healthy") healthy += 1;
     else if (state === "erroring") erroring += 1;
   }
-  if (enabled === 0) return { label: "Not exporting", tone: "idle", exporting: 0 };
-  if (healthy === enabled) return { label: "Healthy", tone: "running", exporting: healthy };
+  if (enabled === 0)
+    return { label: "Not exporting", tone: "idle", exporting: 0 };
+  if (healthy === enabled)
+    return { label: "Healthy", tone: "running", exporting: healthy };
   if (healthy === 0 && erroring > 0)
     return { label: "Erroring", tone: "blocked", exporting: healthy };
   return { label: "Degraded", tone: "paused", exporting: healthy };
@@ -281,8 +283,8 @@ function Segmented({
 
 export function OtlpConfigScreen() {
   const [load, setLoad] = useState<LoadState>({ kind: "loading" });
-  const [destination, setDestination] = useState<Destination>(
-    () => deriveDestination(emptyConfig()),
+  const [destination, setDestination] = useState<Destination>(() =>
+    deriveDestination(emptyConfig()),
   );
   const [signals, setSignals] = useState<Record<SignalKey, SignalSlot>>(() => ({
     traces: { enabled: false },
@@ -308,7 +310,10 @@ export function OtlpConfigScreen() {
       .then(async (r) => {
         if (r.status === 404) return { kind: "empty" as const };
         if (!r.ok) return { kind: "error" as const, status: r.status };
-        return { kind: "loaded" as const, wire: (await r.json()) as OtelConfigWire };
+        return {
+          kind: "loaded" as const,
+          wire: (await r.json()) as OtelConfigWire,
+        };
       })
       .then((s) => {
         if (!alive) return;
@@ -432,7 +437,11 @@ export function OtlpConfigScreen() {
       setDirty(false);
       setSaveState({ kind: "ok" });
     } else {
-      setSaveState({ kind: "error", status: res.status, body: await res.text() });
+      setSaveState({
+        kind: "error",
+        status: res.status,
+        body: await res.text(),
+      });
     }
   }
 
@@ -458,260 +467,303 @@ export function OtlpConfigScreen() {
 
       {load.kind === "loading" && <p className="muted">Loading…</p>}
       {load.kind === "error" && (
-        <p className="state state--error" role="alert" data-testid="otlp-load-error">
+        <p
+          className="state state--error"
+          role="alert"
+          data-testid="otlp-load-error"
+        >
           Could not read exporter config (status {load.status || "network"}).
         </p>
       )}
 
       {load.kind !== "loading" && load.kind !== "error" && (
         <>
-        <div className="settings-otlp__body">
-          <div className="settings-otlp__main">
-          {/* Destination — the shared endpoint every enabled signal inherits. */}
-          <div className="card otlp-destination" data-testid="otlp-destination">
-            <h2>Destination</h2>
-            <p className="muted">
-              The collector every enabled signal exports to, unless a signal
-              overrides it below.
-            </p>
-            <div className="signal__grid">
-              <label>
-                <span>Endpoint</span>
-                <input
-                  data-testid="dest-endpoint"
-                  value={destination.endpoint}
-                  onChange={(e) => patchDestination({ endpoint: e.target.value })}
-                  onBlur={() => touch("dest-endpoint")}
-                  placeholder={
-                    destination.protocol === "http"
-                      ? "https://backend:4318"
-                      : "otel-collector:4317"
-                  }
-                  aria-invalid={!!show("dest-endpoint", destErrors.endpoint)}
-                  aria-describedby={
-                    show("dest-endpoint", destErrors.endpoint)
-                      ? "dest-endpoint-err"
-                      : undefined
-                  }
-                />
-                {show("dest-endpoint", destErrors.endpoint) && (
-                  <em className="field-error" id="dest-endpoint-err" role="alert">
-                    {destErrors.endpoint}
-                  </em>
-                )}
-              </label>
-              <label>
-                <span>Protocol</span>
-                <Segmented
-                  idBase="dest"
-                  value={destination.protocol}
-                  onChange={(p) => patchDestination({ protocol: p })}
-                />
-              </label>
-              <label>
-                <span>Auth Secret ref</span>
-                <input
-                  data-testid="dest-auth"
-                  value={destination.authSecretRef}
-                  onChange={(e) =>
-                    patchDestination({ authSecretRef: e.target.value })
-                  }
-                  onBlur={() => touch("dest-auth")}
-                  placeholder="my-exporter-secret (name only — never a token)"
-                  aria-invalid={!!show("dest-auth", destErrors.authSecretRef)}
-                  aria-describedby={
-                    show("dest-auth", destErrors.authSecretRef)
-                      ? "dest-auth-err"
-                      : undefined
-                  }
-                />
-                {show("dest-auth", destErrors.authSecretRef) && (
-                  <em className="field-error" id="dest-auth-err" role="alert">
-                    {destErrors.authSecretRef}
-                  </em>
-                )}
-              </label>
-              <label>
-                <span>Sampling (0–1, traces)</span>
-                <input
-                  data-testid="dest-sampling"
-                  type="number"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={destination.sampling ?? ""}
-                  onChange={(e) =>
-                    patchDestination({
-                      sampling:
-                        e.target.value === "" ? null : Number(e.target.value),
-                    })
-                  }
-                  onBlur={() => touch("dest-sampling")}
-                  aria-invalid={!!show("dest-sampling", destErrors.sampling)}
-                  aria-describedby={
-                    show("dest-sampling", destErrors.sampling)
-                      ? "dest-sampling-err"
-                      : undefined
-                  }
-                />
-                {show("dest-sampling", destErrors.sampling) && (
-                  <em className="field-error" id="dest-sampling-err" role="alert">
-                    {destErrors.sampling}
-                  </em>
-                )}
-              </label>
-            </div>
-          </div>
-
-          {/* Signals — compact rows inheriting the Destination unless overridden. */}
-          <div className="card otlp-signals" data-testid="otlp-signals">
-            <div className="otlp-signals__head">
-              <h2>Signals</h2>
-              <span className="otlp-signals__rollup" data-testid="signals-rollup">
-                {healthRollup(wire, signals)}
-              </span>
-            </div>
-            <StatusLegend />
-            <ul className="signal-rows" role="list">
-              {SIGNAL_KEYS.map((key) => {
-                const slot = signals[key];
-                const enabled = slot.enabled;
-                const isOverride = enabled && slot.mode === "override";
-                const status = statusView(
-                  enabled,
-                  wire?.status?.signals?.[key]?.state,
-                );
-                const detail = enabled
-                  ? wire?.status?.signals?.[key]?.detail
-                  : undefined;
-                const isOpen = expanded === key;
-                return (
-                  <li
-                    key={key}
-                    className={"signal-row" + (enabled ? "" : " is-off")}
-                    data-testid={`signal-row-${key}`}
-                    data-tone={status.tone}
-                  >
-                    <div className="signal-row__main">
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={enabled}
-                        aria-label={`Enable ${SIGNAL_LABEL[key]} exporter`}
-                        data-testid={`signal-toggle-${key}`}
-                        className={"toggle" + (enabled ? " is-on" : "")}
-                        onClick={() => toggleSignal(key)}
-                      >
-                        <span className="toggle__knob" />
-                      </button>
-                      <SignalIcon signalKey={key} />
-                      <span className="signal-row__name">{SIGNAL_LABEL[key]}</span>
-                      {enabled && (
-                        <span
-                          className={
-                            "chip signal-row__chip" +
-                            (isOverride ? " chip--override" : " chip--inherit")
-                          }
-                          data-testid={`signal-chip-${key}`}
-                        >
-                          {isOverride ? "own endpoint" : "→ destination"}
-                        </span>
-                      )}
-                      <span
-                        className={`pill pill--${status.tone} signal-row__pill`}
-                        data-testid={`signal-pill-${key}`}
-                        title={detail || undefined}
-                      >
-                        {status.label}
-                        {detail ? ` · ${detail}` : ""}
-                      </span>
-                      <button
-                        type="button"
-                        className={"chevron" + (isOpen ? " is-open" : "")}
-                        aria-expanded={isOpen}
-                        aria-label={`${isOpen ? "Collapse" : "Expand"} ${SIGNAL_LABEL[key]}`}
-                        data-testid={`signal-expand-${key}`}
-                        onClick={() => setExpanded(isOpen ? null : key)}
-                      >
-                        <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
-                          <path
-                            d="M6 8l4 4 4-4"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      </button>
-                    </div>
-
-                    {isOpen && (
-                      <div
-                        className="signal-row__panel"
-                        data-testid={`signal-panel-${key}`}
-                      >
-                        {!enabled ? (
-                          <p className="muted">
-                            {SIGNAL_LABEL[key]} export is off. Enable it with the
-                            toggle to route this signal to the destination.
-                          </p>
-                        ) : (
-                          <SignalOverridePanel
-                            signalKey={key}
-                            slot={slot}
-                            errors={validation[key]}
-                            touched={touched}
-                            onTouch={touch}
-                            onUseOwn={(own) => setOwnEndpoint(key, own)}
-                            onPatch={(p) => patchOverride(key, p)}
-                            onRemove={() => toggleSignal(key)}
-                          />
-                        )}
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-            {!anyEnabled && (
-              <div className="signals-empty" data-testid="signals-empty">
-                <p className="signals-empty__title">No app-level exporter yet</p>
-                <p className="muted signals-empty__body">
-                  Turn on a signal to start routing <em>this app&apos;s</em> own
-                  telemetry to your collector. Platform telemetry still flows via the
-                  cluster&apos;s infrastructure OTel Collector — that layer is managed
-                  outside this screen.
-                </p>
-                <button
-                  type="button"
-                  className="btn btn--primary signals-empty__cta"
-                  data-testid="signals-empty-cta"
-                  onClick={() => toggleSignal("traces")}
-                >
-                  Enable Traces exporter
-                </button>
-              </div>
-            )}
-          </div>
-          </div>
-
-          <aside className="settings-otlp__rail" data-testid="otlp-rail">
-            <ExportHealthCard wire={wire} signals={signals} />
-            <ResourceAttributesCard
-              key={`attrs-${revision}`}
-              attrs={destination.resourceAttributes}
-              onChange={(next) => patchDestination({ resourceAttributes: next })}
-            />
-          </aside>
-        </div>
-
-        <div className="settings-otlp__actions" data-testid="otlp-actions">
-            {dirty && (
-              <span
-                className="settings-otlp__dirty"
-                data-testid="otlp-dirty"
+          <div className="settings-otlp__body">
+            <div className="settings-otlp__main">
+              {/* Destination — the shared endpoint every enabled signal inherits. */}
+              <div
+                className="card otlp-destination"
+                data-testid="otlp-destination"
               >
+                <h2>Destination</h2>
+                <p className="muted">
+                  The collector every enabled signal exports to, unless a signal
+                  overrides it below.
+                </p>
+                <div className="signal__grid">
+                  <label>
+                    <span>Endpoint</span>
+                    <input
+                      data-testid="dest-endpoint"
+                      value={destination.endpoint}
+                      onChange={(e) =>
+                        patchDestination({ endpoint: e.target.value })
+                      }
+                      onBlur={() => touch("dest-endpoint")}
+                      placeholder={
+                        destination.protocol === "http"
+                          ? "https://backend:4318"
+                          : "otel-collector:4317"
+                      }
+                      aria-invalid={
+                        !!show("dest-endpoint", destErrors.endpoint)
+                      }
+                      aria-describedby={
+                        show("dest-endpoint", destErrors.endpoint)
+                          ? "dest-endpoint-err"
+                          : undefined
+                      }
+                    />
+                    {show("dest-endpoint", destErrors.endpoint) && (
+                      <em
+                        className="field-error"
+                        id="dest-endpoint-err"
+                        role="alert"
+                      >
+                        {destErrors.endpoint}
+                      </em>
+                    )}
+                  </label>
+                  <label>
+                    <span>Protocol</span>
+                    <Segmented
+                      idBase="dest"
+                      value={destination.protocol}
+                      onChange={(p) => patchDestination({ protocol: p })}
+                    />
+                  </label>
+                  <label>
+                    <span>Auth Secret ref</span>
+                    <input
+                      data-testid="dest-auth"
+                      value={destination.authSecretRef}
+                      onChange={(e) =>
+                        patchDestination({ authSecretRef: e.target.value })
+                      }
+                      onBlur={() => touch("dest-auth")}
+                      placeholder="my-exporter-secret (name only — never a token)"
+                      aria-invalid={
+                        !!show("dest-auth", destErrors.authSecretRef)
+                      }
+                      aria-describedby={
+                        show("dest-auth", destErrors.authSecretRef)
+                          ? "dest-auth-err"
+                          : undefined
+                      }
+                    />
+                    {show("dest-auth", destErrors.authSecretRef) && (
+                      <em
+                        className="field-error"
+                        id="dest-auth-err"
+                        role="alert"
+                      >
+                        {destErrors.authSecretRef}
+                      </em>
+                    )}
+                  </label>
+                  <label>
+                    <span>Sampling (0–1, traces)</span>
+                    <input
+                      data-testid="dest-sampling"
+                      type="number"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={destination.sampling ?? ""}
+                      onChange={(e) =>
+                        patchDestination({
+                          sampling:
+                            e.target.value === ""
+                              ? null
+                              : Number(e.target.value),
+                        })
+                      }
+                      onBlur={() => touch("dest-sampling")}
+                      aria-invalid={
+                        !!show("dest-sampling", destErrors.sampling)
+                      }
+                      aria-describedby={
+                        show("dest-sampling", destErrors.sampling)
+                          ? "dest-sampling-err"
+                          : undefined
+                      }
+                    />
+                    {show("dest-sampling", destErrors.sampling) && (
+                      <em
+                        className="field-error"
+                        id="dest-sampling-err"
+                        role="alert"
+                      >
+                        {destErrors.sampling}
+                      </em>
+                    )}
+                  </label>
+                </div>
+              </div>
+
+              {/* Signals — compact rows inheriting the Destination unless overridden. */}
+              <div className="card otlp-signals" data-testid="otlp-signals">
+                <div className="otlp-signals__head">
+                  <h2>Signals</h2>
+                  <span
+                    className="otlp-signals__rollup"
+                    data-testid="signals-rollup"
+                  >
+                    {healthRollup(wire, signals)}
+                  </span>
+                </div>
+                <StatusLegend />
+                <ul className="signal-rows" role="list">
+                  {SIGNAL_KEYS.map((key) => {
+                    const slot = signals[key];
+                    const enabled = slot.enabled;
+                    const isOverride = enabled && slot.mode === "override";
+                    const status = statusView(
+                      enabled,
+                      wire?.status?.signals?.[key]?.state,
+                    );
+                    const detail = enabled
+                      ? wire?.status?.signals?.[key]?.detail
+                      : undefined;
+                    const isOpen = expanded === key;
+                    return (
+                      <li
+                        key={key}
+                        className={"signal-row" + (enabled ? "" : " is-off")}
+                        data-testid={`signal-row-${key}`}
+                        data-tone={status.tone}
+                      >
+                        <div className="signal-row__main">
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={enabled}
+                            aria-label={`Enable ${SIGNAL_LABEL[key]} exporter`}
+                            data-testid={`signal-toggle-${key}`}
+                            className={"toggle" + (enabled ? " is-on" : "")}
+                            onClick={() => toggleSignal(key)}
+                          >
+                            <span className="toggle__knob" />
+                          </button>
+                          <SignalIcon signalKey={key} />
+                          <span className="signal-row__name">
+                            {SIGNAL_LABEL[key]}
+                          </span>
+                          {enabled && (
+                            <span
+                              className={
+                                "chip signal-row__chip" +
+                                (isOverride
+                                  ? " chip--override"
+                                  : " chip--inherit")
+                              }
+                              data-testid={`signal-chip-${key}`}
+                            >
+                              {isOverride ? "own endpoint" : "→ destination"}
+                            </span>
+                          )}
+                          <span
+                            className={`pill pill--${status.tone} signal-row__pill`}
+                            data-testid={`signal-pill-${key}`}
+                            title={detail || undefined}
+                          >
+                            {status.label}
+                            {detail ? ` · ${detail}` : ""}
+                          </span>
+                          <button
+                            type="button"
+                            className={"chevron" + (isOpen ? " is-open" : "")}
+                            aria-expanded={isOpen}
+                            aria-label={`${isOpen ? "Collapse" : "Expand"} ${SIGNAL_LABEL[key]}`}
+                            data-testid={`signal-expand-${key}`}
+                            onClick={() => setExpanded(isOpen ? null : key)}
+                          >
+                            <svg
+                              viewBox="0 0 20 20"
+                              width="16"
+                              height="16"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M6 8l4 4 4-4"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </button>
+                        </div>
+
+                        {isOpen && (
+                          <div
+                            className="signal-row__panel"
+                            data-testid={`signal-panel-${key}`}
+                          >
+                            {!enabled ? (
+                              <p className="muted">
+                                {SIGNAL_LABEL[key]} export is off. Enable it
+                                with the toggle to route this signal to the
+                                destination.
+                              </p>
+                            ) : (
+                              <SignalOverridePanel
+                                signalKey={key}
+                                slot={slot}
+                                errors={validation[key]}
+                                touched={touched}
+                                onTouch={touch}
+                                onUseOwn={(own) => setOwnEndpoint(key, own)}
+                                onPatch={(p) => patchOverride(key, p)}
+                                onRemove={() => toggleSignal(key)}
+                              />
+                            )}
+                          </div>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+                {!anyEnabled && (
+                  <div className="signals-empty" data-testid="signals-empty">
+                    <p className="signals-empty__title">
+                      No app-level exporter yet
+                    </p>
+                    <p className="muted signals-empty__body">
+                      Turn on a signal to start routing <em>this app&apos;s</em>{" "}
+                      own telemetry to your collector. Platform telemetry still
+                      flows via the cluster&apos;s infrastructure OTel Collector
+                      — that layer is managed outside this screen.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn--primary signals-empty__cta"
+                      data-testid="signals-empty-cta"
+                      onClick={() => toggleSignal("traces")}
+                    >
+                      Enable Traces exporter
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <aside className="settings-otlp__rail" data-testid="otlp-rail">
+              <ExportHealthCard wire={wire} signals={signals} />
+              <ResourceAttributesCard
+                key={`attrs-${revision}`}
+                attrs={destination.resourceAttributes}
+                onChange={(next) =>
+                  patchDestination({ resourceAttributes: next })
+                }
+              />
+            </aside>
+          </div>
+
+          <div className="settings-otlp__actions" data-testid="otlp-actions">
+            {dirty && (
+              <span className="settings-otlp__dirty" data-testid="otlp-dirty">
                 Unsaved changes
               </span>
             )}
@@ -731,14 +783,18 @@ export function OtlpConfigScreen() {
               disabled={!dirty || !valid || saveState.kind === "saving"}
               data-testid="otlp-apply"
             >
-              {saveState.kind === "saving" ? "Saving…" : "Apply OTLP configuration"}
+              {saveState.kind === "saving"
+                ? "Saving…"
+                : "Apply OTLP configuration"}
             </button>
             {saveState.kind === "error" && (
               <span className="state state--error" role="alert">
                 Save failed (status {saveState.status}).
               </span>
             )}
-            {saveState.kind === "ok" && <span className="state state--ok">Saved.</span>}
+            {saveState.kind === "ok" && (
+              <span className="state state--ok">Saved.</span>
+            )}
           </div>
         </>
       )}
@@ -778,7 +834,10 @@ function ExportHealthCard({
           <span className="muted export-health__spark-label">spans/min</span>
         </div>
       ) : (
-        <p className="muted export-health__no-spark" data-testid="export-health-no-spark">
+        <p
+          className="muted export-health__no-spark"
+          data-testid="export-health-no-spark"
+        >
           Throughput history unavailable.
         </p>
       )}
@@ -818,8 +877,8 @@ function ResourceAttributesCard({
     <div className="card resource-attrs" data-testid="resource-attributes">
       <h2>Resource attributes</h2>
       <p className="muted">
-        Applied to every signal that inherits the destination. A signal with its own
-        endpoint keeps its own attributes.
+        Applied to every signal that inherits the destination. A signal with its
+        own endpoint keeps its own attributes.
       </p>
       {rows.length === 0 && (
         <p className="muted" data-testid="attrs-empty">
@@ -828,7 +887,11 @@ function ResourceAttributesCard({
       )}
       <ul className="resource-attrs__rows" role="list">
         {rows.map((row, i) => (
-          <li className="resource-attrs__row" key={i} data-testid={`attr-row-${i}`}>
+          <li
+            className="resource-attrs__row"
+            key={i}
+            data-testid={`attr-row-${i}`}
+          >
             <input
               className="resource-attrs__key"
               data-testid={`attr-key-${i}`}
@@ -836,7 +899,11 @@ function ResourceAttributesCard({
               placeholder="key"
               aria-label={`Attribute ${i + 1} key`}
               onChange={(e) =>
-                commit(rows.map((r, j) => (j === i ? { ...r, key: e.target.value } : r)))
+                commit(
+                  rows.map((r, j) =>
+                    j === i ? { ...r, key: e.target.value } : r,
+                  ),
+                )
               }
             />
             <span className="resource-attrs__eq" aria-hidden="true">
@@ -850,7 +917,9 @@ function ResourceAttributesCard({
               aria-label={`Attribute ${i + 1} value`}
               onChange={(e) =>
                 commit(
-                  rows.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)),
+                  rows.map((r, j) =>
+                    j === i ? { ...r, value: e.target.value } : r,
+                  ),
                 )
               }
             />
@@ -950,7 +1019,9 @@ function SignalOverridePanel({
               }
               aria-invalid={!!show("endpoint", errors.endpoint)}
               aria-describedby={
-                show("endpoint", errors.endpoint) ? f("endpoint-err") : undefined
+                show("endpoint", errors.endpoint)
+                  ? f("endpoint-err")
+                  : undefined
               }
             />
             {show("endpoint", errors.endpoint) && (
@@ -998,13 +1069,16 @@ function SignalOverridePanel({
                 value={ov.sampling ?? ""}
                 onChange={(e) =>
                   onPatch({
-                    sampling: e.target.value === "" ? null : Number(e.target.value),
+                    sampling:
+                      e.target.value === "" ? null : Number(e.target.value),
                   })
                 }
                 onBlur={() => onTouch(f("sampling"))}
                 aria-invalid={!!show("sampling", errors.sampling)}
                 aria-describedby={
-                  show("sampling", errors.sampling) ? f("sampling-err") : undefined
+                  show("sampling", errors.sampling)
+                    ? f("sampling-err")
+                    : undefined
                 }
               />
               {show("sampling", errors.sampling) && (

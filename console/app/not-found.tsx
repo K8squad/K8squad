@@ -20,9 +20,19 @@ export default function NotFound() {
         padding: "24px",
       }}
     >
-      <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+      <div
+        style={{
+          textAlign: "center",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
         <Logo size={40} />
-        <h1 style={{ margin: 0, fontSize: 20, color: "var(--text-1)" }}>Page not found</h1>
+        <h1 style={{ margin: 0, fontSize: 20, color: "var(--text-1)" }}>
+          Page not found
+        </h1>
         <p style={{ margin: 0, color: "var(--text-2)", fontSize: 14 }}>
           The page you’re looking for doesn’t exist or has moved.
         </p>

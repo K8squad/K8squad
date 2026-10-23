@@ -112,7 +112,9 @@ describe("patchWorkItemState request contract (ISI-4225)", () => {
   });
 
   it("rethrows non-2xx as ApiError so the screen re-syncs (never keeps client state)", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ error: "toState required" }, 400));
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error: "toState required" }, 400),
+    );
     await expect(
       patchWorkItemState("wi-1", {
         toState: "in_progress",
@@ -126,14 +128,18 @@ describe("fetchViewerRole reads /auth/me's globalRole (ISI-4496 RBAC gate)", () 
   beforeEach(() => fetchMock.mockReset());
 
   it("returns the caller's globalRole so a signed-in caller clears the create gate", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ globalRole: "user", username: "ada" }));
+    fetchMock.mockResolvedValue(
+      jsonResponse({ globalRole: "user", username: "ada" }),
+    );
     // Regression: reading the (non-existent) `role` field pinned every caller to "viewer",
     // hiding "+ New issue" for admins too. "user" !== "viewer" ⇒ create is offered.
     expect(await fetchViewerRole()).toBe("user");
   });
 
   it("passes admin through unchanged", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ globalRole: "admin", username: "root" }));
+    fetchMock.mockResolvedValue(
+      jsonResponse({ globalRole: "admin", username: "root" }),
+    );
     expect(await fetchViewerRole()).toBe("admin");
   });
 
@@ -143,7 +149,9 @@ describe("fetchViewerRole reads /auth/me's globalRole (ISI-4496 RBAC gate)", () 
   });
 
   it("fails closed to viewer on a non-200 (no session / expired)", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ error: "no valid session" }, 401));
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error: "no valid session" }, 401),
+    );
     expect(await fetchViewerRole()).toBe("viewer");
   });
 
@@ -170,29 +178,56 @@ describe("listSquadAgents dedupe + role projection (ISI-4807 §1/§2)", () => {
     fetchMock.mockResolvedValue(
       jsonResponse({
         agents: [
-          { id: "ns1-rev", name: "agent:reviewer", role: "Code Reviewer", namespace: "k8squad-system" },
-          { id: "ns2-rev", name: "agent:reviewer", role: "Code Reviewer", namespace: "k8squad-preview" },
-          { id: "ns1-bld", name: "agent:builder", role: "Implementer", namespace: "k8squad-system" },
-          { id: "ns2-bld", name: "agent:builder", role: "Implementer", namespace: "k8squad-preview" },
+          {
+            id: "ns1-rev",
+            name: "agent:reviewer",
+            role: "Code Reviewer",
+            namespace: "k8squad-system",
+          },
+          {
+            id: "ns2-rev",
+            name: "agent:reviewer",
+            role: "Code Reviewer",
+            namespace: "k8squad-preview",
+          },
+          {
+            id: "ns1-bld",
+            name: "agent:builder",
+            role: "Implementer",
+            namespace: "k8squad-system",
+          },
+          {
+            id: "ns2-bld",
+            name: "agent:builder",
+            role: "Implementer",
+            namespace: "k8squad-preview",
+          },
         ],
       }),
     );
     const agents = await listSquadAgents();
-    expect(agents.map((a) => a.name)).toEqual(["agent:reviewer", "agent:builder"]);
+    expect(agents.map((a) => a.name)).toEqual([
+      "agent:reviewer",
+      "agent:builder",
+    ]);
     // First occurrence wins — the id is stable, not doubled.
     expect(agents[0].id).toBe("ns1-rev");
   });
 
   it("carries the referenced role through so the picker can label role — name", async () => {
     fetchMock.mockResolvedValue(
-      jsonResponse({ agents: [{ id: "a1", name: "agent:pm", role: "Product Manager" }] }),
+      jsonResponse({
+        agents: [{ id: "a1", name: "agent:pm", role: "Product Manager" }],
+      }),
     );
     const [pm] = await listSquadAgents();
     expect(pm.role).toBe("Product Manager");
   });
 
   it("leaves role undefined when the agent declares none", async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ agents: [{ id: "a1", name: "agent:pm" }] }));
+    fetchMock.mockResolvedValue(
+      jsonResponse({ agents: [{ id: "a1", name: "agent:pm" }] }),
+    );
     const [pm] = await listSquadAgents();
     expect(pm.role).toBeUndefined();
   });
@@ -200,9 +235,9 @@ describe("listSquadAgents dedupe + role projection (ISI-4807 §1/§2)", () => {
 
 describe("agentOptionLabel (ISI-4807 §2)", () => {
   it("renders role — name when a role is present", () => {
-    expect(agentOptionLabel({ id: "a1", name: "agent:pm", role: "Product Manager" })).toBe(
-      "Product Manager — agent:pm",
-    );
+    expect(
+      agentOptionLabel({ id: "a1", name: "agent:pm", role: "Product Manager" }),
+    ).toBe("Product Manager — agent:pm");
   });
 
   it("falls back to the bare name when no role is set", () => {

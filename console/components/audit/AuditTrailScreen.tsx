@@ -33,9 +33,12 @@ export interface AuditTrailScreenProps {
   load?: (queryString: string) => Promise<Response>;
 }
 
-type LoadState = "loading" | "ok" | "denied" | "forbidden-actor" | "unconfigured" | "error";
+type LoadState =
+  "loading" | "ok" | "denied" | "forbidden-actor" | "unconfigured" | "error";
 
-export function AuditTrailScreen({ load = defaultLoad }: AuditTrailScreenProps) {
+export function AuditTrailScreen({
+  load = defaultLoad,
+}: AuditTrailScreenProps) {
   const [filters, setFilters] = useState<AuditFilters>(emptyAuditFilters);
   const [applied, setApplied] = useState<AuditFilters>(emptyAuditFilters);
   const [state, setState] = useState<LoadState>("loading");
@@ -49,8 +52,11 @@ export function AuditTrailScreen({ load = defaultLoad }: AuditTrailScreenProps) 
         const res = await load(qs);
         if (res.status >= 200 && res.status < 300) {
           const body = await res.json();
-          const events: AuditEvent[] = Array.isArray(body?.events) ? body.events : [];
-          const cursor = typeof body?.nextBefore === "number" ? body.nextBefore : null;
+          const events: AuditEvent[] = Array.isArray(body?.events)
+            ? body.events
+            : [];
+          const cursor =
+            typeof body?.nextBefore === "number" ? body.nextBefore : null;
           if (mode === "append") setRows((prev) => [...prev, ...events]);
           else setRows(events);
           setNextBefore(cursor);
@@ -89,7 +95,8 @@ export function AuditTrailScreen({ load = defaultLoad }: AuditTrailScreenProps) 
     setLoadingOlder(false);
   };
 
-  const set = (patch: Partial<AuditFilters>) => setFilters((f) => ({ ...f, ...patch }));
+  const set = (patch: Partial<AuditFilters>) =>
+    setFilters((f) => ({ ...f, ...patch }));
 
   return (
     <section className="audit" data-testid="audit-screen" data-state={state}>
@@ -97,13 +104,17 @@ export function AuditTrailScreen({ load = defaultLoad }: AuditTrailScreenProps) 
         <div>
           <h1>Audit trail</h1>
           <p className="muted">
-            The coordination record — every checkout, comment, artifact, and transition as an
-            immutable who / what / when / result row
+            The coordination record — every checkout, comment, artifact, and
+            transition as an immutable who / what / when / result row
           </p>
         </div>
       </header>
 
-      <form className="audit__filters" onSubmit={onFilterSubmit} data-testid="audit-filters">
+      <form
+        className="audit__filters"
+        onSubmit={onFilterSubmit}
+        data-testid="audit-filters"
+      >
         <label>
           Work item
           <input
@@ -170,19 +181,23 @@ export function AuditTrailScreen({ load = defaultLoad }: AuditTrailScreenProps) 
       </form>
 
       {state === "loading" ? (
-        <p className="audit__state" data-testid="audit-loading">Loading audit trail…</p>
+        <p className="audit__state" data-testid="audit-loading">
+          Loading audit trail…
+        </p>
       ) : state === "denied" ? (
         <p className="audit__state" data-testid="audit-denied">
           Sign in to view the audit trail.
         </p>
       ) : state === "forbidden-actor" ? (
         <p className="audit__state" data-testid="audit-forbidden">
-          The audit trail is admin-scoped — you can query your own principal&apos;s activity only.
-          Clear the actor filter to see your own trail.
+          The audit trail is admin-scoped — you can query your own
+          principal&apos;s activity only. Clear the actor filter to see your own
+          trail.
         </p>
       ) : state === "unconfigured" ? (
         <p className="audit__state" data-testid="audit-unconfigured">
-          The audit read model is not wired on this apiserver (dev run without a database reader).
+          The audit read model is not wired on this apiserver (dev run without a
+          database reader).
         </p>
       ) : state === "error" ? (
         <p className="audit__state" data-testid="audit-error">
@@ -217,11 +232,15 @@ export function AuditTrailScreen({ load = defaultLoad }: AuditTrailScreenProps) 
                         <td title={e.createdAt}>{whenLabel(e.createdAt)}</td>
                         <td title={e.principal}>{actorLabel(e.principal)}</td>
                         <td>
-                          <span className={`audit__badge audit__badge--${badge.tone}`}>
+                          <span
+                            className={`audit__badge audit__badge--${badge.tone}`}
+                          >
                             {badge.label}
                           </span>
                         </td>
-                        <td title={e.workItemId ?? undefined}>{shortId(e.workItemId)}</td>
+                        <td title={e.workItemId ?? undefined}>
+                          {shortId(e.workItemId)}
+                        </td>
                         <td title={e.runId ?? undefined}>{shortId(e.runId)}</td>
                         <td>{resultLabel(e)}</td>
                       </tr>

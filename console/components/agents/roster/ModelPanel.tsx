@@ -38,9 +38,20 @@ import { useRosterDetail } from "./useRosterDetail";
 
 /** Frame 04's save ladder tail: the Saving…/Saved/Error line under an editor. */
 function SaveLadder({ state }: { state: SaveState }) {
-  if (state.kind === "saving") return <p className="roster-edit__ladder roster-edit__ladder--saving">Saving…</p>;
-  if (state.kind === "saved") return <p className="roster-edit__ladder roster-edit__ladder--saved">Saved</p>;
-  if (state.kind === "error") return <p className="roster-edit__ladder roster-edit__ladder--error">{state.message}</p>;
+  if (state.kind === "saving")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--saving">Saving…</p>
+    );
+  if (state.kind === "saved")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--saved">Saved</p>
+    );
+  if (state.kind === "error")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--error">
+        {state.message}
+      </p>
+    );
   return null;
 }
 
@@ -100,13 +111,25 @@ function BlastRadiusConfirm({
 }) {
   const shown = affected.slice(0, 8);
   return (
-    <div className="roster-edit__confirm" role="alertdialog" aria-label="Confirm shared-role change">
+    <div
+      className="roster-edit__confirm"
+      role="alertdialog"
+      aria-label="Confirm shared-role change"
+    >
       <p className="roster-edit__confirm-head">
-        Changing this model affects <strong>{count} {count === 1 ? "agent" : "agents"}</strong>
+        Changing this model affects{" "}
+        <strong>
+          {count} {count === 1 ? "agent" : "agents"}
+        </strong>
       </p>
       <p className="roster-edit__confirm-diff">
-        <span className="roster-edit__from">{from || "inherit org default"}</span>
-        <span className="roster-edit__arrow" aria-hidden="true"> → </span>
+        <span className="roster-edit__from">
+          {from || "inherit org default"}
+        </span>
+        <span className="roster-edit__arrow" aria-hidden="true">
+          {" "}
+          →{" "}
+        </span>
         <span className="roster-edit__to">{to || "inherit org default"}</span>
       </p>
       {shown.length ? (
@@ -114,14 +137,26 @@ function BlastRadiusConfirm({
           {shown.map((a) => (
             <li key={a}>{a}</li>
           ))}
-          {affected.length > shown.length ? <li>+{affected.length - shown.length} more</li> : null}
+          {affected.length > shown.length ? (
+            <li>+{affected.length - shown.length} more</li>
+          ) : null}
         </ul>
       ) : null}
       <div className="roster-edit__confirm-actions">
-        <button type="button" className="btn btn--primary" onClick={onApply} disabled={busy}>
+        <button
+          type="button"
+          className="btn btn--primary"
+          onClick={onApply}
+          disabled={busy}
+        >
           {busy ? "Applying…" : "Apply"}
         </button>
-        <button type="button" className="btn" onClick={onCancel} disabled={busy}>
+        <button
+          type="button"
+          className="btn"
+          onClick={onCancel}
+          disabled={busy}
+        >
           Cancel
         </button>
       </div>
@@ -132,9 +167,7 @@ function BlastRadiusConfirm({
 // ── Role → Model (Frame 02) ──────────────────────────────────────────────────
 
 type RoleEditState =
-  | { kind: "view" }
-  | { kind: "editing" }
-  | { kind: "confirm" };
+  { kind: "view" } | { kind: "editing" } | { kind: "confirm" };
 
 export function RoleModelPanel({
   roleName,
@@ -160,7 +193,11 @@ export function RoleModelPanel({
     return <p className="muted">Loading role…</p>;
   }
   if (detailState.kind === "error") {
-    return <p className="roster-edit__ladder roster-edit__ladder--error">{detailState.message}</p>;
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--error">
+        {detailState.message}
+      </p>
+    );
   }
   const detail = detailState.detail;
   const affected = detail.usedBy?.agents ?? [];
@@ -180,13 +217,21 @@ export function RoleModelPanel({
   async function commit() {
     setSave({ kind: "saving" });
     try {
-      await putCompose("roles", detail.name, roleModelPut(detail, { model, fallbackModel: fallback }), team);
+      await putCompose(
+        "roles",
+        detail.name,
+        roleModelPut(detail, { model, fallbackModel: fallback }),
+        team,
+      );
       setSave({ kind: "saved" });
       setEdit({ kind: "view" });
       setNonce((n) => n + 1); // re-read: provenance + resourceVersion + usedBy refresh
       onSaved();
     } catch (e) {
-      setSave({ kind: "error", message: e instanceof Error ? e.message : "Save failed." });
+      setSave({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Save failed.",
+      });
       // Back to the form with the values intact — the user fixes or cancels.
       setEdit({ kind: "editing" });
     }
@@ -211,12 +256,16 @@ export function RoleModelPanel({
                 {detail.model ? (
                   <>
                     <code>{detail.model}</code>
-                    <span className="roster-edit__prov roster-edit__prov--role">role default</span>
+                    <span className="roster-edit__prov roster-edit__prov--role">
+                      role default
+                    </span>
                   </>
                 ) : (
                   <>
                     <span className="muted">inherits org default</span>
-                    <span className="roster-edit__prov roster-edit__prov--default">org default</span>
+                    <span className="roster-edit__prov roster-edit__prov--default">
+                      org default
+                    </span>
                   </>
                 )}
               </dd>
@@ -232,10 +281,14 @@ export function RoleModelPanel({
               <dd>
                 {affected.length ? (
                   <span>
-                    {affected.length} {affected.length === 1 ? "agent" : "agents"} reference this role
+                    {affected.length}{" "}
+                    {affected.length === 1 ? "agent" : "agents"} reference this
+                    role
                   </span>
                 ) : (
-                  <span className="muted">no agents reference this role yet</span>
+                  <span className="muted">
+                    no agents reference this role yet
+                  </span>
                 )}
               </dd>
             </dl>
@@ -258,7 +311,10 @@ export function RoleModelPanel({
                 placeholder="e.g. claude-sonnet-4-5 — blank inherits the org default"
                 autoFocus
               />
-              <label className="roster-edit__label" htmlFor="roster-role-fallback">
+              <label
+                className="roster-edit__label"
+                htmlFor="roster-role-fallback"
+              >
                 Fallback model <span className="muted">(optional)</span>
               </label>
               <input
@@ -283,10 +339,20 @@ export function RoleModelPanel({
               />
             ) : null}
             <div className="roster-edit__row">
-              <button type="button" className="btn btn--primary" onClick={requestSave} disabled={save.kind === "saving"}>
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={requestSave}
+                disabled={save.kind === "saving"}
+              >
                 Save
               </button>
-              <button type="button" className="btn" onClick={cancelEdit} disabled={save.kind === "saving"}>
+              <button
+                type="button"
+                className="btn"
+                onClick={cancelEdit}
+                disabled={save.kind === "saving"}
+              >
                 Cancel
               </button>
             </div>
@@ -295,8 +361,8 @@ export function RoleModelPanel({
         <SaveLadder state={save} />
       </div>
       <p className="muted roster-detail__note">
-        A role is a shared library object — saving a model here re-roots every agent that references
-        it, so the confirm shows the blast radius first.
+        A role is a shared library object — saving a model here re-roots every
+        agent that references it, so the confirm shows the blast radius first.
       </p>
     </div>
   );
@@ -326,20 +392,32 @@ export function AgentModelPanel({
     return <p className="muted">Loading agent…</p>;
   }
   if (detailState.kind === "error") {
-    return <p className="roster-edit__ladder roster-edit__ladder--error">{detailState.message}</p>;
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--error">
+        {detailState.message}
+      </p>
+    );
   }
   const detail = detailState.detail;
 
   async function commit(next: string) {
     setSave({ kind: "saving" });
     try {
-      await putCompose("agents", detail.name, agentModelPut(detail, next), team);
+      await putCompose(
+        "agents",
+        detail.name,
+        agentModelPut(detail, next),
+        team,
+      );
       setSave({ kind: "saved" });
       setEditing(false);
       setNonce((n) => n + 1); // re-read: the override row + the readout below refresh
       onSaved();
     } catch (e) {
-      setSave({ kind: "error", message: e instanceof Error ? e.message : "Save failed." });
+      setSave({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Save failed.",
+      });
     }
   }
 
@@ -349,14 +427,21 @@ export function AgentModelPanel({
           `key` forces a remount (→ refetch) after a save flips the winning tier. */}
       <div className="card roster-edit__card">
         <h3 className="roster-detail__card-head">Effective model</h3>
-        <EffectiveModelReadout key={nonce} agentName={detail.name} team={team} />
+        <EffectiveModelReadout
+          key={nonce}
+          agentName={detail.name}
+          team={team}
+        />
       </div>
       <div className="card roster-edit__card">
         <h3 className="roster-detail__card-head">Agent-tier override</h3>
         {editing ? (
           <>
             <div className="roster-edit__fields">
-              <label className="roster-edit__label" htmlFor="roster-agent-model">
+              <label
+                className="roster-edit__label"
+                htmlFor="roster-agent-model"
+              >
                 Model
               </label>
               <ModelInput
@@ -376,7 +461,12 @@ export function AgentModelPanel({
               >
                 Save
               </button>
-              <button type="button" className="btn" onClick={() => setEditing(false)} disabled={save.kind === "saving"}>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setEditing(false)}
+                disabled={save.kind === "saving"}
+              >
                 Cancel
               </button>
             </div>
@@ -389,10 +479,14 @@ export function AgentModelPanel({
                 {detail.model ? (
                   <>
                     <code>{detail.model}</code>
-                    <span className="roster-edit__prov roster-edit__prov--agent">agent override</span>
+                    <span className="roster-edit__prov roster-edit__prov--agent">
+                      agent override
+                    </span>
                   </>
                 ) : (
-                  <span className="muted">none — inherits from the role / org default</span>
+                  <span className="muted">
+                    none — inherits from the role / org default
+                  </span>
                 )}
               </dd>
             </dl>

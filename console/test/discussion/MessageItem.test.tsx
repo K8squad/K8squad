@@ -51,9 +51,7 @@ describe("<MessageItem> — retraction rendering", () => {
   it("renders a tombstone (not the body) for a retracted message", () => {
     render(
       <ul>
-        <MessageItem
-          message={msg({ invalidatedAt: "2026-09-09T11:00:00Z" })}
-        />
+        <MessageItem message={msg({ invalidatedAt: "2026-09-09T11:00:00Z" })} />
       </ul>,
     );
     expect(screen.getByTestId("tombstone")).toBeTruthy();
@@ -159,10 +157,7 @@ describe("<MessageItem> — ticket reference chips (ISI-5168)", () => {
     );
     const link = screen.getByTestId("ticket-ref");
     expect(link.tagName).toBe("A");
-    expect(link).toHaveAttribute(
-      "href",
-      "/projects/proj-9/issues/wi-42",
-    );
+    expect(link).toHaveAttribute("href", "/projects/proj-9/issues/wi-42");
     expect(link.textContent).toContain("Fix login");
   });
 

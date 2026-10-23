@@ -117,7 +117,9 @@ function TeamGroup({
               </li>
             ))
           ) : (
-            <li className="roster-rail__empty muted">No agents on this team yet</li>
+            <li className="roster-rail__empty muted">
+              No agents on this team yet
+            </li>
           )}
         </ul>
       ) : null}
@@ -185,7 +187,12 @@ export function RosterRail({
         <ul className="roster-rail__tree">
           {view.teams.length ? (
             view.teams.map((t) => (
-              <TeamGroup key={t.uid} team={t} sel={selection} onSelect={onSelect} />
+              <TeamGroup
+                key={t.uid}
+                team={t}
+                sel={selection}
+                onSelect={onSelect}
+              />
             ))
           ) : (
             <li className="roster-rail__empty muted">No matching teams</li>

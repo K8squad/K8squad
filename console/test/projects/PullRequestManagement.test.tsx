@@ -51,7 +51,14 @@ const prs: GithubPR[] = [
     // No branch and no url on this mirror row — both must degrade honestly.
     actor: "jwilson",
   },
-  { number: 141, title: "perf: Optimize CI pipeline", state: "closed", reviewState: "merged", merged: true, url: "https://gh/pull/141" },
+  {
+    number: 141,
+    title: "perf: Optimize CI pipeline",
+    state: "closed",
+    reviewState: "merged",
+    merged: true,
+    url: "https://gh/pull/141",
+  },
   { number: 140, title: "chore: drop old job", state: "closed" },
 ];
 
@@ -63,9 +70,25 @@ const checks: GithubStatus["checkRuns"] = [
 describe("prStage / stageCounts", () => {
   it("maps mirror state + reviewState onto the merge pipeline", () => {
     expect(prStage({ number: 1, title: "a", state: "open" })).toBe("open");
-    expect(prStage({ number: 2, title: "b", state: "open", reviewState: "ready-for-review" })).toBe("review");
-    expect(prStage({ number: 3, title: "c", state: "closed", merged: true })).toBe("merged");
-    expect(prStage({ number: 4, title: "d", state: "closed", reviewState: "merged" })).toBe("merged");
+    expect(
+      prStage({
+        number: 2,
+        title: "b",
+        state: "open",
+        reviewState: "ready-for-review",
+      }),
+    ).toBe("review");
+    expect(
+      prStage({ number: 3, title: "c", state: "closed", merged: true }),
+    ).toBe("merged");
+    expect(
+      prStage({
+        number: 4,
+        title: "d",
+        state: "closed",
+        reviewState: "merged",
+      }),
+    ).toBe("merged");
     expect(prStage({ number: 5, title: "e", state: "closed" })).toBe("closed");
   });
 
@@ -95,20 +118,30 @@ describe("checkTone", () => {
 
 describe("PullRequestManagement", () => {
   it("renders PR cards with branch, checks and review state (AC1)", () => {
-    render(<PullRequestManagement data={status({ pullRequests: prs, checkRuns: checks })} />);
+    render(
+      <PullRequestManagement
+        data={status({ pullRequests: prs, checkRuns: checks })}
+      />,
+    );
 
     const cards = screen.getAllByTestId("pr-row");
     expect(cards).toHaveLength(4);
 
     const first = within(cards[0]);
-    expect(first.getByTestId("gh-pr-branch").textContent).toBe("feat/integration");
-    expect(first.getByTestId("gh-pr-review-state").textContent).toBe("ready-for-review");
+    expect(first.getByTestId("gh-pr-branch").textContent).toBe(
+      "feat/integration",
+    );
+    expect(first.getByTestId("gh-pr-review-state").textContent).toBe(
+      "ready-for-review",
+    );
     expect(first.getAllByTestId("gh-pr-check")).toHaveLength(2);
     expect(first.getByText("build")).toBeTruthy();
     expect(first.getByText("lint")).toBeTruthy();
 
     // The second mirror row carries no branch — degrade honestly, don't invent.
-    expect(within(cards[1]).getByTestId("gh-pr-branch").textContent).toBe("not mirrored");
+    expect(within(cards[1]).getByTestId("gh-pr-branch").textContent).toBe(
+      "not mirrored",
+    );
   });
 
   it("deep-links every PR title via pull/{n} (AC2)", () => {
@@ -117,9 +150,13 @@ describe("PullRequestManagement", () => {
 
     // Mirror url preferred when present; canonical path reconstructed otherwise.
     expect(links[0].getAttribute("href")).toBe("https://gh/pull/142");
-    expect(links[1].getAttribute("href")).toBe("https://github.com/K8squad/K8squad/pull/143");
+    expect(links[1].getAttribute("href")).toBe(
+      "https://github.com/K8squad/K8squad/pull/143",
+    );
     expect(links[0].getAttribute("target")).toBe("_blank");
-    expect(links[0].textContent).toMatch(/#142: feat: Add k8squad agent integration/);
+    expect(links[0].textContent).toMatch(
+      /#142: feat: Add k8squad agent integration/,
+    );
   });
 
   it("reflects merge state across the four workflow stages (AC3)", () => {
@@ -131,40 +168,70 @@ describe("PullRequestManagement", () => {
       "merged",
       "closed",
     ]);
-    const counts = screen.getAllByTestId("gh-pr-stage-count").map((c) => c.textContent);
+    const counts = screen
+      .getAllByTestId("gh-pr-stage-count")
+      .map((c) => c.textContent);
     expect(counts).toEqual(["0", "2", "1", "1"]);
   });
 
   it("deep-links the action row to real GitHub actions", () => {
     render(<PullRequestManagement data={status({ pullRequests: prs })} />);
     const actions = within(screen.getByTestId("gh-pr-actions"));
-    expect(actions.getByText(/New Pull Request/).closest("a")?.getAttribute("href")).toBe(
-      "https://github.com/K8squad/K8squad/pulls/new",
-    );
-    expect(actions.getByText(/Drafts/).closest("a")?.getAttribute("href")).toContain("is%3Adraft");
-    expect(actions.getByText(/Filters/).closest("a")?.getAttribute("href")).toContain("is%3Aopen");
+    expect(
+      actions
+        .getByText(/New Pull Request/)
+        .closest("a")
+        ?.getAttribute("href"),
+    ).toBe("https://github.com/K8squad/K8squad/pulls/new");
+    expect(
+      actions
+        .getByText(/Drafts/)
+        .closest("a")
+        ?.getAttribute("href"),
+    ).toContain("is%3Adraft");
+    expect(
+      actions
+        .getByText(/Filters/)
+        .closest("a")
+        ?.getAttribute("href"),
+    ).toContain("is%3Aopen");
   });
 
   it("states the mirror's limits instead of fabricating reviewers/agents/comments", () => {
     const { container } = render(
-      <PullRequestManagement data={status({ pullRequests: prs, checkRuns: checks })} />,
+      <PullRequestManagement
+        data={status({ pullRequests: prs, checkRuns: checks })}
+      />,
     );
     // The mockup shows reviewers, agent tags, comments, +/- and related work
     // items — the mirror carries none of them, so they must not appear.
-    for (const forbidden of [/reviewer/i, /related:/i, /agent$/i, /opened \d/i]) {
+    for (const forbidden of [
+      /reviewer/i,
+      /related:/i,
+      /agent$/i,
+      /opened \d/i,
+    ]) {
       expect(screen.queryByText(forbidden)).toBeNull();
     }
     expect(container.textContent).not.toMatch(/merge queue/i);
     // But it explains why those regions are absent.
-    expect(screen.getByTestId("gh-pr-workflow-note").textContent).toMatch(/does not carry/);
+    expect(screen.getByTestId("gh-pr-workflow-note").textContent).toMatch(
+      /does not carry/,
+    );
   });
 
   it("shows the selected PR's real fields in the detail panel", () => {
-    render(<PullRequestManagement data={status({ pullRequests: prs, checkRuns: checks })} />);
+    render(
+      <PullRequestManagement
+        data={status({ pullRequests: prs, checkRuns: checks })}
+      />,
+    );
     const detail = within(screen.getByTestId("gh-pr-detail"));
     expect(detail.getByText(/PR #142: Detailed View/)).toBeTruthy();
     expect(detail.getByText("@alexchen")).toBeTruthy();
-    expect(detail.getByTestId("gh-pr-detail-link").getAttribute("href")).toBe("https://gh/pull/142");
+    expect(detail.getByTestId("gh-pr-detail-link").getAttribute("href")).toBe(
+      "https://gh/pull/142",
+    );
   });
 
   it("renders nothing when the mirror has no pull requests", () => {
@@ -174,11 +241,18 @@ describe("PullRequestManagement", () => {
 
   it("shows the Review automation settings button only with a projectId (ISI-4764)", () => {
     // Without a projectId the settings button is hidden (no dialog target).
-    const { rerender } = render(<PullRequestManagement data={status({ pullRequests: prs })} />);
+    const { rerender } = render(
+      <PullRequestManagement data={status({ pullRequests: prs })} />,
+    );
     expect(screen.queryByTestId("gh-review-automation-btn")).toBeNull();
 
     // With a projectId the button appears and the dialog is closed until clicked.
-    rerender(<PullRequestManagement data={status({ pullRequests: prs })} projectId="ns/demo" />);
+    rerender(
+      <PullRequestManagement
+        data={status({ pullRequests: prs })}
+        projectId="ns/demo"
+      />,
+    );
     expect(screen.getByTestId("gh-review-automation-btn")).toBeTruthy();
     expect(screen.queryByTestId("gh-review-automation-dialog")).toBeNull();
   });
@@ -213,17 +287,21 @@ describe("PullRequestManagement", () => {
       // #200 done → "Reviewed", deep-links to the work item.
       const done = within(cards[0]).getByTestId("gh-pr-review-badge");
       expect(done.textContent).toContain("Reviewed");
-      expect(done.getAttribute("href")).toBe("/projects/ns%2Fdemo/issues/wi-done");
-      // #201 in progress → "Review in progress".
-      expect(within(cards[1]).getByTestId("gh-pr-review-badge").textContent).toContain(
-        "Review in progress",
+      expect(done.getAttribute("href")).toBe(
+        "/projects/ns%2Fdemo/issues/wi-done",
       );
+      // #201 in progress → "Review in progress".
+      expect(
+        within(cards[1]).getByTestId("gh-pr-review-badge").textContent,
+      ).toContain("Review in progress");
       // #202 no review → honest absence, no badge.
       expect(within(cards[2]).queryByTestId("gh-pr-review-badge")).toBeNull();
     });
 
     it("renders the badge as presence-only text when no projectId is available", () => {
-      render(<PullRequestManagement data={status({ pullRequests: reviewedPrs })} />);
+      render(
+        <PullRequestManagement data={status({ pullRequests: reviewedPrs })} />,
+      );
       const badge = within(screen.getAllByTestId("pr-row")[0]).getByTestId(
         "gh-pr-review-badge",
       );

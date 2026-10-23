@@ -31,13 +31,17 @@ describe("gateDecision", () => {
     expect(gateDecision("/overview", "", true)).toEqual({ action: "next" });
   });
   it("lets an anonymous navigation to a public route through (no redirect loop at /login)", () => {
-    expect(gateDecision("/login", "?next=%2Foverview", false)).toEqual({ action: "next" });
+    expect(gateDecision("/login", "?next=%2Foverview", false)).toEqual({
+      action: "next",
+    });
     expect(gateDecision("/api/runs/x", "", false)).toEqual({ action: "next" });
   });
   it("redirects an anonymous navigation to a protected route to /login, preserving the destination", () => {
     const r = gateDecision("/projects/checkout", "?tab=runs", false);
     expect(r.action).toBe("redirect");
-    expect(r.location).toBe("/login?next=" + encodeURIComponent("/projects/checkout?tab=runs"));
+    expect(r.location).toBe(
+      "/login?next=" + encodeURIComponent("/projects/checkout?tab=runs"),
+    );
   });
   it("preserves a bare protected path with no query", () => {
     const r = gateDecision("/overview", "", false);

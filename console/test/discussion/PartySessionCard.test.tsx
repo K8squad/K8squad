@@ -50,15 +50,49 @@ const opener = msg({
 
 const roundMessages = [
   opener,
-  msg({ id: "f1", authorPrincipal: "facil", authorAgentId: "ag-facil", partySessionId: "s1", partyRound: 1, partyRoundKind: "round" }),
-  msg({ id: "v1", authorPrincipal: "alice", authorAgentId: "ag-alice", partySessionId: "s1", partyRound: 1, partyRoundKind: "round" }),
-  msg({ id: "f2", authorPrincipal: "facil", authorAgentId: "ag-facil", partySessionId: "s1", partyRound: 2, partyRoundKind: "round" }),
-  msg({ id: "v2", authorPrincipal: "bob", authorAgentId: "ag-bob", partySessionId: "s1", partyRound: 2, partyRoundKind: "round" }),
+  msg({
+    id: "f1",
+    authorPrincipal: "facil",
+    authorAgentId: "ag-facil",
+    partySessionId: "s1",
+    partyRound: 1,
+    partyRoundKind: "round",
+  }),
+  msg({
+    id: "v1",
+    authorPrincipal: "alice",
+    authorAgentId: "ag-alice",
+    partySessionId: "s1",
+    partyRound: 1,
+    partyRoundKind: "round",
+  }),
+  msg({
+    id: "f2",
+    authorPrincipal: "facil",
+    authorAgentId: "ag-facil",
+    partySessionId: "s1",
+    partyRound: 2,
+    partyRoundKind: "round",
+  }),
+  msg({
+    id: "v2",
+    authorPrincipal: "bob",
+    authorAgentId: "ag-bob",
+    partySessionId: "s1",
+    partyRound: 2,
+    partyRoundKind: "round",
+  }),
 ];
 
 describe("PartySessionCard — per-round grouping (Gap 1)", () => {
   it("lists the numbered facilitator rounds with their voices (opener omitted)", () => {
-    render(<PartySessionCard session={session({ phase: "active", round: 1 })} opener={opener} messages={roundMessages} />);
+    render(
+      <PartySessionCard
+        session={session({ phase: "active", round: 1 })}
+        opener={opener}
+        messages={roundMessages}
+      />,
+    );
     const rounds = screen.getAllByTestId("party-round");
     expect(rounds).toHaveLength(2); // round 0 opener omitted
     expect(rounds[0]).toHaveAttribute("data-round", "1");
@@ -85,7 +119,12 @@ describe("PartySessionCard — terminal takeaways (Gap 2)", () => {
   it("shows the real phase/round/paid-run tally from a terminal session object", () => {
     render(
       <PartySessionCard
-        session={session({ phase: "converged", round: 2, paidRunsUsed: 7, closedAt: "2026-10-08T11:00:00Z" })}
+        session={session({
+          phase: "converged",
+          round: 2,
+          paidRunsUsed: 7,
+          closedAt: "2026-10-08T11:00:00Z",
+        })}
         opener={opener}
         messages={roundMessages}
       />,
@@ -99,8 +138,17 @@ describe("PartySessionCard — terminal takeaways (Gap 2)", () => {
   });
 
   it("degrades to transcript-only takeaways (no numbers) when no session object is reachable", () => {
-    render(<PartySessionCard session={null} opener={opener} messages={roundMessages} />);
-    expect(screen.getByTestId("party-session")).toHaveAttribute("data-phase", "ended");
+    render(
+      <PartySessionCard
+        session={null}
+        opener={opener}
+        messages={roundMessages}
+      />,
+    );
+    expect(screen.getByTestId("party-session")).toHaveAttribute(
+      "data-phase",
+      "ended",
+    );
     const outcome = screen.getByTestId("party-outcome");
     expect(outcome.textContent).toMatch(/ended/i);
     expect(outcome.textContent).not.toMatch(/paid runs/);

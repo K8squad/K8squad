@@ -9,7 +9,13 @@
 // item's own lane (§8.6).
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { ListView } from "@/components/tickets/ListView";
 import { KanbanBoard } from "@/components/tickets/KanbanBoard";
 import type { TreeController } from "@/components/tickets/SubTicketTree";
@@ -22,7 +28,8 @@ afterEach(cleanup);
 // but live data + the Kanban target the ISI-4455 ten-status enum — accept any
 // state string here and assert onto WorkItem["state"] at the one build seam.
 function item(
-  partial: Partial<Omit<WorkItem, "state">> & Pick<WorkItem, "id"> & { state?: string },
+  partial: Partial<Omit<WorkItem, "state">> &
+    Pick<WorkItem, "id"> & { state?: string },
 ): WorkItem {
   const { state, ...rest } = partial;
   return {
@@ -61,7 +68,10 @@ describe("ListView — Paperclip row bands + sub-ticket tree (8.14c + 8.17)", ()
     render(
       <ListView
         items={[parent]}
-        tree={controller({ expanded: new Set(["par"]), children: { par: [child] } })}
+        tree={controller({
+          expanded: new Set(["par"]),
+          children: { par: [child] },
+        })}
         sort={SORT}
         onSortChange={vi.fn()}
         projectId="ns/demo"
@@ -88,14 +98,20 @@ describe("ListView — Paperclip row bands + sub-ticket tree (8.14c + 8.17)", ()
     );
     expect(screen.getByTestId("row-state-d")).toHaveTextContent("Done");
     // The row exposes the phase hue as a CSS custom property for spine/dot/chip.
-    expect(screen.getByTestId("row-d").getAttribute("style")).toContain("--phase-hue");
+    expect(screen.getByTestId("row-d").getAttribute("style")).toContain(
+      "--phase-hue",
+    );
   });
 
   it("shows a warn glyph on a blocked row and struck styling class on cancelled", () => {
     render(
       <ListView
         items={[
-          item({ id: "b", state: "in_progress", blockedReason: "needs_approval" }),
+          item({
+            id: "b",
+            state: "in_progress",
+            blockedReason: "needs_approval",
+          }),
           item({ id: "x", state: "cancelled" as unknown as WorkItem["state"] }),
         ]}
         tree={controller({})}
@@ -105,7 +121,9 @@ describe("ListView — Paperclip row bands + sub-ticket tree (8.14c + 8.17)", ()
       />,
     );
     expect(screen.getByTestId("blocked-glyph-b")).toBeInTheDocument();
-    expect(screen.getByTestId("row-x").className).toContain("ksq-listrow--cancelled");
+    expect(screen.getByTestId("row-x").className).toContain(
+      "ksq-listrow--cancelled",
+    );
   });
 
   it("renders a 10-status colour legend in the footer (S5)", () => {
@@ -119,7 +137,9 @@ describe("ListView — Paperclip row bands + sub-ticket tree (8.14c + 8.17)", ()
       />,
     );
     expect(screen.getByTestId("status-legend")).toBeInTheDocument();
-    expect(screen.getByTestId("legend-code_review")).toHaveTextContent("Code Review");
+    expect(screen.getByTestId("legend-code_review")).toHaveTextContent(
+      "Code Review",
+    );
     expect(screen.getByTestId("legend-blocked")).toBeInTheDocument();
   });
 
@@ -154,7 +174,10 @@ describe("ListView — Paperclip row bands + sub-ticket tree (8.14c + 8.17)", ()
     rerender(
       <ListView
         items={[parent]}
-        tree={controller({ expanded: new Set(["par"]), children: { par: [child] } })}
+        tree={controller({
+          expanded: new Set(["par"]),
+          children: { par: [child] },
+        })}
         sort={SORT}
         onSortChange={vi.fn()}
         projectId="ns/demo"
@@ -214,7 +237,13 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
   it("folds a transitional engine lane onto its phase column (in_progress → Implementation)", () => {
     render(
       <KanbanBoard
-        items={[item({ id: "b", state: "in_progress", blockedReason: "needs_approval" })]}
+        items={[
+          item({
+            id: "b",
+            state: "in_progress",
+            blockedReason: "needs_approval",
+          }),
+        ]}
         tree={controller({})}
         role="viewer"
         onTransition={noop}
@@ -241,7 +270,9 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
     expect(screen.getByTestId("column-owner-implementation")).toHaveTextContent(
       "Front-End Engineer",
     );
-    expect(screen.getByTestId("column-owner-code_review")).toHaveTextContent("Code Reviewer");
+    expect(screen.getByTestId("column-owner-code_review")).toHaveTextContent(
+      "Code Reviewer",
+    );
     // Un-owned intake/terminal columns carry no owner chip.
     expect(screen.queryByTestId("column-owner-backlog")).toBeNull();
     expect(screen.queryByTestId("column-owner-done")).toBeNull();
@@ -257,7 +288,9 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
         projectId="ns/demo"
       />,
     );
-    expect(screen.getByTestId("card-v").getAttribute("draggable")).toBe("false");
+    expect(screen.getByTestId("card-v").getAttribute("draggable")).toBe(
+      "false",
+    );
     expect(screen.queryByTestId("quick-move-v")).toBeNull();
   });
 
@@ -290,7 +323,13 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
       .map((o) => o.value)
       .filter(Boolean);
     // implementation → code_review, testing, planning, design, cancelled (ISI-4455 §2)
-    expect(values).toEqual(["code_review", "testing", "planning", "design", "cancelled"]);
+    expect(values).toEqual([
+      "code_review",
+      "testing",
+      "planning",
+      "design",
+      "cancelled",
+    ]);
     expect(values).not.toContain("implementation"); // never a no-op move
     expect(values).not.toContain("done"); // a disallowed long jump is not offered
   });
@@ -340,7 +379,10 @@ describe("Live-run markers — list pill + kanban badge/ring + column chip (ISI-
   it("ListView marks only the live rows, with a decorative pill + sr-only title note", () => {
     render(
       <ListView
-        items={[item({ id: "live1", title: "Live one" }), item({ id: "idle1", title: "Idle one" })]}
+        items={[
+          item({ id: "live1", title: "Live one" }),
+          item({ id: "idle1", title: "Idle one" }),
+        ]}
         tree={controller({})}
         sort={SORT}
         onSortChange={vi.fn()}
@@ -353,8 +395,12 @@ describe("Live-run markers — list pill + kanban badge/ring + column chip (ISI-
     expect(pill).toHaveAttribute("aria-hidden", "true"); // decorative — AT reads the title note
     expect(screen.queryByTestId("row-live-idle1")).toBeNull();
     // The visually-hidden "(live run)" rides the live row's title for assistive tech.
-    expect(screen.getByTestId("row-title-live1")).toHaveTextContent("(live run)");
-    expect(screen.getByTestId("row-title-idle1")).not.toHaveTextContent("(live run)");
+    expect(screen.getByTestId("row-title-live1")).toHaveTextContent(
+      "(live run)",
+    );
+    expect(screen.getByTestId("row-title-idle1")).not.toHaveTextContent(
+      "(live run)",
+    );
   });
 
   it("KanbanBoard marks the live card (badge + --live ring class) and leaves idle cards plain", () => {
@@ -373,9 +419,15 @@ describe("Live-run markers — list pill + kanban badge/ring + column chip (ISI-
     );
     expect(screen.getByTestId("card-live-live1")).toBeInTheDocument();
     expect(screen.queryByTestId("card-live-idle1")).toBeNull();
-    expect(screen.getByTestId("card-live1")).toHaveClass("ksq-kanban-card--live");
-    expect(screen.getByTestId("card-idle1")).not.toHaveClass("ksq-kanban-card--live");
-    expect(screen.getByTestId("card-title-live1")).toHaveTextContent("(live run)");
+    expect(screen.getByTestId("card-live1")).toHaveClass(
+      "ksq-kanban-card--live",
+    );
+    expect(screen.getByTestId("card-idle1")).not.toHaveClass(
+      "ksq-kanban-card--live",
+    );
+    expect(screen.getByTestId("card-title-live1")).toHaveTextContent(
+      "(live run)",
+    );
   });
 
   it("KanbanBoard shows a per-column 'N live' chip counting live issues in that lane", () => {

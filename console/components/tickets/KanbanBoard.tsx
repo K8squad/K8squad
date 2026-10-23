@@ -37,18 +37,29 @@ import {
   type PhaseGroup,
   type PhaseStatus,
 } from "@/lib/tickets/statusColor";
-import { allowedTargets, canTransition, phaseOf } from "@/lib/tickets/transitions";
+import {
+  allowedTargets,
+  canTransition,
+  phaseOf,
+} from "@/lib/tickets/transitions";
 import { TicketNode, type TreeController } from "./SubTicketTree";
 
 /** The four super-header groups, in lifecycle order (design §1 · Kanban row). */
-const GROUP_ORDER: readonly PhaseGroup[] = ["Intake", "Build", "Review", "Done"];
+const GROUP_ORDER: readonly PhaseGroup[] = [
+  "Intake",
+  "Build",
+  "Review",
+  "Done",
+];
 
 /** Columns per group, DERIVED from the shared SSOT so the two can never drift. */
-const GROUPS: ReadonlyArray<{ group: PhaseGroup; phases: readonly PhaseStatus[] }> =
-  GROUP_ORDER.map((group) => ({
-    group,
-    phases: PHASE_STATUSES.filter((s) => STATUS_META[s].group === group),
-  }));
+const GROUPS: ReadonlyArray<{
+  group: PhaseGroup;
+  phases: readonly PhaseStatus[];
+}> = GROUP_ORDER.map((group) => ({
+  group,
+  phases: PHASE_STATUSES.filter((s) => STATUS_META[s].group === group),
+}));
 
 export interface KanbanBoardProps {
   /** The visible (already filtered) items — roots of the sub-ticket tree. */
@@ -82,16 +93,21 @@ export function KanbanBoard({
   const [draggingId, setDraggingId] = useState<string | null>(null);
   // The column currently under the pointer + whether a drop there is allowed —
   // drives the glow / drop-line (allowed) vs the "no-drop" cue (disallowed).
-  const [dropTarget, setDropTarget] = useState<{ phase: PhaseStatus; allowed: boolean } | null>(
-    null,
-  );
+  const [dropTarget, setDropTarget] = useState<{
+    phase: PhaseStatus;
+    allowed: boolean;
+  } | null>(null);
   // Groups the user has collapsed to a slim rail (10 columns exceed one screen).
-  const [collapsed, setCollapsed] = useState<ReadonlySet<PhaseGroup>>(new Set());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<PhaseGroup>>(
+    new Set(),
+  );
 
   // Placement: bucket every visible root by the phase COLUMN its state folds to
   // (§13 pure projection). Unknown states are dropped, never guessed into a lane.
   const byPhase = useMemo(() => {
-    const map = new Map<PhaseStatus, WorkItem[]>(PHASE_STATUSES.map((s) => [s, []]));
+    const map = new Map<PhaseStatus, WorkItem[]>(
+      PHASE_STATUSES.map((s) => [s, []]),
+    );
     for (const it of items) {
       const p = phaseOf(it.state);
       if (p) map.get(p)!.push(it);
@@ -105,8 +121,9 @@ export function KanbanBoard({
 
   // The in-flight engine lanes (folded away as columns) surface as a coordinator
   // hint — honest count, never a fabricated lane.
-  const dispatching = items.filter((it) => it.state === "in_progress" || it.state === "in_review")
-    .length;
+  const dispatching = items.filter(
+    (it) => it.state === "in_progress" || it.state === "in_review",
+  ).length;
 
   async function transition(item: WorkItem, to: PhaseStatus) {
     if (!draggable) return; // UI RBAC gate — the server wall (§6.7.2) stays authoritative.
@@ -160,7 +177,10 @@ export function KanbanBoard({
         }}
       >
         {isBlocked(item) && (
-          <span className="ksq-kanban-blocked" data-testid={`blocked-badge-${item.id}`}>
+          <span
+            className="ksq-kanban-blocked"
+            data-testid={`blocked-badge-${item.id}`}
+          >
             Blocked
           </span>
         )}
@@ -232,7 +252,10 @@ export function KanbanBoard({
     const quiet = laneItems.length === 0;
     // Per-column live chip (ISI-5528, OQ3): count live ISSUES in this lane — matches the
     // card-marker semantics (a ticket may hold >1 run, but it is one live card).
-    const liveInColumn = laneItems.reduce((n, it) => n + (liveIssueIds.has(it.id) ? 1 : 0), 0);
+    const liveInColumn = laneItems.reduce(
+      (n, it) => n + (liveIssueIds.has(it.id) ? 1 : 0),
+      0,
+    );
     const isOver = dropTarget?.phase === phase;
     const overAllowed = isOver && dropTarget.allowed;
     const overBlocked = isOver && !dropTarget.allowed;
@@ -267,7 +290,9 @@ export function KanbanBoard({
           }
           setDropTarget({ phase, allowed });
         }}
-        onDragLeave={() => setDropTarget((t) => (t && t.phase === phase ? null : t))}
+        onDragLeave={() =>
+          setDropTarget((t) => (t && t.phase === phase ? null : t))
+        }
         onDrop={(evt) => {
           evt.preventDefault();
           const item = dragged.current;
@@ -300,7 +325,10 @@ export function KanbanBoard({
             </span>
           )}
           {overAllowed && (
-            <span className="ksq-kanban-column__cue" data-testid={`drop-cue-${phase}`}>
+            <span
+              className="ksq-kanban-column__cue"
+              data-testid={`drop-cue-${phase}`}
+            >
               → {meta.label}
             </span>
           )}
@@ -318,7 +346,10 @@ export function KanbanBoard({
           )}
         </header>
         {meta.role && (
-          <div className="ksq-kanban-column__owner" data-testid={`column-owner-${phase}`}>
+          <div
+            className="ksq-kanban-column__owner"
+            data-testid={`column-owner-${phase}`}
+          >
             <span aria-hidden="true" className="ksq-kanban-owner-dot" />
             {meta.role}
           </div>
@@ -332,7 +363,13 @@ export function KanbanBoard({
             />
           )}
           {laneItems.map((item) => (
-            <TicketNode key={item.id} item={item} depth={0} tree={tree} renderNode={renderCard} />
+            <TicketNode
+              key={item.id}
+              item={item}
+              depth={0}
+              tree={tree}
+              renderNode={renderCard}
+            />
           ))}
           {quiet && <p className="ksq-empty-hint">No tickets.</p>}
         </div>
@@ -345,10 +382,13 @@ export function KanbanBoard({
       <div className="ksq-coordinator-strip" data-testid="coordinator-strip">
         <span className="ksq-coordinator-strip__label">Coordinator</span>
         <span className="ksq-coordinator-strip__note">
-          Dispatches work across the phase lifecycle — column moves here are audited
-          human overrides, not agent claims.
+          Dispatches work across the phase lifecycle — column moves here are
+          audited human overrides, not agent claims.
         </span>
-        <span className="ksq-coordinator-strip__count" data-testid="coordinator-inflight">
+        <span
+          className="ksq-coordinator-strip__count"
+          data-testid="coordinator-inflight"
+        >
           {dispatching} in flight
         </span>
       </div>
@@ -375,11 +415,15 @@ export function KanbanBoard({
                     {isCollapsed ? "▸" : "▾"}
                   </span>
                   <span className="ksq-phase-group__name">{group}</span>
-                  <span className="ksq-phase-group__count">{groupCount(phases)}</span>
+                  <span className="ksq-phase-group__count">
+                    {groupCount(phases)}
+                  </span>
                 </button>
               </header>
               {!isCollapsed && (
-                <div className="ksq-phase-group__cols">{phases.map(renderColumn)}</div>
+                <div className="ksq-phase-group__cols">
+                  {phases.map(renderColumn)}
+                </div>
               )}
             </section>
           );

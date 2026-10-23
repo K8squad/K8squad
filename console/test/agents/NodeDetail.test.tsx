@@ -30,16 +30,43 @@ afterEach(() => {
 });
 
 const teams: TeamWire[] = [
-  { name: "Platform Team", namespace: "ns-plat", uid: "t-plat", agentCount: 2, projectCount: 1 },
+  {
+    name: "Platform Team",
+    namespace: "ns-plat",
+    uid: "t-plat",
+    agentCount: 2,
+    projectCount: 1,
+  },
 ];
 const agents: AgentWire[] = [
-  { id: "a1", name: "agent-7", namespace: "ns-plat", role: "Backend", skillCount: 4, coordinator: false },
-  { id: "a2", name: "agent-9", namespace: "ns-plat", role: "PM", skillCount: 2, coordinator: true },
+  {
+    id: "a1",
+    name: "agent-7",
+    namespace: "ns-plat",
+    role: "Backend",
+    skillCount: 4,
+    coordinator: false,
+  },
+  {
+    id: "a2",
+    name: "agent-9",
+    namespace: "ns-plat",
+    role: "PM",
+    skillCount: 2,
+    coordinator: true,
+  },
 ];
 const roles: RoleWire[] = [
-  { name: "Backend Engineer", namespace: "ns-plat", uid: "r1", defaultSkills: ["git", "kubectl"] },
+  {
+    name: "Backend Engineer",
+    namespace: "ns-plat",
+    uid: "r1",
+    defaultSkills: ["git", "kubectl"],
+  },
 ];
-const skills: SkillWire[] = [{ name: "git", namespace: "ns-plat", uid: "s1", permissions: ["repo"] }];
+const skills: SkillWire[] = [
+  { name: "git", namespace: "ns-plat", uid: "s1", permissions: ["repo"] },
+];
 
 const roster = buildRoster(teams, agents, roles, skills);
 
@@ -49,7 +76,13 @@ function tabNames(): string[] {
 
 describe("NodeDetail tab relevance", () => {
   it("shows the full Overview·Model·Skills·Advanced strip for an Agent", () => {
-    render(<NodeDetail roster={roster} selection={{ kind: "agent", id: "a1" }} onRosterChanged={() => {}} />);
+    render(
+      <NodeDetail
+        roster={roster}
+        selection={{ kind: "agent", id: "a1" }}
+        onRosterChanged={() => {}}
+      />,
+    );
     expect(tabNames()).toEqual(["Overview", "Model", "Skills", "Advanced"]);
   });
 
@@ -65,21 +98,39 @@ describe("NodeDetail tab relevance", () => {
   });
 
   it("shows NO Model tab for a Skill — only Overview (strip hidden for a single tab)", () => {
-    render(<NodeDetail roster={roster} selection={{ kind: "skill", name: "git" }} onRosterChanged={() => {}} />);
+    render(
+      <NodeDetail
+        roster={roster}
+        selection={{ kind: "skill", name: "git" }}
+        onRosterChanged={() => {}}
+      />,
+    );
     expect(tabNames()).not.toContain("Model");
     // A single-tab node hides the strip entirely.
     expect(screen.queryByRole("tab")).toBeNull();
   });
 
   it("shows NO Model tab for a Team", () => {
-    render(<NodeDetail roster={roster} selection={{ kind: "team", uid: "t-plat" }} onRosterChanged={() => {}} />);
+    render(
+      <NodeDetail
+        roster={roster}
+        selection={{ kind: "team", uid: "t-plat" }}
+        onRosterChanged={() => {}}
+      />,
+    );
     expect(tabNames()).not.toContain("Model");
   });
 });
 
 describe("NodeDetail team overview enrichments (ISI-5439(3))", () => {
   beforeEach(() => {
-    render(<NodeDetail roster={roster} selection={{ kind: "team", uid: "t-plat" }} onRosterChanged={() => {}} />);
+    render(
+      <NodeDetail
+        roster={roster}
+        selection={{ kind: "team", uid: "t-plat" }}
+        onRosterChanged={() => {}}
+      />,
+    );
   });
 
   it("renders a reporting-structure diagram with coordinator + members", () => {
@@ -93,6 +144,8 @@ describe("NodeDetail team overview enrichments (ISI-5439(3))", () => {
     // Backend Engineer loads git + kubectl as defaults.
     expect(screen.getByText("git")).toBeTruthy();
     expect(screen.getByText("kubectl")).toBeTruthy();
-    expect(screen.getAllByText(/via Backend Engineer/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/via Backend Engineer/i).length).toBeGreaterThan(
+      0,
+    );
   });
 });

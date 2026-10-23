@@ -19,7 +19,9 @@ export function proposalActionLabel(payload: ProposalPayload): string {
         ? `Assign ${payload.assigneeAgentId ?? "an agent"} to ticket ${payload.ticketId}`
         : "Assign agent";
     case "party_run":
-      return payload.title ? `Start a party run "${payload.title}"` : "Start a party run";
+      return payload.title
+        ? `Start a party run "${payload.title}"`
+        : "Start a party run";
     default:
       return "Proposal";
   }
@@ -65,7 +67,10 @@ export function ProposalCard({
           {phase}
         </span>
         {proposal.decidedBy ? (
-          <span className="ksq-proposal__decided" data-testid="proposal-decided-by">
+          <span
+            className="ksq-proposal__decided"
+            data-testid="proposal-decided-by"
+          >
             by {proposal.decidedBy}
           </span>
         ) : null}

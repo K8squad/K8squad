@@ -60,7 +60,11 @@ const TABS_FOR_KIND: Record<string, ReadonlyArray<NodeTab>> = {
 };
 
 function TypeBadge({ kind }: { kind: string }) {
-  return <span className={`roster-detail__badge roster-detail__badge--${kind}`}>{kind}</span>;
+  return (
+    <span className={`roster-detail__badge roster-detail__badge--${kind}`}>
+      {kind}
+    </span>
+  );
 }
 
 function Breadcrumb({ parts }: { parts: string[] }) {
@@ -153,7 +157,9 @@ function DetailShell({
         </div>
       ) : null}
       <div className="roster-detail__body">
-        {active === "overview" ? children : (tabContent[active] ?? <TabFallback tab={active} />)}
+        {active === "overview"
+          ? children
+          : (tabContent[active] ?? <TabFallback tab={active} />)}
       </div>
     </section>
   );
@@ -164,7 +170,8 @@ function TabFallback({ tab }: { tab: NodeTab }) {
     overview: "",
     model: "The effective model is shown on the Overview tab.",
     skills: "The skill summary is shown on the Overview tab.",
-    advanced: "Advanced identity and scheduling fields are read-only here — use Full-form edit.",
+    advanced:
+      "Advanced identity and scheduling fields are read-only here — use Full-form edit.",
   };
   return <p className="muted">{copy[tab]}</p>;
 }
@@ -185,7 +192,10 @@ function AgentOverview({ agent, team }: { agent: RosterAgent; team?: string }) {
               <span className="muted">No role assigned</span>
             )}
             {agent.coordinator ? (
-              <span className="roster-detail__coord" title="Team coordinator role">
+              <span
+                className="roster-detail__coord"
+                title="Team coordinator role"
+              >
                 coordinator
               </span>
             ) : null}
@@ -212,7 +222,13 @@ function RoleOverview({ role }: { role: RosterRole }) {
       <h3 className="roster-detail__card-head">Role definition</h3>
       <dl className="roster-detail__dl">
         <dt>Prompt</dt>
-        <dd>{role.prompt ? role.prompt : <span className="muted">— none referenced</span>}</dd>
+        <dd>
+          {role.prompt ? (
+            role.prompt
+          ) : (
+            <span className="muted">— none referenced</span>
+          )}
+        </dd>
         <dt>Default skills</dt>
         <dd>
           {role.defaultSkills.length ? (
@@ -231,8 +247,8 @@ function RoleOverview({ role }: { role: RosterRole }) {
         <dd>{role.runtimeClassHint ?? <span className="muted">—</span>}</dd>
       </dl>
       <p className="muted roster-detail__note">
-        A shared library object — model and default-skill edits on the Model / Skills tabs show
-        their blast radius before saving.
+        A shared library object — model and default-skill edits on the Model /
+        Skills tabs show their blast radius before saving.
       </p>
     </div>
   );
@@ -278,17 +294,33 @@ function TeamHierarchyDiagram({ team }: { team: RosterTeam }) {
   if (!team.agents.length) {
     return <p className="muted">No agents on this team yet.</p>;
   }
-  const DiagramNode = ({ label, role, coord }: { label: string; role?: string; coord?: boolean }) => (
-    <span className={`roster-diagram__node${coord ? " roster-diagram__node--coord" : ""}`}>
+  const DiagramNode = ({
+    label,
+    role,
+    coord,
+  }: {
+    label: string;
+    role?: string;
+    coord?: boolean;
+  }) => (
+    <span
+      className={`roster-diagram__node${coord ? " roster-diagram__node--coord" : ""}`}
+    >
       <span className="roster-diagram__node-name">{label}</span>
       {role ? <span className="roster-diagram__node-role">·{role}</span> : null}
-      {coord ? <span className="roster-diagram__node-tag">coordinator</span> : null}
+      {coord ? (
+        <span className="roster-diagram__node-tag">coordinator</span>
+      ) : null}
     </span>
   );
   // A static diagram, not an interactive tree widget — a labelled group wrapping a semantic nested
   // list reads correctly to a screen reader without implying selectable tree items.
   return (
-    <div className="roster-diagram" role="group" aria-label={`${team.name} reporting structure`}>
+    <div
+      className="roster-diagram"
+      role="group"
+      aria-label={`${team.name} reporting structure`}
+    >
       <div className="roster-diagram__root">
         <DiagramNode label={team.name} />
       </div>
@@ -323,10 +355,20 @@ function TeamHierarchyDiagram({ team }: { team: RosterTeam }) {
   );
 }
 
-function TeamSkillsSummary({ roster, team }: { roster: Roster; team: RosterTeam }) {
+function TeamSkillsSummary({
+  roster,
+  team,
+}: {
+  roster: Roster;
+  team: RosterTeam;
+}) {
   const rollup = teamSkillSummary(roster, team);
   if (!rollup.length) {
-    return <p className="muted">No default skills are declared by this team&rsquo;s roles.</p>;
+    return (
+      <p className="muted">
+        No default skills are declared by this team&rsquo;s roles.
+      </p>
+    );
   }
   return (
     <ul className="roster-detail__skill-rollup">
@@ -368,8 +410,8 @@ function TeamOverview({ roster, team }: { roster: Roster; team: RosterTeam }) {
         <h3 className="roster-detail__card-head">Skills loaded on the team</h3>
         <TeamSkillsSummary roster={roster} team={team} />
         <p className="muted roster-detail__note">
-          The union of default skills across this team&rsquo;s roles, attributed to the role that
-          loads each one.
+          The union of default skills across this team&rsquo;s roles, attributed
+          to the role that loads each one.
         </p>
       </div>
     </div>
@@ -381,8 +423,9 @@ function OrgDefaultOverview() {
     <div className="card roster-detail__card">
       <h3 className="roster-detail__card-head">Org default model</h3>
       <p className="muted">
-        The organisation-wide default model (the <code>ModelConfig</code> singleton) is the final
-        tier in the Agent → Role → Org-default resolution. Manage it in Settings → Configuration.
+        The organisation-wide default model (the <code>ModelConfig</code>{" "}
+        singleton) is the final tier in the Agent → Role → Org-default
+        resolution. Manage it in Settings → Configuration.
       </p>
     </div>
   );
@@ -471,7 +514,12 @@ export function NodeDetail({
           tabContent={{
             // Keyed by node identity: switching agents remounts the editors with fresh reads.
             model: (
-              <AgentModelPanel key={r.node.name} agentName={r.node.name} team={nodeTeam} onSaved={onRosterChanged} />
+              <AgentModelPanel
+                key={r.node.name}
+                agentName={r.node.name}
+                team={nodeTeam}
+                onSaved={onRosterChanged}
+              />
             ),
             skills: (
               <AgentSkillsPanel
@@ -511,7 +559,12 @@ export function NodeDetail({
           actions={<EditInCompose kind="roles" name={r.node.name} />}
           tabContent={{
             model: (
-              <RoleModelPanel key={r.node.name} roleName={r.node.name} team={nodeTeam} onSaved={onRosterChanged} />
+              <RoleModelPanel
+                key={r.node.name}
+                roleName={r.node.name}
+                team={nodeTeam}
+                onSaved={onRosterChanged}
+              />
             ),
             skills: (
               <RoleSkillsPanel

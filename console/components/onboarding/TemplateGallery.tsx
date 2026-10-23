@@ -55,7 +55,8 @@ export const SQUAD_TEMPLATES: ReadonlyArray<SquadTemplate> = [
     id: "minimal-trio",
     title: "Minimal Trio",
     recommended: true,
-    blurb: "Boss + Implementer + Manager — the smallest squad that plans, ships and reviews.",
+    blurb:
+      "Boss + Implementer + Manager — the smallest squad that plans, ships and reviews.",
     agents: [
       { name: "boss", preset: "boss" },
       { name: "implementer", preset: "implementer" },
@@ -65,7 +66,8 @@ export const SQUAD_TEMPLATES: ReadonlyArray<SquadTemplate> = [
   {
     id: "bmad",
     title: "BMAD Squad",
-    blurb: "The full examples/bmad-team persona set mapped onto the seeded Role presets.",
+    blurb:
+      "The full examples/bmad-team persona set mapped onto the seeded Role presets.",
     agents: [
       { name: "sam", preset: "boss", persona: "CEO" },
       { name: "john", preset: "manager", persona: "Product Manager" },
@@ -130,19 +132,28 @@ type FieldErrors = Record<string, string>;
 
 /** Parse a non-2xx squad response body (verbatim honesty, mirroring the shared
  * ComposeScreen/Launchpad contract): server message + field errors as sent. */
-function parseError(status: number, body: string): { message: string; fields: FieldErrors } {
+function parseError(
+  status: number,
+  body: string,
+): { message: string; fields: FieldErrors } {
   const fields: FieldErrors = {};
   let message = `Materialize failed (status ${status}).`;
   try {
-    const j = JSON.parse(body) as { error?: string; fields?: Array<{ field: string; message: string }> };
+    const j = JSON.parse(body) as {
+      error?: string;
+      fields?: Array<{ field: string; message: string }>;
+    };
     if (j.error) message = j.error;
-    if (Array.isArray(j.fields)) for (const f of j.fields) fields[f.field] = f.message;
+    if (Array.isArray(j.fields))
+      for (const f of j.fields) fields[f.field] = f.message;
   } catch {
     /* non-JSON — keep the status message */
   }
   if (status === 401) message = "You must sign in to compose.";
-  else if (status === 404) message = message || "No team scope for this caller.";
-  else if (status === 501) message = "Compose is not available on this deployment yet.";
+  else if (status === 404)
+    message = message || "No team scope for this caller.";
+  else if (status === 501)
+    message = "Compose is not available on this deployment yet.";
   return { message, fields };
 }
 
@@ -189,18 +200,31 @@ export function TemplateGallery({
       if (res.status === 201) {
         const body = (await res.json()) as SquadResponse;
         const n = body.agents?.length ?? 0;
-        const teamNote = body.team ? `team "${body.team.name}"` + (body.team.operation === "existing" ? " (existing)" : "") + ", " : "";
-        onApplied(`Squad materialized — ${teamNote}${n} agent${n === 1 ? "" : "s"} created`);
+        const teamNote = body.team
+          ? `team "${body.team.name}"` +
+            (body.team.operation === "existing" ? " (existing)" : "") +
+            ", "
+          : "";
+        onApplied(
+          `Squad materialized — ${teamNote}${n} agent${n === 1 ? "" : "s"} created`,
+        );
         return;
       }
       if (res.status === 207) {
-        setApply({ kind: "partial", created: (await res.json()) as SquadResponse });
+        setApply({
+          kind: "partial",
+          created: (await res.json()) as SquadResponse,
+        });
         return;
       }
       const { message, fields } = parseError(res.status, await res.text());
       setApply({ kind: "error", message, fields });
     } catch {
-      setApply({ kind: "error", message: "Network error — the squad was not sent.", fields: {} });
+      setApply({
+        kind: "error",
+        message: "Network error — the squad was not sent.",
+        fields: {},
+      });
     }
   }
 
@@ -208,7 +232,10 @@ export function TemplateGallery({
 
   return (
     <div className="launchpad-gallery" data-testid="template-gallery">
-      <ul className="launchpad-gallery__cards" aria-label="Starter squad templates">
+      <ul
+        className="launchpad-gallery__cards"
+        aria-label="Starter squad templates"
+      >
         {SQUAD_TEMPLATES.map((t) => {
           const active = t.id === selected.id;
           return (
@@ -254,12 +281,21 @@ export function TemplateGallery({
         })}
       </ul>
 
-      {apply.kind === "partial" && <PartialResultPanel result={apply.created} onDismiss={() => setApply({ kind: "idle" })} onStartBlank={onStartBlank} />}
+      {apply.kind === "partial" && (
+        <PartialResultPanel
+          result={apply.created}
+          onDismiss={() => setApply({ kind: "idle" })}
+          onStartBlank={onStartBlank}
+        />
+      )}
 
       <div className="launchpad-gallery__apply">
         <label className="launchpad-gallery__project">
           <span>
-            Project <span className="muted">— the squad these agents compose within</span>
+            Project{" "}
+            <span className="muted">
+              — the squad these agents compose within
+            </span>
           </span>
           <input
             value={project}
@@ -314,15 +350,20 @@ function PartialResultPanel({
   const agents = result.agents ?? [];
   const errors = result.errors ?? [];
   return (
-    <div className="launchpad-gallery__partial" role="alert" data-testid="squad-partial-result">
+    <div
+      className="launchpad-gallery__partial"
+      role="alert"
+      data-testid="squad-partial-result"
+    >
       <p>
-        <strong>Partial materialize (207)</strong> — the server reported some objects failed.
-        Nothing is masked:
+        <strong>Partial materialize (207)</strong> — the server reported some
+        objects failed. Nothing is masked:
       </p>
       <ul className="launchpad-gallery__outcomes">
         {result.team && (
           <li className="launchpad-gallery__ok">
-            ✓ Team <code>{result.team.name}</code> — {result.team.operation ?? "created"}
+            ✓ Team <code>{result.team.name}</code> —{" "}
+            {result.team.operation ?? "created"}
           </li>
         )}
         {agents.map((a) => (
@@ -337,7 +378,11 @@ function PartialResultPanel({
         ))}
       </ul>
       <div className="launchpad-gallery__actions">
-        <button type="button" className="btn btn--primary" onClick={onStartBlank}>
+        <button
+          type="button"
+          className="btn btn--primary"
+          onClick={onStartBlank}
+        >
           Finish by hand →
         </button>
         <button type="button" className="btn" onClick={onDismiss}>
@@ -345,8 +390,9 @@ function PartialResultPanel({
         </button>
       </div>
       <p className="muted">
-        Created objects count immediately — finish the failed ones with the shared form (retries
-        of the whole template would conflict on the names that already exist).
+        Created objects count immediately — finish the failed ones with the
+        shared form (retries of the whole template would conflict on the names
+        that already exist).
       </p>
     </div>
   );

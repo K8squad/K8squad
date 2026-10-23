@@ -13,7 +13,12 @@
 // SSOT). This module adds ONLY the adjacency graph + the legacy-lane fold — it
 // never forks the colour map.
 
-import { PHASE_STATUSES, WORKING_PHASES, type PhaseStatus, type WorkingPhase } from "./statusColor";
+import {
+  PHASE_STATUSES,
+  WORKING_PHASES,
+  type PhaseStatus,
+  type WorkingPhase,
+} from "./statusColor";
 
 /**
  * Fold a read-model `state` to the phase COLUMN it renders under. The coordinator's
@@ -29,7 +34,8 @@ const LEGACY_FOLD: Readonly<Record<string, PhaseStatus>> = {
 };
 
 export function phaseOf(state: string): PhaseStatus | null {
-  if ((PHASE_STATUSES as readonly string[]).includes(state)) return state as PhaseStatus;
+  if ((PHASE_STATUSES as readonly string[]).includes(state))
+    return state as PhaseStatus;
   return LEGACY_FOLD[state] ?? null;
 }
 
@@ -46,7 +52,9 @@ export function phaseOf(state: string): PhaseStatus | null {
  */
 export function workingPhaseOf(state: string): WorkingPhase | null {
   const p = phaseOf(state);
-  return p && (WORKING_PHASES as readonly string[]).includes(p) ? (p as WorkingPhase) : null;
+  return p && (WORKING_PHASES as readonly string[]).includes(p)
+    ? (p as WorkingPhase)
+    : null;
 }
 
 /**
@@ -55,14 +63,22 @@ export function workingPhaseOf(state: string): WorkingPhase | null {
  * `cancelled` is a valid target from every working lane; it is never reachable
  * directly from `done` (and vice-versa) — that is the one hop the server 422s.
  */
-export const ALLOWED_DROPS: Readonly<Record<PhaseStatus, readonly PhaseStatus[]>> = {
+export const ALLOWED_DROPS: Readonly<
+  Record<PhaseStatus, readonly PhaseStatus[]>
+> = {
   backlog: ["todo", "design", "cancelled"],
   todo: ["design", "planning", "implementation", "backlog", "cancelled"],
   design: ["planning", "implementation", "todo", "cancelled"],
   planning: ["implementation", "design", "cancelled"],
   implementation: ["code_review", "testing", "planning", "design", "cancelled"],
   code_review: ["testing", "documentation", "implementation", "cancelled"],
-  testing: ["documentation", "done", "implementation", "code_review", "cancelled"],
+  testing: [
+    "documentation",
+    "done",
+    "implementation",
+    "code_review",
+    "cancelled",
+  ],
   documentation: ["done", "testing", "cancelled"],
   done: ["backlog", "todo"],
   cancelled: ["backlog", "todo"],

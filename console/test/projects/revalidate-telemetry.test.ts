@@ -60,7 +60,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const listing = (gen: string, over: Partial<FileListing> = {}): FileListing => ({
+const listing = (
+  gen: string,
+  over: Partial<FileListing> = {},
+): FileListing => ({
   path: "",
   entries: [{ name: "a.ts", path: "a.ts", type: "file", size: 1 }],
   generation: gen,
@@ -69,7 +72,13 @@ const listing = (gen: string, over: Partial<FileListing> = {}): FileListing => (
 
 describe("revalidate-telemetry — §3 field contract", () => {
   it("serve beacon carries the exact §3 fields and posts to the local sink", async () => {
-    emitServe({ projectId: "p1", path: "src/lib/x", fromCache: true, revisit: true, generation: "a1b2c3deadbeef" });
+    emitServe({
+      projectId: "p1",
+      path: "src/lib/x",
+      fromCache: true,
+      revisit: true,
+      generation: "a1b2c3deadbeef",
+    });
     expect(sendBeacon).toHaveBeenCalledTimes(1);
     expect(beacons[0].url).toBe(REVALIDATE_TELEMETRY_URL);
     const b = await bodyOf(0);
@@ -84,7 +93,13 @@ describe("revalidate-telemetry — §3 field contract", () => {
   });
 
   it("§8 PII firewall: no path string, no file names, no raw generation in the body", async () => {
-    emitServe({ projectId: "p1", path: "secrets/prod/.env", fromCache: false, revisit: false, generation: "deadbeefcafe" });
+    emitServe({
+      projectId: "p1",
+      path: "secrets/prod/.env",
+      fromCache: false,
+      revisit: false,
+      generation: "deadbeefcafe",
+    });
     const b = await bodyOf(0);
     const serialized = JSON.stringify(b);
     expect(b).not.toHaveProperty("path");
@@ -95,7 +110,13 @@ describe("revalidate-telemetry — §3 field contract", () => {
   });
 
   it("revalidate success carries outcome/latency/generationChanged", async () => {
-    emitRevalidate({ projectId: "p1", path: "", outcome: "success", latencyMs: 142, generationChanged: false });
+    emitRevalidate({
+      projectId: "p1",
+      path: "",
+      outcome: "success",
+      latencyMs: 142,
+      generationChanged: false,
+    });
     const b = await bodyOf(0);
     expect(b.event).toBe("revalidate");
     expect(b.outcome).toBe("success");
@@ -104,7 +125,14 @@ describe("revalidate-telemetry — §3 field contract", () => {
   });
 
   it("revalidate failed is ALWAYS sent and carries a required reason", async () => {
-    emitRevalidate({ projectId: "p1", path: "", outcome: "failed", reason: "snapshot_unavailable", latencyMs: 9, generationChanged: false });
+    emitRevalidate({
+      projectId: "p1",
+      path: "",
+      outcome: "failed",
+      reason: "snapshot_unavailable",
+      latencyMs: 9,
+      generationChanged: false,
+    });
     expect(sendBeacon).toHaveBeenCalledTimes(1);
     const b = await bodyOf(0);
     expect(b.outcome).toBe("failed");
@@ -112,7 +140,11 @@ describe("revalidate-telemetry — §3 field contract", () => {
   });
 
   it("invalidate is ALWAYS sent with pathsEvicted and sampleRate=1", async () => {
-    emitInvalidate({ projectId: "p1", reason: "generation_changed", pathsEvicted: 4 });
+    emitInvalidate({
+      projectId: "p1",
+      reason: "generation_changed",
+      pathsEvicted: 4,
+    });
     const b = await bodyOf(0);
     expect(b.event).toBe("invalidate");
     expect(b.reason).toBe("generation_changed");
@@ -122,13 +154,30 @@ describe("revalidate-telemetry — §3 field contract", () => {
 
   it("never throws when sendBeacon is unavailable (SSR / old browser)", () => {
     vi.stubGlobal("navigator", {});
-    expect(() => emitServe({ projectId: "p", path: "", fromCache: false, revisit: false })).not.toThrow();
-    expect(() => emitInvalidate({ projectId: "p", reason: "busy_flip", pathsEvicted: 0 })).not.toThrow();
+    expect(() =>
+      emitServe({ projectId: "p", path: "", fromCache: false, revisit: false }),
+    ).not.toThrow();
+    expect(() =>
+      emitInvalidate({ projectId: "p", reason: "busy_flip", pathsEvicted: 0 }),
+    ).not.toThrow();
   });
 
   it("never throws when sendBeacon itself throws", () => {
-    vi.stubGlobal("navigator", { sendBeacon: () => { throw new Error("boom"); } });
-    expect(() => emitRevalidate({ projectId: "p", path: "", outcome: "failed", reason: "network", latencyMs: 0, generationChanged: false })).not.toThrow();
+    vi.stubGlobal("navigator", {
+      sendBeacon: () => {
+        throw new Error("boom");
+      },
+    });
+    expect(() =>
+      emitRevalidate({
+        projectId: "p",
+        path: "",
+        outcome: "failed",
+        reason: "network",
+        latencyMs: 0,
+        generationChanged: false,
+      }),
+    ).not.toThrow();
   });
 });
 

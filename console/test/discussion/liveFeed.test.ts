@@ -111,7 +111,9 @@ describe("parseThinkingRow (ISI-5208)", () => {
   });
 
   it("returns null on an empty body or garbage", () => {
-    expect(parseThinkingRow(JSON.stringify({ author: "agent:john", body: "" }))).toBeNull();
+    expect(
+      parseThinkingRow(JSON.stringify({ author: "agent:john", body: "" })),
+    ).toBeNull();
     expect(parseThinkingRow("not json")).toBeNull();
     expect(parseThinkingRow(JSON.stringify(42))).toBeNull();
   });

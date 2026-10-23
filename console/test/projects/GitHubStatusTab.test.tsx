@@ -3,7 +3,14 @@
 // AC5 loading/empty/501 honest states, and no-credential-in-DOM (AC6).
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  within,
+  fireEvent,
+} from "@testing-library/react";
 import { GitHubStatusTab } from "@/components/GitHubStatusTab";
 import type { GithubStatus } from "@/lib/github-status";
 
@@ -29,8 +36,22 @@ function stub(status: number, body?: unknown) {
 const projection: GithubStatus = {
   project: { name: "web", namespace: "squad-a" },
   pullRequests: [
-    { number: 7, title: "add feature", state: "open", reviewState: "ready-for-review", branch: "feat/x", url: "https://gh/pull/7" },
-    { number: 8, title: "shipped", state: "closed", reviewState: "merged", merged: true, url: "https://gh/pull/8" },
+    {
+      number: 7,
+      title: "add feature",
+      state: "open",
+      reviewState: "ready-for-review",
+      branch: "feat/x",
+      url: "https://gh/pull/7",
+    },
+    {
+      number: 8,
+      title: "shipped",
+      state: "closed",
+      reviewState: "merged",
+      merged: true,
+      url: "https://gh/pull/8",
+    },
   ],
   issues: [
     {
@@ -42,11 +63,30 @@ const projection: GithubStatus = {
       assignees: ["dev"],
     },
   ],
-  checkRuns: [{ name: "ci", state: "completed", conclusion: "success", url: "https://gh/runs/101" }],
+  checkRuns: [
+    {
+      name: "ci",
+      state: "completed",
+      conclusion: "success",
+      url: "https://gh/runs/101",
+    },
+  ],
   artifacts: [{ name: "logs", url: "https://gh/artifact/55", sizeBytes: 4096 }],
-  releases: [{ name: "v1.0.0", tag: "v1.0.0", state: "published", url: "https://gh/releases/v1.0.0" }],
+  releases: [
+    {
+      name: "v1.0.0",
+      tag: "v1.0.0",
+      state: "published",
+      url: "https://gh/releases/v1.0.0",
+    },
+  ],
   branches: [
-    { name: "main", default: true, headSha: "abc1234def5678", url: "https://gh/tree/main" },
+    {
+      name: "main",
+      default: true,
+      headSha: "abc1234def5678",
+      url: "https://gh/tree/main",
+    },
     { name: "feat/x", headSha: "fff2345fff5678" },
   ],
   freshness: {
@@ -62,7 +102,9 @@ describe("GitHubStatusTab", () => {
     stub(200, projection);
     render(<GitHubStatusTab projectId="web" />);
 
-    await waitFor(() => expect(screen.getByTestId("github-status")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-status")).toBeTruthy(),
+    );
     expect(screen.getByTestId("panel-prs")).toBeTruthy();
     // The issues panel lists the mirror's issues, each deep-linked.
     expect(screen.getByTestId("panel-issues")).toBeTruthy();
@@ -83,7 +125,9 @@ describe("GitHubStatusTab", () => {
     expect(prPanel.getByText(/merged/)).toBeTruthy();
     // Check conclusion surfaced (scoped to the CI/CD panel: the overview's
     // "CI success rate" label also matches an unscoped /success/ query).
-    expect(within(screen.getByTestId("panel-checks")).getByText(/success/)).toBeTruthy();
+    expect(
+      within(screen.getByTestId("panel-checks")).getByText(/success/),
+    ).toBeTruthy();
 
     // Each PR title deep-links to the normalized GitHub url via `pull/{n}`.
     const pr7 = screen.getAllByTestId("gh-pr-link")[0];
@@ -106,7 +150,9 @@ describe("GitHubStatusTab", () => {
     await waitFor(() => expect(screen.getByTestId("gh-cicd")).toBeTruthy());
 
     // Summary band + stage flow derived from the one mirrored check run.
-    expect(screen.getByTestId("gh-cicd-summary").textContent).toMatch(/Success rate/);
+    expect(screen.getByTestId("gh-cicd-summary").textContent).toMatch(
+      /Success rate/,
+    );
     const stage = screen.getByTestId("gh-cicd-stage");
     expect(stage.getAttribute("data-status")).toBe("passed");
     expect(stage.textContent).toMatch(/ci/);
@@ -121,7 +167,9 @@ describe("GitHubStatusTab", () => {
   it("renders the Overview Dashboard: metrics, timeline, repo health (ISI-4671)", async () => {
     stub(200, projection);
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-overview")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-overview")).toBeTruthy(),
+    );
 
     // 5-up activity metric band derived from the mirror rows.
     expect(screen.getByTestId("stat-branches").textContent).toContain("2");
@@ -130,21 +178,32 @@ describe("GitHubStatusTab", () => {
     expect(screen.getByTestId("stat-check-runs").textContent).toContain("1");
     expect(screen.getByTestId("stat-releases").textContent).toContain("1");
     // Open/merged/closed breakdown on the PR tile.
-    expect(screen.getByTestId("stat-open-prs").textContent).toMatch(/1 merged · 0 closed/);
+    expect(screen.getByTestId("stat-open-prs").textContent).toMatch(
+      /1 merged · 0 closed/,
+    );
 
     // Recent-activity timeline: one row per PR/issue/release, each deep-linked.
     // Scoped to the timeline so it can't collide with the entity panels below.
     const timeline = within(screen.getByTestId("github-timeline"));
     expect(timeline.getAllByTestId("github-timeline-row")).toHaveLength(4);
-    expect(timeline.getByText(/PR #8: shipped/).closest("a")?.getAttribute("href")).toBe(
-      "https://gh/pull/8",
-    );
-    expect(timeline.getByText(/Issue #3: a bug/).closest("a")?.getAttribute("href")).toBe(
-      "https://gh/issues/3",
-    );
-    expect(timeline.getByText(/v1\.0\.0/).closest("a")?.getAttribute("href")).toBe(
-      "https://gh/releases/v1.0.0",
-    );
+    expect(
+      timeline
+        .getByText(/PR #8: shipped/)
+        .closest("a")
+        ?.getAttribute("href"),
+    ).toBe("https://gh/pull/8");
+    expect(
+      timeline
+        .getByText(/Issue #3: a bug/)
+        .closest("a")
+        ?.getAttribute("href"),
+    ).toBe("https://gh/issues/3");
+    expect(
+      timeline
+        .getByText(/v1\.0\.0/)
+        .closest("a")
+        ?.getAttribute("href"),
+    ).toBe("https://gh/releases/v1.0.0");
 
     // Repo health is derived honestly: merged/closed (100%), checks (100%), issue close (0%).
     expect(screen.getByTestId("github-health")).toBeTruthy();
@@ -155,7 +214,9 @@ describe("GitHubStatusTab", () => {
   it("header + repo slug deep-link to GitHub (ISI-4671)", async () => {
     stub(200, projection);
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-repo-link")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-repo-link")).toBeTruthy(),
+    );
     expect(screen.getByTestId("github-repo-link").getAttribute("href")).toBe(
       "https://github.com/K8squad/K8squad",
     );
@@ -163,7 +224,9 @@ describe("GitHubStatusTab", () => {
       "https://github.com/K8squad/K8squad",
     );
     // The repo slug is rendered, and the external-link glyph is decorative.
-    expect(screen.getByTestId("github-repo-link").textContent).toMatch(/K8squad\/K8squad/);
+    expect(screen.getByTestId("github-repo-link").textContent).toMatch(
+      /K8squad\/K8squad/,
+    );
   });
 
   it("degrades repo health to — (never a fabricated 0) when no signal is derivable", async () => {
@@ -179,29 +242,41 @@ describe("GitHubStatusTab", () => {
       branches: [],
     });
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-health")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-health")).toBeTruthy(),
+    );
     expect(screen.getByTestId("health-score").textContent).toBe("—");
-    expect(screen.getByTestId("health-tier").textContent).toBe("Not enough data");
+    expect(screen.getByTestId("health-tier").textContent).toBe(
+      "Not enough data",
+    );
   });
 
   it("hides the branch panel when the mirror has no branch rows", async () => {
     stub(200, { ...projection, branches: [] });
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-status")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-status")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("panel-branches")).toBeNull();
   });
 
   it("shows honest freshness 'Synced · N ago · via <trigger>' from the mirror, not a live badge (AC2)", async () => {
     stub(200, projection);
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-freshness")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-freshness")).toBeTruthy(),
+    );
     const chip = screen.getByTestId("github-freshness").textContent ?? "";
     expect(chip).toMatch(/Synced · .*ago/);
     // Trigger source proves the AC "no manual kick" — refresh is automatic.
     expect(chip).toMatch(/via webhook/);
-    expect(screen.getByTestId("github-autoline").textContent).toMatch(/no manual kick/);
+    expect(screen.getByTestId("github-autoline").textContent).toMatch(
+      /no manual kick/,
+    );
     // A green (running) chip; never a fabricated "live" badge.
-    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("running");
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe(
+      "running",
+    );
     expect(screen.queryByText(/live/i)).toBeNull();
   });
 
@@ -214,13 +289,19 @@ describe("GitHubStatusTab", () => {
     });
     render(<GitHubStatusTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("github-chip")).toBeTruthy());
-    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("blocked");
-    expect(screen.getByTestId("github-chip").textContent).toMatch(/reconnect required/);
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe(
+      "blocked",
+    );
+    expect(screen.getByTestId("github-chip").textContent).toMatch(
+      /reconnect required/,
+    );
     const cardCred = screen.getByTestId("github-state-card");
     expect(cardCred.getAttribute("data-reason")).toBe("CredentialMissing");
     expect(cardCred.textContent).toMatch(/GitHub token can't be resolved/);
     // Degrade, don't blank: panels remain, marked ghosted.
-    expect(screen.getByTestId("github-panels").getAttribute("data-ghost")).toBe("true");
+    expect(screen.getByTestId("github-panels").getAttribute("data-ghost")).toBe(
+      "true",
+    );
   });
 
   it("renders the ProviderError card amber with auto-retry copy, keeping last-good data", async () => {
@@ -229,11 +310,19 @@ describe("GitHubStatusTab", () => {
       sync: { reason: "ProviderError", trigger: "poll", ageSeconds: 840 },
     });
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-state-card")).toBeTruthy());
-    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("paused");
+    await waitFor(() =>
+      expect(screen.getByTestId("github-state-card")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe(
+      "paused",
+    );
     expect(screen.getByTestId("github-chip").textContent).toMatch(/last good/);
-    expect(screen.getByTestId("github-state-card").textContent).toMatch(/GitHub unreachable — retrying/);
-    expect(screen.getByTestId("github-panels").getAttribute("data-ghost")).toBe("true");
+    expect(screen.getByTestId("github-state-card").textContent).toMatch(
+      /GitHub unreachable — retrying/,
+    );
+    expect(screen.getByTestId("github-panels").getAttribute("data-ghost")).toBe(
+      "true",
+    );
   });
 
   it("surfaces the freshness SLI: Synced but past the SLO ⇒ amber 'Data is behind schedule'", async () => {
@@ -242,30 +331,49 @@ describe("GitHubStatusTab", () => {
       sync: { reason: "Synced", trigger: "poll", ageSeconds: 600 }, // > 360 SLO
     });
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-state-card")).toBeTruthy());
-    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("paused");
-    expect(screen.getByTestId("github-state-card").textContent).toMatch(/Data is behind schedule/);
+    await waitFor(() =>
+      expect(screen.getByTestId("github-state-card")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe(
+      "paused",
+    );
+    expect(screen.getByTestId("github-state-card").textContent).toMatch(
+      /Data is behind schedule/,
+    );
   });
 
   it("renders the first-run 'No repository linked' card for SyncNotConfigured (no chip)", async () => {
     stub(200, {
       project: { name: "web", namespace: "squad-a" },
-      pullRequests: [], issues: [], checkRuns: [], artifacts: [], releases: [], branches: [],
+      pullRequests: [],
+      issues: [],
+      checkRuns: [],
+      artifacts: [],
+      releases: [],
+      branches: [],
       freshness: { mirrorRecordCount: 0 },
       sync: { reason: "SyncNotConfigured" },
     });
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-state-card")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-state-card")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("github-chip")).toBeNull();
-    expect(screen.getByTestId("github-state-card").textContent).toMatch(/No repository linked/);
+    expect(screen.getByTestId("github-state-card").textContent).toMatch(
+      /No repository linked/,
+    );
     // CTA is a link into project settings to link the repo.
-    expect(screen.getByTestId("github-state-card-cta").getAttribute("href")).toMatch(/\/settings$/);
+    expect(
+      screen.getByTestId("github-state-card-cta").getAttribute("href"),
+    ).toMatch(/\/settings$/);
   });
 
   it("never leaks a credential/secret/token into the DOM (AC6)", async () => {
     stub(200, projection);
     const { container } = render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-status")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-status")).toBeTruthy(),
+    );
     const html = container.innerHTML.toLowerCase();
     for (const forbidden of ["credential", "secret", "token", "password"]) {
       expect(html.includes(forbidden)).toBe(false);
@@ -285,21 +393,27 @@ describe("GitHubStatusTab", () => {
       sync: { reason: "Synced", trigger: "poll", ageSeconds: 30 },
     });
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-empty")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-empty")).toBeTruthy(),
+    );
     expect(screen.getByText(/No GitHub activity yet/)).toBeTruthy();
   });
 
   it("renders an honest 'not available yet' on 501 (AC5)", async () => {
     stub(501, null);
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-honest")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-honest")).toBeTruthy(),
+    );
     expect(screen.getByText(/not available yet/)).toBeTruthy();
   });
 
   it("renders an existence-hiding not-found on 404", async () => {
     stub(404, null);
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-honest")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-honest")).toBeTruthy(),
+    );
     expect(screen.getByText(/No GitHub status/)).toBeTruthy();
   });
 
@@ -329,21 +443,29 @@ describe("GitHubStatusTab", () => {
     await waitFor(() => expect(screen.getByTestId("github-tabs")).toBeTruthy());
 
     // Defaults to the sync-health view; the releases screen is behind its tab.
-    expect(screen.getByTestId("github-tab-status").getAttribute("aria-selected")).toBe("true");
+    expect(
+      screen.getByTestId("github-tab-status").getAttribute("aria-selected"),
+    ).toBe("true");
     fireEvent.click(screen.getByTestId("github-tab-releases"));
 
     expect(screen.getByTestId("gh-releases-branches")).toBeTruthy();
-    expect(screen.getByTestId("github-tab-releases").getAttribute("aria-selected")).toBe("true");
+    expect(
+      screen.getByTestId("github-tab-releases").getAttribute("aria-selected"),
+    ).toBe("true");
 
     // Release timeline: tag + notes + honest recency, state badge.
     expect(screen.getAllByTestId("gh-release-row")).toHaveLength(2);
     const firstTag = screen.getAllByTestId("gh-release-link")[0];
     expect(firstTag.textContent).toMatch(/v2\.1\.0/);
-    expect(screen.getByText("Performance improvements & bug fixes")).toBeTruthy();
+    expect(
+      screen.getByText("Performance improvements & bug fixes"),
+    ).toBeTruthy();
     expect(screen.getByText(/Released .* ago by @mikelee/)).toBeTruthy();
 
     // Honest stats from the mirror (no fabricated contributor counts).
-    expect(screen.getByTestId("gh-stat-total-releases").textContent).toMatch(/2/);
+    expect(screen.getByTestId("gh-stat-total-releases").textContent).toMatch(
+      /2/,
+    );
     expect(screen.getByTestId("gh-stat-published").textContent).toMatch(/1/);
 
     // Honest freshness, never a fabricated "live" badge.
@@ -372,8 +494,12 @@ describe("GitHubStatusTab", () => {
     const branchHrefs = screen
       .getAllByTestId("gh-branch-link")
       .map((a) => a.getAttribute("href"));
-    expect(branchHrefs).toContain("https://github.com/K8squad/K8squad/tree/main");
-    expect(branchHrefs).toContain("https://github.com/K8squad/K8squad/tree/feat/x");
+    expect(branchHrefs).toContain(
+      "https://github.com/K8squad/K8squad/tree/main",
+    );
+    expect(branchHrefs).toContain(
+      "https://github.com/K8squad/K8squad/tree/feat/x",
+    );
 
     // Header deep-links to the repo.
     expect(screen.getByTestId("gh-open-github").getAttribute("href")).toBe(
@@ -389,7 +515,9 @@ describe("GitHubStatusTab", () => {
     render(<GitHubStatusTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("github-tabs")).toBeTruthy());
     fireEvent.click(screen.getByTestId("github-tab-releases"));
-    expect(screen.getByTestId("gh-releases-branches").getAttribute("data-ghost")).toBe("true");
+    expect(
+      screen.getByTestId("gh-releases-branches").getAttribute("data-ghost"),
+    ).toBe("true");
   });
 
   it("shows honest empty states on the releases screen", async () => {
@@ -414,7 +542,10 @@ describe("GitHubStatusTab", () => {
       const u = String(url);
       const body = u.includes("/api/squad/agents")
         ? { agents: [{ id: "uid-alice", name: "alice" }] }
-        : { ...projection, sync: { reason: "ProviderError", trigger: "poll", ageSeconds: 840 } };
+        : {
+            ...projection,
+            sync: { reason: "ProviderError", trigger: "poll", ageSeconds: 840 },
+          };
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -425,7 +556,9 @@ describe("GitHubStatusTab", () => {
     vi.stubGlobal("fetch", spy);
 
     render(<GitHubStatusTab projectId="web" />);
-    await waitFor(() => expect(screen.getByTestId("github-panels")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-panels")).toBeTruthy(),
+    );
 
     // Degrade, don't blank: the block is marked stale (dimmed) …
     const panels = screen.getByTestId("github-panels");
@@ -449,7 +582,9 @@ describe("GitHubStatusTab", () => {
     }
 
     // The control is genuinely usable: once the roster loads the select enables.
-    const select = screen.getByTestId("gh-issue-assign-select") as HTMLSelectElement;
+    const select = screen.getByTestId(
+      "gh-issue-assign-select",
+    ) as HTMLSelectElement;
     await waitFor(() => expect(select.disabled).toBe(false));
     expect(screen.getByTestId("gh-issue-assign-submit")).toBeTruthy();
   });
@@ -506,7 +641,9 @@ describe("GitHubStatusTab", () => {
     stub(200, projection);
     render(<GitHubStatusTab projectId="web" />);
 
-    await waitFor(() => expect(screen.getByTestId("github-status")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("github-status")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("github-durable-health")).toBeNull();
   });
 });

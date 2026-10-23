@@ -37,12 +37,20 @@
   color: var(--text-1);
 }
 
-.ksq-markdown h1 { font-size: 1.4em; }
-.ksq-markdown h2 { font-size: 1.2em; }
-.ksq-markdown h3 { font-size: 1.05em; }
+.ksq-markdown h1 {
+  font-size: 1.4em;
+}
+.ksq-markdown h2 {
+  font-size: 1.2em;
+}
+.ksq-markdown h3 {
+  font-size: 1.05em;
+}
 .ksq-markdown h4,
 .ksq-markdown h5,
-.ksq-markdown h6 { font-size: 1em; }
+.ksq-markdown h6 {
+  font-size: 1em;
+}
 
 /* ── Paragraphs & block spacing ──────────────────────────────────────────── */
 

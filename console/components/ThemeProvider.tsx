@@ -12,7 +12,13 @@
 // script (lib/theme.ts THEME_INIT_SCRIPT, injected in app/layout.tsx) stamps `data-theme` before
 // first paint; this effect reconciles React state and covers the no-script / late-hydration case.
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 import type { ReactNode } from "react";
 import {
   DEFAULT_THEME,

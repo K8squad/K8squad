@@ -43,7 +43,9 @@ const THREADS = [
   thread("older", "Retro", "2026-10-10T12:00:00Z"),
 ];
 
-function renderPanel(over: Partial<React.ComponentProps<typeof DiscussionsPanel>> = {}) {
+function renderPanel(
+  over: Partial<React.ComponentProps<typeof DiscussionsPanel>> = {},
+) {
   const props = {
     threads: THREADS,
     activeThreadId: "newest",
@@ -187,7 +189,9 @@ describe("<DiscussionsPanel> — ISI-5673", () => {
         now={NOW}
       />,
     );
-    fireEvent.click(within(screen.getByTestId("discussions-panel-error")).getByText("Retry"));
+    fireEvent.click(
+      within(screen.getByTestId("discussions-panel-error")).getByText("Retry"),
+    );
     expect(onRetry).toHaveBeenCalled();
   });
 

@@ -173,7 +173,10 @@ async function isRetryableDegraded(res: Response): Promise<boolean> {
   if (res.status !== 503) return false;
   try {
     const body: FileErrorBody = await res.clone().json();
-    return body.code === FILE_ERR_RETRYABLE_DEGRADED || body.code === FILE_ERR_PREPARING;
+    return (
+      body.code === FILE_ERR_RETRYABLE_DEGRADED ||
+      body.code === FILE_ERR_PREPARING
+    );
   } catch {
     return false;
   }
@@ -279,7 +282,9 @@ export async function listProjectFilesAttempt(
  * the `as unknown as` casts the tests otherwise need, and stops fixtures from
  * pretending the server sends a field it never has. */
 export type WireFileEntry = Omit<FileEntry, "path"> & { path?: string };
-export type WireFileListing = Omit<FileListing, "entries"> & { entries: WireFileEntry[] | null };
+export type WireFileListing = Omit<FileListing, "entries"> & {
+  entries: WireFileEntry[] | null;
+};
 
 /** The content payload as it ACTUALLY arrives from S4b (ISI-4705): the reader
  * emits `{size,contentType,offset,length,data}` — `path` is NOT echoed, so the
@@ -298,7 +303,10 @@ export type WireFileContent = Omit<FileContent, "path"> & { path?: string };
  * contain "/", so `${dir}/${name}` is unique by construction, and a server that
  * later emits a wrong or duplicated `path` (ISI-4708) still cannot reintroduce
  * the shared-key recursion. */
-export function normalizeListing(dir: string, listing: WireFileListing): FileListing {
+export function normalizeListing(
+  dir: string,
+  listing: WireFileListing,
+): FileListing {
   const base = (dir ?? "").replace(/\/+$/, "");
   const entries: FileEntry[] = (listing.entries ?? []).map((e) => ({
     ...e,
@@ -372,7 +380,10 @@ function markServed(projectId: string, path: string): boolean {
 // signature (both are covered by the PR#787 cache tests), the fetcher stashes
 // its latency + classified reason here and the verdict reads+clears it, so the
 // single revalidate beacon carries all of the §3 fields.
-type RevalidateMeta = { latencyMs: number; failReason: RevalidateFailReason | null };
+type RevalidateMeta = {
+  latencyMs: number;
+  failReason: RevalidateFailReason | null;
+};
 const revalidateMeta = new Map<string, RevalidateMeta>();
 
 function cacheKey(projectId: string, path: string): string {
@@ -389,7 +400,10 @@ export function isCacheableListing(listing: FileListing): boolean {
 /** Synchronous cache lookup for the cache-first render. Returns a client-stamped
  * clone (`fromCache:true` + the stored `cachedAt`) so the tree paints with no
  * blocking spinner, and touches LRU recency. `null` ⇒ cold path (unchanged). */
-export function getCachedListing(projectId: string, path: string): FileListing | null {
+export function getCachedListing(
+  projectId: string,
+  path: string,
+): FileListing | null {
   const key = cacheKey(projectId, path);
   const hit = listingCache.get(key);
   if (!hit) return null;
@@ -401,20 +415,34 @@ export function getCachedListing(projectId: string, path: string): FileListing |
   // so revisit is unconditionally true (markServed still records the key for any
   // later cold serve). Best-effort beacon — never throws into render.
   markServed(projectId, path);
-  emitServe({ projectId, path, fromCache: true, revisit: true, generation: hit.generation });
+  emitServe({
+    projectId,
+    path,
+    fromCache: true,
+    revisit: true,
+    generation: hit.generation,
+  });
   return { ...hit.listing, fromCache: true, cachedAt: hit.cachedAt };
 }
 
 /** Write-through a freshly-served listing. No-op (cache LEFT INTACT) when the
  * listing is uncacheable — a degraded/busy revalidation must never evict the
  * last good tree (AC3). Enforces the M3 LRU cap. */
-export function cacheListing(projectId: string, path: string, listing: FileListing): void {
+export function cacheListing(
+  projectId: string,
+  path: string,
+  listing: FileListing,
+): void {
   if (!isCacheableListing(listing)) return;
   const key = cacheKey(projectId, path);
   // Strip any client stamps before storing so the cache holds only wire truth.
   const { fromCache: _f, cachedAt: _c, ...clean } = listing;
   listingCache.delete(key);
-  listingCache.set(key, { generation: listing.generation as string, listing: clean, cachedAt: Date.now() });
+  listingCache.set(key, {
+    generation: listing.generation as string,
+    listing: clean,
+    cachedAt: Date.now(),
+  });
   // Evict oldest (head of insertion order) until under the cap.
   while (listingCache.size > LISTING_CACHE_MAX) {
     const oldest = listingCache.keys().next().value as string | undefined;
@@ -453,13 +481,16 @@ export function invalidateProjectListings(
 // ISI-5500: map a non-2xx revalidate response to the §3 reason enum, reusing the
 // S1 taxonomy verbatim (FILE_ERR_* / FILE_REASON_*). Pure classification, never
 // throws — a body it can't parse degrades to "retryable_degraded"/"network".
-async function classifyRevalidateFailReason(res: Response): Promise<RevalidateFailReason> {
+async function classifyRevalidateFailReason(
+  res: Response,
+): Promise<RevalidateFailReason> {
   if (res.status === 202) return "preparing";
   if (res.status === 404) return "not_found";
   if (res.status === 503) {
     try {
       const body: FileErrorBody = await res.clone().json();
-      if (body.code === FILE_ERR_SNAPSHOT_UNAVAILABLE) return "snapshot_unavailable";
+      if (body.code === FILE_ERR_SNAPSHOT_UNAVAILABLE)
+        return "snapshot_unavailable";
       if (body.code === FILE_ERR_PREPARING) return "preparing";
       return "retryable_degraded";
     } catch {
@@ -492,7 +523,10 @@ export function revalidateListing(
         failReason = await classifyRevalidateFailReason(res);
         return null; // 202 preparing / 503 / 4xx / 5xx -> keep cache, stale.
       }
-      const fresh = normalizeListing(path, (await res.json()) as WireFileListing);
+      const fresh = normalizeListing(
+        path,
+        (await res.json()) as WireFileListing,
+      );
       if (!isCacheableListing(fresh)) {
         // 200-degraded (project went busy) -> keep cache, stale.
         failReason = (fresh.reason as RevalidateFailReason) ?? "workspace_busy";
@@ -505,7 +539,10 @@ export function revalidateListing(
     } finally {
       inflightRevalidate.delete(key);
       // ISI-5500: hand latency + classified reason to applyRevalidation's beacon.
-      revalidateMeta.set(key, { latencyMs: Date.now() - startedAt, failReason });
+      revalidateMeta.set(key, {
+        latencyMs: Date.now() - startedAt,
+        failReason,
+      });
     }
   })();
   inflightRevalidate.set(key, run);
@@ -527,7 +564,10 @@ function rowKey(e: FileEntry): string {
   return `${e.type} ${e.name}`;
 }
 
-export function reconcileListing(prev: FileEntry[], next: FileEntry[]): ListingReconcile {
+export function reconcileListing(
+  prev: FileEntry[],
+  next: FileEntry[],
+): ListingReconcile {
   const prevByKey = new Map(prev.map((e) => [rowKey(e), e] as const));
   const nextByKey = new Map(next.map((e) => [rowKey(e), e] as const));
   const added: string[] = [];
@@ -606,7 +646,11 @@ export function applyRevalidation(
     generationChanged: false,
     generation: fresh.generation,
   });
-  return { kind: "updated", listing: fresh, reconcile: reconcileListing(rendered.entries ?? [], fresh.entries ?? []) };
+  return {
+    kind: "updated",
+    listing: fresh,
+    reconcile: reconcileListing(rendered.entries ?? [], fresh.entries ?? []),
+  };
 }
 
 /** Test-only: drop all durable cache + in-flight state between cases. */
@@ -632,7 +676,10 @@ export async function readProjectFile(
     return { kind: "preparing", attempt: 1 };
   }
   if (res.ok) {
-    return { kind: "ready", data: normalizeContent(path, (await res.json()) as FileContent) };
+    return {
+      kind: "ready",
+      data: normalizeContent(path, (await res.json()) as FileContent),
+    };
   }
   return classifyFilesStatus<FileContent>(res.status);
 }
@@ -645,8 +692,14 @@ export async function readProjectFile(
  * `path` threw `Cannot read properties of undefined (reading 'slice')` the instant a
  * file was opened. The caller always knows the exact path it fetched — use it as the
  * authoritative value. */
-export function normalizeContent(path: string, content: WireFileContent): FileContent {
-  return { ...content, path: content.path && content.path.length > 0 ? content.path : path };
+export function normalizeContent(
+  path: string,
+  content: WireFileContent,
+): FileContent {
+  return {
+    ...content,
+    path: content.path && content.path.length > 0 ? content.path : path,
+  };
 }
 
 /** Fetch a file's stat / change metadata through the BFF choke point (ISI-4651).
@@ -676,7 +729,10 @@ export async function statProjectFile(
  * upstream errors (404/413/501/503) surface as the browser's native download
  * failure rather than fabricated UI state. Read-only: this is a GET, no write
  * path into the volume (§D3). */
-export function downloadProjectFileUrl(projectId: string, path: string): string {
+export function downloadProjectFileUrl(
+  projectId: string,
+  path: string,
+): string {
   return `/api/projects/${encodeURIComponent(projectId)}/files/download?path=${encodeURIComponent(path)}`;
 }
 
@@ -722,7 +778,10 @@ export type FilePreviewKind = "image" | "markdown" | "code" | "text" | "binary";
 /** Classify a fetched file for the preview pane. Extension decides image vs
  * markdown vs code; the wire binary hint then guards everything else (AC2 —
  * never UTF-8-decode binary bytes). */
-export function previewKind(path: string, contentType: "text" | "binary"): FilePreviewKind {
+export function previewKind(
+  path: string,
+  contentType: "text" | "binary",
+): FilePreviewKind {
   const ext = fileExt(path);
   if (ext === "png" || ext === "svg") return "image";
   if (contentType === "binary") return "binary";

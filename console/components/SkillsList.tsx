@@ -112,7 +112,11 @@ export function SkillsList() {
             setDetail({ kind: "error", name, status: res.status });
             return;
           }
-          setDetail({ kind: "ready", name, data: (await res.json()) as SkillViewData });
+          setDetail({
+            kind: "ready",
+            name,
+            data: (await res.json()) as SkillViewData,
+          });
         })
         .catch(() => {
           if (alive) setDetail({ kind: "error", name, status: 0 });
@@ -133,8 +137,8 @@ export function SkillsList() {
       <div className="card" data-testid="skills-unauthenticated">
         <h2 style={{ marginTop: 0 }}>Sign in required</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          The Skills list is scoped to your session. Authenticate through the console sign-in flow
-          and reload.
+          The Skills list is scoped to your session. Authenticate through the
+          console sign-in flow and reload.
         </p>
       </div>
     );
@@ -144,8 +148,8 @@ export function SkillsList() {
       <div className="card" data-testid="skills-no-team">
         <h2 style={{ marginTop: 0 }}>No squad for your Team yet</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          Your session resolves to a Team with no projection — the Team may be newly created (or
-          deleted) and the cache has not observed it yet.
+          Your session resolves to a Team with no projection — the Team may be
+          newly created (or deleted) and the cache has not observed it yet.
         </p>
       </div>
     );
@@ -155,8 +159,8 @@ export function SkillsList() {
       <div className="card" data-testid="skills-not-wired">
         <h2 style={{ marginTop: 0 }}>Skills list not wired</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          This apiserver runs without the skills read model (dev / cluster-less run) and answers its
-          documented 501.
+          This apiserver runs without the skills read model (dev / cluster-less
+          run) and answers its documented 501.
         </p>
       </div>
     );
@@ -166,8 +170,8 @@ export function SkillsList() {
       <div className="card" data-testid="skills-error">
         <h2 style={{ marginTop: 0 }}>Skills unavailable</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          The read model could not be reached (HTTP {state.status || "network error"}). Retry
-          shortly.
+          The read model could not be reached (HTTP{" "}
+          {state.status || "network error"}). Retry shortly.
         </p>
       </div>
     );
@@ -236,7 +240,9 @@ export function SkillsList() {
                 </p>
               </button>
 
-              {open ? <SkillDetail detail={detail} fleet={!!state.data.fleet} /> : null}
+              {open ? (
+                <SkillDetail detail={detail} fleet={!!state.data.fleet} />
+              ) : null}
             </section>
           );
         })
@@ -247,17 +253,31 @@ export function SkillsList() {
 
 /** The expanded single-skill view (AC4): source provenance + capability envelope. For an admin
  * (fleet), the owning Team is surfaced with the ISI-3943 AC2 deep link into that squad's agents. */
-function SkillDetail({ detail, fleet }: { detail: DetailState; fleet: boolean }) {
+function SkillDetail({
+  detail,
+  fleet,
+}: {
+  detail: DetailState;
+  fleet: boolean;
+}) {
   if (detail.kind === "loading") {
     return (
-      <p className="muted" data-testid="skills-detail-loading" style={{ marginTop: 8 }}>
+      <p
+        className="muted"
+        data-testid="skills-detail-loading"
+        style={{ marginTop: 8 }}
+      >
         Loading skill…
       </p>
     );
   }
   if (detail.kind === "error") {
     return (
-      <p className="muted" data-testid="skills-detail-error" style={{ marginTop: 8 }}>
+      <p
+        className="muted"
+        data-testid="skills-detail-error"
+        style={{ marginTop: 8 }}
+      >
         Could not load this skill (HTTP {detail.status || "network error"}).
       </p>
     );
@@ -271,7 +291,14 @@ function SkillDetail({ detail, fleet }: { detail: DetailState; fleet: boolean })
   const sidecars = d.sidecars ?? [];
 
   return (
-    <div data-testid="skills-detail" style={{ marginTop: 8, borderTop: "1px solid var(--border, #333)", paddingTop: 8 }}>
+    <div
+      data-testid="skills-detail"
+      style={{
+        marginTop: 8,
+        borderTop: "1px solid var(--border, #333)",
+        paddingTop: 8,
+      }}
+    >
       <dl className="skills-detail__meta" style={{ margin: 0 }}>
         <Field label="Source">
           <code>{d.sourceType || "—"}</code>
@@ -304,23 +331,41 @@ function SkillDetail({ detail, fleet }: { detail: DetailState; fleet: boolean })
           </Field>
         ) : null}
         <Field label="MCP tools">
-          <ChipList items={mcp} testId="skills-detail-mcp" empty="none granted" />
+          <ChipList
+            items={mcp}
+            testId="skills-detail-mcp"
+            empty="none granted"
+          />
         </Field>
         <Field label="Permissions">
           <ChipList items={perms} testId="skills-detail-perms" empty="none" />
         </Field>
         <Field label="Toolchains">
-          <ChipList items={toolchains} testId="skills-detail-toolchains" empty="none" />
+          <ChipList
+            items={toolchains}
+            testId="skills-detail-toolchains"
+            empty="none"
+          />
         </Field>
         <Field label="Sidecars">
-          <ChipList items={sidecars} testId="skills-detail-sidecars" empty="none" />
+          <ChipList
+            items={sidecars}
+            testId="skills-detail-sidecars"
+            empty="none"
+          />
         </Field>
       </dl>
     </div>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div style={{ display: "flex", gap: 8, margin: "4px 0", fontSize: 13 }}>
       <dt className="muted" style={{ minWidth: 110, flexShrink: 0 }}>
@@ -331,10 +376,21 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function ChipList({ items, testId, empty }: { items: string[]; testId: string; empty: string }) {
+function ChipList({
+  items,
+  testId,
+  empty,
+}: {
+  items: string[];
+  testId: string;
+  empty: string;
+}) {
   if (items.length === 0) return <span className="muted">{empty}</span>;
   return (
-    <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }} data-testid={testId}>
+    <span
+      style={{ display: "inline-flex", gap: 6, flexWrap: "wrap" }}
+      data-testid={testId}
+    >
       {items.map((it) => (
         <code key={it}>{it}</code>
       ))}

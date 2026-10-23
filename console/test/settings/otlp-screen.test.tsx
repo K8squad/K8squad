@@ -48,10 +48,7 @@ function loadedWire(over: Partial<OtelConfigWire> = {}): OtelConfigWire {
 }
 
 /** Route GET/PUT /api/otelconfig; capture the PUT body for assertions. */
-function stubOtlp(
-  getResp: Response,
-  onPut?: (body: string) => void,
-): void {
+function stubOtlp(getResp: Response, onPut?: (body: string) => void): void {
   vi.stubGlobal(
     "fetch",
     vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
@@ -112,7 +109,9 @@ describe("<OtlpConfigScreen> — ISI-4831 S2 Signals list & row", () => {
     render(<OtlpConfigScreen />);
     await waitFor(() => screen.getByTestId("otlp-signals"));
 
-    expect(screen.getByTestId("signal-pill-traces").textContent).toBe("Healthy");
+    expect(screen.getByTestId("signal-pill-traces").textContent).toBe(
+      "Healthy",
+    );
     expect(screen.getByTestId("signal-pill-logs").textContent).toContain(
       "Erroring",
     );
@@ -167,12 +166,12 @@ describe("<OtlpConfigScreen> — ISI-4831 S2 Signals list & row", () => {
     expect(http.getAttribute("aria-checked")).toBe("false");
 
     fireEvent.click(http);
-    expect(screen.getByTestId("dest-proto-http").getAttribute("aria-checked")).toBe(
-      "true",
-    );
-    expect(screen.getByTestId("dest-proto-grpc").getAttribute("aria-checked")).toBe(
-      "false",
-    );
+    expect(
+      screen.getByTestId("dest-proto-http").getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("dest-proto-grpc").getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
   it("validation is inline and only after edit (P4)", async () => {
@@ -317,24 +316,24 @@ describe("<OtlpConfigScreen> — ISI-4831 S3 Right rail + action bar", () => {
 
     // Clean: no dirty indicator, Discard + Apply disabled.
     expect(screen.queryByTestId("otlp-dirty")).toBeNull();
-    expect((screen.getByTestId("otlp-discard") as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    expect(
+      (screen.getByTestId("otlp-discard") as HTMLButtonElement).disabled,
+    ).toBe(true);
 
     // Edit the endpoint → dirty.
     fireEvent.change(screen.getByTestId("dest-endpoint"), {
       target: { value: "changed:4317" },
     });
     expect(screen.getByTestId("otlp-dirty")).toBeTruthy();
-    expect((screen.getByTestId("otlp-discard") as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(
+      (screen.getByTestId("otlp-discard") as HTMLButtonElement).disabled,
+    ).toBe(false);
 
     // Discard → back to the loaded endpoint, dirty cleared.
     fireEvent.click(screen.getByTestId("otlp-discard"));
-    expect((screen.getByTestId("dest-endpoint") as HTMLInputElement).value).toBe(
-      "otel-collector:4317",
-    );
+    expect(
+      (screen.getByTestId("dest-endpoint") as HTMLInputElement).value,
+    ).toBe("otel-collector:4317");
     expect(screen.queryByTestId("otlp-dirty")).toBeNull();
   });
 
@@ -415,9 +414,9 @@ describe("<OtlpConfigScreen> — ISI-4831 S4 States & a11y", () => {
 
     // Traces is now on → empty state gone, its inherit chip appears, dirty flagged.
     expect(screen.queryByTestId("signals-empty")).toBeNull();
-    expect(screen.getByTestId("signal-toggle-traces").getAttribute("aria-checked")).toBe(
-      "true",
-    );
+    expect(
+      screen.getByTestId("signal-toggle-traces").getAttribute("aria-checked"),
+    ).toBe("true");
     expect(screen.getByTestId("signal-chip-traces").textContent).toBe(
       "→ destination",
     );

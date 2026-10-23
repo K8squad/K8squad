@@ -17,7 +17,14 @@
 // jumps the clock across the 15s / 45s degrade thresholds and flushes the async discovery poll.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+  act,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 import {
   DISPATCH_SOFT_MS,
@@ -121,7 +128,9 @@ function routeFetch(opts?: { runs?: unknown[] }) {
 
 /** Fill the composer + pick the agent + click Comment & assign (dispatch 200). */
 async function commentAndAssign() {
-  await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+  await waitFor(() =>
+    expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+  );
   await waitFor(() =>
     expect(
       screen.getAllByRole("option", { name: "agent:reviewer" }).length,
@@ -185,14 +194,21 @@ describe("TicketDetail — degrade & honesty (ISI-4883 / S5)", () => {
       ),
     );
     // Never fabricated progress: an operator-slow dispatch never claims to be working.
-    expect(screen.getByTestId("dispatch-label")).not.toHaveTextContent("Working…");
+    expect(screen.getByTestId("dispatch-label")).not.toHaveTextContent(
+      "Working…",
+    );
   });
 
   it("AC-2: a run that reaches Claiming but not Running NEVER shows 'Working…'", async () => {
     // A Run row exists but is only Claiming — the honesty guard caps the card at "Picking up…".
     routeFetch({
       runs: [
-        { id: "run-c", workItemRef: "wi-1", phase: "Claiming", agents: ["agent:reviewer"] },
+        {
+          id: "run-c",
+          workItemRef: "wi-1",
+          phase: "Claiming",
+          agents: ["agent:reviewer"],
+        },
       ],
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
@@ -204,7 +220,9 @@ describe("TicketDetail — degrade & honesty (ISI-4883 / S5)", () => {
         "picking_up",
       ),
     );
-    expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Picking up…");
+    expect(screen.getByTestId("dispatch-label")).toHaveTextContent(
+      "Picking up…",
+    );
 
     // Let wall-clock run well past both degrade thresholds: Claiming must NOT drift to Working…,
     // and past-queued the degrade note is meaningless (never renders).
@@ -215,14 +233,21 @@ describe("TicketDetail — degrade & honesty (ISI-4883 / S5)", () => {
       "data-state",
       "picking_up",
     );
-    expect(screen.getByTestId("dispatch-label")).not.toHaveTextContent("Working…");
+    expect(screen.getByTestId("dispatch-label")).not.toHaveTextContent(
+      "Working…",
+    );
     expect(screen.queryByTestId("dispatch-degrade")).toBeNull();
   });
 
   it("AC-3: a Failed run resolves the card to a static terminal state and stops all timers/subscriptions", async () => {
     routeFetch({
       runs: [
-        { id: "run-f", workItemRef: "wi-1", phase: "Failed", agents: ["agent:reviewer"] },
+        {
+          id: "run-f",
+          workItemRef: "wi-1",
+          phase: "Failed",
+          agents: ["agent:reviewer"],
+        },
       ],
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
@@ -258,7 +283,12 @@ describe("TicketDetail — degrade & honesty (ISI-4883 / S5)", () => {
   it("AC-3: a Succeeded run resolves the card to the static 'Finished' terminal state", async () => {
     routeFetch({
       runs: [
-        { id: "run-s", workItemRef: "wi-1", phase: "Succeeded", agents: ["agent:reviewer"] },
+        {
+          id: "run-s",
+          workItemRef: "wi-1",
+          phase: "Succeeded",
+          agents: ["agent:reviewer"],
+        },
       ],
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);

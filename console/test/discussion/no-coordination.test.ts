@@ -75,7 +75,8 @@ describe("AC5 — no coordination affordance in the room UI", () => {
     it(`exposes no "${verb}" affordance`, () => {
       const re = new RegExp(`\\b${verb}\\b`, "i");
       const offenders = files.filter(
-        (f) => !PROPOSAL_CARD_FILES.has(f.split("/").pop() ?? "") &&
+        (f) =>
+          !PROPOSAL_CARD_FILES.has(f.split("/").pop() ?? "") &&
           re.test(code(f)),
       );
       expect(offenders).toEqual([]);

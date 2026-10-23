@@ -31,12 +31,19 @@ test.describe("ISI-6202 · LLM Settings: Mistral (vibe) entry", () => {
     await expect(backend).toBeVisible();
 
     // The vibe entry is offered alongside the existing backends.
-    await expect(backend.locator("option", { hasText: "Mistral (vibe)" })).toHaveCount(1);
+    await expect(
+      backend.locator("option", { hasText: "Mistral (vibe)" }),
+    ).toHaveCount(1);
 
     await backend.selectOption("mistral");
 
     // Masked API key (never plaintext) + the optional BYO base-URL field both appear.
-    await expect(page.getByLabel("Model API key")).toHaveAttribute("type", "password");
-    await expect(page.getByLabel("Model endpoint URL", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Model API key")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    await expect(
+      page.getByLabel("Model endpoint URL", { exact: true }),
+    ).toBeVisible();
   });
 });

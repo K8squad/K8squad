@@ -17,7 +17,14 @@
 //     child — in the Kanban view and, after toggling, the List view.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { TicketsScreen } from "@/components/tickets/TicketsScreen";
 
 const fetchMock = vi.fn();
@@ -66,7 +73,9 @@ function routeBoard(items: unknown) {
   fetchMock.mockImplementation((url: string) => {
     const u = String(url);
     if (u.includes("/api/session")) {
-      return Promise.resolve(jsonResponse({ globalRole: "user", username: "ada" }));
+      return Promise.resolve(
+        jsonResponse({ globalRole: "user", username: "ada" }),
+      );
     }
     if (u.includes("/work-items")) return Promise.resolve(jsonResponse(items));
     return Promise.resolve(jsonResponse([]));
@@ -94,18 +103,24 @@ describe("TicketsScreen sub-tickets surface in both views (ISI-5547)", () => {
     // The parent advertises its single child via the caret + count badge (8.17 AC1),
     // derived from the full board read — no `childCount` field, no extra fetch.
     const caret = screen.getByTestId(`tree-caret-${PARENT_ID}`);
-    expect(screen.getByTestId(`child-count-${PARENT_ID}`)).toHaveTextContent("1");
+    expect(screen.getByTestId(`child-count-${PARENT_ID}`)).toHaveTextContent(
+      "1",
+    );
 
     // Expanding reveals the child card, nested under the parent (same column).
     fireEvent.click(caret);
     const childCard = await screen.findByTestId(`card-${CHILD_ID}`);
     expect(childCard).toHaveTextContent("Child sub-ticket");
     const todoLane = screen.getByTestId("column-todo");
-    expect(within(todoLane).getByTestId(`card-${CHILD_ID}`)).toBeInTheDocument();
+    expect(
+      within(todoLane).getByTestId(`card-${CHILD_ID}`),
+    ).toBeInTheDocument();
 
     // No second board read was needed to reveal the child (children came from the
     // full set already in hand); only the initial list + session + overview ran.
-    const listCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes("/work-items"));
+    const listCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("/work-items"),
+    );
     expect(listCalls).toHaveLength(1);
   });
 
@@ -120,14 +135,18 @@ describe("TicketsScreen sub-tickets surface in both views (ISI-5547)", () => {
     // Parent root row present; the child row is hidden until the parent expands.
     await screen.findByTestId(`row-${PARENT_ID}`);
     expect(screen.queryByTestId(`row-${CHILD_ID}`)).toBeNull();
-    expect(screen.getByTestId(`child-count-${PARENT_ID}`)).toHaveTextContent("1");
+    expect(screen.getByTestId(`child-count-${PARENT_ID}`)).toHaveTextContent(
+      "1",
+    );
 
     // Expanding the parent reveals the child as an indented sibling band (depth 1),
     // carrying its own status chip.
     fireEvent.click(screen.getByTestId(`tree-caret-${PARENT_ID}`));
     const childRow = await screen.findByTestId(`row-${CHILD_ID}`);
     expect(childRow.getAttribute("data-tree-depth")).toBe("1");
-    expect(within(childRow).getByTestId(`row-state-${CHILD_ID}`)).toHaveTextContent("In Progress");
+    expect(
+      within(childRow).getByTestId(`row-state-${CHILD_ID}`),
+    ).toHaveTextContent("In Progress");
   });
 
   it("a leaf root (no children) shows no caret — the tree index only carets real parents", async () => {

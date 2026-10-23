@@ -125,7 +125,8 @@ function KindIcon({ kind }: { kind: EntryKind }) {
 function LifecycleRail({ lifecycle }: { lifecycle: Lifecycle }) {
   const { nodes, currentIndex, totalMs } = lifecycle;
   const total = formatDurationMs(totalMs);
-  const fillPct = nodes.length > 1 ? (currentIndex / (nodes.length - 1)) * 100 : 0;
+  const fillPct =
+    nodes.length > 1 ? (currentIndex / (nodes.length - 1)) * 100 : 0;
   return (
     <section className="card run-rail" data-testid="run-lifecycle">
       <div className="run-rail__head">
@@ -134,7 +135,10 @@ function LifecycleRail({ lifecycle }: { lifecycle: Lifecycle }) {
       </div>
       <div className="run-rail__track">
         <div className="run-rail__line" />
-        <div className="run-rail__line run-rail__line--done" style={{ width: `${fillPct}%` }} />
+        <div
+          className="run-rail__line run-rail__line--done"
+          style={{ width: `${fillPct}%` }}
+        />
         <ol className="run-rail__nodes">
           {nodes.map((n, i) => (
             <li
@@ -145,7 +149,9 @@ function LifecycleRail({ lifecycle }: { lifecycle: Lifecycle }) {
             >
               <span className="run-rail__dot" />
               <span className="run-rail__label">{n.label}</span>
-              <span className="run-rail__clock">{formatRailClock(n.clock)}</span>
+              <span className="run-rail__clock">
+                {formatRailClock(n.clock)}
+              </span>
             </li>
           ))}
         </ol>
@@ -194,7 +200,11 @@ function ToolRow({ tools, ts }: { tools: ToolCall[]; ts: number }) {
 
 function ActivityRow({ entry }: { entry: ClassifiedEntry }) {
   return (
-    <article className="activity" data-kind={entry.kind} data-testid={`activity-${entry.kind}`}>
+    <article
+      className="activity"
+      data-kind={entry.kind}
+      data-testid={`activity-${entry.kind}`}
+    >
       <span className="activity__rail-dot" aria-hidden />
       <div className="activity__card">
         <header className="activity__head">
@@ -202,7 +212,9 @@ function ActivityRow({ entry }: { entry: ClassifiedEntry }) {
             <KindIcon kind={entry.kind} />
           </span>
           <span className="activity__kind">{KIND_LABEL[entry.kind]}</span>
-          {entry.author ? <span className="activity__author">{entry.author}</span> : null}
+          {entry.author ? (
+            <span className="activity__author">{entry.author}</span>
+          ) : null}
           <time className="activity__time">{formatCompactTime(entry.ts)}</time>
         </header>
         <p className="activity__text">{entry.text}</p>
@@ -237,8 +249,13 @@ function ActivityStream({
         ),
       )}
       {collapsed ? (
-        <button type="button" className="activity-more" onClick={() => setExpanded(true)}>
-          {hidden} more activity item{hidden === 1 ? "" : "s"} collapsed · Show all
+        <button
+          type="button"
+          className="activity-more"
+          onClick={() => setExpanded(true)}
+        >
+          {hidden} more activity item{hidden === 1 ? "" : "s"} collapsed · Show
+          all
         </button>
       ) : null}
     </div>
@@ -249,7 +266,15 @@ function ActivityStream({
 
 const EXCHANGE_COLLAPSE = 480; // chars of a panel shown before "Show all"
 
-function ExchangePanel({ label, tone, text }: { label: string; tone: "prompt" | "response"; text: string }) {
+function ExchangePanel({
+  label,
+  tone,
+  text,
+}: {
+  label: string;
+  tone: "prompt" | "response";
+  text: string;
+}) {
   const [open, setOpen] = useState(false);
   const long = text.length > EXCHANGE_COLLAPSE;
   const shown = open || !long ? text : `${text.slice(0, EXCHANGE_COLLAPSE)}…`;
@@ -258,7 +283,11 @@ function ExchangePanel({ label, tone, text }: { label: string; tone: "prompt" | 
       <span className="exchange__panel-label">{label}</span>
       <p className="exchange__panel-text">{shown}</p>
       {long ? (
-        <button type="button" className="exchange__toggle" onClick={() => setOpen((v) => !v)}>
+        <button
+          type="button"
+          className="exchange__toggle"
+          onClick={() => setOpen((v) => !v)}
+        >
           {open ? "Show less" : "Show all"}
         </button>
       ) : null}
@@ -266,7 +295,11 @@ function ExchangePanel({ label, tone, text }: { label: string; tone: "prompt" | 
   );
 }
 
-function ModelExchangeCard({ item }: { item: Extract<ExecutionItem, { type: "exchange" }> }) {
+function ModelExchangeCard({
+  item,
+}: {
+  item: Extract<ExecutionItem, { type: "exchange" }>;
+}) {
   const tokens = formatTokens(item.tokens);
   return (
     <article className="activity" data-kind="llm" data-testid="activity-llm">
@@ -277,12 +310,24 @@ function ModelExchangeCard({ item }: { item: Extract<ExecutionItem, { type: "exc
             <KindIcon kind="llm" />
           </span>
           <span className="activity__kind">Model exchange</span>
-          {item.model ? <span className="activity__author">{item.model}</span> : null}
-          {tokens ? <span className="exchange__tokens">{tokens} tokens</span> : null}
+          {item.model ? (
+            <span className="activity__author">{item.model}</span>
+          ) : null}
+          {tokens ? (
+            <span className="exchange__tokens">{tokens} tokens</span>
+          ) : null}
           <time className="activity__time">{formatCompactTime(item.ts)}</time>
         </header>
-        {item.prompt ? <ExchangePanel label="Prompt" tone="prompt" text={item.prompt} /> : null}
-        {item.response ? <ExchangePanel label="Response" tone="response" text={item.response} /> : null}
+        {item.prompt ? (
+          <ExchangePanel label="Prompt" tone="prompt" text={item.prompt} />
+        ) : null}
+        {item.response ? (
+          <ExchangePanel
+            label="Response"
+            tone="response"
+            text={item.response}
+          />
+        ) : null}
         {!item.prompt && !item.response ? (
           <p className="activity__text muted">No exchange content recorded.</p>
         ) : null}
@@ -291,7 +336,11 @@ function ModelExchangeCard({ item }: { item: Extract<ExecutionItem, { type: "exc
   );
 }
 
-function ToolCallCard({ item }: { item: Extract<ExecutionItem, { type: "tool" }> }) {
+function ToolCallCard({
+  item,
+}: {
+  item: Extract<ExecutionItem, { type: "tool" }>;
+}) {
   const [open, setOpen] = useState(false);
   const hasExit = typeof item.ok === "boolean";
   return (
@@ -335,7 +384,9 @@ function ToolCallCard({ item }: { item: Extract<ExecutionItem, { type: "tool" }>
                 <pre className="toolcall__pre">{item.output}</pre>
               </div>
             ) : (
-              <p className="activity__text muted">No tool output recorded for this call.</p>
+              <p className="activity__text muted">
+                No tool output recorded for this call.
+              </p>
             )}
           </div>
         ) : null}
@@ -349,10 +400,15 @@ function ExecutionStream({ items }: { items: ExecutionItem[] }) {
   if (items.length === 0) {
     return (
       <div className="execution-empty" data-testid="execution-empty">
-        <p className="execution-empty__line">No model exchange recorded for this run.</p>
-        <p className="execution-empty__line">No tool calls recorded for this run.</p>
+        <p className="execution-empty__line">
+          No model exchange recorded for this run.
+        </p>
+        <p className="execution-empty__line">
+          No tool calls recorded for this run.
+        </p>
         <p className="execution-empty__hint muted">
-          Execution telemetry (prompts, tool calls) appears here once the run emits it.
+          Execution telemetry (prompts, tool calls) appears here once the run
+          emits it.
         </p>
       </div>
     );
@@ -372,8 +428,13 @@ function ExecutionStream({ items }: { items: ExecutionItem[] }) {
         ),
       )}
       {collapsed ? (
-        <button type="button" className="activity-more" onClick={() => setExpanded(true)}>
-          {hidden} more execution item{hidden === 1 ? "" : "s"} collapsed · Show all
+        <button
+          type="button"
+          className="activity-more"
+          onClick={() => setExpanded(true)}
+        >
+          {hidden} more execution item{hidden === 1 ? "" : "s"} collapsed · Show
+          all
         </button>
       ) : null}
     </div>
@@ -423,7 +484,9 @@ function RunSummaryCard({
           <dt>Tools</dt>
           <dd>
             {toolCount}
-            {toolErrors ? ` (${toolErrors} error${toolErrors === 1 ? "" : "s"})` : ""}
+            {toolErrors
+              ? ` (${toolErrors} error${toolErrors === 1 ? "" : "s"})`
+              : ""}
           </dd>
         </div>
         <div className="run-summary__row">
@@ -475,7 +538,8 @@ export function RunDetail({ runId }: { runId: string }) {
     });
   }, [runId]);
 
-  const detail: RunDetailResponseWire | null = state.kind === "ready" ? state.detail : null;
+  const detail: RunDetailResponseWire | null =
+    state.kind === "ready" ? state.detail : null;
 
   const classified = useMemo<ClassifiedEntry[]>(() => {
     if (!detail) return [];
@@ -491,9 +555,18 @@ export function RunDetail({ runId }: { runId: string }) {
     () => filterByScope(classified, scope, runId, runUid),
     [classified, scope, runId, runUid],
   );
-  const { execution, conversation } = useMemo(() => partitionByView(scoped), [scoped]);
-  const executionItems = useMemo(() => buildExecutionItems(execution), [execution]);
-  const conversationItems = useMemo(() => foldActivity(conversation), [conversation]);
+  const { execution, conversation } = useMemo(
+    () => partitionByView(scoped),
+    [scoped],
+  );
+  const executionItems = useMemo(
+    () => buildExecutionItems(execution),
+    [execution],
+  );
+  const conversationItems = useMemo(
+    () => foldActivity(conversation),
+    [conversation],
+  );
 
   if (state.kind === "loading") {
     return (
@@ -519,22 +592,29 @@ export function RunDetail({ runId }: { runId: string }) {
 
   const { run } = state.detail;
   const phase = run.status?.phase ?? "Unknown";
-  const agents = (run.spec.agents ?? []).map((a) => a.name).filter(Boolean) as string[];
+  const agents = (run.spec.agents ?? [])
+    .map((a) => a.name)
+    .filter(Boolean) as string[];
   const project = run.spec.projectRef?.name;
   const tokens = formatTokens(run.status?.totalTokenUsage?.totalTokens);
   const trace = run.status?.traceID;
-  const startedAt = run.status?.claimedAt ?? run.metadata?.creationTimestamp ?? null;
+  const startedAt =
+    run.status?.claimedAt ?? run.metadata?.creationTimestamp ?? null;
   const lifecycle = buildLifecycle(state.detail);
   const duration = formatDurationMs(lifecycle.totalMs);
-  const pausedReason = run.status?.conditions?.find((c) => c.type === "Paused")?.reason;
+  const pausedReason = run.status?.conditions?.find(
+    (c) => c.type === "Paused",
+  )?.reason;
 
   // Run-wide tool tally for the summary: fold call+result halves so one tool call
   // counts once (not twice), across the whole run regardless of the scope toggle.
-  const allToolCards = buildExecutionItems(partitionByView(classified).execution).filter(
-    (i) => i.type === "tool",
-  );
+  const allToolCards = buildExecutionItems(
+    partitionByView(classified).execution,
+  ).filter((i) => i.type === "tool");
   const toolCount = allToolCards.length;
-  const toolErrors = allToolCards.filter((i) => i.type === "tool" && i.ok === false).length;
+  const toolErrors = allToolCards.filter(
+    (i) => i.type === "tool" && i.ok === false,
+  ).length;
   const label = runScopeLabel(runId);
 
   return (
@@ -542,7 +622,11 @@ export function RunDetail({ runId }: { runId: string }) {
       <header className="card run-detail__header">
         <div className="run-detail__header-row">
           <div className="run-detail__badges">
-            <span className="phase-chip" data-tone={phaseTone(phase)} data-testid="run-phase">
+            <span
+              className="phase-chip"
+              data-tone={phaseTone(phase)}
+              data-testid="run-phase"
+            >
               {phase}
               {pausedReason ? ` (${pausedReason})` : ""}
             </span>
@@ -551,13 +635,17 @@ export function RunDetail({ runId }: { runId: string }) {
                 {a}
               </span>
             ))}
-            {project ? <span className="run-detail__project-badge">{project}</span> : null}
+            {project ? (
+              <span className="run-detail__project-badge">{project}</span>
+            ) : null}
           </div>
           <KillRun workItem={run.spec.workItemRef ?? ""} phase={phase} />
         </div>
         <h1 className="run-detail__title">Run {runId}</h1>
         <p className="run-detail__meta">
-          {startedAt ? `Started ${new Date(parseTs(startedAt)).toLocaleString()}` : "Not started"}
+          {startedAt
+            ? `Started ${new Date(parseTs(startedAt)).toLocaleString()}`
+            : "Not started"}
           {duration ? ` · ${duration}` : ""}
           {tokens ? (
             <>
@@ -567,7 +655,9 @@ export function RunDetail({ runId }: { runId: string }) {
           ) : null}
           {trace ? ` · Trace ${trace.slice(0, 8)}` : ""}
           {" · "}
-          <a href={`/runs/${encodeURIComponent(runId)}/build`}>Build workspace</a>
+          <a href={`/runs/${encodeURIComponent(runId)}/build`}>
+            Build workspace
+          </a>
         </p>
       </header>
 
@@ -634,8 +724,15 @@ export function RunDetail({ runId }: { runId: string }) {
                 </button>
               </div>
               <ul className="run-legend" aria-hidden>
-                {(view === "execution" ? EXECUTION_LEGEND : CONVERSATION_LEGEND).map((l) => (
-                  <li key={l.kind} className="run-legend__item" data-kind={l.kind}>
+                {(view === "execution"
+                  ? EXECUTION_LEGEND
+                  : CONVERSATION_LEGEND
+                ).map((l) => (
+                  <li
+                    key={l.kind}
+                    className="run-legend__item"
+                    data-kind={l.kind}
+                  >
                     <span className="run-legend__dot" />
                     {l.label}
                   </li>
@@ -648,7 +745,9 @@ export function RunDetail({ runId }: { runId: string }) {
               <ActivityStream
                 items={conversationItems}
                 emptyHint={
-                  scope === "this" && conversation.length === 0 && classified.length > 0
+                  scope === "this" &&
+                  conversation.length === 0 &&
+                  classified.length > 0
                     ? "No conversation for this run yet — switch to All to see other runs."
                     : "No ticket conversation recorded for this run."
                 }

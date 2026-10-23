@@ -22,7 +22,9 @@ describe("RunCreatedTickets", () => {
         hrefFor={(id) => `/projects/demo/issues/${id}`}
       />,
     );
-    expect(screen.getByTestId("run-created-count").textContent).toContain("3 sub-tickets");
+    expect(screen.getByTestId("run-created-count").textContent).toContain(
+      "3 sub-tickets",
+    );
     const items = screen.getAllByTestId("run-created-item");
     expect(items).toHaveLength(3);
     // Each created record surfaces as a real link to its ticket + its identifier.

@@ -64,7 +64,9 @@ describe("navTree — item-set + order match the ISI-3641 mock (ISI-3725), conso
     expect(tree.find((n) => n.id === "agents")).toBeUndefined();
     // The retired Teams rail island leaves no marker behind (only Projects stays dynamic).
     expect(unified?.dynamicChildren).toBeUndefined();
-    expect(tree.find((n) => n.id === "projects")?.dynamicChildren).toBe("projects");
+    expect(tree.find((n) => n.id === "projects")?.dynamicChildren).toBe(
+      "projects",
+    );
   });
 
   it("groups LLM Settings · OTel · Credentials · Plugins · Users&Roles under SETTINGS", () => {
@@ -87,11 +89,7 @@ describe("inboxActionableCount — mailbox-style badge counts ALL actionable row
   it("counts every inbox row regardless of the per-row unread flag", () => {
     // Every row in /api/squad/inbox is an open item awaiting action; the badge is the TOTAL,
     // not the unread subset (E1/ISI-5535 shipped unread-only; ISI-5560 refines it to row count).
-    const items = [
-      { unread: true },
-      { unread: false },
-      { unread: false },
-    ];
+    const items = [{ unread: true }, { unread: false }, { unread: false }];
     expect(inboxActionableCount(items)).toBe(3);
   });
 
@@ -162,14 +160,22 @@ describe("breadcrumbFor — /users reads as a labelled trail", () => {
 
   it("labels the dedicated LLM settings route 'LLM Settings' (ISI-5004)", () => {
     const crumbs = breadcrumbFor("/settings/llm");
-    expect(crumbs.map((c) => c.label)).toEqual(["Dashboard", "Settings", "LLM Settings"]);
+    expect(crumbs.map((c) => c.label)).toEqual([
+      "Dashboard",
+      "Settings",
+      "LLM Settings",
+    ]);
     const last = crumbs[crumbs.length - 1];
     expect(last).toEqual({ label: "LLM Settings", href: null });
   });
 
   it("keeps the OTLP surface labelled 'Configuration' under /settings/configuration", () => {
     const crumbs = breadcrumbFor("/settings/configuration");
-    expect(crumbs.map((c) => c.label)).toEqual(["Dashboard", "Settings", "Configuration"]);
+    expect(crumbs.map((c) => c.label)).toEqual([
+      "Dashboard",
+      "Settings",
+      "Configuration",
+    ]);
     const last = crumbs[crumbs.length - 1];
     expect(last).toEqual({ label: "Configuration", href: null });
   });

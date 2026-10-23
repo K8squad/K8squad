@@ -63,7 +63,9 @@ export function useProjects(): ProjectOption[] {
   useEffect(() => {
     let alive = true;
     fetch("/api/projects", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error(String(r.status))),
+      )
       .then((body: { projects?: ProjectOption[] }) => {
         if (alive && Array.isArray(body.projects)) setProjects(body.projects);
       })
@@ -77,14 +79,20 @@ export function useProjects(): ProjectOption[] {
   return projects;
 }
 
-export function NavigatingProjectSelector({ activeId }: { activeId: string | null }) {
+export function NavigatingProjectSelector({
+  activeId,
+}: {
+  activeId: string | null;
+}) {
   const projects = useProjects();
   const router = useRouter();
   return (
     <ProjectSelector
       projects={projects}
       activeId={activeId}
-      onNavigate={(id) => router.push(`/projects/${encodeURIComponent(id)}/tickets`)}
+      onNavigate={(id) =>
+        router.push(`/projects/${encodeURIComponent(id)}/tickets`)
+      }
     />
   );
 }

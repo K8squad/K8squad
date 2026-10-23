@@ -8,7 +8,13 @@
 //     Team delete is intentionally absent (board-gated on the parent ISI-4107).
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { ComposeScreen } from "@/components/compose/ComposeScreen";
 
 let current = new URLSearchParams();
@@ -27,7 +33,10 @@ interface Call {
  * unmatched URLs 404. Later routes can be more specific than earlier ones by ordering keys longest
  * first. 204 responses carry an empty body.
  */
-function stubRoutes(routes: Record<string, Route>): { spy: ReturnType<typeof vi.fn>; calls: Call[] } {
+function stubRoutes(routes: Record<string, Route>): {
+  spy: ReturnType<typeof vi.fn>;
+  calls: Call[];
+} {
   const calls: Call[] = [];
   const keys = Object.keys(routes).sort((a, b) => b.length - a.length);
   const spy = vi.fn((input: string, init?: { method?: string }) => {
@@ -40,7 +49,8 @@ function stubRoutes(routes: Record<string, Route>): { spy: ReturnType<typeof vi.
     return Promise.resolve({
       ok,
       status: r.status,
-      text: () => Promise.resolve(r.body === undefined ? "" : JSON.stringify(r.body)),
+      text: () =>
+        Promise.resolve(r.body === undefined ? "" : JSON.stringify(r.body)),
       json: () => Promise.resolve(r.body ?? null),
     });
   });
@@ -50,7 +60,15 @@ function stubRoutes(routes: Record<string, Route>): { spy: ReturnType<typeof vi.
 
 const tenantTeams = {
   fleet: false,
-  teams: [{ name: "own", namespace: "own-ns", uid: "u-own", agentCount: 1, projectCount: 1 }],
+  teams: [
+    {
+      name: "own",
+      namespace: "own-ns",
+      uid: "u-own",
+      agentCount: 1,
+      projectCount: 1,
+    },
+  ],
 };
 
 beforeEach(() => {
@@ -68,7 +86,10 @@ async function renderAgentEdit(extra: Record<string, Route> = {}) {
   const { calls } = stubRoutes({
     "/api/squad/teams": { status: 200, body: tenantTeams },
     "/api/squad/agents/my-agent": { status: 200, body: { name: "my-agent" } },
-    "/api/squad/agents": { status: 200, body: { agents: [{ name: "my-agent", runtime: "claude" }] } },
+    "/api/squad/agents": {
+      status: 200,
+      body: { agents: [{ name: "my-agent", runtime: "claude" }] },
+    },
     ...extra,
   });
   render(<ComposeScreen />);
@@ -83,14 +104,18 @@ describe("Compose delete UI — confirm gate (ISI-4108)", () => {
 
     fireEvent.click(screen.getByTestId("compose-delete-open"));
     // Dialog is up…
-    expect(await screen.findByTestId("compose-delete-confirm")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("compose-delete-confirm"),
+    ).toBeInTheDocument();
     // …but nothing was deleted yet.
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
 
     // Cancelling still fires no DELETE and dismisses the dialog.
     fireEvent.click(screen.getByTestId("compose-delete-cancel"));
     await waitFor(() =>
-      expect(screen.queryByTestId("compose-delete-confirm")).not.toBeInTheDocument(),
+      expect(
+        screen.queryByTestId("compose-delete-confirm"),
+      ).not.toBeInTheDocument(),
     );
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   });
@@ -105,7 +130,9 @@ describe("Compose delete UI — confirm gate (ISI-4108)", () => {
 
     fireEvent.keyDown(dialog, { key: "Escape" });
     await waitFor(() =>
-      expect(screen.queryByTestId("compose-delete-confirm")).not.toBeInTheDocument(),
+      expect(
+        screen.queryByTestId("compose-delete-confirm"),
+      ).not.toBeInTheDocument(),
     );
   });
 });
@@ -116,22 +143,36 @@ describe("Compose delete UI — 204 success (ISI-4108)", () => {
       "/api/compose/agents/my-agent": { status: 204 },
     });
 
-    const listCallsBefore = calls.filter((c) => c.url === "/api/squad/agents").length;
+    const listCallsBefore = calls.filter(
+      (c) => c.url === "/api/squad/agents",
+    ).length;
 
     fireEvent.click(screen.getByTestId("compose-delete-open"));
     fireEvent.click(await screen.findByTestId("compose-delete-confirm-btn"));
 
     // DELETE fired against the BFF compose route.
     await waitFor(() =>
-      expect(calls.some((c) => c.method === "DELETE" && c.url.startsWith("/api/compose/agents/my-agent"))).toBe(true),
+      expect(
+        calls.some(
+          (c) =>
+            c.method === "DELETE" &&
+            c.url.startsWith("/api/compose/agents/my-agent"),
+        ),
+      ).toBe(true),
     );
     // Dialog closed, form dropped back to CREATE mode (button label flips), list refetched.
     await waitFor(() =>
-      expect(screen.queryByTestId("compose-delete-confirm")).not.toBeInTheDocument(),
+      expect(
+        screen.queryByTestId("compose-delete-confirm"),
+      ).not.toBeInTheDocument(),
     );
-    await waitFor(() => expect(screen.getByText("Create Agent")).toBeInTheDocument());
     await waitFor(() =>
-      expect(calls.filter((c) => c.url === "/api/squad/agents").length).toBeGreaterThan(listCallsBefore),
+      expect(screen.getByText("Create Agent")).toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(
+        calls.filter((c) => c.url === "/api/squad/agents").length,
+      ).toBeGreaterThan(listCallsBefore),
     );
   });
 });
@@ -139,7 +180,10 @@ describe("Compose delete UI — 204 success (ISI-4108)", () => {
 describe("Compose delete UI — error surfacing (ISI-4108)", () => {
   it("a 403 denial is relayed verbatim via ErrorBanner", async () => {
     await renderAgentEdit({
-      "/api/compose/agents/my-agent": { status: 403, body: { error: "forbidden: not a member" } },
+      "/api/compose/agents/my-agent": {
+        status: 403,
+        body: { error: "forbidden: not a member" },
+      },
     });
 
     fireEvent.click(screen.getByTestId("compose-delete-open"));
@@ -148,7 +192,9 @@ describe("Compose delete UI — error surfacing (ISI-4108)", () => {
     expect(await screen.findByText("HTTP 403")).toBeInTheDocument();
     expect(screen.getByText("forbidden: not a member")).toBeInTheDocument();
     // Confirm dialog closed on error.
-    expect(screen.queryByTestId("compose-delete-confirm")).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("compose-delete-confirm"),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -159,7 +205,9 @@ describe("Compose delete UI — RBAC scope query (ISI-4108)", () => {
     });
 
     // The operator supplies the project RBAC scope (not persisted in the CRD read).
-    fireEvent.change(screen.getByLabelText(/Project/i), { target: { value: "proj-x" } });
+    fireEvent.change(screen.getByLabelText(/Project/i), {
+      target: { value: "proj-x" },
+    });
     fireEvent.click(screen.getByTestId("compose-delete-open"));
     fireEvent.click(await screen.findByTestId("compose-delete-confirm-btn"));
 
@@ -199,7 +247,9 @@ describe("Compose delete UI — RBAC scope query (ISI-4108)", () => {
     });
     render(<ComposeScreen />);
     // Wait for the edit form to render, then assert no delete button.
-    await waitFor(() => expect(screen.getByText("Save Team (new revision)")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("Save Team (new revision)")).toBeInTheDocument(),
+    );
     expect(screen.queryByTestId("compose-delete-open")).not.toBeInTheDocument();
   });
 });

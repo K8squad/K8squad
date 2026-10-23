@@ -91,7 +91,10 @@ export function useLiveIssueIds(projectId: string): ReadonlySet<string> {
     };
 
     const tick = async () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
         schedule();
         return;
       }

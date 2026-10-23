@@ -107,15 +107,12 @@ export async function updateWorkItem(
   workItemId: string,
   patch: UpdateWorkItemBody,
 ): Promise<WorkItem> {
-  const res = await fetch(
-    `/api/work-items/${encodeURIComponent(workItemId)}`,
-    {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(patch),
-      cache: "no-store",
-    },
-  );
+  const res = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+    cache: "no-store",
+  });
   return (await jsonOrThrow(res)) as WorkItem;
 }
 
@@ -160,7 +157,15 @@ export async function listSquadAgents(): Promise<AgentOption[]> {
     const payload = (await res.json()) as { agents?: unknown };
     const rows = Array.isArray(payload.agents) ? payload.agents : [];
     const mapped = rows
-      .map((r) => r as { id?: unknown; name?: unknown; role?: unknown; coordinator?: unknown })
+      .map(
+        (r) =>
+          r as {
+            id?: unknown;
+            name?: unknown;
+            role?: unknown;
+            coordinator?: unknown;
+          },
+      )
       .filter((r) => typeof r.id === "string" && typeof r.name === "string")
       .map((r) => ({
         id: r.id as string,
@@ -210,10 +215,11 @@ export async function listSquadAgents(): Promise<AgentOption[]> {
  *               team — the write-time 422 remains the authoritative backstop.
  */
 export type EligibleReviewers =
-  | { status: "ok"; agents: AgentOption[] }
-  | { status: "error" };
+  { status: "ok"; agents: AgentOption[] } | { status: "error" };
 
-export async function listEligibleReviewers(projectId: string): Promise<EligibleReviewers> {
+export async function listEligibleReviewers(
+  projectId: string,
+): Promise<EligibleReviewers> {
   try {
     const res = await fetch(
       `/api/projects/${encodeURIComponent(projectId)}/repo/review-automation/eligible-agents`,
@@ -338,7 +344,11 @@ export async function assignAndDispatch(
     if (res.ok) {
       return { ok: true, result: (await res.json()) as GithubAssignResult };
     }
-    return { ok: false, status: res.status, code: mapGithubAssignError(res.status) };
+    return {
+      ok: false,
+      status: res.status,
+      code: mapGithubAssignError(res.status),
+    };
   } catch {
     return { ok: false, status: 0, code: "failed" };
   }

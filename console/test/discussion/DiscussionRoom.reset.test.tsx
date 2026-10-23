@@ -21,7 +21,11 @@ import {
 } from "@/lib/discussion/types";
 import type { RoomStreamEvent } from "@/lib/discussion/liveFeed";
 
-function humanMsg(id: string, body: string, createdAt = "2026-10-01T10:00:00Z"): Message {
+function humanMsg(
+  id: string,
+  body: string,
+  createdAt = "2026-10-01T10:00:00Z",
+): Message {
   return {
     id,
     threadId: "th-1",
@@ -48,7 +52,9 @@ function resetMarker(createdAt: string): Message {
   };
 }
 
-function makeClient(overrides: Partial<DiscussionClient> = {}): DiscussionClient {
+function makeClient(
+  overrides: Partial<DiscussionClient> = {},
+): DiscussionClient {
   return {
     listThreads: vi.fn(),
     getThread: vi.fn().mockResolvedValue([humanMsg("m1", "hello room")]),

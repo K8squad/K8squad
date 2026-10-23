@@ -138,15 +138,17 @@ export function DiscussionRoom({
   // post-close takeaways carry the real phase/round/paid-run numbers instead of
   // the transcript-only degrade; null until a closed debate is read (or on a
   // pre-ISI-5617 apiserver, where the card falls back to the transcript).
-  const [terminalSession, setTerminalSession] =
-    useState<PartySession | null>(null);
+  const [terminalSession, setTerminalSession] = useState<PartySession | null>(
+    null,
+  );
   // Reset state (ISI-5674 WS-D, ADR-0030). `resetInfo` is the latest live reset
   // marker's metadata (who/when) — set from the thread read on load and from the
   // marker when a reset lands (POST response or SSE). It drives the post-reset
   // empty state. `resetOpen` toggles the confirm dialog; `resetBusy` guards the
   // in-flight reset round-trip against a double-run.
-  const [resetInfo, setResetInfo] =
-    useState<{ at: string; by: string } | null>(null);
+  const [resetInfo, setResetInfo] = useState<{ at: string; by: string } | null>(
+    null,
+  );
   const [resetOpen, setResetOpen] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   // The roster the post callback reads to resolve dispatch targets, held in a
@@ -230,7 +232,11 @@ export function DiscussionRoom({
           flat.some((m) => isPartyStart(m)) &&
           typeof client.listPartySessions === "function"
         ) {
-          const list = await client.listPartySessions(projectId, threadId, true);
+          const list = await client.listPartySessions(
+            projectId,
+            threadId,
+            true,
+          );
           setTerminalSession(newestTerminalSession(list));
         } else {
           setTerminalSession(null);
@@ -395,7 +401,10 @@ export function DiscussionRoom({
       setMessages((cur) =>
         applyRoomEvent(cur, { type: "message.created", message: res.marker }),
       );
-      setResetInfo({ at: res.marker.createdAt, by: res.marker.authorPrincipal });
+      setResetInfo({
+        at: res.marker.createdAt,
+        by: res.marker.authorPrincipal,
+      });
       setResetOpen(false);
     } finally {
       setResetBusy(false);
@@ -573,11 +582,11 @@ export function DiscussionRoom({
             />
           ) : null}
           {showResetEmptyState ? (
-            <div className="ksq-room__reset-empty" data-testid="room-reset-empty">
-              <p
-                className="ksq-room__reset-meta"
-                data-testid="room-reset-meta"
-              >
+            <div
+              className="ksq-room__reset-empty"
+              data-testid="room-reset-empty"
+            >
+              <p className="ksq-room__reset-meta" data-testid="room-reset-meta">
                 reset by {resetInfo.by} · {formatResetTime(resetInfo.at)}
               </p>
               <div className="ksq-room__reset-illus" aria-hidden="true">
@@ -591,9 +600,12 @@ export function DiscussionRoom({
                   />
                 </svg>
               </div>
-              <h2 className="ksq-room__reset-title">This discussion was reset</h2>
+              <h2 className="ksq-room__reset-title">
+                This discussion was reset
+              </h2>
               <p className="ksq-room__reset-sub">
-                Earlier messages are archived for audit and no longer shown here.
+                Earlier messages are archived for audit and no longer shown
+                here.
               </p>
             </div>
           ) : null}
@@ -626,7 +638,9 @@ export function DiscussionRoom({
           <Composer
             onPost={post}
             onCommand={onCommand}
-            placeholder={showResetEmptyState ? "Start the discussion…" : undefined}
+            placeholder={
+              showResetEmptyState ? "Start the discussion…" : undefined
+            }
             directTargets={rosterAgents.map((a) => ({
               id: a.id,
               name: a.name,

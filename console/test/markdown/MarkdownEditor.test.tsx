@@ -116,9 +116,9 @@ describe("<MarkdownEditor> — Write/Preview", () => {
 
   it("marks the active tab with aria-selected", () => {
     render(<Harness />);
-    expect(screen.getByTestId("ed-tab-write").getAttribute("aria-selected")).toBe(
-      "true",
-    );
+    expect(
+      screen.getByTestId("ed-tab-write").getAttribute("aria-selected"),
+    ).toBe("true");
     fireEvent.click(screen.getByTestId("ed-tab-preview"));
     expect(
       screen.getByTestId("ed-tab-preview").getAttribute("aria-selected"),

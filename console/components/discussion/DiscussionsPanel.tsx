@@ -150,7 +150,10 @@ export function DiscussionsPanel({
       </button>
 
       {expanded && draftTitle !== null && (
-        <div className="ksq-dpanel__draft" data-testid="discussions-new-chat-draft">
+        <div
+          className="ksq-dpanel__draft"
+          data-testid="discussions-new-chat-draft"
+        >
           <input
             ref={draftRef}
             className="ksq-dpanel__draft-input"
@@ -249,7 +252,10 @@ export function DiscussionsPanel({
                     <>
                       <span className="ksq-dpanel__rowtitle">{t.title}</span>
                       {ts && (
-                        <time className="ksq-dpanel__rowts" dateTime={t.createdAt}>
+                        <time
+                          className="ksq-dpanel__rowts"
+                          dateTime={t.createdAt}
+                        >
                           {ts}
                         </time>
                       )}

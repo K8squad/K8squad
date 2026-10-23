@@ -51,7 +51,10 @@ export function useModelHints(): readonly ModelHint[] {
 }
 
 /** True when `id` is one of the curated hints (drives edit-mode "curated vs Custom" — AC1/AC2). */
-export function isCuratedModel(id: string, hints: readonly ModelHint[] = CURATED_MODELS): boolean {
+export function isCuratedModel(
+  id: string,
+  hints: readonly ModelHint[] = CURATED_MODELS,
+): boolean {
   const v = id.trim();
   return v.length > 0 && hints.some((h) => h.id === v);
 }
@@ -89,7 +92,12 @@ export function modelProvider(id: string): string {
   const slash = v.indexOf("/");
   if (slash > 0) return v.slice(0, slash);
   if (v.startsWith("claude")) return "claude";
-  if (v.startsWith("gpt") || v.startsWith("o1") || v.startsWith("o3") || v.startsWith("openai")) {
+  if (
+    v.startsWith("gpt") ||
+    v.startsWith("o1") ||
+    v.startsWith("o3") ||
+    v.startsWith("openai")
+  ) {
     return "openai";
   }
   const dash = v.indexOf("-");

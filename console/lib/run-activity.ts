@@ -23,7 +23,8 @@ import type {
 // observation output. Both are EXECUTION kinds (ISI-4813 P2-C): the run screen
 // separates these from the CONVERSATION kinds (you / comment / system) so
 // ticket/admin chatter no longer drowns the execution detail.
-export type EntryKind = "you" | "thinking" | "comment" | "tool" | "system" | "llm";
+export type EntryKind =
+  "you" | "thinking" | "comment" | "tool" | "system" | "llm";
 
 export interface ToolCall {
   name: string;
@@ -50,8 +51,16 @@ export interface ClassifiedEntry {
 }
 
 /** Execution = the model's own work; Conversation = ticket/admin chatter. */
-export const EXECUTION_KINDS: ReadonlySet<EntryKind> = new Set(["llm", "tool", "thinking"]);
-export const CONVERSATION_KINDS: ReadonlySet<EntryKind> = new Set(["you", "comment", "system"]);
+export const EXECUTION_KINDS: ReadonlySet<EntryKind> = new Set([
+  "llm",
+  "tool",
+  "thinking",
+]);
+export const CONVERSATION_KINDS: ReadonlySet<EntryKind> = new Set([
+  "you",
+  "comment",
+  "system",
+]);
 
 function parseTs(value?: string | null): number {
   if (!value) return 0;
@@ -60,7 +69,10 @@ function parseTs(value?: string | null): number {
 }
 
 /** Strip a leading `[run <id>]` marker, returning the token and the remainder. */
-export function parseRunScope(content: string): { runScope: string | null; rest: string } {
+export function parseRunScope(content: string): {
+  runScope: string | null;
+  rest: string;
+} {
   const m = /^\s*\[run\s+([A-Za-z0-9._-]+)\]\s*/.exec(content ?? "");
   if (!m) return { runScope: null, rest: (content ?? "").trim() };
   return { runScope: m[1], rest: content.slice(m[0].length).trim() };
@@ -69,8 +81,12 @@ export function parseRunScope(content: string): { runScope: string | null; rest:
 const OK_RESULTS = new Set(["ok", "success", "succeeded", "pass"]);
 
 /** Parse a `[tool:<name>/result(ok|err)]` marker off the front of the content. */
-export function parseToolCall(content: string): { tool: ToolCall; rest: string } | null {
-  const m = /^\s*\[tool:([A-Za-z0-9._-]+)\/result\(([A-Za-z]+)\)\]\s*/.exec(content ?? "");
+export function parseToolCall(
+  content: string,
+): { tool: ToolCall; rest: string } | null {
+  const m = /^\s*\[tool:([A-Za-z0-9._-]+)\/result\(([A-Za-z]+)\)\]\s*/.exec(
+    content ?? "",
+  );
   if (!m) return null;
   const ok = OK_RESULTS.has(m[2].toLowerCase());
   return { tool: { name: m[1], ok }, rest: content.slice(m[0].length).trim() };
@@ -78,7 +94,13 @@ export function parseToolCall(content: string): { tool: ToolCall; rest: string }
 
 function isUserAgent(agent: string): boolean {
   const a = agent.toLowerCase();
-  return /^user[:/]/.test(a) || a === "you" || a === "human" || a === "user" || a === "admin";
+  return (
+    /^user[:/]/.test(a) ||
+    a === "you" ||
+    a === "human" ||
+    a === "user" ||
+    a === "admin"
+  );
 }
 
 function isSystemAgent(agent: string): boolean {
@@ -156,13 +178,24 @@ export function classifyEntry(entry: ThinkingEntryWire): ClassifiedEntry {
     };
   }
   if (entry.type === "observation") {
-    return { ...base, kind: "tool", toolPhase: "result", text: rest, author: agent || undefined };
+    return {
+      ...base,
+      kind: "tool",
+      toolPhase: "result",
+      text: rest,
+      author: agent || undefined,
+    };
   }
   if (entry.type === "llm_interaction") {
     return { ...base, kind: "llm", text: rest, author: agent || undefined };
   }
   if (entry.type === "thinking") {
-    return { ...base, kind: "thinking", text: rest, author: agent || undefined };
+    return {
+      ...base,
+      kind: "thinking",
+      text: rest,
+      author: agent || undefined,
+    };
   }
   // 4. Conversation fallback.
   if (entry.type === "comment") {
@@ -235,7 +268,8 @@ export function belongsToRun(
   if (!tok) return true;
   const t = tok.toLowerCase();
   const uidTok = runUidToken(runUid).toLowerCase();
-  if (uidTok) return t === uidTok || uidTok.startsWith(t) || t.startsWith(uidTok);
+  if (uidTok)
+    return t === uidTok || uidTok.startsWith(t) || t.startsWith(uidTok);
   // Legacy fallback (no uid on the wire): match against name / short label.
   const r = (runId ?? "").toLowerCase();
   const label = runScopeLabel(runId).toLowerCase();
@@ -302,7 +336,9 @@ export type ExecutionItem =
  * Unpaired halves render on their own — the screen never fabricates a missing
  * side.
  */
-export function buildExecutionItems(entries: ClassifiedEntry[]): ExecutionItem[] {
+export function buildExecutionItems(
+  entries: ClassifiedEntry[],
+): ExecutionItem[] {
   const out: ExecutionItem[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
@@ -320,7 +356,11 @@ export function buildExecutionItems(entries: ClassifiedEntry[]): ExecutionItem[]
       if (isResponse) item.response = e.text;
       else item.prompt = e.text;
       // Fold a following response into the same card when this was the prompt.
-      if (!isResponse && next?.kind === "llm" && (next.role ?? "").toLowerCase() === "response") {
+      if (
+        !isResponse &&
+        next?.kind === "llm" &&
+        (next.role ?? "").toLowerCase() === "response"
+      ) {
         item.response = next.text;
         item.tokens = next.tokens ?? item.tokens;
         item.model = next.author ?? item.model;
@@ -405,7 +445,12 @@ export interface Lifecycle {
   totalMs: number | null;
 }
 
-const TERMINAL_PHASES = new Set(["succeeded", "failed", "cancelled", "completed"]);
+const TERMINAL_PHASES = new Set([
+  "succeeded",
+  "failed",
+  "cancelled",
+  "completed",
+]);
 
 function phaseIndex(phase: string): number {
   const p = (phase ?? "").toLowerCase();
@@ -432,7 +477,8 @@ export function buildLifecycle(detail: RunDetailResponseWire): Lifecycle {
   const created = parseTs(run.metadata?.creationTimestamp);
   const claimed = parseTs(run.status?.claimedAt);
 
-  const dispatch = created || claimed || (started.length ? Math.min(...started) : 0);
+  const dispatch =
+    created || claimed || (started.length ? Math.min(...started) : 0);
   const running = claimed || (started.length ? Math.min(...started) : 0);
   const collecting = completed.length ? Math.max(...completed) : 0;
   const terminalClock = terminal
@@ -446,10 +492,22 @@ export function buildLifecycle(detail: RunDetailResponseWire): Lifecycle {
     : "Succeeded";
 
   const nodes: LifecycleNode[] = [
-    { label: "Dispatching", clock: dispatch || null, reached: currentIndex >= 0 },
+    {
+      label: "Dispatching",
+      clock: dispatch || null,
+      reached: currentIndex >= 0,
+    },
     { label: "Running", clock: running || null, reached: currentIndex >= 1 },
-    { label: "Collecting", clock: collecting || null, reached: currentIndex >= 2 },
-    { label: terminalLabel, clock: terminalClock || null, reached: currentIndex >= 3 },
+    {
+      label: "Collecting",
+      clock: collecting || null,
+      reached: currentIndex >= 2,
+    },
+    {
+      label: terminalLabel,
+      clock: terminalClock || null,
+      reached: currentIndex >= 3,
+    },
   ];
 
   const end = terminalClock || collecting || Date.now();

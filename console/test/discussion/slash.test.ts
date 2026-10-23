@@ -46,7 +46,9 @@ describe("matchSlashCommands — prefix filter", () => {
   it("exposes the mock copy for /reset", () => {
     const reset = SLASH_COMMANDS.find((c) => c.name === "reset");
     expect(reset?.title).toBe("Clear this discussion");
-    expect(reset?.subtitle).toBe("Starts a fresh transcript · history preserved");
+    expect(reset?.subtitle).toBe(
+      "Starts a fresh transcript · history preserved",
+    );
   });
 });
 

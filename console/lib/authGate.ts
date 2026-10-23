@@ -12,10 +12,21 @@
 // not a grant. Keeping the real decision upstream is what stops a client-forgeable authz path.
 
 /** Route prefixes that must render WITHOUT a session (else an anonymous user could never reach login). */
-const PUBLIC_PREFIXES = ["/login", "/_next", "/favicon", "/public", "/assets"] as const;
+const PUBLIC_PREFIXES = [
+  "/login",
+  "/_next",
+  "/favicon",
+  "/public",
+  "/assets",
+] as const;
 
 /** Exact public files at the root. */
-const PUBLIC_FILES = ["/favicon.ico", "/robots.txt", "/sitemap.xml", "/manifest.webmanifest"] as const;
+const PUBLIC_FILES = [
+  "/favicon.ico",
+  "/robots.txt",
+  "/sitemap.xml",
+  "/manifest.webmanifest",
+] as const;
 
 /**
  * isPublicPath reports whether a path is reachable without a session. /api/* is public HERE because the
@@ -25,7 +36,8 @@ const PUBLIC_FILES = ["/favicon.ico", "/robots.txt", "/sitemap.xml", "/manifest.
  */
 export function isPublicPath(pathname: string): boolean {
   if (pathname.startsWith("/api/")) return true;
-  for (const p of PUBLIC_PREFIXES) if (pathname === p || pathname.startsWith(p + "/")) return true;
+  for (const p of PUBLIC_PREFIXES)
+    if (pathname === p || pathname.startsWith(p + "/")) return true;
   for (const f of PUBLIC_FILES) if (pathname === f) return true;
   return false;
 }
@@ -42,7 +54,11 @@ export interface GateResult {
  * On an anonymous navigation to a protected route it redirects to /login with a `next` param so the
  * login flow can return the user where they were headed.
  */
-export function gateDecision(pathname: string, search: string, hasSession: boolean): GateResult {
+export function gateDecision(
+  pathname: string,
+  search: string,
+  hasSession: boolean,
+): GateResult {
   if (isPublicPath(pathname) || hasSession) return { action: "next" };
   // Anonymous → login. Preserve the intended destination (path + query) for post-login return.
   const dest = pathname + (search || "");

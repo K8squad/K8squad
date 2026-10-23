@@ -97,9 +97,21 @@ describe("agentHueMap", () => {
     const bubbles = buildRunComments(
       thread({
         comments: [
-          { author: "agent:builder", body: "wired", createdAt: "2026-09-14T10:00:00Z" },
-          { author: "agent:reviewer", body: "lgtm", createdAt: "2026-09-14T10:01:00Z" },
-          { author: "user:alice", body: "ok", createdAt: "2026-09-14T10:02:00Z" },
+          {
+            author: "agent:builder",
+            body: "wired",
+            createdAt: "2026-09-14T10:00:00Z",
+          },
+          {
+            author: "agent:reviewer",
+            body: "lgtm",
+            createdAt: "2026-09-14T10:01:00Z",
+          },
+          {
+            author: "user:alice",
+            body: "ok",
+            createdAt: "2026-09-14T10:02:00Z",
+          },
         ],
       }),
     );
@@ -126,19 +138,39 @@ describe("isRunningState", () => {
 
 describe("buildRunComments", () => {
   const comments = [
-    { author: "agent:builder", body: "first run", createdAt: "2026-09-14T10:00:00Z" },
-    { author: "user:alice", body: "looks good", createdAt: "2026-09-14T10:05:00Z" },
-    { author: "agent:builder", body: "second run", createdAt: "2026-09-14T10:10:00Z" },
+    {
+      author: "agent:builder",
+      body: "first run",
+      createdAt: "2026-09-14T10:00:00Z",
+    },
+    {
+      author: "user:alice",
+      body: "looks good",
+      createdAt: "2026-09-14T10:05:00Z",
+    },
+    {
+      author: "agent:builder",
+      body: "second run",
+      createdAt: "2026-09-14T10:10:00Z",
+    },
   ];
 
   it("orders newest last and flags only the newest agent bubble as latest", () => {
-    const rc = buildRunComments(thread({ comments, runId: "run-9", state: "in_progress" }));
-    expect(rc.map((r) => r.body)).toEqual(["first run", "looks good", "second run"]);
+    const rc = buildRunComments(
+      thread({ comments, runId: "run-9", state: "in_progress" }),
+    );
+    expect(rc.map((r) => r.body)).toEqual([
+      "first run",
+      "looks good",
+      "second run",
+    ]);
     expect(rc.map((r) => r.isLatestAgent)).toEqual([false, false, true]);
   });
 
   it("attributes run-id + trace ribbon ONLY to the newest agent bubble", () => {
-    const rc = buildRunComments(thread({ comments, runId: "run-9", state: "in_progress" }));
+    const rc = buildRunComments(
+      thread({ comments, runId: "run-9", state: "in_progress" }),
+    );
     expect(rc[0].runId).toBeUndefined(); // older agent run: no fabricated id
     expect(rc[1].runId).toBeUndefined(); // human reply: never a run
     expect(rc[2].runId).toBe("run-9");
@@ -147,15 +179,21 @@ describe("buildRunComments", () => {
   });
 
   it("pulses the live dot only when the ticket is in an in-flight phase", () => {
-    const live = buildRunComments(thread({ comments, runId: "run-9", state: "in_progress" }));
+    const live = buildRunComments(
+      thread({ comments, runId: "run-9", state: "in_progress" }),
+    );
     expect(live[2].running).toBe(true);
-    const done = buildRunComments(thread({ comments, runId: "run-9", state: "done" }));
+    const done = buildRunComments(
+      thread({ comments, runId: "run-9", state: "done" }),
+    );
     expect(done[2].running).toBe(false);
     expect(done[2].runId).toBe("run-9"); // still attributed, just not live
   });
 
   it("attaches no run meta when the thread carries no holding run", () => {
-    const rc = buildRunComments(thread({ comments, runId: "", state: "in_progress" }));
+    const rc = buildRunComments(
+      thread({ comments, runId: "", state: "in_progress" }),
+    );
     expect(rc.every((r) => r.runId === undefined)).toBe(true);
     expect(rc.every((r) => r.running === false)).toBe(true);
     // The newest agent bubble is still identifiable for collapse behaviour.
@@ -166,7 +204,11 @@ describe("buildRunComments", () => {
     const rc = buildRunComments(
       thread({
         comments: [
-          { author: "agent:x", body: "dated", createdAt: "2026-09-14T10:00:00Z" },
+          {
+            author: "agent:x",
+            body: "dated",
+            createdAt: "2026-09-14T10:00:00Z",
+          },
           { author: "agent:x", body: "undated", createdAt: "" },
         ],
         runId: "run-1",

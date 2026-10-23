@@ -16,7 +16,10 @@
 // (globals.css), and the run pulse `ksq-runcomment__dot--live` (tickets.css). So reduced-motion is
 // respected for free, inherited from the reused rules.
 
-import type { DispatchState, DispatchWatch } from "@/lib/tickets/useDispatchWatch";
+import type {
+  DispatchState,
+  DispatchWatch,
+} from "@/lib/tickets/useDispatchWatch";
 
 /**
  * The per-state indicator (§3 "tone / motion"):
@@ -99,7 +102,11 @@ export function DispatchPendingCard({
       aria-live="polite"
       aria-label={`Run status: ${watch.label}`}
     >
-      <span className="ksq-runcomment__avatar" data-kind="agent" aria-hidden="true">
+      <span
+        className="ksq-runcomment__avatar"
+        data-kind="agent"
+        aria-hidden="true"
+      >
         {avatar ?? "?"}
       </span>
       <div className="ksq-runcomment__bubble">
@@ -114,7 +121,10 @@ export function DispatchPendingCard({
             data-tone={watch.tone}
           >
             <StatusIndicator state={watch.state} />
-            <span className="ksq-dispatch-card__label" data-testid="dispatch-label">
+            <span
+              className="ksq-dispatch-card__label"
+              data-testid="dispatch-label"
+            >
               {watch.label}
             </span>
           </span>
@@ -122,13 +132,20 @@ export function DispatchPendingCard({
 
         {/* Placeholder body — the shimmer skeleton stands in for the not-yet-arrived run content, so
             the bubble keeps a real card's footprint and nothing jumps when the run card lands. */}
-        <div className="ksq-dispatch-card__skeleton" data-testid="dispatch-skeleton" aria-hidden="true">
+        <div
+          className="ksq-dispatch-card__skeleton"
+          data-testid="dispatch-skeleton"
+          aria-hidden="true"
+        >
           <span className="ksq-skel-bar" />
           <span className="ksq-skel-bar" />
         </div>
 
         {note && (
-          <p className="ksq-dispatch-card__degrade" data-testid="dispatch-degrade">
+          <p
+            className="ksq-dispatch-card__degrade"
+            data-testid="dispatch-degrade"
+          >
             {note}
           </p>
         )}

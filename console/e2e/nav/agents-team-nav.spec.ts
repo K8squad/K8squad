@@ -31,11 +31,21 @@ test.describe("ISI-5432 · Agents & Team rail node + legacy redirects", () => {
     const unified = page.getByRole("link", { name: "Agents & Team" });
     await expect(unified).toHaveAttribute("href", "/agents-team");
     // The legacy nodes are retired from the rail entirely.
-    await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Teams", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Agents", exact: true })).toHaveCount(0);
+    await expect(
+      page
+        .getByRole("navigation", { name: "Primary" })
+        .getByRole("link", { name: "Teams", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page
+        .getByRole("navigation", { name: "Primary" })
+        .getByRole("link", { name: "Agents", exact: true }),
+    ).toHaveCount(0);
   });
 
-  test("the unified surface lights the rail node as the current page", async ({ page }) => {
+  test("the unified surface lights the rail node as the current page", async ({
+    page,
+  }) => {
     await page.goto("/agents-team");
     const unified = page.getByRole("link", { name: "Agents & Team" });
     await expect(unified).toHaveAttribute("data-active", "true");

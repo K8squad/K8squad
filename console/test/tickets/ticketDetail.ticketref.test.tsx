@@ -8,7 +8,13 @@
 // the real TicketDetail + Composer + shared MentionPopover; only fetch + SSE are stubbed.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -49,9 +55,30 @@ const THREAD: Record<string, unknown> = {
 const MENTIONS = {
   query: "auth",
   results: [
-    { type: "agent", id: "agent:builder", displayName: "agent:builder", projectId: "", state: "online", rank: 0 },
-    { type: "work_item", id: "wi-42", displayName: "Fix the auth bug", projectId: "uid-demo", state: "todo", rank: 1 },
-    { type: "work_item", id: "wi-43", displayName: "Auth token refresh", projectId: "uid-demo", state: "in_progress", rank: 0.5 },
+    {
+      type: "agent",
+      id: "agent:builder",
+      displayName: "agent:builder",
+      projectId: "",
+      state: "online",
+      rank: 0,
+    },
+    {
+      type: "work_item",
+      id: "wi-42",
+      displayName: "Fix the auth bug",
+      projectId: "uid-demo",
+      state: "todo",
+      rank: 1,
+    },
+    {
+      type: "work_item",
+      id: "wi-43",
+      displayName: "Auth token refresh",
+      projectId: "uid-demo",
+      state: "in_progress",
+      rank: 0.5,
+    },
   ],
 };
 
@@ -75,7 +102,9 @@ function routeFetch() {
       return Promise.resolve(jsonResponse({ globalRole: "contributor" }));
     }
     if (u.includes("/api/squad/agents")) {
-      return Promise.resolve(jsonResponse({ agents: [{ id: "ag-1", name: "agent:builder" }] }));
+      return Promise.resolve(
+        jsonResponse({ agents: [{ id: "ag-1", name: "agent:builder" }] }),
+      );
     }
     if (u.includes("/discussion/mentions")) {
       return Promise.resolve(jsonResponse(MENTIONS));
@@ -98,7 +127,9 @@ function routeFetch() {
 }
 
 async function readyComposer() {
-  await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+  await waitFor(() =>
+    expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+  );
 }
 
 afterEach(cleanup);
@@ -139,10 +170,14 @@ describe("TicketDetail — # ticket picker + references (ISI-5214)", () => {
         .find((o) => o.textContent?.includes("Fix the auth bug"))!,
     );
 
-    const input = screen.getByTestId("detail-composer-input") as HTMLTextAreaElement;
+    const input = screen.getByTestId(
+      "detail-composer-input",
+    ) as HTMLTextAreaElement;
     expect(input.value).toContain("#Fix the auth bug ");
     // A ticket link is NOT a dispatch — the assign select stays empty.
-    const assign = screen.getByTestId("detail-composer-assignee") as HTMLSelectElement;
+    const assign = screen.getByTestId(
+      "detail-composer-assignee",
+    ) as HTMLSelectElement;
     expect(assign.value).toBe("");
   });
 
@@ -191,9 +226,6 @@ describe("TicketDetail — # ticket picker + references (ISI-5214)", () => {
 
     const chip = await screen.findByTestId("comment-ticket-ref");
     expect(chip).toHaveTextContent("Fix the auth bug");
-    expect(chip).toHaveAttribute(
-      "href",
-      "/projects/ns%2Fdemo/issues/wi-42",
-    );
+    expect(chip).toHaveAttribute("href", "/projects/ns%2Fdemo/issues/wi-42");
   });
 });

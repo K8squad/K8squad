@@ -64,7 +64,9 @@ export type CredentialTypesState =
   | { kind: "ready"; data: CredentialTypesResponse };
 
 /** Map an HTTP status to the honest state it carries (mirrors classifyProjectSettings). */
-export function classifyCredentialTypes(status: number): Exclude<CredentialTypesState, { kind: "ready" } | { kind: "loading" }> {
+export function classifyCredentialTypes(
+  status: number,
+): Exclude<CredentialTypesState, { kind: "ready" } | { kind: "loading" }> {
   switch (status) {
     case 401:
       return { kind: "unauthenticated" };
@@ -94,7 +96,8 @@ export type VaultBadge = {
  * Presence is NEVER a guessed green: only an explicit "satisfied" is Connected.
  */
 export function vaultStatusBadge(entry: CredentialTypeEntry): VaultBadge {
-  if (entry.gateState === "satisfied") return { label: "Connected", tone: "ok" };
+  if (entry.gateState === "satisfied")
+    return { label: "Connected", tone: "ok" };
   if (entry.requiredByGate) return { label: "Required", tone: "bad" };
   return { label: "Not set", tone: "idle" };
 }
@@ -117,7 +120,9 @@ export function isSatisfied(entry: CredentialTypeEntry): boolean {
  * group — the backend already sorts types alphabetically, so ties preserve that.
  * Returns a NEW array (never mutates the input).
  */
-export function sortVaultTypes(types: CredentialTypeEntry[]): CredentialTypeEntry[] {
+export function sortVaultTypes(
+  types: CredentialTypeEntry[],
+): CredentialTypeEntry[] {
   return types
     .map((t, i) => ({ t, i }))
     .sort((a, b) => {
@@ -152,7 +157,9 @@ export interface ToolCredentialCreateInput {
  *  forwards the value verbatim (write-only), pins the {type} discriminator and
  *  projectId that route the write through the binding registry into the
  *  project's namespace. */
-export function toolCredentialCreateBody(input: ToolCredentialCreateInput): Record<string, string> {
+export function toolCredentialCreateBody(
+  input: ToolCredentialCreateInput,
+): Record<string, string> {
   return {
     name: input.name,
     value: input.value,
@@ -229,10 +236,15 @@ export async function vaultErrorText(res: Response): Promise<string | null> {
 /** Read the credential-types projection through the BFF. 200 ⇒ ready; else the
  *  classified honest state. Never throws on a non-2xx — a transport throw is the
  *  caller's `error` frame. */
-export async function fetchCredentialTypes(projectId: string): Promise<CredentialTypesState> {
-  const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/credential-types`, {
-    cache: "no-store",
-  });
+export async function fetchCredentialTypes(
+  projectId: string,
+): Promise<CredentialTypesState> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/credential-types`,
+    {
+      cache: "no-store",
+    },
+  );
   if (res.ok) {
     const data = (await res.json()) as CredentialTypesResponse;
     // The apiserver guarantees types:[] (never null); defend anyway so a
@@ -247,7 +259,9 @@ export async function fetchCredentialTypes(projectId: string): Promise<Credentia
  *  value is write-only — it rides one request and is never serialised back.
  *  Returns the raw Response so the caller classifies (created / conflict /
  *  invalid / …) and surfaces the apiserver's field message verbatim. */
-export async function createToolCredential(input: ToolCredentialCreateInput): Promise<Response> {
+export async function createToolCredential(
+  input: ToolCredentialCreateInput,
+): Promise<Response> {
   return fetch("/api/credentials", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -276,7 +290,9 @@ export interface ToolCredentialRotateInput {
 
 /** Build the PUT /api/credentials rotate body. Pure + unit-testable: forwards the
  *  new value verbatim (write-only) and pins the {type} discriminator + projectId. */
-export function toolCredentialRotateBody(input: ToolCredentialRotateInput): Record<string, string> {
+export function toolCredentialRotateBody(
+  input: ToolCredentialRotateInput,
+): Record<string, string> {
   return {
     value: input.value,
     type: input.type,
@@ -328,7 +344,9 @@ export function vaultRotateMessage(outcome: VaultRotateOutcome): string {
  *  write-only — it rides one request and is never serialised back. Returns the raw
  *  Response so the caller classifies (rotated / retry / invalid / …) and surfaces
  *  the apiserver's field message verbatim. */
-export async function rotateToolCredential(input: ToolCredentialRotateInput): Promise<Response> {
+export async function rotateToolCredential(
+  input: ToolCredentialRotateInput,
+): Promise<Response> {
   return fetch("/api/credentials", {
     method: "PUT",
     headers: { "content-type": "application/json" },
@@ -351,7 +369,9 @@ export interface ToolCredentialDeleteInput {
 }
 
 /** Build the DELETE /api/credentials body (type discriminator + project scope). */
-export function toolCredentialDeleteBody(input: ToolCredentialDeleteInput): Record<string, string> {
+export function toolCredentialDeleteBody(
+  input: ToolCredentialDeleteInput,
+): Record<string, string> {
   return {
     type: input.type,
     projectId: input.projectId,
@@ -402,7 +422,9 @@ export function vaultDeleteMessage(outcome: VaultDeleteOutcome): string {
 /** Delete a vault credential (DELETE /api/credentials vault axis). Returns the raw
  *  Response so the caller classifies (deleted / absent / denied / …); a 404 is a
  *  benign "already gone" (existence-hiding), not a failure. */
-export async function deleteToolCredential(input: ToolCredentialDeleteInput): Promise<Response> {
+export async function deleteToolCredential(
+  input: ToolCredentialDeleteInput,
+): Promise<Response> {
   return fetch("/api/credentials", {
     method: "DELETE",
     headers: { "content-type": "application/json" },

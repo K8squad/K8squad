@@ -44,7 +44,9 @@ describe("UserMenu — the sign-out control", () => {
     fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
 
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/login"));
-    expect(fetchMock).toHaveBeenCalledWith("/api/session", { method: "DELETE" });
+    expect(fetchMock).toHaveBeenCalledWith("/api/session", {
+      method: "DELETE",
+    });
   });
 
   it("still navigates to /login when the logout call fails (fail toward signed-out)", async () => {

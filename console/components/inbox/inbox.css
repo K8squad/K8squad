@@ -188,10 +188,18 @@
   color: color-mix(in srgb, var(--chip-hue) 80%, var(--text-1));
   background: color-mix(in srgb, var(--chip-hue) 12%, transparent);
 }
-.inbox__chip--violet { --chip-hue: var(--ksq-run); }
-.inbox__chip--green  { --chip-hue: var(--status-running); }
-.inbox__chip--blue   { --chip-hue: var(--accent); }
-.inbox__chip--amber  { --chip-hue: var(--status-paused); }
+.inbox__chip--violet {
+  --chip-hue: var(--ksq-run);
+}
+.inbox__chip--green {
+  --chip-hue: var(--status-running);
+}
+.inbox__chip--blue {
+  --chip-hue: var(--accent);
+}
+.inbox__chip--amber {
+  --chip-hue: var(--status-paused);
+}
 
 /* --- inline answer (E3) --- */
 .inbox__inline {

@@ -16,20 +16,30 @@ import { useState } from "react";
 
 type KillState = "idle" | "armed" | "killing" | "done" | "conflict" | "error";
 
-export function KillRun({ workItem, phase }: { workItem: string; phase?: string }) {
+export function KillRun({
+  workItem,
+  phase,
+}: {
+  workItem: string;
+  phase?: string;
+}) {
   const [state, setState] = useState<KillState>("idle");
   const [detail, setDetail] = useState<string>("");
 
   // Terminal Runs have nothing to kill; no work item = nothing to key the kill on.
-  const terminal = phase === "Succeeded" || phase === "Failed" || phase === "Cancelled";
+  const terminal =
+    phase === "Succeeded" || phase === "Failed" || phase === "Cancelled";
   if (!workItem || terminal) return null;
 
   async function fire() {
     setState("killing");
     try {
-      const res = await fetch(`/api/work-items/${encodeURIComponent(workItem)}/kill`, {
-        method: "POST",
-      });
+      const res = await fetch(
+        `/api/work-items/${encodeURIComponent(workItem)}/kill`,
+        {
+          method: "POST",
+        },
+      );
       if (res.status === 200) {
         setState("done");
         return;
@@ -54,7 +64,11 @@ export function KillRun({ workItem, phase }: { workItem: string; phase?: string 
 
   if (state === "done") {
     return (
-      <span className="phase-chip" data-tone="negative" data-testid="kill-issued">
+      <span
+        className="phase-chip"
+        data-tone="negative"
+        data-testid="kill-issued"
+      >
         Kill issued → Canceling
       </span>
     );
@@ -90,7 +104,11 @@ export function KillRun({ workItem, phase }: { workItem: string; phase?: string 
         </button>
       )}
       {state === "conflict" || state === "error" ? (
-        <span className="muted" style={{ fontSize: 12 }} data-testid="kill-detail">
+        <span
+          className="muted"
+          style={{ fontSize: 12 }}
+          data-testid="kill-detail"
+        >
           {detail}.{" "}
           {state === "conflict" ? (
             <a

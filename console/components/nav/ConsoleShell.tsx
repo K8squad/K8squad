@@ -108,11 +108,12 @@ function NodeLink({
       </span>
     );
   }
-  const href = node.scope === "project" && projectId
-    ? withProject(node.href, projectId)
-    : node.scope === "project"
-      ? "/overview" // no project selected yet — Project root lands on a global screen
-      : node.href;
+  const href =
+    node.scope === "project" && projectId
+      ? withProject(node.href, projectId)
+      : node.scope === "project"
+        ? "/overview" // no project selected yet — Project root lands on a global screen
+        : node.href;
   return (
     <Link
       href={href}
@@ -184,7 +185,12 @@ export function ConsoleShell({
     fetch("/api/onboarding/progress", { cache: "no-store" })
       .then((res) => (res.ok ? res.json() : null))
       .then((p) => {
-        if (cancelled || !p || typeof p.done !== "number" || typeof p.total !== "number") {
+        if (
+          cancelled ||
+          !p ||
+          typeof p.done !== "number" ||
+          typeof p.total !== "number"
+        ) {
           return;
         }
         setProgress(p as OnboardingProgress);
@@ -225,12 +231,17 @@ export function ConsoleShell({
   const teamExists = progress ? progress.nextMilestone !== "team" : true;
   const lockedTree = withOnboardingLock(tree, teamExists);
   // ISI-5560: stamp the inbox badge (actionable-ticket count) onto the inbox nav node; hidden at zero.
-  const badgedTree = inboxActionable > 0
-    ? lockedTree.map((n) => n.id === "inbox" ? { ...n, badge: String(inboxActionable) } : n)
-    : lockedTree;
+  const badgedTree =
+    inboxActionable > 0
+      ? lockedTree.map((n) =>
+          n.id === "inbox" ? { ...n, badge: String(inboxActionable) } : n,
+        )
+      : lockedTree;
   const nodes = visibleNav(badgedTree, access);
   const projectMatch = pathname.match(/^\/projects\/([^/]+)/);
-  const activeProject = projectMatch ? decodeURIComponent(projectMatch[1]) : null;
+  const activeProject = projectMatch
+    ? decodeURIComponent(projectMatch[1])
+    : null;
   const { bottom, drawer } = mobileNav(access, badgedTree);
 
   return (
@@ -239,7 +250,11 @@ export function ConsoleShell({
           and content): brand lockup + `console · <host>` env chip left · search + username +
           avatar right. Hidden on mobile (<768), where `.topbar` (below) keeps story 8.20 intact. */}
       <header className="appbar">
-        <Link href="/overview" className="appbar__brand" aria-label="K8squad home">
+        <Link
+          href="/overview"
+          className="appbar__brand"
+          aria-label="K8squad home"
+        >
           <Logo size={24} />
         </Link>
         {/* Muted env chip — the mock's `console · 10.0.0.219`. Host is the live origin
@@ -256,148 +271,163 @@ export function ConsoleShell({
       </header>
 
       <div className="shell__row">
-      {/* Desktop/tablet left rail (labels on desktop; icon-only on tablet, tap expands overlay).
+        {/* Desktop/tablet left rail (labels on desktop; icon-only on tablet, tap expands overlay).
           ISI-3871: NAV-ONLY — the brand block moved up into the appbar; only the tablet expand
           affordance remains at the rail's head (hidden on desktop where the rail is persistent). */}
-      <aside
-        className="rail"
-        data-expanded={railExpanded || undefined}
-        aria-label="Primary"
-      >
-        <div className="rail__head">
-          <button
-            type="button"
-            className="rail__expand"
-            aria-label={railExpanded ? "Collapse navigation" : "Expand navigation"}
-            aria-expanded={railExpanded}
-            onClick={() => setRailExpanded((v) => !v)}
-          >
-            <NavIcon id={railExpanded ? "close" : "menu"} />
-          </button>
-        </div>
-        <nav className="rail__nav">
-          {nodes.map((n) =>
-            n.dynamicChildren === "projects" ? (
-              // Projects (ISI-4090): the rail's remaining DYNAMIC, lazy-loaded sub-tree (the Teams
-              // island was retired with the /agents-team consolidation, ISI-5432). The label links
-              // to /projects, the ProjectsNavTree island owns expand + project(s) → Build/Tickets/
-              // Runs/Discussion/GitHub sections, and a fetch/render failure degrades to the plain
-              // Projects link rather than blanking the rail.
-              <div key={n.id} className="rail__group">
-                <NavErrorBoundary
-                  fallback={
-                    <NodeLink
-                      node={n}
+        <aside
+          className="rail"
+          data-expanded={railExpanded || undefined}
+          aria-label="Primary"
+        >
+          <div className="rail__head">
+            <button
+              type="button"
+              className="rail__expand"
+              aria-label={
+                railExpanded ? "Collapse navigation" : "Expand navigation"
+              }
+              aria-expanded={railExpanded}
+              onClick={() => setRailExpanded((v) => !v)}
+            >
+              <NavIcon id={railExpanded ? "close" : "menu"} />
+            </button>
+          </div>
+          <nav className="rail__nav">
+            {nodes.map((n) =>
+              n.dynamicChildren === "projects" ? (
+                // Projects (ISI-4090): the rail's remaining DYNAMIC, lazy-loaded sub-tree (the Teams
+                // island was retired with the /agents-team consolidation, ISI-5432). The label links
+                // to /projects, the ProjectsNavTree island owns expand + project(s) → Build/Tickets/
+                // Runs/Discussion/GitHub sections, and a fetch/render failure degrades to the plain
+                // Projects link rather than blanking the rail.
+                <div key={n.id} className="rail__group">
+                  <NavErrorBoundary
+                    fallback={
+                      <NodeLink
+                        node={n}
+                        active={ids.has(n.id)}
+                        projectId={activeProject}
+                      />
+                    }
+                  >
+                    <ProjectsNavTree
                       active={ids.has(n.id)}
+                      pathname={pathname}
+                    />
+                  </NavErrorBoundary>
+                </div>
+              ) : n.section ? (
+                // SETTINGS group (ISI-3725): a small-caps heading + its children as full rail links,
+                // NOT the project accordion. The heading is presentational (no link, no icon).
+                <div key={n.id} className="rail__group rail__group--section">
+                  <div className="rail__section">{n.label}</div>
+                  {(n.children ?? []).map((c) => (
+                    <NodeLink
+                      key={c.id}
+                      node={c}
+                      active={ids.has(c.id)}
                       projectId={activeProject}
                     />
-                  }
-                >
-                  <ProjectsNavTree active={ids.has(n.id)} pathname={pathname} />
-                </NavErrorBoundary>
-              </div>
-            ) : n.section ? (
-              // SETTINGS group (ISI-3725): a small-caps heading + its children as full rail links,
-              // NOT the project accordion. The heading is presentational (no link, no icon).
-              <div key={n.id} className="rail__group rail__group--section">
-                <div className="rail__section">{n.label}</div>
-                {(n.children ?? []).map((c) => (
+                  ))}
+                </div>
+              ) : (
+                <div key={n.id} className="rail__group">
                   <NodeLink
-                    key={c.id}
-                    node={c}
-                    active={ids.has(c.id)}
+                    node={n}
+                    active={ids.has(n.id)}
                     projectId={activeProject}
                   />
-                ))}
-              </div>
-            ) : (
-              <div key={n.id} className="rail__group">
-                <NodeLink
-                  node={n}
-                  active={ids.has(n.id)}
-                  projectId={activeProject}
-                />
-                {n.children && (n.id !== "project" || activeProject) && (
-                  <div className="rail__sub">
-                    {n.children.map((c) => (
-                      <NodeLink
-                        key={c.id}
-                        node={c}
-                        active={ids.has(c.id)}
-                        projectId={activeProject}
-                        expanded
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            ),
-          )}
-        </nav>
-        {/* Functional deviations the mock predates (ISI-3871): ProjectSelector + SetupChip stay,
+                  {n.children && (n.id !== "project" || activeProject) && (
+                    <div className="rail__sub">
+                      {n.children.map((c) => (
+                        <NodeLink
+                          key={c.id}
+                          node={c}
+                          active={ids.has(c.id)}
+                          projectId={activeProject}
+                          expanded
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ),
+            )}
+          </nav>
+          {/* Functional deviations the mock predates (ISI-3871): ProjectSelector + SetupChip stay,
             but restyled to sit QUIETLY BELOW the mock's nav geometry — the rail top now reads
             exactly like frames 01/06 (nav first, then SETTINGS). */}
-        <NavigatingProjectSelector activeId={activeProject} />
-        {/* E1-S3: persistent way back to setup (renders only when incomplete + dismissed). */}
-        <SetupChip progress={progress} />
-        {/* Account footer + sign-out (ISI-3570) — always at the rail's foot. */}
-        <div className="rail__foot">
-          <UserMenu username={username} variant="rail" />
-        </div>
-      </aside>
-      {railExpanded && (
-        <div
-          className="rail__scrim"
-          role="presentation"
-          onClick={() => setRailExpanded(false)}
-        />
-      )}
+          <NavigatingProjectSelector activeId={activeProject} />
+          {/* E1-S3: persistent way back to setup (renders only when incomplete + dismissed). */}
+          <SetupChip progress={progress} />
+          {/* Account footer + sign-out (ISI-3570) — always at the rail's foot. */}
+          <div className="rail__foot">
+            <UserMenu username={username} variant="rail" />
+          </div>
+        </aside>
+        {railExpanded && (
+          <div
+            className="rail__scrim"
+            role="presentation"
+            onClick={() => setRailExpanded(false)}
+          />
+        )}
 
-      <div className="shell__body">
-        {/* Mobile top bar */}
-        <header className="topbar">
-          <button
-            type="button"
-            className="topbar__menu"
-            aria-label="Open navigation"
-            onClick={() => setDrawerOpen(true)}
-          >
-            <NavIcon id="menu" size={20} />
-          </button>
-          <Logo size={22} />
-          <GlobalSearch />
-          <ThemeToggle />
-        </header>
+        <div className="shell__body">
+          {/* Mobile top bar */}
+          <header className="topbar">
+            <button
+              type="button"
+              className="topbar__menu"
+              aria-label="Open navigation"
+              onClick={() => setDrawerOpen(true)}
+            >
+              <NavIcon id="menu" size={20} />
+            </button>
+            <Logo size={22} />
+            <GlobalSearch />
+            <ThemeToggle />
+          </header>
 
-        {/* Desktop/tablet content header — a slim breadcrumb strip (ISI-3871). The mock elements
+          {/* Desktop/tablet content header — a slim breadcrumb strip (ISI-3871). The mock elements
             (search · username · avatar) moved UP into the full-width appbar; Breadcrumb +
             ThemeToggle stay as the recorded product decisions (ISI-3716 §2) and the namespace
             chip remains a quiet functional indicator — none of them displace mock elements. */}
-        <header className="contentbar">
-          <Breadcrumb pathname={pathname} />
-          <span className="nschip" title="Namespace scope">
-            <span className="nschip__dot" aria-hidden="true">
-              ●
+          <header className="contentbar">
+            <Breadcrumb pathname={pathname} />
+            <span className="nschip" title="Namespace scope">
+              <span className="nschip__dot" aria-hidden="true">
+                ●
+              </span>
+              ns: all
             </span>
-            ns: all
-          </span>
-          <ThemeToggle />
-        </header>
+            <ThemeToggle />
+          </header>
 
-        <main className="shell__main">{children}</main>
-      </div>
+          <main className="shell__main">{children}</main>
+        </div>
       </div>
 
       {/* Mobile 5-item bottom nav (story 8.20) — role-filtered, overflow → drawer */}
       <nav className="bottomnav" aria-label="Primary mobile">
         {bottom.map((n) => (
-          <NodeLink key={n.id} node={n} active={ids.has(n.id)} projectId={activeProject} />
+          <NodeLink
+            key={n.id}
+            node={n}
+            active={ids.has(n.id)}
+            projectId={activeProject}
+          />
         ))}
       </nav>
 
       {/* Mobile slide-in drawer for overflow (project sub-nav, settings children, past-budget) */}
       {drawerOpen && (
-        <div className="drawer" role="dialog" aria-modal="true" aria-label="Navigation">
+        <div
+          className="drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation"
+        >
           <div className="drawer__panel">
             <div className="drawer__head">
               <Logo size={22} />
@@ -429,7 +459,10 @@ export function ConsoleShell({
               )}
             </div>
             {/* E1-S3 chip, also reachable on mobile. */}
-            <SetupChip progress={progress} onNavigate={() => setDrawerOpen(false)} />
+            <SetupChip
+              progress={progress}
+              onNavigate={() => setDrawerOpen(false)}
+            />
             {/* Sign-out also reachable from the mobile drawer (ISI-3570). */}
             <div className="drawer__foot">
               <UserMenu username={username} variant="drawer" />

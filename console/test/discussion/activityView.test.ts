@@ -16,7 +16,9 @@ describe("cleanActivityBody (ISI-5696)", () => {
 
   it("strips [server:…] transport tags", () => {
     expect(
-      cleanActivityBody("[run r1] [tool:fetch/result(ok)] [server:mcp.github] done"),
+      cleanActivityBody(
+        "[run r1] [tool:fetch/result(ok)] [server:mcp.github] done",
+      ),
     ).toBe("done");
   });
 

@@ -10,7 +10,14 @@ export interface EmptyStateProps {
   testId?: string;
 }
 
-export function EmptyState({ title, why, ctaLabel, onCta, dependencyNudge, testId = "empty-state" }: EmptyStateProps) {
+export function EmptyState({
+  title,
+  why,
+  ctaLabel,
+  onCta,
+  dependencyNudge,
+  testId = "empty-state",
+}: EmptyStateProps) {
   return (
     <div className="card empty-state" data-testid={testId}>
       <h2 className="empty-state__title">{title}</h2>

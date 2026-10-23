@@ -75,11 +75,19 @@ export function crossSiteReject(req: NextRequest): Response | null {
   const deny = (msg: string) =>
     new Response(JSON.stringify({ error: msg }), {
       status: 403,
-      headers: { "content-type": "application/json", "cache-control": "no-store" },
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      },
     });
 
   const site = req.headers.get("sec-fetch-site");
-  if (site && site !== "same-origin" && site !== "same-site" && site !== "none") {
+  if (
+    site &&
+    site !== "same-origin" &&
+    site !== "same-site" &&
+    site !== "none"
+  ) {
     return deny("cross-site request rejected");
   }
 
@@ -94,7 +102,8 @@ export function crossSiteReject(req: NextRequest): Response | null {
     // Prefer the forwarded Host header; fall back to the request URL's own host so the check holds
     // even when a caller omits Host (the apiserver/gateway always sets it in production).
     const host = req.headers.get("host") ?? req.nextUrl.host;
-    if (host && originHost !== host) return deny("cross-origin request rejected");
+    if (host && originHost !== host)
+      return deny("cross-origin request rejected");
   }
 
   const ct = req.headers.get("content-type");
@@ -215,8 +224,7 @@ export async function proxyAuth(
 
   const raw = await upstream.arrayBuffer();
   const headers = new Headers({
-    "content-type":
-      upstream.headers.get("content-type") ?? "application/json",
+    "content-type": upstream.headers.get("content-type") ?? "application/json",
     "cache-control": "no-store",
   });
   // Relay every Set-Cookie verbatim (the session cookie lands/clears here, HttpOnly attrs intact).
@@ -225,7 +233,10 @@ export async function proxyAuth(
   }
   // 204/205/304 are null-body statuses — logout answers 204 — so a non-null body (even a 0-byte
   // ArrayBuffer) makes the Response constructor throw. Pass null for those.
-  const nullBody = upstream.status === 204 || upstream.status === 205 || upstream.status === 304;
+  const nullBody =
+    upstream.status === 204 ||
+    upstream.status === 205 ||
+    upstream.status === 304;
   return new Response(nullBody ? null : raw, {
     status: upstream.status,
     statusText: upstream.statusText,
@@ -256,7 +267,11 @@ export async function proxyDownload(
   });
 
   const headers = new Headers({ "cache-control": "no-store" });
-  for (const name of ["content-type", "content-disposition", "content-length"]) {
+  for (const name of [
+    "content-type",
+    "content-disposition",
+    "content-length",
+  ]) {
     const value = upstream.headers.get(name);
     if (value) headers.set(name, value);
   }

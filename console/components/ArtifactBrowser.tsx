@@ -84,11 +84,19 @@ export function decodeContent(b64: string): string {
   }
 }
 
-function Section({ title, items }: { title: string; items: string[] | undefined }) {
+function Section({
+  title,
+  items,
+}: {
+  title: string;
+  items: string[] | undefined;
+}) {
   if (!items || items.length === 0) return null;
   return (
     <div data-testid={`handoff-${title}`}>
-      <h3 style={{ margin: "8px 0 4px", textTransform: "capitalize" }}>{title}</h3>
+      <h3 style={{ margin: "8px 0 4px", textTransform: "capitalize" }}>
+        {title}
+      </h3>
       <ul style={{ margin: 0, paddingLeft: 18 }}>
         {items.map((it, i) => (
           <li key={i}>{it}</li>
@@ -100,9 +108,12 @@ function Section({ title, items }: { title: string; items: string[] | undefined 
 
 export function ArtifactBrowser({ runId }: { runId: string }) {
   const [state, setState] = useState<ListState>({ kind: "loading" });
-  const [selected, setSelected] = useState<{ row: ArtifactRow; text: string; truncated: boolean; size: number } | null>(
-    null,
-  );
+  const [selected, setSelected] = useState<{
+    row: ArtifactRow;
+    text: string;
+    truncated: boolean;
+    size: number;
+  } | null>(null);
   const [loadingRow, setLoadingRow] = useState<string | null>(null);
   // Latest in-flight inspect request: a response is applied only if it is still the newest
   // request. Two rapid Inspect clicks must not let the slower response overwrite the newer
@@ -141,7 +152,12 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
       );
       if (stale()) return;
       if (!res.ok) {
-        setSelected({ row, text: `(content unavailable — HTTP ${res.status})`, truncated: false, size: 0 });
+        setSelected({
+          row,
+          text: `(content unavailable — HTTP ${res.status})`,
+          truncated: false,
+          size: 0,
+        });
         return;
       }
       const body = (await res.json()) as ContentResult;
@@ -153,7 +169,13 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
         size: body.size,
       });
     } catch {
-      if (!stale()) setSelected({ row, text: "(content fetch failed)", truncated: false, size: 0 });
+      if (!stale())
+        setSelected({
+          row,
+          text: "(content fetch failed)",
+          truncated: false,
+          size: 0,
+        });
     } finally {
       if (!stale()) setLoadingRow(null);
     }
@@ -180,7 +202,8 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
     return (
       <div className="card" data-testid="artifacts-not-found">
         <p className="muted" style={{ margin: 0 }}>
-          No artifact view for this Run — it does not exist or is not in your Team&apos;s scope.
+          No artifact view for this Run — it does not exist or is not in your
+          Team&apos;s scope.
         </p>
       </div>
     );
@@ -189,8 +212,8 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
     return (
       <div className="card" data-testid="artifacts-not-wired">
         <p className="muted" style={{ margin: 0 }}>
-          This apiserver runs without the artifact-browser read model (dev / DB-less run) and
-          answers its documented 501.
+          This apiserver runs without the artifact-browser read model (dev /
+          DB-less run) and answers its documented 501.
         </p>
       </div>
     );
@@ -199,7 +222,8 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
     return (
       <div className="card" data-testid="artifacts-error">
         <p className="muted" style={{ margin: 0 }}>
-          Artifacts could not be reached (HTTP {state.status || "network error"}). Retry shortly.
+          Artifacts could not be reached (HTTP {state.status || "network error"}
+          ). Retry shortly.
         </p>
       </div>
     );
@@ -213,7 +237,8 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
         <section className="card" data-testid="handoff-card">
           <h2 style={{ margin: "0 0 4px" }}>Structured handoff</h2>
           <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
-            The advisory handoff contract this Run registered with the coordination record.
+            The advisory handoff contract this Run registered with the
+            coordination record.
           </p>
           <Section title="did" items={handoff.did} />
           <Section title="decisions" items={handoff.decisions} />
@@ -238,7 +263,8 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
               </ul>
             </div>
           ) : null}
-          {handoff.artifacts_for_downstream && handoff.artifacts_for_downstream.length > 0 ? (
+          {handoff.artifacts_for_downstream &&
+          handoff.artifacts_for_downstream.length > 0 ? (
             <div data-testid="handoff-downstream">
               <h3 style={{ margin: "8px 0 4px" }}>Artifacts for downstream</h3>
               <ul style={{ margin: 0, paddingLeft: 18 }}>
@@ -256,44 +282,53 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
       <section className="card">
         <h2 style={{ margin: "0 0 8px" }}>Artifacts</h2>
         {!artifacts || artifacts.length === 0 ? (
-          <p className="muted" style={{ margin: 0 }} data-testid="artifacts-empty">
+          <p
+            className="muted"
+            style={{ margin: 0 }}
+            data-testid="artifacts-empty"
+          >
             The coordination record holds no artifacts for this Run yet.
           </p>
         ) : (
           <div className="artifact-table-wrap">
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr className="muted" style={{ textAlign: "left", fontSize: 12 }}>
-                <th style={{ padding: "4px 8px 4px 0" }}>Kind</th>
-                <th style={{ padding: "4px 8px 4px 0" }}>Digest</th>
-                <th style={{ padding: "4px 8px 4px 0" }}>Registered</th>
-                <th style={{ padding: "4px 8px 4px 0" }} />
-              </tr>
-            </thead>
-            <tbody>
-              {artifacts.map((a) => (
-                <tr key={a.id} data-testid="artifact-row">
-                  <td style={{ padding: "4px 8px 4px 0" }}>
-                    <span className="kind-badge">{a.kind}</span>
-                  </td>
-                  <td style={{ padding: "4px 8px 4px 0" }}>
-                    <code title={a.sha256}>{a.sha256.slice(0, 12)}</code>
-                  </td>
-                  <td style={{ padding: "4px 8px 4px 0" }}>{new Date(a.createdAt).toLocaleString()}</td>
-                  <td style={{ padding: "4px 8px 4px 0" }}>
-                    <button
-                      type="button"
-                      onClick={() => void openArtifact(a)}
-                      disabled={loadingRow === a.id}
-                      data-testid="artifact-open"
-                    >
-                      {loadingRow === a.id ? "Loading…" : "Inspect"}
-                    </button>
-                  </td>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr
+                  className="muted"
+                  style={{ textAlign: "left", fontSize: 12 }}
+                >
+                  <th style={{ padding: "4px 8px 4px 0" }}>Kind</th>
+                  <th style={{ padding: "4px 8px 4px 0" }}>Digest</th>
+                  <th style={{ padding: "4px 8px 4px 0" }}>Registered</th>
+                  <th style={{ padding: "4px 8px 4px 0" }} />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {artifacts.map((a) => (
+                  <tr key={a.id} data-testid="artifact-row">
+                    <td style={{ padding: "4px 8px 4px 0" }}>
+                      <span className="kind-badge">{a.kind}</span>
+                    </td>
+                    <td style={{ padding: "4px 8px 4px 0" }}>
+                      <code title={a.sha256}>{a.sha256.slice(0, 12)}</code>
+                    </td>
+                    <td style={{ padding: "4px 8px 4px 0" }}>
+                      {new Date(a.createdAt).toLocaleString()}
+                    </td>
+                    <td style={{ padding: "4px 8px 4px 0" }}>
+                      <button
+                        type="button"
+                        onClick={() => void openArtifact(a)}
+                        disabled={loadingRow === a.id}
+                        data-testid="artifact-open"
+                      >
+                        {loadingRow === a.id ? "Loading…" : "Inspect"}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>

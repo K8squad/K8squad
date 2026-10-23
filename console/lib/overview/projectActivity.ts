@@ -12,7 +12,10 @@
 // any project rather than guessed onto this one.
 
 import { encodeProjectId } from "@/lib/projectId";
-import type { AgentActivity, AgentCurrentOrLastRun } from "@/lib/overview/agentActivity";
+import type {
+  AgentActivity,
+  AgentCurrentOrLastRun,
+} from "@/lib/overview/agentActivity";
 
 /** True when a run's work-item or discussion deep-link points into `/projects/{encoded}/…`. */
 function runLinksToProject(

@@ -112,7 +112,9 @@ describe("<Roster> — live-run flip", () => {
     rerender(
       <Roster
         agents={agents}
-        liveRuns={{ amelia: { state: "running", phase: "Running", workItem: "ISI-9" } }}
+        liveRuns={{
+          amelia: { state: "running", phase: "Running", workItem: "ISI-9" },
+        }}
       />,
     );
     expect(screen.getAllByTestId("roster-agent")[0]).toHaveAttribute(

@@ -11,7 +11,9 @@ export default function InboxPage() {
   return (
     <div className="inbox">
       <h1 className="inbox__heading">Inbox</h1>
-      <p className="inbox__subhead">Decisions waiting for you across all projects.</p>
+      <p className="inbox__subhead">
+        Decisions waiting for you across all projects.
+      </p>
       <InboxList />
     </div>
   );

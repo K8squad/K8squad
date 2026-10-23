@@ -21,7 +21,11 @@ import {
   runScopeLabel,
   type ClassifiedEntry,
 } from "@/lib/run-activity";
-import type { LLMInteractionWire, RunDetailResponseWire, ThinkingEntryWire } from "@/lib/runs";
+import type {
+  LLMInteractionWire,
+  RunDetailResponseWire,
+  ThinkingEntryWire,
+} from "@/lib/runs";
 
 function entry(overrides: Partial<ThinkingEntryWire>): ThinkingEntryWire {
   return {
@@ -37,28 +41,38 @@ function entry(overrides: Partial<ThinkingEntryWire>): ThinkingEntryWire {
 
 describe("classifyEntry — the 5-kind colour system", () => {
   it("maps a human turn (user:admin) to You with the bare author", () => {
-    const c = classifyEntry(entry({ agent: "user:admin", content: "Can you trigger the design?" }));
+    const c = classifyEntry(
+      entry({ agent: "user:admin", content: "Can you trigger the design?" }),
+    );
     expect(c.kind).toBe("you");
     expect(c.author).toBe("admin");
     expect(c.text).toBe("Can you trigger the design?");
   });
 
   it("maps a neutral agent turn to thinking", () => {
-    const c = classifyEntry(entry({ agent: "sam", type: "", content: "reasoning out loud" }));
+    const c = classifyEntry(
+      entry({ agent: "sam", type: "", content: "reasoning out loud" }),
+    );
     expect(c.kind).toBe("thinking");
     expect(c.author).toBe("sam");
   });
 
   it("maps the P2-A execution types: llm_interaction → llm, tool_use/observation → tool", () => {
-    const llm = classifyEntry(entry({ type: "llm_interaction", agent: "claude", content: "hi" }));
+    const llm = classifyEntry(
+      entry({ type: "llm_interaction", agent: "claude", content: "hi" }),
+    );
     expect(llm.kind).toBe("llm");
     expect(llm.author).toBe("claude");
 
-    const call = classifyEntry(entry({ type: "tool_use", agent: "claude", content: "ls -la" }));
+    const call = classifyEntry(
+      entry({ type: "tool_use", agent: "claude", content: "ls -la" }),
+    );
     expect(call.kind).toBe("tool");
     expect(call.toolPhase).toBe("call");
 
-    const result = classifyEntry(entry({ type: "observation", agent: "claude", content: "total 8" }));
+    const result = classifyEntry(
+      entry({ type: "observation", agent: "claude", content: "total 8" }),
+    );
     expect(result.kind).toBe("tool");
     expect(result.toolPhase).toBe("result");
   });
@@ -66,27 +80,47 @@ describe("classifyEntry — the 5-kind colour system", () => {
   it("keeps a human/operator turn ahead of a mis-typed execution type", () => {
     // Defensive: a real execution entry always carries the model as agent, but a
     // user:/operator agent must never be swallowed into the execution stream.
-    expect(classifyEntry(entry({ agent: "user:admin", type: "observation" })).kind).toBe("you");
-    expect(classifyEntry(entry({ agent: "ksquad-operator", type: "tool_use" })).kind).toBe("system");
+    expect(
+      classifyEntry(entry({ agent: "user:admin", type: "observation" })).kind,
+    ).toBe("you");
+    expect(
+      classifyEntry(entry({ agent: "ksquad-operator", type: "tool_use" })).kind,
+    ).toBe("system");
   });
 
   it("maps type=comment to comment (green)", () => {
-    const c = classifyEntry(entry({ agent: "sam", type: "comment", content: "Plan is in 01-plan.md" }));
+    const c = classifyEntry(
+      entry({
+        agent: "sam",
+        type: "comment",
+        content: "Plan is in 01-plan.md",
+      }),
+    );
     expect(c.kind).toBe("comment");
   });
 
   it("maps the operator to system regardless of type", () => {
-    const c = classifyEntry(entry({ agent: "ksquad-operator", type: "comment", content: "Run succeeded" }));
+    const c = classifyEntry(
+      entry({
+        agent: "ksquad-operator",
+        type: "comment",
+        content: "Run succeeded",
+      }),
+    );
     expect(c.kind).toBe("system");
   });
 
   it("classifies a tool result off the [tool:…] payload, ahead of the agent", () => {
-    const ok = classifyEntry(entry({ agent: "sam", content: "[tool:bash/result(ok)] ls -la" }));
+    const ok = classifyEntry(
+      entry({ agent: "sam", content: "[tool:bash/result(ok)] ls -la" }),
+    );
     expect(ok.kind).toBe("tool");
     expect(ok.tool).toEqual({ name: "bash", ok: true });
     expect(ok.text).toBe("ls -la");
 
-    const err = classifyEntry(entry({ agent: "sam", content: "[tool:glob/result(err)] no match" }));
+    const err = classifyEntry(
+      entry({ agent: "sam", content: "[tool:glob/result(err)] no match" }),
+    );
     expect(err.kind).toBe("tool");
     expect(err.tool).toEqual({ name: "glob", ok: false });
   });
@@ -97,7 +131,9 @@ describe("classifyEntry — the 5-kind colour system", () => {
   });
 
   it("strips the [run …] scope prefix from the displayed text and records it", () => {
-    const c = classifyEntry(entry({ agent: "sam", content: "[run 51c621b4] thinking out loud" }));
+    const c = classifyEntry(
+      entry({ agent: "sam", content: "[run 51c621b4] thinking out loud" }),
+    );
     expect(c.runScope).toBe("51c621b4");
     expect(c.text).toBe("thinking out loud");
     expect(c.kind).toBe("thinking");
@@ -106,11 +142,18 @@ describe("classifyEntry — the 5-kind colour system", () => {
 
 describe("parseRunScope / parseToolCall", () => {
   it("returns null scope when no prefix present", () => {
-    expect(parseRunScope("just text")).toEqual({ runScope: null, rest: "just text" });
+    expect(parseRunScope("just text")).toEqual({
+      runScope: null,
+      rest: "just text",
+    });
   });
   it("treats success/succeeded as ok", () => {
-    expect(parseToolCall("[tool:kubectl/result(success)] applied")?.tool.ok).toBe(true);
-    expect(parseToolCall("[tool:kubectl/result(failure)] denied")?.tool.ok).toBe(false);
+    expect(
+      parseToolCall("[tool:kubectl/result(success)] applied")?.tool.ok,
+    ).toBe(true);
+    expect(
+      parseToolCall("[tool:kubectl/result(failure)] denied")?.tool.ok,
+    ).toBe(false);
   });
   it("returns null for non-tool content", () => {
     expect(parseToolCall("plain comment")).toBeNull();
@@ -148,22 +191,32 @@ describe("This-run / All scope filter", () => {
   const runUid = "51c621b4-aaaa-bbbb-cccc-dddddddddddd";
 
   it("keeps unlabelled entries as this run's own", () => {
-    expect(belongsToRun(classified({ runScope: null }), runId, runUid)).toBe(true);
+    expect(belongsToRun(classified({ runScope: null }), runId, runUid)).toBe(
+      true,
+    );
   });
 
   it("keeps entries whose token matches THIS run's UID prefix (ISI-5130)", () => {
-    expect(belongsToRun(classified({ runScope: "51c621b4" }), runId, runUid)).toBe(true);
+    expect(
+      belongsToRun(classified({ runScope: "51c621b4" }), runId, runUid),
+    ).toBe(true);
   });
 
   it("drops sibling-run entries even though the run label is r83", () => {
-    expect(belongsToRun(classified({ runScope: "af093ad5" }), runId, runUid)).toBe(false);
+    expect(
+      belongsToRun(classified({ runScope: "af093ad5" }), runId, runUid),
+    ).toBe(false);
     // The `rNN` label is NOT the run identity — a marker never carries it.
-    expect(belongsToRun(classified({ runScope: "r83" }), runId, runUid)).toBe(false);
+    expect(belongsToRun(classified({ runScope: "r83" }), runId, runUid)).toBe(
+      false,
+    );
   });
 
   it("falls back to the name/label heuristic when no uid is on the wire", () => {
     expect(belongsToRun(classified({ runScope: "r83" }), runId)).toBe(true);
-    expect(belongsToRun(classified({ runScope: "af093ad5" }), runId)).toBe(false);
+    expect(belongsToRun(classified({ runScope: "af093ad5" }), runId)).toBe(
+      false,
+    );
   });
 
   it("filterByScope=this hides other runs but All keeps everything", () => {
@@ -172,8 +225,12 @@ describe("This-run / All scope filter", () => {
       classified({ id: "b", runScope: "51c621b4" }),
       classified({ id: "c", runScope: "af093ad5" }),
     ];
-    expect(filterByScope(entries, "this", runId, runUid).map((e) => e.id)).toEqual(["a", "b"]);
-    expect(filterByScope(entries, "all", runId, runUid).map((e) => e.id)).toEqual(["a", "b", "c"]);
+    expect(
+      filterByScope(entries, "this", runId, runUid).map((e) => e.id),
+    ).toEqual(["a", "b"]);
+    expect(
+      filterByScope(entries, "all", runId, runUid).map((e) => e.id),
+    ).toEqual(["a", "b", "c"]);
   });
 });
 
@@ -181,8 +238,18 @@ describe("foldActivity — consecutive tool calls collapse into one row", () => 
   it("buckets runs of tool entries and leaves other entries as their own rows", () => {
     const items = foldActivity([
       classified({ id: "you", kind: "you" }),
-      classified({ id: "t1", kind: "tool", tool: { name: "bash", ok: true }, ts: 1 }),
-      classified({ id: "t2", kind: "tool", tool: { name: "glob", ok: false }, ts: 2 }),
+      classified({
+        id: "t1",
+        kind: "tool",
+        tool: { name: "bash", ok: true },
+        ts: 1,
+      }),
+      classified({
+        id: "t2",
+        kind: "tool",
+        tool: { name: "glob", ok: false },
+        ts: 2,
+      }),
       classified({ id: "cmt", kind: "comment" }),
     ]);
     expect(items).toHaveLength(3);
@@ -205,7 +272,14 @@ describe("enrichLlm — joins the digest role/tokens onto llm entries (ISI-4813)
       classified({ id: "c1", kind: "comment" }),
     ];
     const digests: LLMInteractionWire[] = [
-      { id: "i1", model: "claude-sonnet-4", role: "prompt", content: "prompt text", timestamp: "", tokensUsed: 1200 },
+      {
+        id: "i1",
+        model: "claude-sonnet-4",
+        role: "prompt",
+        content: "prompt text",
+        timestamp: "",
+        tokensUsed: 1200,
+      },
     ];
     const [llm, cmt] = enrichLlm(entries, digests);
     expect(llm.role).toBe("prompt");
@@ -238,25 +312,71 @@ describe("partitionByView — execution vs conversation (ISI-4813)", () => {
 describe("buildExecutionItems — pairs prompt/response and call/output (ISI-4813)", () => {
   it("folds a prompt followed by its response into one exchange card", () => {
     const items = buildExecutionItems([
-      classified({ id: "p", kind: "llm", role: "prompt", text: "ask", author: "claude", ts: 1 }),
-      classified({ id: "r", kind: "llm", role: "response", text: "reply", tokens: 900, author: "claude", ts: 2 }),
+      classified({
+        id: "p",
+        kind: "llm",
+        role: "prompt",
+        text: "ask",
+        author: "claude",
+        ts: 1,
+      }),
+      classified({
+        id: "r",
+        kind: "llm",
+        role: "response",
+        text: "reply",
+        tokens: 900,
+        author: "claude",
+        ts: 2,
+      }),
     ]);
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ type: "exchange", prompt: "ask", response: "reply", tokens: 900 });
+    expect(items[0]).toMatchObject({
+      type: "exchange",
+      prompt: "ask",
+      response: "reply",
+      tokens: 900,
+    });
   });
 
   it("folds a tool call and its observation output into one tool card", () => {
     const items = buildExecutionItems([
-      classified({ id: "t", kind: "tool", toolPhase: "call", tool: { name: "bash", ok: true }, text: "ls", ts: 1 }),
-      classified({ id: "o", kind: "tool", toolPhase: "result", text: "total 8", ts: 2 }),
+      classified({
+        id: "t",
+        kind: "tool",
+        toolPhase: "call",
+        tool: { name: "bash", ok: true },
+        text: "ls",
+        ts: 1,
+      }),
+      classified({
+        id: "o",
+        kind: "tool",
+        toolPhase: "result",
+        text: "total 8",
+        ts: 2,
+      }),
     ]);
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ type: "tool", name: "bash", ok: true, args: "ls", output: "total 8", ts: 2 });
+    expect(items[0]).toMatchObject({
+      type: "tool",
+      name: "bash",
+      ok: true,
+      args: "ls",
+      output: "total 8",
+      ts: 2,
+    });
   });
 
   it("renders an unpaired response on its own without fabricating a prompt", () => {
     const items = buildExecutionItems([
-      classified({ id: "r", kind: "llm", role: "response", text: "reply", ts: 1 }),
+      classified({
+        id: "r",
+        kind: "llm",
+        role: "response",
+        text: "reply",
+        ts: 1,
+      }),
     ]);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ type: "exchange", response: "reply" });
@@ -264,7 +384,9 @@ describe("buildExecutionItems — pairs prompt/response and call/output (ISI-481
   });
 
   it("passes thinking entries straight through", () => {
-    const items = buildExecutionItems([classified({ id: "th", kind: "thinking", text: "hmm" })]);
+    const items = buildExecutionItems([
+      classified({ id: "th", kind: "thinking", text: "hmm" }),
+    ]);
     expect(items[0]).toMatchObject({ type: "thinking" });
   });
 
@@ -277,7 +399,8 @@ describe("buildExecutionItems — pairs prompt/response and call/output (ISI-481
     const e = classifyEntry(
       entry({
         agent: "claude",
-        content: "[tool:mempalace_search/result(err)] semantic search: invalid input syntax for type uuid",
+        content:
+          "[tool:mempalace_search/result(err)] semantic search: invalid input syntax for type uuid",
       }),
     );
     const items = buildExecutionItems([e]);
@@ -301,14 +424,25 @@ describe("buildLifecycle — the rail replaces state-transition rows", () => {
         status: { phase, claimedAt: "2026-09-22T08:56:15Z" },
       },
       steps: [
-        { id: "s1", name: "impl", status: "done", startedAt: "2026-09-22T08:56:15Z", completedAt: "2026-09-22T09:04:48Z" },
+        {
+          id: "s1",
+          name: "impl",
+          status: "done",
+          startedAt: "2026-09-22T08:56:15Z",
+          completedAt: "2026-09-22T09:04:48Z",
+        },
       ],
     };
   }
 
   it("marks every node reached on a terminal run and labels the last node", () => {
     const lc = buildLifecycle(detail("Succeeded"));
-    expect(lc.nodes.map((n) => n.label)).toEqual(["Dispatching", "Running", "Collecting", "Succeeded"]);
+    expect(lc.nodes.map((n) => n.label)).toEqual([
+      "Dispatching",
+      "Running",
+      "Collecting",
+      "Succeeded",
+    ]);
     expect(lc.nodes.every((n) => n.reached)).toBe(true);
     expect(lc.currentIndex).toBe(3);
     expect(lc.totalMs).toBeGreaterThan(0);
@@ -325,6 +459,8 @@ describe("buildLifecycle — the rail replaces state-transition rows", () => {
 describe("formatCompactTime", () => {
   it("renders h:mm and a dash for the zero clock", () => {
     expect(formatCompactTime(0)).toBe("—");
-    expect(formatCompactTime(Date.parse("2026-09-22T08:57:00"))).toMatch(/^\d{1,2}:\d{2}$/);
+    expect(formatCompactTime(Date.parse("2026-09-22T08:57:00"))).toMatch(
+      /^\d{1,2}:\d{2}$/,
+    );
   });
 });

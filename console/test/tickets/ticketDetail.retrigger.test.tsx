@@ -11,7 +11,13 @@
 // only fetch and the (absent-in-jsdom) EventSource transport are stubbed.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -103,7 +109,9 @@ function routeFetch(opts?: { comment?: unknown; runs?: unknown[] }) {
 
 /** Fill the composer + click the PLAIN "Comment" button (never the assign pair). */
 async function plainComment() {
-  await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+  await waitFor(() =>
+    expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+  );
   fireEvent.change(screen.getByTestId("detail-composer-input"), {
     target: { value: "nudge nudge" },
   });
@@ -145,7 +153,12 @@ describe("TicketDetail — plain-comment re-trigger ladder (ISI-4918 / S7)", () 
   it("AC1: the ladder advances to picking_up when the re-triggered Run row appears", async () => {
     routeFetch({
       runs: [
-        { id: "run-x", phase: "Pending", workItemRef: "wi-1", agents: ["agent:builder"] },
+        {
+          id: "run-x",
+          phase: "Pending",
+          workItemRef: "wi-1",
+          agents: ["agent:builder"],
+        },
       ],
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
@@ -157,7 +170,9 @@ describe("TicketDetail — plain-comment re-trigger ladder (ISI-4918 / S7)", () 
         "picking_up",
       ),
     );
-    expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Picking up…");
+    expect(screen.getByTestId("dispatch-label")).toHaveTextContent(
+      "Picking up…",
+    );
   });
 
   // ISI-4918 follow-up, found in LIVE verification: a nudged ticket carries run rows from its
@@ -210,7 +225,9 @@ describe("TicketDetail — plain-comment re-trigger ladder (ISI-4918 / S7)", () 
     await plainComment();
 
     // The comment still lands…
-    await waitFor(() => expect(screen.getByText("nudge nudge")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("nudge nudge")).toBeInTheDocument(),
+    );
     // …but nothing was seeded (reTriggered=false).
     expect(screen.queryByTestId("dispatch-pending-card")).toBeNull();
     expect(screen.queryByTestId("detail-dispatch-status")).toBeNull();

@@ -270,17 +270,57 @@ describe("deriveTakeaways (from a session object)", () => {
 describe("partyRounds (ISI-5613 Gap 1 — server-stamped round grouping)", () => {
   it("groups messages into numbered rounds, opener at round 0", () => {
     const rounds = partyRounds([
-      msg({ id: "m0", partySessionId: "s1", partyRound: 0, partyRoundKind: "opener", authorAgentId: null }),
-      msg({ id: "f1", partySessionId: "s1", partyRound: 1, partyRoundKind: "round", authorPrincipal: "facil", authorAgentId: "ag-facil" }),
-      msg({ id: "v1", partySessionId: "s1", partyRound: 1, partyRoundKind: "round", authorPrincipal: "alice", authorAgentId: "ag-alice" }),
-      msg({ id: "f2", partySessionId: "s1", partyRound: 2, partyRoundKind: "round", authorPrincipal: "facil", authorAgentId: "ag-facil" }),
-      msg({ id: "v2", partySessionId: "s1", partyRound: 2, partyRoundKind: "round", authorPrincipal: "bob", authorAgentId: "ag-bob" }),
+      msg({
+        id: "m0",
+        partySessionId: "s1",
+        partyRound: 0,
+        partyRoundKind: "opener",
+        authorAgentId: null,
+      }),
+      msg({
+        id: "f1",
+        partySessionId: "s1",
+        partyRound: 1,
+        partyRoundKind: "round",
+        authorPrincipal: "facil",
+        authorAgentId: "ag-facil",
+      }),
+      msg({
+        id: "v1",
+        partySessionId: "s1",
+        partyRound: 1,
+        partyRoundKind: "round",
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+      }),
+      msg({
+        id: "f2",
+        partySessionId: "s1",
+        partyRound: 2,
+        partyRoundKind: "round",
+        authorPrincipal: "facil",
+        authorAgentId: "ag-facil",
+      }),
+      msg({
+        id: "v2",
+        partySessionId: "s1",
+        partyRound: 2,
+        partyRoundKind: "round",
+        authorPrincipal: "bob",
+        authorAgentId: "ag-bob",
+      }),
     ]);
     expect(rounds.map((r) => r.round)).toEqual([0, 1, 2]);
     expect(rounds[0].kind).toBe("opener");
     // round 1 holds the facilitator + alice as distinct voices
-    expect(rounds[1].voices.map((v) => v.agentId).sort()).toEqual(["ag-alice", "ag-facil"]);
-    expect(rounds[2].voices.map((v) => v.agentId).sort()).toEqual(["ag-bob", "ag-facil"]);
+    expect(rounds[1].voices.map((v) => v.agentId).sort()).toEqual([
+      "ag-alice",
+      "ag-facil",
+    ]);
+    expect(rounds[2].voices.map((v) => v.agentId).sort()).toEqual([
+      "ag-bob",
+      "ag-facil",
+    ]);
   });
 
   it("skips messages with no party-round linkage (non-party / pre-ISI-5616 wire)", () => {
@@ -292,20 +332,54 @@ describe("partyRounds (ISI-5613 Gap 1 — server-stamped round grouping)", () =>
 
   it("counts a voice's repeat posts within a round and orders by count then name", () => {
     const rounds = partyRounds([
-      msg({ id: "a1", partySessionId: "s1", partyRound: 1, authorPrincipal: "alice", authorAgentId: "ag-alice" }),
-      msg({ id: "a2", partySessionId: "s1", partyRound: 1, authorPrincipal: "alice", authorAgentId: "ag-alice" }),
-      msg({ id: "z1", partySessionId: "s1", partyRound: 1, authorPrincipal: "zoe", authorAgentId: "ag-zoe" }),
+      msg({
+        id: "a1",
+        partySessionId: "s1",
+        partyRound: 1,
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+      }),
+      msg({
+        id: "a2",
+        partySessionId: "s1",
+        partyRound: 1,
+        authorPrincipal: "alice",
+        authorAgentId: "ag-alice",
+      }),
+      msg({
+        id: "z1",
+        partySessionId: "s1",
+        partyRound: 1,
+        authorPrincipal: "zoe",
+        authorAgentId: "ag-zoe",
+      }),
     ]);
     expect(rounds).toHaveLength(1);
-    expect(rounds[0].voices[0]).toMatchObject({ agentId: "ag-alice", contributions: 2 });
-    expect(rounds[0].voices[1]).toMatchObject({ agentId: "ag-zoe", contributions: 1 });
+    expect(rounds[0].voices[0]).toMatchObject({
+      agentId: "ag-alice",
+      contributions: 2,
+    });
+    expect(rounds[0].voices[1]).toMatchObject({
+      agentId: "ag-zoe",
+      contributions: 1,
+    });
     expect(rounds[0].messages.map((m) => m.id)).toEqual(["a1", "a2", "z1"]);
   });
 
   it("separates rounds that belong to different sessions", () => {
     const rounds = partyRounds([
-      msg({ id: "b1", partySessionId: "sB", partyRound: 1, authorAgentId: "ag-b" }),
-      msg({ id: "a1", partySessionId: "sA", partyRound: 1, authorAgentId: "ag-a" }),
+      msg({
+        id: "b1",
+        partySessionId: "sB",
+        partyRound: 1,
+        authorAgentId: "ag-b",
+      }),
+      msg({
+        id: "a1",
+        partySessionId: "sA",
+        partyRound: 1,
+        authorAgentId: "ag-a",
+      }),
     ]);
     // ordered by session id asc, then round
     expect(rounds.map((r) => r.sessionId)).toEqual(["sA", "sB"]);

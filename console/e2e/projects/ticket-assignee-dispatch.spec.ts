@@ -57,7 +57,9 @@ test.describe("ISI-6290 - dropdown pick == dispatched agentId", () => {
         password: process.env.KSQUAD_E2E_PASSWORD,
       },
     });
-    expect(login.status(), "admin session seed via POST /api/session").toBe(200);
+    expect(login.status(), "admin session seed via POST /api/session").toBe(
+      200,
+    );
 
     // Capture every dispatch POST; the conformance target.
     const dispatchBodies: Array<{ url: string; agentId?: string }> = [];
@@ -100,7 +102,10 @@ test.describe("ISI-6290 - dropdown pick == dispatched agentId", () => {
     const values = await options.evaluateAll((els) =>
       (els as Array<HTMLOptionElement>).map((o) => o.value),
     );
-    expect(values.length, "squad roster with at least two agents").toBeGreaterThanOrEqual(2);
+    expect(
+      values.length,
+      "squad roster with at least two agents",
+    ).toBeGreaterThanOrEqual(2);
     const mentionBait = values[0]!;
     const picked = values[1]!;
 
@@ -108,7 +113,9 @@ test.describe("ISI-6290 - dropdown pick == dispatched agentId", () => {
     // hijack vector), the explicit pick armed, then the PRIMARY Comment submit.
     await page
       .getByTestId("detail-composer-input")
-      .fill("@" + mentionBait + " handing this to " + picked + " - please take it");
+      .fill(
+        "@" + mentionBait + " handing this to " + picked + " - please take it",
+      );
     await composerSelect.selectOption(picked);
     await page.getByTestId("detail-composer-submit").click();
 
@@ -123,16 +130,23 @@ test.describe("ISI-6290 - dropdown pick == dispatched agentId", () => {
     // requested-agent STAMP. Read the thread API rather than a DOM testid -
     // Intake claims the item within seconds (lane leaves todo), so the rail's
     // "dispatch pending" hint may already be gone by the time we look.
-    const itemId = dispatchBodies[0]!.url.match(/work-items\/([^/]+)\/dispatch/)?.[1];
+    const itemId = dispatchBodies[0]!.url.match(
+      /work-items\/([^/]+)\/dispatch/,
+    )?.[1];
     expect(itemId, "work item id from the dispatch URL").toBeTruthy();
     const thread = await page.request.get("/api/work-items/" + itemId);
     expect(thread.ok(), "thread re-fetch after dispatch").toBeTruthy();
     const threadBody = (await thread.json()) as { RequestedAgent?: string };
-    expect(threadBody.RequestedAgent, "the requested-agent stamp is the PICK").toBe(picked);
+    expect(
+      threadBody.RequestedAgent,
+      "the requested-agent stamp is the PICK",
+    ).toBe(picked);
 
     // Cleanup: kill the probe ticket so Intake never mints a live Run.
     if (itemId) {
-      await page.request.post("/api/work-items/" + itemId + "/kill").catch(() => {});
+      await page.request
+        .post("/api/work-items/" + itemId + "/kill")
+        .catch(() => {});
     }
   });
 });

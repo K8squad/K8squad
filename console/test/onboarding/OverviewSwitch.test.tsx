@@ -3,7 +3,13 @@
 // dismissal persists on-device with a resume banner.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { OverviewSwitch } from "@/components/onboarding/OverviewSwitch";
 import { ONBOARDING_DISMISS_KEY } from "@/lib/onboarding";
 
@@ -66,7 +72,13 @@ describe("D5 gate", () => {
   it("honors the server dismissal flag without a banner (E1-S3's chip owns the way back)", async () => {
     mockFetch((url) =>
       url === "/api/onboarding/progress"
-        ? progressOk({ step: 3, done: 2, total: 4, nextMilestone: "models", dismissed: true })
+        ? progressOk({
+            step: 3,
+            done: 2,
+            total: 4,
+            nextMilestone: "models",
+            dismissed: true,
+          })
         : notWired(),
     );
     render(<OverviewSwitch />);
@@ -78,7 +90,13 @@ describe("D5 gate", () => {
 });
 
 describe("dismissal (FR-1.3 v1 floor)", () => {
-  const halfway = { step: 3, done: 2, total: 4, nextMilestone: "models", dismissed: false };
+  const halfway = {
+    step: 3,
+    done: 2,
+    total: 4,
+    nextMilestone: "models",
+    dismissed: false,
+  };
 
   it("Skip for now persists on-device, swaps to Overview + resume banner", async () => {
     mockFetch((url) =>
@@ -91,16 +109,21 @@ describe("dismissal (FR-1.3 v1 floor)", () => {
 
     expect(window.localStorage.getItem(ONBOARDING_DISMISS_KEY)).toBe("true");
     expect(screen.queryByText("Finish setting up your squad")).toBeNull();
-    const banner = screen.getByRole("button", { name: /Finish setup \(2\/4\)/i });
+    const banner = screen.getByRole("button", {
+      name: /Finish setup \(2\/4\)/i,
+    });
     expect(banner).toBeTruthy();
   });
 
   it("Skip for now also POSTs the server-side dismissal (E1-S4, ISI-3780, AC3)", async () => {
-    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) =>
-      url === "/api/onboarding/progress" && (!init || init.method === undefined)
-        ? progressOk(halfway)
-        : notWired(),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) =>
+        url === "/api/onboarding/progress" &&
+        (!init || init.method === undefined)
+          ? progressOk(halfway)
+          : notWired(),
+      );
     vi.stubGlobal("fetch", fetchMock);
     render(<OverviewSwitch />);
     await waitFor(() => screen.getByText("Finish setting up your squad"));
@@ -120,11 +143,14 @@ describe("dismissal (FR-1.3 v1 floor)", () => {
 
   it("the resume banner also POSTs the cleared server-side flag (E1-S4, ISI-3780, AC3)", async () => {
     window.localStorage.setItem(ONBOARDING_DISMISS_KEY, "true");
-    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) =>
-      url === "/api/onboarding/progress" && (!init || init.method === undefined)
-        ? progressOk(halfway)
-        : notWired(),
-    );
+    const fetchMock = vi
+      .fn()
+      .mockImplementation((url: string, init?: RequestInit) =>
+        url === "/api/onboarding/progress" &&
+        (!init || init.method === undefined)
+          ? progressOk(halfway)
+          : notWired(),
+      );
     vi.stubGlobal("fetch", fetchMock);
     render(<OverviewSwitch />);
 
@@ -150,7 +176,9 @@ describe("dismissal (FR-1.3 v1 floor)", () => {
       vi.fn().mockImplementation((url: string) => {
         if (url === "/api/onboarding/dismiss")
           return Promise.reject(new Error("offline"));
-        return url === "/api/onboarding/progress" ? progressOk(halfway) : notWired();
+        return url === "/api/onboarding/progress"
+          ? progressOk(halfway)
+          : notWired();
       }),
     );
     render(<OverviewSwitch />);

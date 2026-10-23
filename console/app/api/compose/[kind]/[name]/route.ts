@@ -34,7 +34,11 @@ export async function PUT(
   if (team) forwarded.set("team", team);
   const query = forwarded.toString();
   const suffix = query ? `?${query}` : "";
-  return proxyJsonWrite(req, `/api/${kind}/${encodeURIComponent(name)}${suffix}`, "PUT");
+  return proxyJsonWrite(
+    req,
+    `/api/${kind}/${encodeURIComponent(name)}${suffix}`,
+    "PUT",
+  );
 }
 
 // DELETE /api/compose/{kind}/{name} → apiserver DELETE /api/{kind}/{name} (ISI-4107).
@@ -56,5 +60,9 @@ export async function DELETE(
   if (team) forwarded.set("team", team);
   const query = forwarded.toString();
   const suffix = query ? `?${query}` : "";
-  return proxyJsonWrite(req, `/api/${kind}/${encodeURIComponent(name)}${suffix}`, "DELETE");
+  return proxyJsonWrite(
+    req,
+    `/api/${kind}/${encodeURIComponent(name)}${suffix}`,
+    "DELETE",
+  );
 }

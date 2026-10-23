@@ -33,10 +33,22 @@ describe("statusColor / statusMeta (S1)", () => {
   });
 
   it("carries group + owning role for the mid-phase Build/Review statuses", () => {
-    expect(statusMeta("planning")).toMatchObject({ group: "Build", role: "Architect" });
-    expect(statusMeta("code_review")).toMatchObject({ group: "Review", role: "Code Reviewer" });
-    expect(statusMeta("testing")).toMatchObject({ group: "Review", role: "Testing Architect" });
-    expect(statusMeta("documentation")).toMatchObject({ group: "Review", role: "Tech Writer" });
+    expect(statusMeta("planning")).toMatchObject({
+      group: "Build",
+      role: "Architect",
+    });
+    expect(statusMeta("code_review")).toMatchObject({
+      group: "Review",
+      role: "Code Reviewer",
+    });
+    expect(statusMeta("testing")).toMatchObject({
+      group: "Review",
+      role: "Testing Architect",
+    });
+    expect(statusMeta("documentation")).toMatchObject({
+      group: "Review",
+      role: "Tech Writer",
+    });
   });
 
   it("marks cancelled as struck-through", () => {

@@ -37,8 +37,7 @@ export interface ThinkingRow {
  * `thinking` named event). Both ride the single 8.2 stream — no second transport.
  */
 export type RoomStreamEvent =
-  | { kind: "room"; event: RoomEvent }
-  | { kind: "thinking"; row: ThinkingRow };
+  { kind: "room"; event: RoomEvent } | { kind: "thinking"; row: ThinkingRow };
 
 /** Parse a raw `thinking` SSE `data:` payload into a ThinkingRow, or null when it
  * carries no renderable body (author or body missing ⇒ nothing to show). */

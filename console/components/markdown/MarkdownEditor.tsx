@@ -159,7 +159,11 @@ const TOOLBAR: ToolbarButton[] = [
       </svg>
     ),
   },
-  { fmt: "ul", label: "Bulleted list", content: <span aria-hidden="true">•</span> },
+  {
+    fmt: "ul",
+    label: "Bulleted list",
+    content: <span aria-hidden="true">•</span>,
+  },
 ];
 
 export function MarkdownEditor({

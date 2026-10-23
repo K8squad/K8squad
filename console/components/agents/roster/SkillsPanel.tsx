@@ -37,9 +37,20 @@ import { useRosterDetail } from "./useRosterDetail";
 
 /** Frame 04's save ladder tail (same grammar as ModelPanel's). */
 function SaveLadder({ state }: { state: SaveState }) {
-  if (state.kind === "saving") return <p className="roster-edit__ladder roster-edit__ladder--saving">Saving…</p>;
-  if (state.kind === "saved") return <p className="roster-edit__ladder roster-edit__ladder--saved">Saved</p>;
-  if (state.kind === "error") return <p className="roster-edit__ladder roster-edit__ladder--error">{state.message}</p>;
+  if (state.kind === "saving")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--saving">Saving…</p>
+    );
+  if (state.kind === "saved")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--saved">Saved</p>
+    );
+  if (state.kind === "error")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--error">
+        {state.message}
+      </p>
+    );
   return null;
 }
 
@@ -58,7 +69,11 @@ function SkillChip({
   return (
     <span
       className={`chip roster-edit__chip roster-edit__chip--${tier}`}
-      title={tier === "role" ? "Granted by the role — edit it on the role" : "Added to this agent"}
+      title={
+        tier === "role"
+          ? "Granted by the role — edit it on the role"
+          : "Added to this agent"
+      }
     >
       {name}
       {onRemove ? (
@@ -89,10 +104,17 @@ function SkillPicker({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
-  const hits = roster.skills.filter((s) => !q || s.name.toLowerCase().includes(q)).slice(0, 8);
+  const hits = roster.skills
+    .filter((s) => !q || s.name.toLowerCase().includes(q))
+    .slice(0, 8);
   if (!open) {
     return (
-      <button type="button" className="btn" onClick={() => setOpen(true)} disabled={disabled}>
+      <button
+        type="button"
+        className="btn"
+        onClick={() => setOpen(true)}
+        disabled={disabled}
+      >
         + Add skill
       </button>
     );
@@ -123,7 +145,9 @@ function SkillPicker({
                 disabled={disabled}
               >
                 {s.name}
-                {s.sourceType ? <span className="muted"> · {s.sourceType}</span> : null}
+                {s.sourceType ? (
+                  <span className="muted"> · {s.sourceType}</span>
+                ) : null}
               </button>
             </li>
           ))}
@@ -167,23 +191,39 @@ export function AgentSkillsPanel({
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
 
   if (state.kind === "loading") return <p className="muted">Loading agent…</p>;
-  if (state.kind === "error") return <p className="roster-edit__ladder roster-edit__ladder--error">{state.message}</p>;
+  if (state.kind === "error")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--error">
+        {state.message}
+      </p>
+    );
   const detail = state.detail;
 
   // The role-tier half of the union: read from the roster's library axis (already loaded —
   // no extra fetch; the rail and this panel agree by construction).
   const role = roster.roles.find((r) => r.name === detail.roleRef.name);
-  const { fromRole, addedToAgent } = partitionAgentSkills(detail, role?.defaultSkills ?? []);
+  const { fromRole, addedToAgent } = partitionAgentSkills(
+    detail,
+    role?.defaultSkills ?? [],
+  );
 
   async function saveBindings(next: string[]) {
     setSave({ kind: "saving" });
     try {
-      await putCompose("agents", detail.name, agentSkillsPut(detail, next), team);
+      await putCompose(
+        "agents",
+        detail.name,
+        agentSkillsPut(detail, next),
+        team,
+      );
       setSave({ kind: "saved" });
       setNonce((n) => n + 1); // re-read skillRefs + refresh the rail's count via the parent
       onSaved();
     } catch (e) {
-      setSave({ kind: "error", message: e instanceof Error ? e.message : "Save failed." });
+      setSave({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Save failed.",
+      });
     }
   }
 
@@ -205,7 +245,8 @@ export function AgentSkillsPanel({
           <p className="muted">The role pins no default skills.</p>
         )}
         <p className="muted roster-detail__note">
-          Shared definitions — edit them on the role (their blast radius shows there).
+          Shared definitions — edit them on the role (their blast radius shows
+          there).
         </p>
       </div>
       <div className="card roster-edit__card">
@@ -213,14 +254,26 @@ export function AgentSkillsPanel({
         {addedToAgent.length ? (
           <p className="roster-edit__chips">
             {addedToAgent.map((s) => (
-              <SkillChip key={s} name={s} tier="agent" onRemove={() => void saveBindings(addedToAgent.filter((x) => x !== s))} disabled={busy} />
+              <SkillChip
+                key={s}
+                name={s}
+                tier="agent"
+                onRemove={() =>
+                  void saveBindings(addedToAgent.filter((x) => x !== s))
+                }
+                disabled={busy}
+              />
             ))}
           </p>
         ) : (
           <p className="muted">No agent-added skills yet.</p>
         )}
         <div className="roster-edit__row">
-          <SkillPicker roster={roster} onPick={(name) => void saveBindings([...addedToAgent, name])} disabled={busy} />
+          <SkillPicker
+            roster={roster}
+            onPick={(name) => void saveBindings([...addedToAgent, name])}
+            disabled={busy}
+          />
         </div>
         <SaveLadder state={save} />
       </div>
@@ -249,7 +302,12 @@ export function RoleSkillsPanel({
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
 
   if (state.kind === "loading") return <p className="muted">Loading role…</p>;
-  if (state.kind === "error") return <p className="roster-edit__ladder roster-edit__ladder--error">{state.message}</p>;
+  if (state.kind === "error")
+    return (
+      <p className="roster-edit__ladder roster-edit__ladder--error">
+        {state.message}
+      </p>
+    );
   const detail = state.detail;
 
   const current = (detail.defaultSkills ?? []).map((r) => r.name);
@@ -263,7 +321,10 @@ export function RoleSkillsPanel({
       setNonce((n) => n + 1);
       onSaved();
     } catch (e) {
-      setSave({ kind: "error", message: e instanceof Error ? e.message : "Save failed." });
+      setSave({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Save failed.",
+      });
     }
   }
 
@@ -276,25 +337,40 @@ export function RoleSkillsPanel({
         {current.length ? (
           <p className="roster-edit__chips">
             {current.map((s) => (
-              <SkillChip key={s} name={s} tier="role" onRemove={() => void saveBindings(current.filter((x) => x !== s))} disabled={busy} />
+              <SkillChip
+                key={s}
+                name={s}
+                tier="role"
+                onRemove={() =>
+                  void saveBindings(current.filter((x) => x !== s))
+                }
+                disabled={busy}
+              />
             ))}
           </p>
         ) : (
           <p className="muted">No default skills yet.</p>
         )}
         <div className="roster-edit__row">
-          <SkillPicker roster={roster} onPick={(name) => void saveBindings([...current, name])} disabled={busy} />
+          <SkillPicker
+            roster={roster}
+            onPick={(name) => void saveBindings([...current, name])}
+            disabled={busy}
+          />
         </div>
         <SaveLadder state={save} />
       </div>
       {affected.length ? (
         <p className="muted roster-detail__note">
-          Reaches {affected.length} {affected.length === 1 ? "agent" : "agents"} ({[...affected].slice(0, 6).join(", ")}
-          {affected.length > 6 ? ` +${affected.length - 6} more` : ""}) — every referencing agent
-          gains or loses this default on its next assembly.
+          Reaches {affected.length} {affected.length === 1 ? "agent" : "agents"}{" "}
+          ({[...affected].slice(0, 6).join(", ")}
+          {affected.length > 6 ? ` +${affected.length - 6} more` : ""}) — every
+          referencing agent gains or loses this default on its next assembly.
         </p>
       ) : (
-        <p className="muted roster-detail__note">No agents reference this role yet — edits are local to the library.</p>
+        <p className="muted roster-detail__note">
+          No agents reference this role yet — edits are local to the library.
+        </p>
       )}
     </div>
   );

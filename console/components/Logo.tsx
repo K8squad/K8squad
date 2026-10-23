@@ -92,10 +92,31 @@ export function Logo({
             strokeWidth={CREST.strokeWidth}
           />
           {/* coordinator node — the bright pinch that fuses the two crests */}
-          <rect x={NODE.x} y={NODE.y} width={NODE.size} height={NODE.size} rx={NODE.rx} fill={LEAD} />
+          <rect
+            x={NODE.x}
+            y={NODE.y}
+            width={NODE.size}
+            height={NODE.size}
+            rx={NODE.rx}
+            fill={LEAD}
+          />
           {/* squad member nodes */}
-          <rect x={MEMBER.x} y={MEMBER_Y.top} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={LEAD} />
-          <rect x={MEMBER.x} y={MEMBER_Y.bottom} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={RECEDE} />
+          <rect
+            x={MEMBER.x}
+            y={MEMBER_Y.top}
+            width={MEMBER.size}
+            height={MEMBER.size}
+            rx={MEMBER.rx}
+            fill={LEAD}
+          />
+          <rect
+            x={MEMBER.x}
+            y={MEMBER_Y.bottom}
+            width={MEMBER.size}
+            height={MEMBER.size}
+            rx={MEMBER.rx}
+            fill={RECEDE}
+          />
         </g>
       </svg>
       {withWordmark && (

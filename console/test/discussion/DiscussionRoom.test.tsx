@@ -46,13 +46,17 @@ function agentReply(id: string): Message {
   };
 }
 
-function makeClient(overrides: Partial<DiscussionClient> = {}): DiscussionClient {
+function makeClient(
+  overrides: Partial<DiscussionClient> = {},
+): DiscussionClient {
   return {
     listThreads: vi.fn(),
     getThread: vi.fn().mockResolvedValue([]),
     getThreadInfo: vi.fn(),
     openThread: vi.fn(),
-    postMessage: vi.fn().mockResolvedValue(humanMsg("m-new", "@john please help")),
+    postMessage: vi
+      .fn()
+      .mockResolvedValue(humanMsg("m-new", "@john please help")),
     searchMentions: vi.fn().mockResolvedValue([]),
     getRoster: vi.fn(),
     retractMessage: vi.fn(),
@@ -146,7 +150,10 @@ describe("DiscussionRoom — live chat (ISI-5208)", () => {
     await waitFor(() => screen.getByTestId("working-indicator"));
 
     act(() =>
-      emit({ kind: "room", event: { type: "message.created", message: agentReply("m-reply") } }),
+      emit({
+        kind: "room",
+        event: { type: "message.created", message: agentReply("m-reply") },
+      }),
     );
 
     await waitFor(() => {
@@ -180,7 +187,13 @@ describe("DiscussionRoom — live chat (ISI-5208)", () => {
     act(() =>
       emit({
         kind: "thinking",
-        row: { runId: "rX", author: "agent:mary", body: "unrelated", seq: 1, at: "z" },
+        row: {
+          runId: "rX",
+          author: "agent:mary",
+          body: "unrelated",
+          seq: 1,
+          at: "z",
+        },
       }),
     );
 

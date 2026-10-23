@@ -11,7 +11,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { loadRoster, type Roster, type RosterSelection } from "@/lib/agents/roster";
+import {
+  loadRoster,
+  type Roster,
+  type RosterSelection,
+} from "@/lib/agents/roster";
 import { NodeDetail } from "./NodeDetail";
 import { RosterRail } from "./RosterRail";
 import {
@@ -22,13 +26,13 @@ import {
 } from "./StateViews";
 
 type LoadState =
-  | { kind: "loading" }
-  | { kind: "error" }
-  | { kind: "ok"; roster: Roster };
+  { kind: "loading" } | { kind: "error" } | { kind: "ok"; roster: Roster };
 
 function isEmpty(roster: Roster): boolean {
   return (
-    roster.teams.length === 0 && roster.roles.length === 0 && roster.skills.length === 0
+    roster.teams.length === 0 &&
+    roster.roles.length === 0 &&
+    roster.skills.length === 0
   );
 }
 

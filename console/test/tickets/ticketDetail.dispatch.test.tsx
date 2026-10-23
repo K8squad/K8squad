@@ -12,7 +12,13 @@
 // the network (fetch) and the SSE transport (EventSource, absent in jsdom) are stubbed.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -100,9 +106,7 @@ function routeFetch(opts?: { dispatchStatus?: number; runs?: unknown[] }) {
       );
     }
     if (u.includes("/api/work-items/")) {
-      const body = posted
-        ? { ...THREAD, Comments: [POSTED_COMMENT] }
-        : THREAD;
+      const body = posted ? { ...THREAD, Comments: [POSTED_COMMENT] } : THREAD;
       return Promise.resolve(jsonResponse(body));
     }
     if (u.includes("/work-items")) return Promise.resolve(jsonResponse([]));
@@ -112,9 +116,13 @@ function routeFetch(opts?: { dispatchStatus?: number; runs?: unknown[] }) {
 
 /** Fill the composer + pick the agent + click Comment & assign. */
 async function commentAndAssign() {
-  await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
   await waitFor(() =>
-    expect(screen.getAllByRole("option", { name: "agent:reviewer" }).length).toBeGreaterThan(0),
+    expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getAllByRole("option", { name: "agent:reviewer" }).length,
+    ).toBeGreaterThan(0),
   );
   fireEvent.change(screen.getByTestId("detail-composer-input"), {
     target: { value: "go go go" },
@@ -155,7 +163,12 @@ describe("TicketDetail — dispatch signal wiring (ISI-4881 / S3)", () => {
     // The discovery poll finds a Pending Run row for this work item → picking_up.
     routeFetch({
       runs: [
-        { id: "run-x", phase: "Pending", workItemRef: "wi-1", agents: ["agent:reviewer"] },
+        {
+          id: "run-x",
+          phase: "Pending",
+          workItemRef: "wi-1",
+          agents: ["agent:reviewer"],
+        },
       ],
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
@@ -168,7 +181,9 @@ describe("TicketDetail — dispatch signal wiring (ISI-4881 / S3)", () => {
         "picking_up",
       ),
     );
-    expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Picking up…");
+    expect(screen.getByTestId("dispatch-label")).toHaveTextContent(
+      "Picking up…",
+    );
     // …and the composer status line is gone (it only lives while queued).
     expect(screen.queryByTestId("detail-dispatch-status")).toBeNull();
   });
@@ -180,7 +195,9 @@ describe("TicketDetail — dispatch signal wiring (ISI-4881 / S3)", () => {
 
     // The assign half's inline error appears (role=alert)…
     await waitFor(() =>
-      expect(screen.getByTestId("detail-composer-assign-error")).toBeInTheDocument(),
+      expect(
+        screen.getByTestId("detail-composer-assign-error"),
+      ).toBeInTheDocument(),
     );
     expect(screen.getByTestId("detail-composer-assign-error")).toHaveAttribute(
       "role",
@@ -197,14 +214,18 @@ describe("TicketDetail — dispatch signal wiring (ISI-4881 / S3)", () => {
     await commentAndAssign();
 
     // The human's comment survives (optimistic append + reconciling re-fetch) …
-    await waitFor(() => expect(screen.getByText("go go go")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("go go go")).toBeInTheDocument(),
+    );
     // … and the dispatch POST carried the picked agent NAME (wire contract unchanged).
     const dispatchCall = fetchMock.mock.calls.find(
       ([u, init]) =>
         String(u).includes("/dispatch") &&
         (init?.method ?? "GET").toUpperCase() === "POST",
     );
-    expect(dispatchCall?.[1]?.body).toBe(JSON.stringify({ agentId: "agent:reviewer" }));
+    expect(dispatchCall?.[1]?.body).toBe(
+      JSON.stringify({ agentId: "agent:reviewer" }),
+    );
   });
 
   it("ISI-5248: when the run settles, the ORIGINAL tab reloads the thread and renders the agent reply", async () => {
@@ -257,9 +278,7 @@ describe("TicketDetail — dispatch signal wiring (ISI-4881 / S3)", () => {
         // The agent's durable reply only lands once the settle-triggered reload
         // re-fetches the thread (the 2nd+ read), proving onRunSettled fired.
         const body =
-          threadFetches >= 2
-            ? { ...THREAD, Comments: [AGENT_REPLY] }
-            : THREAD;
+          threadFetches >= 2 ? { ...THREAD, Comments: [AGENT_REPLY] } : THREAD;
         return Promise.resolve(jsonResponse(body));
       }
       if (u.includes("/work-items")) return Promise.resolve(jsonResponse([]));
@@ -287,13 +306,17 @@ describe("TicketDetail — dispatch signal wiring (ISI-4881 / S3)", () => {
   it("regression: a plain Comment (no assign) never seeds a dispatch card", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "just a comment" },
     });
     fireEvent.click(screen.getByTestId("detail-composer-submit"));
 
-    await waitFor(() => expect(screen.getByText("just a comment")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("just a comment")).toBeInTheDocument(),
+    );
     expect(screen.queryByTestId("dispatch-pending-card")).toBeNull();
     expect(screen.queryByTestId("detail-dispatch-status")).toBeNull();
   });

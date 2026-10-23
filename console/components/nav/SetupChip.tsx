@@ -10,10 +10,7 @@
 
 import Link from "next/link";
 import { NavIcon } from "@/components/nav/NavIcon";
-import {
-  ONBOARDING_MILESTONE_HREF,
-  type OnboardingProgress,
-} from "@/lib/nav";
+import { ONBOARDING_MILESTONE_HREF, type OnboardingProgress } from "@/lib/nav";
 
 export function SetupChip({
   progress,

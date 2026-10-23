@@ -8,7 +8,13 @@
 // state on mount instead of forcing the dark default.
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  fireEvent,
+  act,
+} from "@testing-library/react";
 import {
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
@@ -81,7 +87,9 @@ describe("THEME_INIT_SCRIPT (pre-hydration restore)", () => {
     window.localStorage.setItem(THEME_STORAGE_KEY, "neon");
     // eslint-disable-next-line no-eval
     (0, eval)(THEME_INIT_SCRIPT);
-    expect(document.documentElement.getAttribute("data-theme")).toBe(DEFAULT_THEME);
+    expect(document.documentElement.getAttribute("data-theme")).toBe(
+      DEFAULT_THEME,
+    );
   });
 });
 
@@ -110,7 +118,9 @@ describe("ThemeProvider — persistence & restore", () => {
       </ThemeProvider>,
     );
     // Toggle dark -> light.
-    fireEvent.click(screen.getByRole("button", { name: /switch to light mode/i }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /switch to light mode/i }),
+    );
     expect(screen.getByTestId("theme")).toHaveTextContent("light");
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
 
@@ -135,7 +145,9 @@ describe("ThemeProvider — persistence & restore", () => {
     expect(screen.getByTestId("theme")).toHaveTextContent(DEFAULT_THEME);
     act(() => {
       window.localStorage.setItem(THEME_STORAGE_KEY, "light");
-      window.dispatchEvent(new StorageEvent("storage", { key: THEME_STORAGE_KEY }));
+      window.dispatchEvent(
+        new StorageEvent("storage", { key: THEME_STORAGE_KEY }),
+      );
     });
     expect(screen.getByTestId("theme")).toHaveTextContent("light");
   });

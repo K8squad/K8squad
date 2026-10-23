@@ -17,7 +17,9 @@ describe("<RuntimeAdapterStep> — vibe + goose branches (ISI-6380)", () => {
     );
     const cta = screen.getByTestId("goose-preview-cta") as HTMLButtonElement;
     expect(cta.disabled).toBe(true);
-    expect(document.querySelector(".runtime-adapter")!.getAttribute("style")).toContain("--adapter-accent");
+    expect(
+      document.querySelector(".runtime-adapter")!.getAttribute("style"),
+    ).toContain("--adapter-accent");
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 

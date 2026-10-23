@@ -52,7 +52,9 @@ export function ReviewAutomationDialog({
   projectId: string;
   onClose: () => void;
 }) {
-  const [state, setState] = useState<ReviewAutomationState>({ kind: "loading" });
+  const [state, setState] = useState<ReviewAutomationState>({
+    kind: "loading",
+  });
   const [form, setForm] = useState<Form | null>(null);
   const [agents, setAgents] = useState<AgentOption[]>([]);
   // Whether the eligible-agents read itself succeeded. An empty dropdown then
@@ -63,7 +65,10 @@ export function ReviewAutomationDialog({
   const [saving, setSaving] = useState(false);
   // A field-level rejection surfaced from the write 422 (invalid enum or an
   // ineligible reviewer), or a deploy/authZ-level message.
-  const [error, setError] = useState<{ message: string; fields: string[] } | null>(null);
+  const [error, setError] = useState<{
+    message: string;
+    fields: string[];
+  } | null>(null);
 
   const titleId = useId();
   const enableId = useId();
@@ -138,7 +143,8 @@ export function ReviewAutomationDialog({
         return;
       case "denied":
         setError({
-          message: "You no longer have permission to change this configuration.",
+          message:
+            "You no longer have permission to change this configuration.",
           fields: [],
         });
         return;
@@ -159,7 +165,8 @@ export function ReviewAutomationDialog({
     }
   }, [form, canEdit, saving, projectId, onClose]);
 
-  const fieldHasError = (field: string) => error?.fields.includes(field) ?? false;
+  const fieldHasError = (field: string) =>
+    error?.fields.includes(field) ?? false;
 
   return (
     <div
@@ -237,13 +244,21 @@ export function ReviewAutomationDialog({
               }}
             >
               {!canEdit && (
-                <p className="gh-ra-readonly" role="status" data-testid="gh-ra-readonly">
-                  You can view this configuration but need contributor access to change it.
+                <p
+                  className="gh-ra-readonly"
+                  role="status"
+                  data-testid="gh-ra-readonly"
+                >
+                  You can view this configuration but need contributor access to
+                  change it.
                 </p>
               )}
 
               {/* (a) Enable toggle. */}
-              <label className="gh-ra-field gh-ra-field--row" htmlFor={enableId}>
+              <label
+                className="gh-ra-field gh-ra-field--row"
+                htmlFor={enableId}
+              >
                 <input
                   ref={firstFieldRef}
                   id={enableId}
@@ -265,7 +280,11 @@ export function ReviewAutomationDialog({
                 <select
                   id={reviewerId}
                   data-testid="ra-reviewer"
-                  className={fieldHasError("reviewerAgentId") ? "gh-ra-invalid" : undefined}
+                  className={
+                    fieldHasError("reviewerAgentId")
+                      ? "gh-ra-invalid"
+                      : undefined
+                  }
                   aria-invalid={fieldHasError("reviewerAgentId") || undefined}
                   value={form.reviewerAgentId}
                   disabled={!canEdit}
@@ -276,7 +295,9 @@ export function ReviewAutomationDialog({
                       current roster (renamed/removed) — never silently drop it. */}
                   {form.reviewerAgentId &&
                     !agents.some((a) => a.name === form.reviewerAgentId) && (
-                      <option value={form.reviewerAgentId}>{form.reviewerAgentId}</option>
+                      <option value={form.reviewerAgentId}>
+                        {form.reviewerAgentId}
+                      </option>
                     )}
                   {agents.map((a) => (
                     <option key={a.id} value={a.name}>
@@ -285,31 +306,44 @@ export function ReviewAutomationDialog({
                   ))}
                 </select>
                 <span className="gh-ra-hint muted">
-                  The agent must have the <code>code_review</code> capability; the
-                  server rejects an ineligible choice when you save.
+                  The agent must have the <code>code_review</code> capability;
+                  the server rejects an ineligible choice when you save.
                 </span>
                 {/* An empty roster is ambiguous on its own — say which case it is
                     so a blank dropdown never reads as a broken screen (ISI-5736). */}
                 {rosterStatus === "ok" && agents.length === 0 && (
-                  <span className="gh-ra-hint muted" data-testid="ra-reviewer-empty" role="status">
+                  <span
+                    className="gh-ra-hint muted"
+                    data-testid="ra-reviewer-empty"
+                    role="status"
+                  >
                     No agent on this project&rsquo;s team has the{" "}
                     <code>code_review</code> capability yet. Give an agent the
-                    code-reviewer role — its role must list <code>code_review</code>{" "}
-                    in <code>activePhases</code> — to populate this list.
+                    code-reviewer role — its role must list{" "}
+                    <code>code_review</code> in <code>activePhases</code> — to
+                    populate this list.
                   </span>
                 )}
                 {rosterStatus === "error" && (
-                  <span className="gh-ra-hint muted" data-testid="ra-reviewer-error" role="status">
-                    Couldn&rsquo;t load the eligible reviewers — the roster service
-                    didn&rsquo;t respond. This is not a statement that your team has
-                    none; reopen to retry. You can still save, and the server
-                    validates the reviewer then.
+                  <span
+                    className="gh-ra-hint muted"
+                    data-testid="ra-reviewer-error"
+                    role="status"
+                  >
+                    Couldn&rsquo;t load the eligible reviewers — the roster
+                    service didn&rsquo;t respond. This is not a statement that
+                    your team has none; reopen to retry. You can still save, and
+                    the server validates the reviewer then.
                   </span>
                 )}
               </label>
 
               {/* (c) Scope. */}
-              <fieldset className="gh-ra-field" data-testid="ra-scope" id={scopeId}>
+              <fieldset
+                className="gh-ra-field"
+                data-testid="ra-scope"
+                id={scopeId}
+              >
                 <legend className="gh-ra-field__label">Scope</legend>
                 {SCOPES.map((s) => (
                   <label className="gh-ra-radio" key={s}>
@@ -327,7 +361,11 @@ export function ReviewAutomationDialog({
               </fieldset>
 
               {/* (d) Trigger. */}
-              <fieldset className="gh-ra-field" data-testid="ra-trigger" id={triggerId}>
+              <fieldset
+                className="gh-ra-field"
+                data-testid="ra-trigger"
+                id={triggerId}
+              >
                 <legend className="gh-ra-field__label">Trigger</legend>
                 {TRIGGERS.map((t) => (
                   <label className="gh-ra-radio" key={t}>
@@ -351,7 +389,11 @@ export function ReviewAutomationDialog({
               )}
 
               {error && (
-                <p className="ksq-notice gh-ra-error" role="alert" data-testid="gh-ra-save-error">
+                <p
+                  className="ksq-notice gh-ra-error"
+                  role="alert"
+                  data-testid="gh-ra-save-error"
+                >
                   {error.message}
                 </p>
               )}
@@ -382,7 +424,15 @@ export function ReviewAutomationDialog({
   );
 }
 
-function Honest({ testId, title, why }: { testId: string; title: string; why: string }) {
+function Honest({
+  testId,
+  title,
+  why,
+}: {
+  testId: string;
+  title: string;
+  why: string;
+}) {
   return (
     <div className="gh-ra-honest" data-testid={testId}>
       <h4 className="gh-ra-honest__title">{title}</h4>

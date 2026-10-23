@@ -26,7 +26,10 @@ export interface DecisionAnswerInput {
 }
 
 /** Chip label + hue per mode (ADR-0026 §3.4: approve→green, choose_*→blue, free_form→amber). */
-export function decisionModeChip(mode: DecisionMode): { label: string; hue: string } {
+export function decisionModeChip(mode: DecisionMode): {
+  label: string;
+  hue: string;
+} {
   switch (mode) {
     case "approve":
       return { label: "Approve", hue: "green" };
@@ -51,7 +54,9 @@ function initialSelection(p: DecisionRequestPayload): string[] {
   if (p.defaultSelectedOptionIds && p.defaultSelectedOptionIds.length > 0) {
     return [...p.defaultSelectedOptionIds];
   }
-  const recommended = (p.options ?? []).filter((o) => o.recommended).map((o) => o.id);
+  const recommended = (p.options ?? [])
+    .filter((o) => o.recommended)
+    .map((o) => o.id);
   if (p.mode === "choose_one") return recommended.slice(0, 1);
   return recommended;
 }
@@ -67,15 +72,22 @@ export interface DecisionCardProps {
   busy?: boolean;
 }
 
-export function DecisionCard({ decision, onAnswer, onReject, busy }: DecisionCardProps) {
+export function DecisionCard({
+  decision,
+  onAnswer,
+  onReject,
+  busy,
+}: DecisionCardProps) {
   const payload = decision.Payload;
   const { mode } = payload;
   const open = decision.phase === "open";
   const chip = decisionModeChip(mode);
-  const options = payload.options ?? [];
+  const options = useMemo(() => payload.options ?? [], [payload.options]);
   const offersFreeText = freeTextOffered(payload);
 
-  const [selected, setSelected] = useState<string[]>(() => initialSelection(payload));
+  const [selected, setSelected] = useState<string[]>(() =>
+    initialSelection(payload),
+  );
   const [freeTextOn, setFreeTextOn] = useState(false);
   const [freeText, setFreeText] = useState("");
   const [rejecting, setRejecting] = useState(false);
@@ -138,17 +150,34 @@ export function DecisionCard({ decision, onAnswer, onReject, busy }: DecisionCar
       return;
     }
     onAnswer?.(decision.Message.id, { selectedOptionIds: selected });
-  }, [canSubmit, freeTextActive, freeText, mode, selected, onAnswer, decision.Message.id]);
+  }, [
+    canSubmit,
+    freeTextActive,
+    freeText,
+    mode,
+    selected,
+    onAnswer,
+    decision.Message.id,
+  ]);
 
   const submitReject = useCallback(() => {
     const reason = rejectReason.trim();
     if (payload.rejectRequiresReason && reason.length === 0) return; // handler also enforces (400)
     onReject?.(decision.Message.id, reason || undefined);
-  }, [rejectReason, payload.rejectRequiresReason, onReject, decision.Message.id]);
+  }, [
+    rejectReason,
+    payload.rejectRequiresReason,
+    onReject,
+    decision.Message.id,
+  ]);
 
   const onFormKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !rejecting && (e.target as HTMLElement).tagName !== "TEXTAREA") {
+      if (
+        e.key === "Enter" &&
+        !rejecting &&
+        (e.target as HTMLElement).tagName !== "TEXTAREA"
+      ) {
         submitAnswer();
         e.preventDefault();
       }
@@ -183,13 +212,25 @@ export function DecisionCard({ decision, onAnswer, onReject, busy }: DecisionCar
 
       {/* Decided (read-only) — the card left `open`; the answer lives in the thread. */}
       {!open ? (
-        <div className="ksq-decision__decided" data-testid="decision-decided" data-phase={decision.phase}>
-          <span className="ksq-chip ksq-decision__phase" data-phase={decision.phase}>
+        <div
+          className="ksq-decision__decided"
+          data-testid="decision-decided"
+          data-phase={decision.phase}
+        >
+          <span
+            className="ksq-chip ksq-decision__phase"
+            data-phase={decision.phase}
+          >
             {decision.phase}
           </span>
-          {decision.answeredBy ? <span className="ksq-decision__by"> by {decision.answeredBy}</span> : null}
+          {decision.answeredBy ? (
+            <span className="ksq-decision__by"> by {decision.answeredBy}</span>
+          ) : null}
           {decision.rejectReason ? (
-            <p className="ksq-decision__reason" data-testid="decision-reject-reason">
+            <p
+              className="ksq-decision__reason"
+              data-testid="decision-reject-reason"
+            >
               {decision.rejectReason}
             </p>
           ) : null}
@@ -228,18 +269,32 @@ export function DecisionCard({ decision, onAnswer, onReject, busy }: DecisionCar
                       name={`decision-${decision.Message.id}`}
                       checked={checked}
                       disabled={busy}
-                      onChange={() => (mode === "choose_many" ? toggleMany(o.id) : toggleOne(o.id))}
+                      onChange={() =>
+                        mode === "choose_many"
+                          ? toggleMany(o.id)
+                          : toggleOne(o.id)
+                      }
                     />
-                    <span className="ksq-decision__option-label">{o.label}</span>
+                    <span className="ksq-decision__option-label">
+                      {o.label}
+                    </span>
                     {o.recommended ? (
-                      <span className="ksq-chip ksq-decision__recommended" data-testid="decision-recommended">
+                      <span
+                        className="ksq-chip ksq-decision__recommended"
+                        data-testid="decision-recommended"
+                      >
                         Recommended
                       </span>
                     ) : null}
                     {o.description ? (
-                      <span className="ksq-decision__option-desc">{o.description}</span>
+                      <span className="ksq-decision__option-desc">
+                        {o.description}
+                      </span>
                     ) : null}
-                    <span className="ksq-decision__option-key" aria-hidden="true">
+                    <span
+                      className="ksq-decision__option-key"
+                      aria-hidden="true"
+                    >
                       {i + 1}
                     </span>
                   </label>
@@ -248,7 +303,10 @@ export function DecisionCard({ decision, onAnswer, onReject, busy }: DecisionCar
 
               {/* "Something else — tell me what" free-text escape (Paperclip's gap). */}
               {offersFreeText ? (
-                <label className="ksq-decision__option ksq-decision__option--free" data-checked={freeTextOn}>
+                <label
+                  className="ksq-decision__option ksq-decision__option--free"
+                  data-checked={freeTextOn}
+                >
                   <input
                     type={mode === "choose_one" ? "radio" : "checkbox"}
                     name={`decision-${decision.Message.id}`}
@@ -329,14 +387,19 @@ export function DecisionCard({ decision, onAnswer, onReject, busy }: DecisionCar
 
           {/* Reject-with-reason panel (ADR-0026 §4.4; reason required when the card says so). */}
           {rejecting ? (
-            <div className="ksq-decision__reject" data-testid="decision-reject-panel">
+            <div
+              className="ksq-decision__reject"
+              data-testid="decision-reject-panel"
+            >
               <textarea
                 className="ksq-decision__reject-input"
                 data-testid="decision-reject-reason-input"
                 value={rejectReason}
                 disabled={busy}
                 placeholder={
-                  payload.rejectRequiresReason ? "A reason is required to reject" : "Reason (optional)"
+                  payload.rejectRequiresReason
+                    ? "A reason is required to reject"
+                    : "Reason (optional)"
                 }
                 onChange={(e) => setRejectReason(e.target.value)}
               />
@@ -354,7 +417,11 @@ export function DecisionCard({ decision, onAnswer, onReject, busy }: DecisionCar
                   type="button"
                   className="ksq-btn ksq-btn--reject"
                   data-testid="decision-reject-confirm"
-                  disabled={busy || (payload.rejectRequiresReason && rejectReason.trim().length === 0)}
+                  disabled={
+                    busy ||
+                    (payload.rejectRequiresReason &&
+                      rejectReason.trim().length === 0)
+                  }
                   onClick={submitReject}
                 >
                   Confirm reject

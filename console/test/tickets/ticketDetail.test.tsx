@@ -50,22 +50,56 @@ const THREAD: Record<string, unknown> = {
   State: "in_review",
   BlockedReason: "",
   Comments: [
-    { author: "agent:builder", body: "seam wired", createdAt: "2026-09-14T10:00:00Z" },
-    { author: "user:alice", body: "looks good", createdAt: "2026-09-14T10:05:00Z" },
+    {
+      author: "agent:builder",
+      body: "seam wired",
+      createdAt: "2026-09-14T10:00:00Z",
+    },
+    {
+      author: "user:alice",
+      body: "looks good",
+      createdAt: "2026-09-14T10:05:00Z",
+    },
   ],
   ChangeRefs: [
-    { kind: "commit", ref: "deadbeef", author: "agent:builder", createdAt: "2026-09-14T10:02:00Z" },
+    {
+      kind: "commit",
+      ref: "deadbeef",
+      author: "agent:builder",
+      createdAt: "2026-09-14T10:02:00Z",
+    },
   ],
   Holder: "agent:builder",
   RunID: "run-9",
   statusHistory: [
-    { fromState: "in_progress", toState: "in_review", principal: "agent:builder", occurredAt: "2026-09-14T10:01:00Z" },
+    {
+      fromState: "in_progress",
+      toState: "in_review",
+      principal: "agent:builder",
+      occurredAt: "2026-09-14T10:01:00Z",
+    },
   ],
 };
 
 const CHILDREN = [
-  { id: "wi-2", projectId: "ns/demo", parentId: "wi-1", title: "sub a", state: "done", blockedReason: null, updatedAt: "2026-09-14T00:00:00Z" },
-  { id: "wi-3", projectId: "ns/demo", parentId: "wi-1", title: "sub b", state: "todo", blockedReason: null, updatedAt: "2026-09-14T00:00:00Z" },
+  {
+    id: "wi-2",
+    projectId: "ns/demo",
+    parentId: "wi-1",
+    title: "sub a",
+    state: "done",
+    blockedReason: null,
+    updatedAt: "2026-09-14T00:00:00Z",
+  },
+  {
+    id: "wi-3",
+    projectId: "ns/demo",
+    parentId: "wi-1",
+    title: "sub b",
+    state: "todo",
+    blockedReason: null,
+    updatedAt: "2026-09-14T00:00:00Z",
+  },
 ];
 
 /** Squad roster (fleetlist.go FleetAgentList shape) for the rail AssigneeControl. */
@@ -144,14 +178,18 @@ function routeFetch(opts?: {
 }) {
   const threadBody = opts?.thread ?? THREAD;
   const squad = opts?.squad ?? SQUAD;
-  const baseComments = Array.isArray(threadBody.Comments) ? threadBody.Comments : [];
+  const baseComments = Array.isArray(threadBody.Comments)
+    ? threadBody.Comments
+    : [];
   const threadStatus = opts?.threadStatus ?? 200;
   const role = opts?.role ?? "viewer";
   const postStatus = opts?.postStatus ?? 201;
   const dispatchStatus = opts?.dispatchStatus ?? 200;
   let posted = false;
   let requestedAgent =
-    typeof threadBody.RequestedAgent === "string" ? threadBody.RequestedAgent : null;
+    typeof threadBody.RequestedAgent === "string"
+      ? threadBody.RequestedAgent
+      : null;
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     const u = String(url);
     const method = (init?.method ?? "GET").toUpperCase();
@@ -162,7 +200,11 @@ function routeFetch(opts?: {
     if (u.includes("/api/squad/agents")) {
       return Promise.resolve(jsonResponse({ agents: squad }));
     }
-    if (u.includes("/api/work-items/") && u.includes("/comments") && method === "POST") {
+    if (
+      u.includes("/api/work-items/") &&
+      u.includes("/comments") &&
+      method === "POST"
+    ) {
       if (postStatus === 201) posted = true;
       return Promise.resolve(
         postStatus === 201
@@ -170,8 +212,14 @@ function routeFetch(opts?: {
           : jsonResponse({ error: "x" }, postStatus),
       );
     }
-    if (u.includes("/api/work-items/") && u.includes("/dispatch") && method === "POST") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { agentId?: string };
+    if (
+      u.includes("/api/work-items/") &&
+      u.includes("/dispatch") &&
+      method === "POST"
+    ) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        agentId?: string;
+      };
       if (dispatchStatus === 200 && typeof body.agentId === "string") {
         requestedAgent = body.agentId;
       }
@@ -194,10 +242,13 @@ function routeFetch(opts?: {
         ? { ...threadBody, Comments: [...baseComments, POSTED_COMMENT] }
         : threadBody;
       return Promise.resolve(
-        jsonResponse(requestedAgent ? { ...body, RequestedAgent: requestedAgent } : body),
+        jsonResponse(
+          requestedAgent ? { ...body, RequestedAgent: requestedAgent } : body,
+        ),
       );
     }
-    if (u.includes("/work-items")) return Promise.resolve(jsonResponse(CHILDREN));
+    if (u.includes("/work-items"))
+      return Promise.resolve(jsonResponse(CHILDREN));
     return Promise.resolve(jsonResponse([], 200));
   });
 }
@@ -210,22 +261,32 @@ describe("TicketDetail", () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-description")).toBeTruthy(),
+    );
 
     expect(screen.getByText("ship the thing")).toBeTruthy();
-    expect(within(screen.getByTestId("detail-description")).getByText("the full description")).toBeTruthy();
+    expect(
+      within(screen.getByTestId("detail-description")).getByText(
+        "the full description",
+      ),
+    ).toBeTruthy();
 
     // Activity: two comments + one event + one change, newest last.
     expect(screen.getAllByTestId("activity-comment")).toHaveLength(2);
     expect(screen.getByTestId("activity-event")).toBeTruthy();
     expect(screen.getByTestId("activity-change")).toBeTruthy();
     // Role pills differentiate agent vs user authors.
-    const roles = screen.getAllByTestId("activity-role").map((n) => n.textContent);
+    const roles = screen
+      .getAllByTestId("activity-role")
+      .map((n) => n.textContent);
     expect(roles).toContain("agent");
     expect(roles).toContain("user");
 
     // Sub-tickets progress "1 of 2 done".
-    expect(screen.getByTestId("detail-subtickets-progress").textContent).toContain("1 of 2 done");
+    expect(
+      screen.getByTestId("detail-subtickets-progress").textContent,
+    ).toContain("1 of 2 done");
     expect(screen.getAllByTestId("detail-subticket")).toHaveLength(2);
 
     // A viewer (default fail-closed role) sees the read-only composer + the
@@ -233,14 +294,18 @@ describe("TicketDetail", () => {
     expect(screen.getByTestId("detail-composer-disabled")).toBeTruthy();
     expect(screen.getByTestId("detail-trace-pending")).toBeTruthy();
     // Run id shown in the sidebar.
-    expect(within(screen.getByTestId("detail-run-trace")).getByText("run-9")).toBeTruthy();
+    expect(
+      within(screen.getByTestId("detail-run-trace")).getByText("run-9"),
+    ).toBeTruthy();
   });
 
   it("renders the Agent run & trace row as agent name + run deep-link (ISI-4962)", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-description")).toBeTruthy(),
+    );
 
     // AC1: the row shows the holder's display name (principal prefix stripped,
     // ISI-4567) — never the raw "agent:builder" — plus the run id.
@@ -262,14 +327,18 @@ describe("TicketDetail", () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-description")).toBeTruthy(),
+    );
 
     // The agent comment carries the run meta strip: run-id + a LIVE status dot
     // (the fixture ticket is in_review — an in-flight Review phase — so the run
     // pulses) + a trace ribbon deep-linking to the internal Run-detail surface.
     const meta = screen.getByTestId("runcomment-meta");
     expect(within(meta).getByText("run-9")).toBeTruthy();
-    expect(screen.getByTestId("runcomment-status").getAttribute("data-live")).toBe("true");
+    expect(
+      screen.getByTestId("runcomment-status").getAttribute("data-live"),
+    ).toBe("true");
     const trace = screen.getByTestId("runcomment-trace");
     expect(trace.getAttribute("href")).toBe("/runs/run-9");
     expect(trace.textContent).toContain("View trace");
@@ -286,14 +355,28 @@ describe("TicketDetail", () => {
       thread: {
         ...THREAD,
         Comments: [
-          { author: "agent:builder", body: "wired the seam", createdAt: "2026-09-14T10:00:00Z" },
-          { author: "agent:reviewer", body: "reviewed it", createdAt: "2026-09-14T10:03:00Z" },
-          { author: "user:alice", body: "looks good", createdAt: "2026-09-14T10:05:00Z" },
+          {
+            author: "agent:builder",
+            body: "wired the seam",
+            createdAt: "2026-09-14T10:00:00Z",
+          },
+          {
+            author: "agent:reviewer",
+            body: "reviewed it",
+            createdAt: "2026-09-14T10:03:00Z",
+          },
+          {
+            author: "user:alice",
+            body: "looks good",
+            createdAt: "2026-09-14T10:05:00Z",
+          },
         ],
       },
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
-    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-description")).toBeTruthy(),
+    );
 
     // No agent run is behind a click-to-expand button — the gate is gone.
     expect(screen.queryByTestId("runcomment-collapsed")).toBeNull();
@@ -315,13 +398,23 @@ describe("TicketDetail", () => {
       thread: {
         ...THREAD,
         Comments: [
-          { author: "agent:builder", body: "wired the seam", createdAt: "2026-09-14T10:00:00Z" },
-          { author: "agent:reviewer", body: "reviewed it", createdAt: "2026-09-14T10:03:00Z" },
+          {
+            author: "agent:builder",
+            body: "wired the seam",
+            createdAt: "2026-09-14T10:00:00Z",
+          },
+          {
+            author: "agent:reviewer",
+            body: "reviewed it",
+            createdAt: "2026-09-14T10:03:00Z",
+          },
         ],
       },
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
-    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-description")).toBeTruthy(),
+    );
 
     // Older run opens expanded; collapsing it re-shows the one-line summary button.
     expect(screen.queryByTestId("runcomment-collapsed")).toBeNull();
@@ -333,7 +426,9 @@ describe("TicketDetail", () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-description")).toBeTruthy(),
+    );
 
     // Every comment bubble headers the bare name — "builder"/"alice", never the
     // raw principal "agent:builder"/"user:alice" (displayName strip, wired into
@@ -356,18 +451,33 @@ describe("TicketDetail", () => {
       thread: {
         ...THREAD,
         Comments: [
-          { author: "agent:builder", body: "seam wired", createdAt: "2026-09-14T10:00:00Z" },
-          { author: "agent:reviewer", body: "lgtm", createdAt: "2026-09-14T10:03:00Z" },
-          { author: "user:alice", body: "looks good", createdAt: "2026-09-14T10:05:00Z" },
+          {
+            author: "agent:builder",
+            body: "seam wired",
+            createdAt: "2026-09-14T10:00:00Z",
+          },
+          {
+            author: "agent:reviewer",
+            body: "lgtm",
+            createdAt: "2026-09-14T10:03:00Z",
+          },
+          {
+            author: "user:alice",
+            body: "looks good",
+            createdAt: "2026-09-14T10:05:00Z",
+          },
         ],
       },
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
-    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-description")).toBeTruthy(),
+    );
 
     const hueOf = (el: Element) =>
       (el as HTMLElement).style.getPropertyValue("--ksq-author-hue").trim();
-    const [builder, reviewer, alice] = screen.getAllByTestId("activity-comment");
+    const [builder, reviewer, alice] =
+      screen.getAllByTestId("activity-comment");
 
     // Each agent bubble carries a numeric hue; the two agents differ.
     expect(hueOf(builder)).toMatch(/^\d+$/);
@@ -381,7 +491,9 @@ describe("TicketDetail", () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-header")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-header")).toBeTruthy(),
+    );
 
     // Header + Description live in one card at the top of the main column.
     const header = screen.getByTestId("detail-header");
@@ -390,36 +502,53 @@ describe("TicketDetail", () => {
 
     // Right-rail Properties expose all seven fields; the ones the M1.5 read model
     // doesn't carry yet render an honest em-dash, never a fabricated value.
-    expect(within(screen.getByTestId("prop-project")).getByText("ns/demo")).toBeTruthy();
-    for (const id of ["prop-priority", "prop-workmode", "prop-parent", "prop-labels"]) {
+    expect(
+      within(screen.getByTestId("prop-project")).getByText("ns/demo"),
+    ).toBeTruthy();
+    for (const id of [
+      "prop-priority",
+      "prop-workmode",
+      "prop-parent",
+      "prop-labels",
+    ]) {
       expect(screen.getByTestId(id).textContent).toContain("—");
     }
 
     // Sub-tickets STATUS card (rail): roll-up + progress bar + three count tiles.
     const statusCard = screen.getByTestId("detail-subticket-status");
-    expect(within(statusCard).getByTestId("detail-subticket-summary").textContent).toContain(
-      "1 of 2 done",
-    );
+    expect(
+      within(statusCard).getByTestId("detail-subticket-summary").textContent,
+    ).toContain("1 of 2 done");
     const bar = within(statusCard).getByTestId("detail-progressbar");
     expect(bar.getAttribute("aria-valuenow")).toBe("1");
     expect(bar.getAttribute("aria-valuemax")).toBe("2");
-    expect(within(screen.getByTestId("detail-count-done")).getByText("1")).toBeTruthy();
-    expect(within(screen.getByTestId("detail-count-inprogress")).getByText("0")).toBeTruthy();
-    expect(within(screen.getByTestId("detail-count-todo")).getByText("1")).toBeTruthy();
+    expect(
+      within(screen.getByTestId("detail-count-done")).getByText("1"),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId("detail-count-inprogress")).getByText("0"),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByTestId("detail-count-todo")).getByText("1"),
+    ).toBeTruthy();
     expect(screen.getByTestId("detail-add-subticket")).toBeTruthy();
   });
 
   it("degrades honestly to not-available on a 404", async () => {
     routeFetch({ threadStatus: 404 });
     render(<TicketDetail projectId="ns/demo" workItemId="missing" />);
-    await waitFor(() => expect(screen.getByTestId("detail-unavailable")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-unavailable")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("detail-description")).toBeNull();
   });
 
   it("shows an error state (not a blank page) on a 500", async () => {
     routeFetch({ threadStatus: 500 });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
-    await waitFor(() => expect(screen.getByTestId("detail-error")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-error")).toBeTruthy(),
+    );
   });
 
   it("lets a contributor post a comment (optimistic append + reconciling refetch)", async () => {
@@ -427,7 +556,9 @@ describe("TicketDetail", () => {
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     // Contributor gets the LIVE composer, not the read-only surface.
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("detail-composer-disabled")).toBeNull();
 
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
@@ -442,7 +573,8 @@ describe("TicketDetail", () => {
     expect(screen.getByText("hello agents")).toBeTruthy();
     // Input cleared after a successful post.
     expect(
-      (screen.getByTestId("detail-composer-input") as HTMLTextAreaElement).value,
+      (screen.getByTestId("detail-composer-input") as HTMLTextAreaElement)
+        .value,
     ).toBe("");
   });
 
@@ -450,7 +582,9 @@ describe("TicketDetail", () => {
     routeFetch({ role: "contributor", postStatus: 404 });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "hello agents" },
     });
@@ -469,7 +603,9 @@ describe("TicketDetail", () => {
     routeFetch({ role: "contributor", postStatus: 400 });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "hello agents" },
     });
@@ -489,11 +625,15 @@ describe("TicketDetail", () => {
     routeFetch({ role: "contributor", thread: BACKLOG_THREAD });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     // The composer's own roster select loads beside Comment (rail renders one
     // too — both draw from GET /api/squad/agents, hence TWO reviewer options).
     await waitFor(() =>
-      expect(screen.getAllByRole("option", { name: "agent:reviewer" })).toHaveLength(2),
+      expect(
+        screen.getAllByRole("option", { name: "agent:reviewer" }),
+      ).toHaveLength(2),
     );
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "hello agents" },
@@ -528,7 +668,8 @@ describe("TicketDetail", () => {
     // The re-fetch surfaces the stamped requested agent on the rail select.
     await waitFor(() =>
       expect(
-        (screen.getByTestId("detail-assignee-select") as HTMLSelectElement).value,
+        (screen.getByTestId("detail-assignee-select") as HTMLSelectElement)
+          .value,
       ).toBe("agent:reviewer"),
     );
   });
@@ -551,7 +692,9 @@ describe("TicketDetail", () => {
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     // Both selects (composer + rail) list the roster — wait for the load.
     await waitFor(() =>
       expect(screen.getAllByRole("option", { name: "tess" })).toHaveLength(2),
@@ -600,7 +743,9 @@ describe("TicketDetail", () => {
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     await waitFor(() =>
       expect(screen.getAllByRole("option", { name: "tess" })).toHaveLength(2),
     );
@@ -644,12 +789,16 @@ describe("TicketDetail", () => {
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
     const composer = screen.getByTestId("detail-composer-assignee");
     // Roled agent renders "Engineer — agent:builder"; a role-less agent stays bare.
     await waitFor(() =>
       expect(
-        within(composer).getByRole("option", { name: "Engineer — agent:builder" }),
+        within(composer).getByRole("option", {
+          name: "Engineer — agent:builder",
+        }),
       ).toBeTruthy(),
     );
     expect(
@@ -657,19 +806,29 @@ describe("TicketDetail", () => {
     ).toBeTruthy();
     // The wire value stays the bare NAME (ISI-4501 dispatch contract), not the label.
     expect(
-      (within(composer).getByRole("option", {
-        name: "Engineer — agent:builder",
-      }) as HTMLOptionElement).value,
+      (
+        within(composer).getByRole("option", {
+          name: "Engineer — agent:builder",
+        }) as HTMLOptionElement
+      ).value,
     ).toBe("agent:builder");
   });
 
   it("keeps the comment + inline error when the assign half 403s (never loses the text)", async () => {
-    routeFetch({ role: "contributor", thread: BACKLOG_THREAD, dispatchStatus: 403 });
+    routeFetch({
+      role: "contributor",
+      thread: BACKLOG_THREAD,
+      dispatchStatus: 403,
+    });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
     await waitFor(() =>
-      expect(screen.getAllByRole("option", { name: "agent:reviewer" })).toHaveLength(2),
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("option", { name: "agent:reviewer" }),
+      ).toHaveLength(2),
     );
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "hello agents" },
@@ -687,7 +846,9 @@ describe("TicketDetail", () => {
     expect(screen.getByText("hello agents")).toBeTruthy();
     // The assign error mirrors the rail's 403 copy inline…
     const err = await screen.findByTestId("detail-composer-assign-error");
-    expect(err.textContent).toBe("That agent isn't a member of this project's team.");
+    expect(err.textContent).toBe(
+      "That agent isn't a member of this project's team.",
+    );
     // …and the assign button did NOT latch off (unlike the 501 arm): it is
     // disabled here only because the posted comment cleared the textbox.
     expect(screen.getByTestId("detail-composer")).toBeTruthy();
@@ -701,19 +862,30 @@ describe("TicketDetail", () => {
     });
     await waitFor(() =>
       expect(
-        (screen.getByTestId("detail-composer-submit-assign") as HTMLButtonElement)
-          .disabled,
+        (
+          screen.getByTestId(
+            "detail-composer-submit-assign",
+          ) as HTMLButtonElement
+        ).disabled,
       ).toBe(false),
     );
   });
 
   it("degrades honestly when the assign half 501s: assign button off, composer still posts", async () => {
-    routeFetch({ role: "contributor", thread: BACKLOG_THREAD, dispatchStatus: 501 });
+    routeFetch({
+      role: "contributor",
+      thread: BACKLOG_THREAD,
+      dispatchStatus: 501,
+    });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
     await waitFor(() =>
-      expect(screen.getAllByRole("option", { name: "agent:reviewer" })).toHaveLength(2),
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("option", { name: "agent:reviewer" }),
+      ).toHaveLength(2),
     );
     fireEvent.change(screen.getByTestId("detail-composer-input"), {
       target: { value: "hello agents" },
@@ -729,7 +901,9 @@ describe("TicketDetail", () => {
       expect(screen.getAllByTestId("activity-comment")).toHaveLength(3),
     );
     const err = await screen.findByTestId("detail-composer-assign-error");
-    expect(err.textContent).toBe("Assigning agents isn't hosted on this deployment yet.");
+    expect(err.textContent).toBe(
+      "Assigning agents isn't hosted on this deployment yet.",
+    );
     expect(
       (screen.getByTestId("detail-composer-submit-assign") as HTMLButtonElement)
         .disabled,
@@ -740,7 +914,8 @@ describe("TicketDetail", () => {
     fireEvent.click(screen.getByTestId("detail-composer-submit"));
     await waitFor(() =>
       expect(
-        (screen.getByTestId("detail-composer-input") as HTMLTextAreaElement).value,
+        (screen.getByTestId("detail-composer-input") as HTMLTextAreaElement)
+          .value,
       ).toBe(""),
     );
   });
@@ -779,17 +954,21 @@ describe("TicketDetail", () => {
     // …labelled honestly as a request, not a claim.
     expect(screen.getByText("Requested: agent:builder")).toBeTruthy();
     // Todo hint copy (§2.2) + the dispatch-pending marker (§2.4).
-    expect(screen.getByText("Assignment applies before the agent starts.")).toBeTruthy();
-    expect(screen.getByTestId("detail-requested-pending").textContent).toContain(
-      "dispatch pending",
-    );
+    expect(
+      screen.getByText("Assignment applies before the agent starts."),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("detail-requested-pending").textContent,
+    ).toContain("dispatch pending");
   });
 
   it("keeps in_progress read-only: holder display + Kill/re-dispatch hint, no select", async () => {
     routeFetch({ role: "contributor", thread: IN_PROGRESS_THREAD });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-holder")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-holder")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("detail-assignee-select")).toBeNull();
     expect(
       within(screen.getByTestId("detail-holder")).getByText("agent:builder"),
@@ -815,12 +994,15 @@ describe("TicketDetail", () => {
       String(u).includes("/dispatch"),
     );
     expect(dispatchCalls).toHaveLength(1);
-    expect(dispatchCalls[0][1]?.body).toBe(JSON.stringify({ agentId: "agent:reviewer" }));
+    expect(dispatchCalls[0][1]?.body).toBe(
+      JSON.stringify({ agentId: "agent:reviewer" }),
+    );
     // …and the reconciling thread re-fetch surfaces the swapped requested agent —
     // the select's value can only become agent:reviewer via server truth.
     await waitFor(() =>
       expect(
-        (screen.getByTestId("detail-assignee-select") as HTMLSelectElement).value,
+        (screen.getByTestId("detail-assignee-select") as HTMLSelectElement)
+          .value,
       ).toBe("agent:reviewer"),
     );
     expect(screen.getByText("Requested: agent:reviewer")).toBeTruthy();
@@ -854,7 +1036,9 @@ describe("TicketDetail", () => {
       await screen.findByText("Re-run with agent…");
       expect((select as HTMLSelectElement).value).toBe("");
       expect(
-        screen.getByText("Re-running dispatches the agent to work this ticket again."),
+        screen.getByText(
+          "Re-running dispatches the agent to work this ticket again.",
+        ),
       ).toBeTruthy();
       // The full roster is pickable (including the past agent).
       expect(
@@ -869,7 +1053,9 @@ describe("TicketDetail", () => {
     routeFetch({ role: "contributor", thread: { ...THREAD, State: "done" } });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
-    await waitFor(() => expect(screen.getByTestId("detail-holder")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-holder")).toBeTruthy(),
+    );
     expect(screen.queryByTestId("detail-assignee-select")).toBeNull();
     expect(
       within(screen.getByTestId("detail-holder")).getByText("agent:builder"),
@@ -895,20 +1081,27 @@ describe("TicketDetail", () => {
       String(u).includes("/dispatch"),
     );
     expect(dispatchCalls).toHaveLength(1);
-    expect(dispatchCalls[0][1]?.body).toBe(JSON.stringify({ agentId: "agent:builder" }));
+    expect(dispatchCalls[0][1]?.body).toBe(
+      JSON.stringify({ agentId: "agent:builder" }),
+    );
   });
 
   it("re-run 409: a conflict surfaces the inline error and re-syncs the thread", async () => {
     // A live run was minted under us between load and pick → backend 409s. The
     // control must show the honest error and re-fetch (unchanged 409 handling).
-    routeFetch({ role: "contributor", thread: DONE_UNHELD, dispatchStatus: 409 });
+    routeFetch({
+      role: "contributor",
+      thread: DONE_UNHELD,
+      dispatchStatus: 409,
+    });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     const select = await screen.findByTestId("detail-assignee-select");
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
 
     const threadCallsBefore = fetchMock.mock.calls.filter(
-      ([u]) => String(u).includes("/api/work-items/") && String(u).includes("wi-1"),
+      ([u]) =>
+        String(u).includes("/api/work-items/") && String(u).includes("wi-1"),
     ).length;
 
     fireEvent.change(select, { target: { value: "agent:reviewer" } });
@@ -918,7 +1111,8 @@ describe("TicketDetail", () => {
     // …and the reconciling re-fetch ran (a 409 means the lane moved under us).
     await waitFor(() => {
       const after = fetchMock.mock.calls.filter(
-        ([u]) => String(u).includes("/api/work-items/") && String(u).includes("wi-1"),
+        ([u]) =>
+          String(u).includes("/api/work-items/") && String(u).includes("wi-1"),
       ).length;
       expect(after).toBeGreaterThan(threadCallsBefore);
     });
@@ -931,7 +1125,10 @@ describe("TicketDetail", () => {
       role: "contributor",
       thread: DONE_UNHELD,
       dispatchStatus: 409,
-      dispatchBody: { error: "coord: state transition conflict: live run", reason: "live_run" },
+      dispatchBody: {
+        error: "coord: state transition conflict: live run",
+        reason: "live_run",
+      },
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
@@ -949,7 +1146,10 @@ describe("TicketDetail", () => {
       role: "contributor",
       thread: DONE_UNHELD,
       dispatchStatus: 409,
-      dispatchBody: { error: "coord: state transition conflict: concurrent lane change", reason: "concurrent_change" },
+      dispatchBody: {
+        error: "coord: state transition conflict: concurrent lane change",
+        reason: "concurrent_change",
+      },
     });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
@@ -958,13 +1158,19 @@ describe("TicketDetail", () => {
     fireEvent.change(select, { target: { value: "agent:reviewer" } });
 
     const err = await screen.findByTestId("detail-assignee-error");
-    expect(err.textContent ?? "").toMatch(/re-synced|re-sync|try assigning again/i);
+    expect(err.textContent ?? "").toMatch(
+      /re-synced|re-sync|try assigning again/i,
+    );
   });
 
   it("409 with no reason (legacy apiserver): falls back to generic re-sync copy", async () => {
     // An older apiserver returns {error} with no reason — the copy must still be the
     // safe generic re-sync message, never a blank or a crash.
-    routeFetch({ role: "contributor", thread: DONE_UNHELD, dispatchStatus: 409 });
+    routeFetch({
+      role: "contributor",
+      thread: DONE_UNHELD,
+      dispatchStatus: 409,
+    });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     const select = await screen.findByTestId("detail-assignee-select");

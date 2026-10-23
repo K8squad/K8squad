@@ -52,7 +52,9 @@ export function ThinkingStream({ rows }: { rows?: readonly ThinkingRow[] }) {
             <span className="ksq-thinking__author">
               {authorAgentName(r.author)}
             </span>
-            <span className="ksq-thinking__body">{cleanActivityBody(r.body)}</span>
+            <span className="ksq-thinking__body">
+              {cleanActivityBody(r.body)}
+            </span>
           </li>
         ))}
       </ul>

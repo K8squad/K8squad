@@ -86,26 +86,66 @@
    model). Two-class selectors so a tone beats the muted `--file` base; the
    selected-row `inherit` rule below is more specific, so a highlighted file's
    glyph stays legible on the accent row. Hues chosen for dark-theme contrast. */
-.file-explorer__glyph--go { color: #29b6d8; }
-.file-explorer__glyph--py { color: #4b9fe0; }
-.file-explorer__glyph--js { color: #e5c04b; }
-.file-explorer__glyph--ts { color: #7ca6f7; }
-.file-explorer__glyph--java { color: #e5793b; }
-.file-explorer__glyph--cs { color: #a06ff0; }
-.file-explorer__glyph--rust { color: #e0a06b; }
-.file-explorer__glyph--ruby { color: #e0576b; }
-.file-explorer__glyph--php { color: #8a92d6; }
-.file-explorer__glyph--cpp { color: #6fb0e0; }
-.file-explorer__glyph--shell { color: #7bd66f; }
-.file-explorer__glyph--web { color: #e6795b; }
-.file-explorer__glyph--code { color: #9aa4b2; }
-.file-explorer__glyph--data { color: #f0a94b; }
-.file-explorer__glyph--doc { color: var(--muted, #8b949e); }
-.file-explorer__glyph--docx { color: #5b9be0; }
-.file-explorer__glyph--image { color: #59c07d; }
-.file-explorer__glyph--media { color: #c678dd; }
-.file-explorer__glyph--archive { color: #d19a66; }
-.file-explorer__glyph--default { color: var(--muted, #8b949e); }
+.file-explorer__glyph--go {
+  color: #29b6d8;
+}
+.file-explorer__glyph--py {
+  color: #4b9fe0;
+}
+.file-explorer__glyph--js {
+  color: #e5c04b;
+}
+.file-explorer__glyph--ts {
+  color: #7ca6f7;
+}
+.file-explorer__glyph--java {
+  color: #e5793b;
+}
+.file-explorer__glyph--cs {
+  color: #a06ff0;
+}
+.file-explorer__glyph--rust {
+  color: #e0a06b;
+}
+.file-explorer__glyph--ruby {
+  color: #e0576b;
+}
+.file-explorer__glyph--php {
+  color: #8a92d6;
+}
+.file-explorer__glyph--cpp {
+  color: #6fb0e0;
+}
+.file-explorer__glyph--shell {
+  color: #7bd66f;
+}
+.file-explorer__glyph--web {
+  color: #e6795b;
+}
+.file-explorer__glyph--code {
+  color: #9aa4b2;
+}
+.file-explorer__glyph--data {
+  color: #f0a94b;
+}
+.file-explorer__glyph--doc {
+  color: var(--muted, #8b949e);
+}
+.file-explorer__glyph--docx {
+  color: #5b9be0;
+}
+.file-explorer__glyph--image {
+  color: #59c07d;
+}
+.file-explorer__glyph--media {
+  color: #c678dd;
+}
+.file-explorer__glyph--archive {
+  color: #d19a66;
+}
+.file-explorer__glyph--default {
+  color: var(--muted, #8b949e);
+}
 
 .file-explorer__row[aria-current="true"] .file-explorer__glyph--file {
   color: inherit;
@@ -142,7 +182,10 @@
   text-decoration: none;
   line-height: 0;
   opacity: 0;
-  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+  transition:
+    opacity 120ms ease,
+    background 120ms ease,
+    color 120ms ease;
 }
 
 .file-explorer__rowwrap:hover .file-explorer__download,
@@ -270,7 +313,11 @@
    never the rose error hue. */
 .banner--warn {
   border: 1px solid var(--status-paused, #fbbf24);
-  background: color-mix(in srgb, var(--status-paused, #fbbf24) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--status-paused, #fbbf24) 12%,
+    transparent
+  );
 }
 
 .banner--warn p,
@@ -311,12 +358,20 @@
 
 .file-explorer__pill--live {
   color: var(--status-running, #34d399);
-  border-color: color-mix(in srgb, var(--status-running, #34d399) 40%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--status-running, #34d399) 40%,
+    transparent
+  );
 }
 
 .file-explorer__pill--snapshot {
   color: var(--status-paused, #fbbf24);
-  border-color: color-mix(in srgb, var(--status-paused, #fbbf24) 40%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--status-paused, #fbbf24) 40%,
+    transparent
+  );
 }
 
 .file-explorer__pill-dot {
@@ -344,9 +399,18 @@
 }
 
 @keyframes file-explorer-pulse {
-  0% { transform: scale(0.6); opacity: 0.6; }
-  70% { transform: scale(1.4); opacity: 0; }
-  100% { transform: scale(1.4); opacity: 0; }
+  0% {
+    transform: scale(0.6);
+    opacity: 0.6;
+  }
+  70% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
 }
 
 /* ADR-0025 D5a (ISI-5485) — the background-sync chip for a cache-first paint.
@@ -379,8 +443,13 @@
 }
 
 @keyframes file-explorer-sync-blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
 /* Frame 01 — skeleton rows: muted rounded bars, gently shimmering. */
@@ -393,13 +462,24 @@
   animation: file-explorer-shimmer 1.4s ease-in-out infinite;
 }
 
-.file-explorer__skeleton--w1 { width: 62%; }
-.file-explorer__skeleton--w2 { width: 84%; }
-.file-explorer__skeleton--w3 { width: 48%; }
+.file-explorer__skeleton--w1 {
+  width: 62%;
+}
+.file-explorer__skeleton--w2 {
+  width: 84%;
+}
+.file-explorer__skeleton--w3 {
+  width: 48%;
+}
 
 @keyframes file-explorer-shimmer {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.45; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 /* The shared spin animation: inline per-row caret spinner, the spinning-up
@@ -414,7 +494,9 @@
 }
 
 @keyframes file-explorer-rotate {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Frame 01 — the bounded spinning-up strip (blue, 202 preparing). */
@@ -528,7 +610,11 @@
   color: var(--status-paused, #fbbf24);
 }
 .file-explorer__state--amber .file-explorer__state-badge {
-  border-color: color-mix(in srgb, var(--status-paused, #fbbf24) 40%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--status-paused, #fbbf24) 40%,
+    transparent
+  );
 }
 
 .file-explorer__state--slate .file-explorer__state-icon,
@@ -543,7 +629,11 @@
 }
 .file-explorer__state--rose .file-explorer__state-badge,
 .file-explorer__state--rose {
-  border-color: color-mix(in srgb, var(--status-blocked, #fb7185) 40%, transparent);
+  border-color: color-mix(
+    in srgb,
+    var(--status-blocked, #fb7185) 40%,
+    transparent
+  );
 }
 
 .file-explorer__state .btn {

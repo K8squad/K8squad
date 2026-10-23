@@ -19,9 +19,17 @@
 "use client";
 
 import { useState } from "react";
-import type { GithubArtifact, GithubCheck, GithubStatus } from "@/lib/github-status";
+import type {
+  GithubArtifact,
+  GithubCheck,
+  GithubStatus,
+} from "@/lib/github-status";
 import { ageLabel } from "@/lib/github-status";
-import { GITHUB_REPO_LABEL, GITHUB_REPO_URL, githubRunHref } from "@/lib/github-links";
+import {
+  GITHUB_REPO_LABEL,
+  GITHUB_REPO_URL,
+  githubRunHref,
+} from "@/lib/github-links";
 import { CiFailureDialog } from "./CiFailureDialog";
 import "./github-screens.css";
 import "./cicd.css";
@@ -75,7 +83,12 @@ export type CiSummary = {
 
 /** Roll the mirrored check runs up into the summary band's counts. */
 export function summarize(checks: GithubCheck[]): CiSummary {
-  const counts: Record<CiStatus, number> = { passed: 0, failed: 0, running: 0, pending: 0 };
+  const counts: Record<CiStatus, number> = {
+    passed: 0,
+    failed: 0,
+    running: 0,
+    pending: 0,
+  };
   for (const c of checks) counts[checkStatus(c)] += 1;
   const completed = counts.passed + counts.failed;
   return {
@@ -92,14 +105,18 @@ export function summarize(checks: GithubCheck[]): CiSummary {
 /** A check run may carry an explicit run id on the wire (future-proof); when it
  * does and the mirror url is absent we reconstruct `actions/runs/{id}`. In
  * practice GitHub always normalizes the url, so that is the deep link used. */
-type CheckWithRunId = GithubCheck & { id?: string | number; runId?: string | number };
+type CheckWithRunId = GithubCheck & {
+  id?: string | number;
+  runId?: string | number;
+};
 
 /** Deep link for a check run's title: the mirror's own GitHub url, else the
  * canonical actions-runs path, else the repo's Actions tab — never a dead '#'. */
 export function checkRunHref(c: CheckWithRunId): string {
   if (c.url) return c.url;
   const id = c.runId ?? c.id;
-  if (id !== undefined && id !== null && `${id}` !== "") return githubRunHref(id);
+  if (id !== undefined && id !== null && `${id}` !== "")
+    return githubRunHref(id);
   return `${GITHUB_REPO_URL}/actions`;
 }
 
@@ -152,7 +169,8 @@ export function CiCdPipelineStatus({
 
   const summary = summarize(checks);
   const age = data.sync?.ageSeconds;
-  const freshness = age === undefined ? "not synced yet" : `synced ${ageLabel(age)}`;
+  const freshness =
+    age === undefined ? "not synced yet" : `synced ${ageLabel(age)}`;
 
   return (
     <div
@@ -199,18 +217,53 @@ export function CiCdPipelineStatus({
       </header>
 
       {ciFailureOpen && projectId && (
-        <CiFailureDialog projectId={projectId} onClose={() => setCiFailureOpen(false)} />
+        <CiFailureDialog
+          projectId={projectId}
+          onClose={() => setCiFailureOpen(false)}
+        />
       )}
 
       <div className="gh-stats" data-testid="gh-cicd-summary">
-        <Stat value={summary.passed} label="Passed" sub="completed green" tone="green" testId="gh-cicd-stat-passed" />
-        <Stat value={summary.running} label="Running" sub="in progress" tone="blue" testId="gh-cicd-stat-running" />
-        <Stat value={summary.failed} label="Failed" sub="needs attention" tone="red" testId="gh-cicd-stat-failed" />
-        <Stat value={summary.pending} label="Pending" sub="queued" tone="amber" testId="gh-cicd-stat-pending" />
         <Stat
-          value={summary.successRate === null ? "—" : `${Math.round(summary.successRate * 100)}%`}
+          value={summary.passed}
+          label="Passed"
+          sub="completed green"
+          tone="green"
+          testId="gh-cicd-stat-passed"
+        />
+        <Stat
+          value={summary.running}
+          label="Running"
+          sub="in progress"
+          tone="blue"
+          testId="gh-cicd-stat-running"
+        />
+        <Stat
+          value={summary.failed}
+          label="Failed"
+          sub="needs attention"
+          tone="red"
+          testId="gh-cicd-stat-failed"
+        />
+        <Stat
+          value={summary.pending}
+          label="Pending"
+          sub="queued"
+          tone="amber"
+          testId="gh-cicd-stat-pending"
+        />
+        <Stat
+          value={
+            summary.successRate === null
+              ? "—"
+              : `${Math.round(summary.successRate * 100)}%`
+          }
           label="Success rate"
-          sub={summary.completed === 0 ? "no completed runs yet" : `${summary.passed}/${summary.completed} completed`}
+          sub={
+            summary.completed === 0
+              ? "no completed runs yet"
+              : `${summary.passed}/${summary.completed} completed`
+          }
           tone="muted"
           testId="gh-cicd-stat-success-rate"
         />
@@ -220,18 +273,28 @@ export function CiCdPipelineStatus({
         <header className="gh-panel__head">
           <h3 className="gh-panel__title">Pipeline Stages</h3>
           <span className="gh-caption" style={{ margin: 0 }}>
-            {checks.length === 0 ? "No check runs mirrored" : `${checks.length} stage${checks.length === 1 ? "" : "s"}`}
+            {checks.length === 0
+              ? "No check runs mirrored"
+              : `${checks.length} stage${checks.length === 1 ? "" : "s"}`}
           </span>
         </header>
         <div className="gh-panel__body">
           {checks.length === 0 ? (
-            <p className="gh-panel__empty" role="status" data-testid="gh-cicd-stages-empty">
+            <p
+              className="gh-panel__empty"
+              role="status"
+              data-testid="gh-cicd-stages-empty"
+            >
               No pipeline activity mirrored yet.
             </p>
           ) : (
             <ol className="gh-cicd-stages" data-testid="gh-cicd-stages">
               {checks.map((c, i) => (
-                <StageNode key={`stage-${c.name}-${i}`} check={c} last={i === checks.length - 1} />
+                <StageNode
+                  key={`stage-${c.name}-${i}`}
+                  check={c}
+                  last={i === checks.length - 1}
+                />
               ))}
             </ol>
           )}
@@ -296,10 +359,15 @@ function StageNode({ check, last }: { check: GithubCheck; last: boolean }) {
         {check.name}
         <ExtGlyph />
       </a>
-      <span className="gh-cicd-stage__status" data-testid="gh-cicd-stage-status">
+      <span
+        className="gh-cicd-stage__status"
+        data-testid="gh-cicd-stage-status"
+      >
         {STATUS_LABEL[status]}
       </span>
-      {!last && <span className="gh-cicd-stage__connector" aria-hidden="true" />}
+      {!last && (
+        <span className="gh-cicd-stage__connector" aria-hidden="true" />
+      )}
     </li>
   );
 }
@@ -310,7 +378,10 @@ function CheckRunRow({ check }: { check: GithubCheck }) {
   const raw = check.conclusion || check.state;
   return (
     <li className="gh-cicd-run" data-testid="check-row" data-status={status}>
-      <span className={`gh-cicd-dot gh-cicd-dot--${status}`} aria-hidden="true" />
+      <span
+        className={`gh-cicd-dot gh-cicd-dot--${status}`}
+        aria-hidden="true"
+      />
       <a
         className="gh-cicd-run__name"
         href={href}
@@ -324,7 +395,10 @@ function CheckRunRow({ check }: { check: GithubCheck }) {
       {/* The raw provider verdict stays visible so the state is never obscured
           by the normalized label. */}
       <span className="gh-cicd-run__verdict muted">{raw}</span>
-      <span className={`gh-badge gh-cicd-badge--${status}`} data-testid="gh-cicd-run-status">
+      <span
+        className={`gh-badge gh-cicd-badge--${status}`}
+        data-testid="gh-cicd-run-status"
+      >
         {STATUS_LABEL[status]}
       </span>
     </li>
@@ -360,7 +434,9 @@ function ArtifactRow({ artifact }: { artifact: GithubArtifact }) {
         <span className="gh-cicd-artifact__name">{artifact.name}</span>
       )}
       {size && <span className="gh-cicd-artifact__size muted">{size}</span>}
-      {created && <span className="gh-cicd-artifact__meta muted">{created}</span>}
+      {created && (
+        <span className="gh-cicd-artifact__meta muted">{created}</span>
+      )}
     </li>
   );
 }

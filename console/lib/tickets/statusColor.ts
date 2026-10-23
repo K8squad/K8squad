@@ -85,10 +85,30 @@ export type WorkingPhase = (typeof WORKING_PHASES)[number];
  * live data renders in colour today.
  */
 export const STATUS_META: Record<string, StatusMeta> = {
-  backlog: { label: "Backlog", hue: "var(--ksq-phase-backlog)", group: "Intake", role: null },
-  todo: { label: "Todo", hue: "var(--ksq-phase-todo)", group: "Intake", role: null },
-  design: { label: "Design", hue: "var(--ksq-phase-design)", group: "Build", role: "Graphic Designer" },
-  planning: { label: "Planning", hue: "var(--ksq-phase-planning)", group: "Build", role: "Architect" },
+  backlog: {
+    label: "Backlog",
+    hue: "var(--ksq-phase-backlog)",
+    group: "Intake",
+    role: null,
+  },
+  todo: {
+    label: "Todo",
+    hue: "var(--ksq-phase-todo)",
+    group: "Intake",
+    role: null,
+  },
+  design: {
+    label: "Design",
+    hue: "var(--ksq-phase-design)",
+    group: "Build",
+    role: "Graphic Designer",
+  },
+  planning: {
+    label: "Planning",
+    hue: "var(--ksq-phase-planning)",
+    group: "Build",
+    role: "Architect",
+  },
   implementation: {
     label: "Implementation",
     hue: "var(--ksq-phase-implementation)",
@@ -101,15 +121,31 @@ export const STATUS_META: Record<string, StatusMeta> = {
     group: "Review",
     role: "Code Reviewer",
   },
-  testing: { label: "Testing", hue: "var(--ksq-phase-testing)", group: "Review", role: "Testing Architect" },
+  testing: {
+    label: "Testing",
+    hue: "var(--ksq-phase-testing)",
+    group: "Review",
+    role: "Testing Architect",
+  },
   documentation: {
     label: "Documentation",
     hue: "var(--ksq-phase-documentation)",
     group: "Review",
     role: "Tech Writer",
   },
-  done: { label: "Done", hue: "var(--ksq-phase-done)", group: "Done", role: null },
-  cancelled: { label: "Cancelled", hue: "var(--ksq-phase-cancelled)", group: "Done", role: null, struck: true },
+  done: {
+    label: "Done",
+    hue: "var(--ksq-phase-done)",
+    group: "Done",
+    role: null,
+  },
+  cancelled: {
+    label: "Cancelled",
+    hue: "var(--ksq-phase-cancelled)",
+    group: "Done",
+    role: null,
+    struck: true,
+  },
 
   // Legacy 5-lane states (current read model, pre-ISI-4455) → closest phase hue.
   in_progress: {
@@ -118,7 +154,12 @@ export const STATUS_META: Record<string, StatusMeta> = {
     group: "Build",
     role: null,
   },
-  in_review: { label: "In Review", hue: "var(--ksq-phase-code_review)", group: "Review", role: null },
+  in_review: {
+    label: "In Review",
+    hue: "var(--ksq-phase-code_review)",
+    group: "Review",
+    role: null,
+  },
 };
 
 /** Neutral fallback for a status the read model returns that we don't recognise. */
@@ -141,8 +182,10 @@ export function statusColor(state: string): string {
 
 /** Title-case an unknown snake_case status so the fallback chip still reads. */
 function humanize(state: string): string {
-  return state
-    .split("_")
-    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
-    .join(" ") || "—";
+  return (
+    state
+      .split("_")
+      .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(" ") || "—"
+  );
 }

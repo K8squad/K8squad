@@ -29,16 +29,18 @@ export interface ProjectOverview {
   name: string;
   namespace: string;
   repoUrl?: string;
-  runs: {
-    name: string;
-    workItem?: string;
-    phase: string;
-    claimedAt?: string | null;
-    /** Dispatched agent names (run.Spec.Agents; apiserver RunStatus.Agents, ISI-5527). Lets a
-     * per-agent consumer — the discussion-room roster live flip — join a live run to its agent.
-     * Absent/null on the wire for an unassigned (Team-fanned) run. */
-    agents?: string[] | null;
-  }[] | null;
+  runs:
+    | {
+        name: string;
+        workItem?: string;
+        phase: string;
+        claimedAt?: string | null;
+        /** Dispatched agent names (run.Spec.Agents; apiserver RunStatus.Agents, ISI-5527). Lets a
+         * per-agent consumer — the discussion-room roster live flip — join a live run to its agent.
+         * Absent/null on the wire for an unassigned (Team-fanned) run. */
+        agents?: string[] | null;
+      }[]
+    | null;
   phaseCounts: Record<string, number>;
 }
 
@@ -82,11 +84,16 @@ export function classifyOverviewStatus(status: number): LoadState {
 /** The status hue a Run phase renders with (token roles from story 8.9). */
 export function phaseTone(phase: string): string {
   const p = phase.toLowerCase();
-  if (["running", "claiming", "dispatching", "collecting"].some((s) => p.includes(s))) {
+  if (
+    ["running", "claiming", "dispatching", "collecting"].some((s) =>
+      p.includes(s),
+    )
+  ) {
     return "running";
   }
   if (p.includes("paused")) return "paused";
-  if (["failed", "canceled", "canceling"].some((s) => p.includes(s))) return "blocked";
+  if (["failed", "canceled", "canceling"].some((s) => p.includes(s)))
+    return "blocked";
   return "idle";
 }
 
@@ -116,7 +123,9 @@ function ProjectSection({ project: p }: { project: ProjectOverview }) {
           <code>{p.repoUrl}</code>
         </p>
       ) : null}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+      <div
+        style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}
+      >
         {Object.entries(p.phaseCounts ?? {}).map(([phase, n]) => (
           <span
             key={phase}
@@ -156,7 +165,11 @@ function ProjectSection({ project: p }: { project: ProjectOverview }) {
                   </a>
                 </td>
                 <td style={{ padding: "4px 8px 4px 0" }}>
-                  {r.workItem ? <code>{r.workItem}</code> : <span className="muted">—</span>}
+                  {r.workItem ? (
+                    <code>{r.workItem}</code>
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
                 </td>
                 <td style={{ padding: "4px 8px 4px 0" }}>
                   <span className="phase-chip" data-tone={phaseTone(r.phase)}>
@@ -195,8 +208,11 @@ function TenantOverview({ data }: { data: SquadOverviewData }) {
           {team.name}
         </h1>
         <p className="muted" style={{ margin: "6px 0 0" }}>
-          Squad overview — Team <code>{team.namespace}/{team.name}</code>: Projects and Run
-          status at a glance, no <code>kubectl</code>.
+          Squad overview — Team{" "}
+          <code>
+            {team.namespace}/{team.name}
+          </code>
+          : Projects and Run status at a glance, no <code>kubectl</code>.
         </p>
       </header>
 
@@ -241,7 +257,8 @@ function FleetOverview({ data }: { data: SquadOverviewData }) {
           Fleet overview — all squads
         </h1>
         <p className="muted" style={{ margin: "6px 0 0" }}>
-          Every squad&apos;s Projects and Run status at a glance, no <code>kubectl</code>.
+          Every squad&apos;s Projects and Run status at a glance, no{" "}
+          <code>kubectl</code>.
         </p>
       </header>
 
@@ -254,7 +271,11 @@ function FleetOverview({ data }: { data: SquadOverviewData }) {
       ) : (
         squads.map((ns) => (
           <section key={ns} data-testid="overview-squad-group">
-            <h2 className="muted" style={{ margin: "18px 0 6px" }} data-testid="overview-squad-label">
+            <h2
+              className="muted"
+              style={{ margin: "18px 0 6px" }}
+              data-testid="overview-squad-label"
+            >
               Squad <code>{ns}</code>
             </h2>
             {(bySquad.get(ns) ?? [])
@@ -282,7 +303,10 @@ export function SquadOverview() {
           setState(classifyOverviewStatus(res.status));
           return;
         }
-        setState({ kind: "ready", data: (await res.json()) as SquadOverviewData });
+        setState({
+          kind: "ready",
+          data: (await res.json()) as SquadOverviewData,
+        });
       })
       .catch(() => {
         if (alive) setState({ kind: "error", status: 0 });
@@ -304,8 +328,8 @@ export function SquadOverview() {
       <div className="card" data-testid="overview-unauthenticated">
         <h2 style={{ marginTop: 0 }}>Sign in required</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          The squad overview is scoped to your session&apos;s Team. Authenticate through the
-          console sign-in flow and reload.
+          The squad overview is scoped to your session&apos;s Team. Authenticate
+          through the console sign-in flow and reload.
         </p>
       </div>
     );
@@ -315,8 +339,8 @@ export function SquadOverview() {
       <div className="card" data-testid="overview-no-team">
         <h2 style={{ marginTop: 0 }}>No squad for your Team yet</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          Your session resolves to a Team with no projection — the Team may be newly created
-          (or deleted) and the cache has not observed it yet.
+          Your session resolves to a Team with no projection — the Team may be
+          newly created (or deleted) and the cache has not observed it yet.
         </p>
       </div>
     );
@@ -326,8 +350,8 @@ export function SquadOverview() {
       <div className="card" data-testid="overview-not-wired">
         <h2 style={{ marginTop: 0 }}>Squad overview not wired</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          This apiserver runs without the squad-overview read model (dev / cluster-less run)
-          and answers its documented 501.
+          This apiserver runs without the squad-overview read model (dev /
+          cluster-less run) and answers its documented 501.
         </p>
       </div>
     );
@@ -337,8 +361,8 @@ export function SquadOverview() {
       <div className="card" data-testid="overview-error">
         <h2 style={{ marginTop: 0 }}>Squad overview unavailable</h2>
         <p className="muted" style={{ marginBottom: 0 }}>
-          The read model could not be reached (HTTP {state.status || "network error"}).
-          Retry shortly.
+          The read model could not be reached (HTTP{" "}
+          {state.status || "network error"}). Retry shortly.
         </p>
       </div>
     );

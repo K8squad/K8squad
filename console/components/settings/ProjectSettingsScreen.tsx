@@ -23,7 +23,13 @@
 // ISI-4843) and the Danger zone (needs backend delete endpoints, ISI-4844). Sync is
 // shown read-only in the rail, matching what the backend can actually round-trip today.
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
 import { classifyCreateStatus } from "@/lib/credentials";
 import { CredentialsVaultCard } from "@/components/settings/CredentialsVaultCard";
@@ -57,7 +63,10 @@ const SECTIONS = [
  *  (AC3: the apiserver's field message, never a generic toast). */
 async function composeErrorText(res: Response): Promise<string> {
   try {
-    const j = (await res.json()) as { error?: string; fields?: Array<{ field: string; message: string }> };
+    const j = (await res.json()) as {
+      error?: string;
+      fields?: Array<{ field: string; message: string }>;
+    };
     if (Array.isArray(j.fields) && j.fields.length) {
       return j.fields.map((f) => `${f.field}: ${f.message}`).join("; ");
     }
@@ -68,7 +77,8 @@ async function composeErrorText(res: Response): Promise<string> {
   if (res.status === 401) return "You must sign in to change these settings.";
   if (res.status === 403) return "You don't have write access to this project.";
   if (res.status === 409) return "Concurrent modification — reload and retry.";
-  if (res.status === 501) return "Compose is not available on this deployment yet.";
+  if (res.status === 501)
+    return "Compose is not available on this deployment yet.";
   return `Save failed (status ${res.status}).`;
 }
 
@@ -163,9 +173,9 @@ function ReadyView({
   const [activeSection, setActiveSection] = useState<string>(SECTIONS[0].id);
   useEffect(() => {
     if (typeof IntersectionObserver === "undefined") return;
-    const els = SECTIONS.map((s) => document.getElementById(`settings-${s.id}`)).filter(
-      (el): el is HTMLElement => el !== null,
-    );
+    const els = SECTIONS.map((s) =>
+      document.getElementById(`settings-${s.id}`),
+    ).filter((el): el is HTMLElement => el !== null);
     if (els.length === 0) return;
     const observer = new IntersectionObserver(
       (entries) => {
@@ -186,7 +196,10 @@ function ReadyView({
   }, []);
 
   return (
-    <section className="settings settings--redesign" data-testid="settings-ready">
+    <section
+      className="settings settings--redesign"
+      data-testid="settings-ready"
+    >
       <header className="settings__header">
         <div className="settings__crumb">
           <span className="settings__avatar" aria-hidden="true">
@@ -194,7 +207,10 @@ function ReadyView({
           </span>
           <div>
             <h1 className="settings__title">Settings</h1>
-            <p className="muted settings__subtitle" data-testid="settings-project-slug">
+            <p
+              className="muted settings__subtitle"
+              data-testid="settings-project-slug"
+            >
               {project.namespace}/{project.name}
             </p>
           </div>
@@ -217,7 +233,11 @@ function ReadyView({
         </nav>
 
         <div className="settings__main">
-          <RepositoryAndCredentials data={data} projectId={projectId} onReload={onReload} />
+          <RepositoryAndCredentials
+            data={data}
+            projectId={projectId}
+            onReload={onReload}
+          />
         </div>
 
         <aside className="settings__rail" aria-label="Connection health">
@@ -241,7 +261,10 @@ function RepositoryAndCredentials({
   onReload: () => Promise<void>;
 }) {
   const { repo, auth, canEdit } = data;
-  const badge = useMemo(() => credentialStatusLabel(auth.connected, auth.lastTest), [auth]);
+  const badge = useMemo(
+    () => credentialStatusLabel(auth.connected, auth.lastTest),
+    [auth],
+  );
   const hasRepo = repo.url.trim().length > 0;
 
   const [repoUrl, setRepoUrl] = useState(repo.url);
@@ -270,7 +293,10 @@ function RepositoryAndCredentials({
       try {
         const detail = await fetchProjectDetail(projectId);
         if (!detail) {
-          setRepoMsg({ tone: "bad", text: "Couldn't read the current project to save — try again." });
+          setRepoMsg({
+            tone: "bad",
+            text: "Couldn't read the current project to save — try again.",
+          });
           return;
         }
         const body = buildProjectPutBody(detail, { repoUrl, repoRef });
@@ -282,7 +308,10 @@ function RepositoryAndCredentials({
           setRepoMsg({ tone: "bad", text: await composeErrorText(res) });
         }
       } catch {
-        setRepoMsg({ tone: "bad", text: "The compose endpoint is unreachable — try again." });
+        setRepoMsg({
+          tone: "bad",
+          text: "The compose endpoint is unreachable — try again.",
+        });
       } finally {
         setRepoBusy(false);
       }
@@ -296,11 +325,17 @@ function RepositoryAndCredentials({
       e.preventDefault();
       setCredMsg(null);
       if (!credName.trim() || !pat) {
-        setCredMsg({ tone: "bad", text: "A credential name and a pasted token are both required." });
+        setCredMsg({
+          tone: "bad",
+          text: "A credential name and a pasted token are both required.",
+        });
         return;
       }
       if (!repoUrl.trim()) {
-        setCredMsg({ tone: "bad", text: "Set the repo URL before attaching a credential." });
+        setCredMsg({
+          tone: "bad",
+          text: "Set the repo URL before attaching a credential.",
+        });
         return;
       }
       setCredBusy(true);
@@ -311,7 +346,10 @@ function RepositoryAndCredentials({
         // detail round-trips the full authoring spec on the attach PUT below.
         const detail = await fetchProjectDetail(projectId);
         if (!detail) {
-          setCredMsg({ tone: "bad", text: "Couldn't read the current project to store the credential — try again." });
+          setCredMsg({
+            tone: "bad",
+            text: "Couldn't read the current project to store the credential — try again.",
+          });
           return;
         }
         const credRes = await createScmCredential({
@@ -330,7 +368,10 @@ function RepositoryAndCredentials({
         const body = buildProjectPutBody(detail, {
           repoUrl,
           repoRef,
-          credentialSecretRef: { name: credName.trim(), key: SCM_PAT_SECRET_KEY },
+          credentialSecretRef: {
+            name: credName.trim(),
+            key: SCM_PAT_SECRET_KEY,
+          },
         });
         const putRes = await putProject(projectId, body);
         if (putRes.ok) {
@@ -341,7 +382,10 @@ function RepositoryAndCredentials({
           setCredMsg({ tone: "bad", text: await composeErrorText(putRes) });
         }
       } catch {
-        setCredMsg({ tone: "bad", text: "The credential store is unreachable — try again." });
+        setCredMsg({
+          tone: "bad",
+          text: "The credential store is unreachable — try again.",
+        });
       } finally {
         setCredBusy(false);
       }
@@ -365,7 +409,10 @@ function RepositoryAndCredentials({
       );
       setTestResult(result);
     } catch {
-      setTestResult({ ok: false, detail: "Couldn't reach the test probe — try again." });
+      setTestResult({
+        ok: false,
+        detail: "Couldn't reach the test probe — try again.",
+      });
     } finally {
       setTestBusy(false);
     }
@@ -376,18 +423,29 @@ function RepositoryAndCredentials({
   return (
     <>
       {/* ── Repository — unified read + edit (kills the duplicate URL/ref). ── */}
-      <section id="settings-repository" className="card settings__card" data-testid="settings-repo-panel">
+      <section
+        id="settings-repository"
+        className="card settings__card"
+        data-testid="settings-repo-panel"
+      >
         <div className="settings__card-head">
           <h2 className="settings__card-title">Repository</h2>
           {hasRepo ? (
-            <span className="settings__chip settings__chip--ok" data-testid="repo-linked-chip">
+            <span
+              className="settings__chip settings__chip--ok"
+              data-testid="repo-linked-chip"
+            >
               Linked
             </span>
           ) : null}
         </div>
 
         {canEdit ? (
-          <form className="settings__form" data-testid="settings-repo-form" onSubmit={onSaveRepo}>
+          <form
+            className="settings__form"
+            data-testid="settings-repo-form"
+            onSubmit={onSaveRepo}
+          >
             {!hasRepo ? (
               <EmptyState
                 testId="settings-no-repo"
@@ -420,20 +478,33 @@ function RepositoryAndCredentials({
               </label>
               <div className="settings__field settings__field--static">
                 <span>Provider</span>
-                <span className="settings__chip settings__chip--muted" data-testid="repo-provider">
+                <span
+                  className="settings__chip settings__chip--muted"
+                  data-testid="repo-provider"
+                >
                   {repo.provider}
                 </span>
               </div>
             </div>
             <p className="muted settings__note">
-              Full spec is round-tripped on save — changing the URL never wipes the project&apos;s goals or egress.
+              Full spec is round-tripped on save — changing the URL never wipes
+              the project&apos;s goals or egress.
             </p>
             <div className="settings__actions">
-              <button className="btn btn--primary" type="submit" disabled={repoBusy} data-testid="repo-save">
+              <button
+                className="btn btn--primary"
+                type="submit"
+                disabled={repoBusy}
+                data-testid="repo-save"
+              >
                 {repoBusy ? "Saving…" : "Save repository"}
               </button>
               {repoMsg ? (
-                <span className={`settings__msg settings__msg--${repoMsg.tone}`} data-testid="repo-msg" role="status">
+                <span
+                  className={`settings__msg settings__msg--${repoMsg.tone}`}
+                  data-testid="repo-msg"
+                  role="status"
+                >
                   {repoMsg.text}
                 </span>
               ) : null}
@@ -447,7 +518,9 @@ function RepositoryAndCredentials({
             </div>
             <div>
               <dt>Tracked ref</dt>
-              <dd data-testid="repo-ref">{repo.ref ? repo.ref : "default branch"}</dd>
+              <dd data-testid="repo-ref">
+                {repo.ref ? repo.ref : "default branch"}
+              </dd>
             </div>
             <div>
               <dt>Provider</dt>
@@ -471,7 +544,11 @@ function RepositoryAndCredentials({
       <CredentialsVaultCard projectId={projectId} canEdit={canEdit} />
 
       {/* ── Access & credentials — status strip + Replace-token (one concern). ── */}
-      <section id="settings-access" className="card settings__card" data-testid="settings-cred-panel">
+      <section
+        id="settings-access"
+        className="card settings__card"
+        data-testid="settings-cred-panel"
+      >
         <div className="settings__card-head">
           <h2 className="settings__card-title">Access &amp; credentials</h2>
         </div>
@@ -485,7 +562,10 @@ function RepositoryAndCredentials({
             {badge.label}
           </span>
           {auth.connected && auth.credentialSecretRefName ? (
-            <span className="settings__chip settings__chip--muted" data-testid="cred-ref">
+            <span
+              className="settings__chip settings__chip--muted"
+              data-testid="cred-ref"
+            >
               Secret: {auth.credentialSecretRefName}
             </span>
           ) : null}
@@ -515,10 +595,17 @@ function RepositoryAndCredentials({
         ) : null}
 
         {canEdit ? (
-          <form className="settings__form settings__replace" data-testid="settings-pat-form" onSubmit={onSavePat}>
-            <h3 className="settings__sub-title">{auth.connected ? "Replace token" : "Attach token"}</h3>
+          <form
+            className="settings__form settings__replace"
+            data-testid="settings-pat-form"
+            onSubmit={onSavePat}
+          >
+            <h3 className="settings__sub-title">
+              {auth.connected ? "Replace token" : "Attach token"}
+            </h3>
             <p className="muted settings__note">
-              Paste a personal access token — it&apos;s stored as a Kubernetes Secret and never shown back.
+              Paste a personal access token — it&apos;s stored as a Kubernetes
+              Secret and never shown back.
             </p>
             <div className="settings__field-row">
               <label className="settings__field">
@@ -545,18 +632,30 @@ function RepositoryAndCredentials({
               </label>
             </div>
             <div className="settings__actions">
-              <button className="btn btn--primary" type="submit" disabled={credBusy} data-testid="pat-save">
+              <button
+                className="btn btn--primary"
+                type="submit"
+                disabled={credBusy}
+                data-testid="pat-save"
+              >
                 {credBusy ? "Saving…" : "Save credential"}
               </button>
               {credMsg ? (
-                <span className={`settings__msg settings__msg--${credMsg.tone}`} data-testid="pat-msg" role="status">
+                <span
+                  className={`settings__msg settings__msg--${credMsg.tone}`}
+                  data-testid="pat-msg"
+                  role="status"
+                >
                   {credMsg.text}
                 </span>
               ) : null}
             </div>
           </form>
         ) : (
-          <p className="muted settings__readonly" data-testid="settings-readonly-note">
+          <p
+            className="muted settings__readonly"
+            data-testid="settings-readonly-note"
+          >
             You don&apos;t have permission to change these settings.
           </p>
         )}
@@ -569,7 +668,11 @@ function RepositoryAndCredentials({
       {canEdit ? (
         <SyncCard repo={repo} projectId={projectId} onReload={onReload} />
       ) : (
-        <section id="settings-sync" className="card settings__card" data-testid="settings-sync-panel">
+        <section
+          id="settings-sync"
+          className="card settings__card"
+          data-testid="settings-sync-panel"
+        >
           <div className="settings__card-head">
             <h2 className="settings__card-title">Sync</h2>
             <span
@@ -607,7 +710,11 @@ function ConnectionHealthRail({ data }: { data: ProjectSettings }) {
   const hasRepo = repo.url.trim().length > 0;
 
   const lastTestTone =
-    auth.lastTest === "passed" ? "ok" : auth.lastTest === "failed" ? "bad" : "muted";
+    auth.lastTest === "passed"
+      ? "ok"
+      : auth.lastTest === "failed"
+        ? "bad"
+        : "muted";
   const lastTestLabel =
     auth.lastTest === "passed"
       ? "Passed"
@@ -615,33 +722,62 @@ function ConnectionHealthRail({ data }: { data: ProjectSettings }) {
         ? "Failed"
         : "Not run";
 
-  const rows: Array<{ label: string; value: string; tone: string; testId: string }> = [
+  const rows: Array<{
+    label: string;
+    value: string;
+    tone: string;
+    testId: string;
+  }> = [
     {
       label: "Repository",
       value: hasRepo ? "Linked" : "Not linked",
       tone: hasRepo ? "ok" : "muted",
       testId: "health-repo",
     },
-    { label: "Credential", value: badge.label, tone: badge.tone, testId: "health-cred" },
-    { label: "Last test", value: lastTestLabel, tone: lastTestTone, testId: "health-test" },
+    {
+      label: "Credential",
+      value: badge.label,
+      tone: badge.tone,
+      testId: "health-cred",
+    },
+    {
+      label: "Last test",
+      value: lastTestLabel,
+      tone: lastTestTone,
+      testId: "health-test",
+    },
     {
       label: "Sync",
       value: repo.syncEnabled ? `Every ${repo.pollIntervalSeconds}s` : "Off",
       tone: repo.syncEnabled ? "ok" : "muted",
       testId: "health-sync",
     },
-    { label: "Provider", value: repo.provider, tone: "muted", testId: "health-provider" },
+    {
+      label: "Provider",
+      value: repo.provider,
+      tone: "muted",
+      testId: "health-provider",
+    },
   ];
 
   return (
-    <div className="card settings__card settings__health" data-testid="settings-health-rail">
+    <div
+      className="card settings__card settings__health"
+      data-testid="settings-health-rail"
+    >
       <h2 className="settings__card-title">Connection health</h2>
       <dl className="settings__health-list">
         {rows.map((r) => (
           <div key={r.testId} className="settings__health-row">
             <dt>{r.label}</dt>
-            <dd className={`settings__health-value settings__health-value--${r.tone}`} data-testid={r.testId}>
-              <span className={`settings__dot settings__dot--${r.tone}`} aria-hidden="true" />
+            <dd
+              className={`settings__health-value settings__health-value--${r.tone}`}
+              data-testid={r.testId}
+            >
+              <span
+                className={`settings__dot settings__dot--${r.tone}`}
+                aria-hidden="true"
+              />
               {r.value}
             </dd>
           </div>
@@ -674,7 +810,9 @@ function SyncCard({
 }) {
   const [enabled, setEnabled] = useState(repo.syncEnabled);
   const [poll, setPoll] = useState(
-    repo.syncEnabled && repo.pollIntervalSeconds ? repo.pollIntervalSeconds : DEFAULT_POLL_SECONDS,
+    repo.syncEnabled && repo.pollIntervalSeconds
+      ? repo.pollIntervalSeconds
+      : DEFAULT_POLL_SECONDS,
   );
   const [reflect, setReflect] = useState(repo.reflectOutbound);
   const [busy, setBusy] = useState(false);
@@ -685,30 +823,48 @@ function SyncCard({
       e.preventDefault();
       setMsg(null);
       if (enabled && (!Number.isFinite(poll) || poll < MIN_POLL_SECONDS)) {
-        setMsg({ tone: "bad", text: `pollIntervalSeconds: must be at least ${MIN_POLL_SECONDS}` });
+        setMsg({
+          tone: "bad",
+          text: `pollIntervalSeconds: must be at least ${MIN_POLL_SECONDS}`,
+        });
         return;
       }
       setBusy(true);
       try {
         const detail = await fetchProjectDetail(projectId);
         if (!detail) {
-          setMsg({ tone: "bad", text: "Couldn't read the current project to save — try again." });
+          setMsg({
+            tone: "bad",
+            text: "Couldn't read the current project to save — try again.",
+          });
           return;
         }
         // Round-trip the authoritative repo URL (never the repo form's unsaved edit).
         const body = buildProjectPutBody(detail, {
           repoUrl: detail.repo.url,
-          sync: enabled ? { enabled: true, pollIntervalSeconds: poll, reflectOutbound: reflect } : { enabled: false },
+          sync: enabled
+            ? {
+                enabled: true,
+                pollIntervalSeconds: poll,
+                reflectOutbound: reflect,
+              }
+            : { enabled: false },
         });
         const res = await putProject(projectId, body);
         if (res.ok) {
-          setMsg({ tone: "ok", text: enabled ? "Sync settings saved." : "Sync disabled." });
+          setMsg({
+            tone: "ok",
+            text: enabled ? "Sync settings saved." : "Sync disabled.",
+          });
           await onReload();
         } else {
           setMsg({ tone: "bad", text: await composeErrorText(res) });
         }
       } catch {
-        setMsg({ tone: "bad", text: "The compose endpoint is unreachable — try again." });
+        setMsg({
+          tone: "bad",
+          text: "The compose endpoint is unreachable — try again.",
+        });
       } finally {
         setBusy(false);
       }
@@ -717,7 +873,11 @@ function SyncCard({
   );
 
   return (
-    <section id="settings-sync" className="card settings__card" data-testid="settings-sync-panel">
+    <section
+      id="settings-sync"
+      className="card settings__card"
+      data-testid="settings-sync-panel"
+    >
       <div className="settings__card-head">
         <h2 className="settings__card-title">Sync</h2>
         <span
@@ -728,10 +888,15 @@ function SyncCard({
         </span>
       </div>
       <p className="muted settings__note">
-        Mirror this repository&apos;s issues, pull requests and check runs on a poll fallback. Reflect-outbound
-        posts KSquad run status back to the provider.
+        Mirror this repository&apos;s issues, pull requests and check runs on a
+        poll fallback. Reflect-outbound posts KSquad run status back to the
+        provider.
       </p>
-      <form className="settings__form" data-testid="settings-sync-form" onSubmit={onSave}>
+      <form
+        className="settings__form"
+        data-testid="settings-sync-form"
+        onSubmit={onSave}
+      >
         <label className="settings__toggle">
           <input
             type="checkbox"
@@ -764,11 +929,20 @@ function SyncCard({
           <span>Reflect outbound (post run status back to the provider)</span>
         </label>
         <div className="settings__actions">
-          <button className="btn btn--primary" type="submit" disabled={busy} data-testid="sync-save">
+          <button
+            className="btn btn--primary"
+            type="submit"
+            disabled={busy}
+            data-testid="sync-save"
+          >
             {busy ? "Saving…" : "Save sync settings"}
           </button>
           {msg ? (
-            <span className={`settings__msg settings__msg--${msg.tone}`} data-testid="sync-msg" role="status">
+            <span
+              className={`settings__msg settings__msg--${msg.tone}`}
+              data-testid="sync-msg"
+              role="status"
+            >
               {msg.text}
             </span>
           ) : null}
@@ -800,7 +974,11 @@ function DocsCard({
   projectId: string;
   onReload: () => Promise<void>;
 }) {
-  const { conventions: initialConventions, archDocRefs: initialRefs, canEdit } = data;
+  const {
+    conventions: initialConventions,
+    archDocRefs: initialRefs,
+    canEdit,
+  } = data;
   const [conventions, setConventions] = useState(initialConventions ?? "");
   // One editable row per ref, plus never-empty so the editor always shows an input.
   const [refs, setRefs] = useState<string[]>(
@@ -828,7 +1006,10 @@ function DocsCard({
       try {
         const detail = await fetchProjectDetail(projectId);
         if (!detail) {
-          setMsg({ tone: "bad", text: "Couldn't read the current project to save — try again." });
+          setMsg({
+            tone: "bad",
+            text: "Couldn't read the current project to save — try again.",
+          });
           return;
         }
         const body = buildProjectPutBody(detail, {
@@ -844,7 +1025,10 @@ function DocsCard({
           setMsg({ tone: "bad", text: await composeErrorText(res) });
         }
       } catch {
-        setMsg({ tone: "bad", text: "The compose endpoint is unreachable — try again." });
+        setMsg({
+          tone: "bad",
+          text: "The compose endpoint is unreachable — try again.",
+        });
       } finally {
         setBusy(false);
       }
@@ -855,7 +1039,11 @@ function DocsCard({
   if (!canEdit) {
     const roRefs = (initialRefs ?? []).filter((r) => r.trim().length > 0);
     return (
-      <section id="settings-docs" className="card settings__card" data-testid="settings-docs-panel">
+      <section
+        id="settings-docs"
+        className="card settings__card"
+        data-testid="settings-docs-panel"
+      >
         <div className="settings__card-head">
           <h2 className="settings__card-title">Docs &amp; conventions</h2>
         </div>
@@ -878,19 +1066,32 @@ function DocsCard({
   }
 
   return (
-    <section id="settings-docs" className="card settings__card" data-testid="settings-docs-panel">
+    <section
+      id="settings-docs"
+      className="card settings__card"
+      data-testid="settings-docs-panel"
+    >
       <div className="settings__card-head">
         <h2 className="settings__card-title">Docs &amp; conventions</h2>
       </div>
       <p className="muted settings__note">
-        Project conventions and architecture-doc references are injected into every agent run&apos;s context.
-        These are non-secret descriptor fields.
+        Project conventions and architecture-doc references are injected into
+        every agent run&apos;s context. These are non-secret descriptor fields.
       </p>
-      <p className="muted settings__note" data-testid="docs-guardrail" role="note">
-        🔒 This panel edits descriptor text only. Repository credentials and secret references live under
-        Access &amp; credentials and are never read or changed here.
+      <p
+        className="muted settings__note"
+        data-testid="docs-guardrail"
+        role="note"
+      >
+        🔒 This panel edits descriptor text only. Repository credentials and
+        secret references live under Access &amp; credentials and are never read
+        or changed here.
       </p>
-      <form className="settings__form" data-testid="settings-docs-form" onSubmit={onSave}>
+      <form
+        className="settings__form"
+        data-testid="settings-docs-form"
+        onSubmit={onSave}
+      >
         <label className="settings__field">
           <span>Conventions</span>
           <textarea
@@ -901,7 +1102,10 @@ function DocsCard({
             placeholder="Coding style, review norms, branch conventions…"
             data-testid="docs-conventions-input"
           />
-          <span className="muted settings__hint" data-testid="docs-conventions-count">
+          <span
+            className="muted settings__hint"
+            data-testid="docs-conventions-count"
+          >
             {conventions.length}/{CONVENTIONS_SOFT_MAX}
           </span>
         </label>
@@ -937,11 +1141,20 @@ function DocsCard({
           </button>
         </fieldset>
         <div className="settings__actions">
-          <button className="btn btn--primary" type="submit" disabled={busy} data-testid="docs-save">
+          <button
+            className="btn btn--primary"
+            type="submit"
+            disabled={busy}
+            data-testid="docs-save"
+          >
             {busy ? "Saving…" : "Save docs & conventions"}
           </button>
           {msg ? (
-            <span className={`settings__msg settings__msg--${msg.tone}`} data-testid="docs-msg" role="status">
+            <span
+              className={`settings__msg settings__msg--${msg.tone}`}
+              data-testid="docs-msg"
+              role="status"
+            >
               {msg.text}
             </span>
           ) : null}

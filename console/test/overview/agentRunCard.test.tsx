@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup, within } from "@testing-library/react";
-import { AgentRunCard, AgentRunCardGrid } from "@/components/overview/AgentRunCard";
+import {
+  AgentRunCard,
+  AgentRunCardGrid,
+} from "@/components/overview/AgentRunCard";
 import {
   agentInitials,
   avatarColor,
@@ -33,7 +36,8 @@ function agent(over: Partial<AgentActivity> = {}): AgentActivity {
       phase: "Running",
       workItemRef: "ISI-5687",
       workItemUrl: "/projects/k8squad/issues/isi-5687",
-      lastThinkingSnippet: "helm upgrade: pinning the operator.sandbox.image digest",
+      lastThinkingSnippet:
+        "helm upgrade: pinning the operator.sandbox.image digest",
       lastActivityAt: "2026-10-12T18:00:00Z",
     },
     ...over,
@@ -63,8 +67,12 @@ describe("agentActivity projections", () => {
   it("thinkingLine applies FR-I3: snippet, else waiting (running), else em-dash", () => {
     const run = agent().currentOrLastRun!;
     expect(thinkingLine("running", run)).toBe(run.lastThinkingSnippet);
-    expect(thinkingLine("running", { ...run, lastThinkingSnippet: null })).toBe(WAITING_SNIPPET);
-    expect(thinkingLine("idle", { ...run, lastThinkingSnippet: "  " })).toBe(UNAVAILABLE);
+    expect(thinkingLine("running", { ...run, lastThinkingSnippet: null })).toBe(
+      WAITING_SNIPPET,
+    );
+    expect(thinkingLine("idle", { ...run, lastThinkingSnippet: "  " })).toBe(
+      UNAVAILABLE,
+    );
   });
 
   it("resolveDeepLink prefers ticket, falls back to discussion, else null", () => {
@@ -80,7 +88,11 @@ describe("agentActivity projections", () => {
         workItemUrl: null,
         discussionUrl: "/projects/k8squad/discussions/d1",
       }),
-    ).toEqual({ href: "/projects/k8squad/discussions/d1", label: "discussion", kind: "discussion" });
+    ).toEqual({
+      href: "/projects/k8squad/discussions/d1",
+      label: "discussion",
+      kind: "discussion",
+    });
     expect(resolveDeepLink({ runId: "r1", phase: "Running" })).toBeNull();
   });
 
@@ -107,7 +119,10 @@ describe("<AgentRunCard>", () => {
       "helm upgrade: pinning the operator.sandbox.image digest",
     );
     const chipLink = screen.getByTestId("agent-workchip");
-    expect(chipLink).toHaveAttribute("href", "/projects/k8squad/issues/isi-5687");
+    expect(chipLink).toHaveAttribute(
+      "href",
+      "/projects/k8squad/issues/isi-5687",
+    );
     expect(chipLink).toHaveTextContent("ISI-5687");
     expect(screen.getByTestId("agent-time")).toHaveTextContent("now");
   });
@@ -119,7 +134,10 @@ describe("<AgentRunCard>", () => {
         now={NOW}
       />,
     );
-    expect(screen.getByTestId("agent-run-card")).toHaveAttribute("data-state", "idle");
+    expect(screen.getByTestId("agent-run-card")).toHaveAttribute(
+      "data-state",
+      "idle",
+    );
     expect(screen.getByTestId("agent-phase-chip")).toHaveClass("ov-tone--idle");
   });
 
@@ -142,47 +160,80 @@ describe("<AgentRunCard>", () => {
         now={NOW}
       />,
     );
-    expect(screen.getByTestId("agent-phase-chip")).toHaveClass("ov-tone--blocked");
-    expect(screen.getByTestId("agent-thinking")).toHaveTextContent("Waiting on CI: FR-B3 allowlist gate");
+    expect(screen.getByTestId("agent-phase-chip")).toHaveClass(
+      "ov-tone--blocked",
+    );
+    expect(screen.getByTestId("agent-thinking")).toHaveTextContent(
+      "Waiting on CI: FR-B3 allowlist gate",
+    );
     expect(screen.getByTestId("agent-time")).toHaveTextContent("11m ago");
   });
 
   it("empty: no chip, no dead work-chip, honest 'No run yet' line", () => {
-    render(<AgentRunCard agent={agent({ name: "Scribe", role: "Docs", currentOrLastRun: null })} now={NOW} />);
+    render(
+      <AgentRunCard
+        agent={agent({ name: "Scribe", role: "Docs", currentOrLastRun: null })}
+        now={NOW}
+      />,
+    );
     const card = screen.getByTestId("agent-run-card");
     expect(card).toHaveAttribute("data-state", "empty");
     expect(screen.queryByTestId("agent-phase-chip")).not.toBeInTheDocument();
     expect(screen.queryByTestId("agent-workchip")).not.toBeInTheDocument();
-    expect(screen.getByTestId("agent-empty")).toHaveTextContent("No run yet — idle since onboarding");
+    expect(screen.getByTestId("agent-empty")).toHaveTextContent(
+      "No run yet — idle since onboarding",
+    );
   });
 
   it("role: renders a scannable tag (class + glyph + text), with a truncation title", () => {
-    render(<AgentRunCard agent={agent({ name: "Alfred", role: "CTO" })} now={NOW} />);
+    render(
+      <AgentRunCard agent={agent({ name: "Alfred", role: "CTO" })} now={NOW} />,
+    );
     const tag = screen.getByTestId("agent-role");
     expect(tag).toHaveClass("ov-agentcard__role");
     expect(tag).toHaveTextContent("CTO");
     expect(tag).toHaveAttribute("title", "CTO");
     // a decorative, non-announced person glyph rides alongside the text
     expect(tag.querySelector(".ov-agentcard__role-glyph")).toBeInTheDocument();
-    expect(tag.querySelector(".ov-agentcard__role-glyph")).toHaveAttribute("aria-hidden", "true");
-    expect(tag.querySelector(".ov-agentcard__role-text")).toHaveTextContent("CTO");
+    expect(tag.querySelector(".ov-agentcard__role-glyph")).toHaveAttribute(
+      "aria-hidden",
+      "true",
+    );
+    expect(tag.querySelector(".ov-agentcard__role-text")).toHaveTextContent(
+      "CTO",
+    );
   });
 
   it("role: degrade-don't-blank — no role renders no tag element at all (ISI-4229)", () => {
-    render(<AgentRunCard agent={agent({ name: "Nameless", role: undefined })} now={NOW} />);
+    render(
+      <AgentRunCard
+        agent={agent({ name: "Nameless", role: undefined })}
+        now={NOW}
+      />,
+    );
     expect(screen.queryByTestId("agent-role")).not.toBeInTheDocument();
-    render(<AgentRunCard agent={agent({ name: "Empty", role: "" })} now={NOW} />);
+    render(
+      <AgentRunCard agent={agent({ name: "Empty", role: "" })} now={NOW} />,
+    );
     expect(screen.queryByTestId("agent-role")).not.toBeInTheDocument();
   });
 
   it("running with no snippet yet renders the waiting line, never a blank (FR-I3)", () => {
     render(
       <AgentRunCard
-        agent={agent({ currentOrLastRun: { runId: "r9", phase: "Claiming", lastActivityAt: "2026-10-12T18:00:00Z" } })}
+        agent={agent({
+          currentOrLastRun: {
+            runId: "r9",
+            phase: "Claiming",
+            lastActivityAt: "2026-10-12T18:00:00Z",
+          },
+        })}
         now={NOW}
       />,
     );
-    expect(screen.getByTestId("agent-thinking")).toHaveTextContent(WAITING_SNIPPET);
+    expect(screen.getByTestId("agent-thinking")).toHaveTextContent(
+      WAITING_SNIPPET,
+    );
     // no ticket/discussion → no dead link, an explicit em-dash placeholder instead
     expect(screen.queryByTestId("agent-workchip")).not.toBeInTheDocument();
   });
@@ -190,7 +241,9 @@ describe("<AgentRunCard>", () => {
   it("loading: skeleton only, no agent text, no spinner-blank", () => {
     const { container } = render(<AgentRunCard loading />);
     expect(screen.queryByTestId("agent-run-card")).not.toBeInTheDocument();
-    expect(container.querySelector(".ov-agentcard--loading")).toBeInTheDocument();
+    expect(
+      container.querySelector(".ov-agentcard--loading"),
+    ).toBeInTheDocument();
     expect(container.querySelectorAll(".ov-skel").length).toBeGreaterThan(0);
   });
 
@@ -198,14 +251,19 @@ describe("<AgentRunCard>", () => {
     // The card shows whatever WS-1a already classified. It must not itself surface raw markers,
     // and the thinking text comes straight from lastThinkingSnippet — no raw prefix is injected.
     render(<AgentRunCard agent={agent()} now={NOW} />);
-    expect(screen.getByTestId("agent-thinking").textContent).not.toMatch(/\[run|\[tool|\[result/);
+    expect(screen.getByTestId("agent-thinking").textContent).not.toMatch(
+      /\[run|\[tool|\[result/,
+    );
   });
 
   it("AgentRunCardGrid wraps cards in the responsive grid", () => {
     const { container } = render(
       <AgentRunCardGrid>
         <AgentRunCard agent={agent()} now={NOW} />
-        <AgentRunCard agent={agent({ agentId: "a2", name: "Alfred" })} now={NOW} />
+        <AgentRunCard
+          agent={agent({ agentId: "a2", name: "Alfred" })}
+          now={NOW}
+        />
       </AgentRunCardGrid>,
     );
     expect(container.querySelector(".ov-agentcard-grid")).toBeInTheDocument();

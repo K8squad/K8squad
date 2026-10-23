@@ -42,7 +42,9 @@ describe("AgentDetail Edit deep-link", () => {
   it("renders an Edit action linking to compose edit mode with the name pre-filled (AC3)", async () => {
     stubAgent();
     render(<AgentDetail agentId="a-1" canEdit />);
-    const edit = await screen.findByRole("link", { name: "Edit backup-architect" });
+    const edit = await screen.findByRole("link", {
+      name: "Edit backup-architect",
+    });
     expect(edit).toHaveAttribute(
       "href",
       "/compose?kind=agents&mode=edit&name=backup-architect",
@@ -53,14 +55,18 @@ describe("AgentDetail Edit deep-link", () => {
     stubAgent();
     render(<AgentDetail agentId="a-1" canEdit={false} />);
     // Wait for the agent header to render, then assert no Edit affordance is present.
-    await waitFor(() => expect(screen.getByText("backup-architect")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("backup-architect")).toBeInTheDocument(),
+    );
     expect(screen.queryByRole("link", { name: /^Edit / })).toBeNull();
   });
 
   it("defaults to no Edit action when canEdit is omitted (fails closed)", async () => {
     stubAgent();
     render(<AgentDetail agentId="a-1" />);
-    await waitFor(() => expect(screen.getByText("backup-architect")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText("backup-architect")).toBeInTheDocument(),
+    );
     expect(screen.queryByRole("link", { name: /^Edit / })).toBeNull();
   });
 });

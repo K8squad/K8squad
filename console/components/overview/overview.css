@@ -9,13 +9,27 @@
  */
 
 /* ---- semantic tone map (label -> existing status/brand token) ------------------------------ */
-.ov-tone--running { color: var(--status-running); }
-.ov-tone--paused { color: var(--status-paused); }
-.ov-tone--blocked { color: var(--status-blocked); }
-.ov-tone--idle { color: var(--status-idle); }
-.ov-tone--run { color: var(--ksq-run); }
-.ov-tone--accent { color: var(--accent); }
-.ov-tone--neutral { color: var(--text-hi); }
+.ov-tone--running {
+  color: var(--status-running);
+}
+.ov-tone--paused {
+  color: var(--status-paused);
+}
+.ov-tone--blocked {
+  color: var(--status-blocked);
+}
+.ov-tone--idle {
+  color: var(--status-idle);
+}
+.ov-tone--run {
+  color: var(--ksq-run);
+}
+.ov-tone--accent {
+  color: var(--accent);
+}
+.ov-tone--neutral {
+  color: var(--text-hi);
+}
 
 /* ---- StatTile + 5-up band ------------------------------------------------------------------ */
 .ov-stat-band {
@@ -24,10 +38,14 @@
   gap: 12px;
 }
 @media (max-width: 1100px) {
-  .ov-stat-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-stat-band {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 560px) {
-  .ov-stat-band { grid-template-columns: minmax(0, 1fr); }
+  .ov-stat-band {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .ov-stat {
@@ -51,7 +69,9 @@
   font-size: 26px;
   line-height: 1.1;
   font-weight: 600;
-  color: var(--text-hi); /* overridden by an .ov-tone--* class when a tone is set */
+  color: var(
+    --text-hi
+  ); /* overridden by an .ov-tone--* class when a tone is set */
 }
 .ov-stat__sub {
   font-size: 12px;
@@ -74,11 +94,22 @@
   background: color-mix(in srgb, var(--text-2) 16%, transparent);
   animation: ov-pulse 1.4s ease-in-out infinite;
 }
-.ov-skel--value { height: 26px; width: 60%; }
-.ov-skel--sub { height: 12px; width: 45%; }
+.ov-skel--value {
+  height: 26px;
+  width: 60%;
+}
+.ov-skel--sub {
+  height: 12px;
+  width: 45%;
+}
 @keyframes ov-pulse {
-  0%, 100% { opacity: 0.5; }
-  50% { opacity: 0.9; }
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 0.9;
+  }
 }
 
 /* ---- RunStatusMixBar ----------------------------------------------------------------------- */
@@ -91,12 +122,24 @@
   background: var(--inset);
   border: 1px solid var(--border);
 }
-.ov-mixbar__seg { height: 100%; }
-.ov-mixbar__seg--running { background: var(--status-running); }
-.ov-mixbar__seg--paused { background: var(--status-paused); }
-.ov-mixbar__seg--blocked { background: var(--status-blocked); }
-.ov-mixbar__seg--idle { background: var(--status-idle); }
-.ov-mixbar--empty { background: var(--inset); }
+.ov-mixbar__seg {
+  height: 100%;
+}
+.ov-mixbar__seg--running {
+  background: var(--status-running);
+}
+.ov-mixbar__seg--paused {
+  background: var(--status-paused);
+}
+.ov-mixbar__seg--blocked {
+  background: var(--status-blocked);
+}
+.ov-mixbar__seg--idle {
+  background: var(--status-idle);
+}
+.ov-mixbar--empty {
+  background: var(--inset);
+}
 
 /* ---- PanelCard ----------------------------------------------------------------------------- */
 .ov-panel {
@@ -127,7 +170,9 @@
   text-decoration: none;
   white-space: nowrap;
 }
-.ov-panel__action:hover { text-decoration: underline; }
+.ov-panel__action:hover {
+  text-decoration: underline;
+}
 .ov-panel__body {
   padding: 12px 16px;
   min-height: 0;
@@ -152,13 +197,19 @@
   padding: 4px 12px;
   cursor: pointer;
 }
-.ov-panel__retry:hover { border-color: var(--accent); }
+.ov-panel__retry:hover {
+  border-color: var(--accent);
+}
 .ov-panel__skel-row {
   height: 14px;
   margin: 8px 0;
 }
-.ov-panel__skel-row:nth-child(2) { width: 85%; }
-.ov-panel__skel-row:nth-child(3) { width: 70%; }
+.ov-panel__skel-row:nth-child(2) {
+  width: 85%;
+}
+.ov-panel__skel-row:nth-child(3) {
+  width: 70%;
+}
 
 /* ---- AgentRunCard (ISI-5707, DESIGN ISI-5699 mock B) --------------------------------------- */
 /* Paperclip-style agent card: avatar + name/role, phase chip, classified last-thinking line,
@@ -171,10 +222,14 @@
   gap: 12px;
 }
 @media (max-width: 1100px) {
-  .ov-agentcard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-agentcard-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 560px) {
-  .ov-agentcard-grid { grid-template-columns: minmax(0, 1fr); }
+  .ov-agentcard-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .ov-agentcard {
@@ -314,7 +369,9 @@
   text-decoration: none;
   white-space: nowrap;
 }
-.ov-agentcard__workchip:hover { text-decoration: underline; }
+.ov-agentcard__workchip:hover {
+  text-decoration: underline;
+}
 .ov-agentcard__workchip--none {
   color: var(--text-2);
   background: transparent;
@@ -343,7 +400,9 @@
   height: 13px;
   margin: 3px 0;
 }
-.ov-agentcard__think-skel:nth-child(2) { width: 80%; }
+.ov-agentcard__think-skel:nth-child(2) {
+  width: 80%;
+}
 
 /* ---- charts (StackedAreaChart / HBarChart) shared shell ------------------------------------ */
 .ov-chart {
@@ -424,7 +483,9 @@
 .ov-hbar__fill {
   height: 100%;
   border-radius: 999px;
-  background: var(--accent); /* overridden per-row via inline color token when provided */
+  background: var(
+    --accent
+  ); /* overridden per-row via inline color token when provided */
   min-width: 2px;
 }
 .ov-hbar__value {
@@ -444,7 +505,9 @@
   gap: 10px;
 }
 @media (max-width: 720px) {
-  .ov-ghstrip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-ghstrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .ov-ghstrip__chip {
   display: flex;
@@ -486,7 +549,9 @@
   color: var(--accent-contrast, #fff);
   border: 1px solid transparent;
 }
-.ov-cta:hover { filter: brightness(1.05); }
+.ov-cta:hover {
+  filter: brightness(1.05);
+}
 .ov-cta--ghost {
   background: transparent;
   color: var(--text-1);

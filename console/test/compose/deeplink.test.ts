@@ -23,7 +23,9 @@ describe("parseComposeParams (compose deep-link contract)", () => {
   });
 
   it("seeds edit mode with the name pre-filled (AC3)", () => {
-    expect(parseComposeParams({ kind: "agents", mode: "edit", name: "reviewer" })).toEqual({
+    expect(
+      parseComposeParams({ kind: "agents", mode: "edit", name: "reviewer" }),
+    ).toEqual({
       kind: "agents",
       mode: "edit",
       name: "reviewer",
@@ -31,7 +33,11 @@ describe("parseComposeParams (compose deep-link contract)", () => {
   });
 
   it("falls back to the projects/create default for absent params — /compose is unchanged (AC4)", () => {
-    expect(parseComposeParams({})).toEqual({ kind: "projects", mode: "create", name: "" });
+    expect(parseComposeParams({})).toEqual({
+      kind: "projects",
+      mode: "create",
+      name: "",
+    });
     expect(parseComposeParams({ kind: null, mode: null, name: null })).toEqual({
       kind: "projects",
       mode: "create",
@@ -51,7 +57,9 @@ describe("parseComposeParams (compose deep-link contract)", () => {
       mode: "create",
       name: "",
     });
-    expect(parseComposeParams({ kind: "bogus", mode: "edit", name: "foo" })).toEqual({
+    expect(
+      parseComposeParams({ kind: "bogus", mode: "edit", name: "foo" }),
+    ).toEqual({
       kind: "projects",
       mode: "create",
       name: "",
@@ -59,10 +67,13 @@ describe("parseComposeParams (compose deep-link contract)", () => {
   });
 
   it("treats any non-`edit` mode as create, and trims a padded name", () => {
-    expect(parseComposeParams({ kind: "agents", mode: "delete" }).mode).toBe("create");
-    expect(parseComposeParams({ kind: "agents", mode: "edit", name: "  padded  " }).name).toBe(
-      "padded",
+    expect(parseComposeParams({ kind: "agents", mode: "delete" }).mode).toBe(
+      "create",
     );
+    expect(
+      parseComposeParams({ kind: "agents", mode: "edit", name: "  padded  " })
+        .name,
+    ).toBe("padded");
   });
 
   it("still resolves the other real kinds when explicitly requested (no over-fitting to agents)", () => {

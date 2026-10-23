@@ -9,7 +9,13 @@
 // backend. A root ticket keeps the honest em-dash in the Parent row (FR-I3).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -155,9 +161,9 @@ describe("TicketDetail hierarchy rail (ISI-5312)", () => {
 
     // A leaf sub-ticket has no children of its own — the rail quick-links list is absent.
     await waitFor(() =>
-      expect(screen.getByTestId("detail-subticket-summary").textContent).toContain(
-        "0 of 0 done",
-      ),
+      expect(
+        screen.getByTestId("detail-subticket-summary").textContent,
+      ).toContain("0 of 0 done"),
     );
     expect(screen.queryByTestId("detail-subticket-links")).toBeNull();
   });

@@ -68,7 +68,10 @@ export function tokenTypeLabel(row: AgentCredentialRow): string {
 
 /** Expiry cell text: known horizon formatted compactly; unknown renders the em dash (never a
  *  fabricated number). Static keys ("API key") surface as "— (static)" only when the class says so. */
-export function expiryLabel(row: AgentCredentialRow, now: Date = new Date()): string {
+export function expiryLabel(
+  row: AgentCredentialRow,
+  now: Date = new Date(),
+): string {
   if (
     row.credentialClass === "api_key" ||
     row.credentialClass === "byo_endpoint" ||
@@ -89,7 +92,11 @@ export function expiryLabel(row: AgentCredentialRow, now: Date = new Date()): st
 
 /** True when a known horizon is within the soon-window (soonThresholdMs) — drives the
  *  "Expiring soon" badge. Unknown horizons are never "soon" (honesty over alarm). */
-export function expiringSoon(row: AgentCredentialRow, now: Date = new Date(), soonThresholdMs = 45 * 60 * 1000): boolean {
+export function expiringSoon(
+  row: AgentCredentialRow,
+  now: Date = new Date(),
+  soonThresholdMs = 45 * 60 * 1000,
+): boolean {
   if (!row.expiresKnown || !row.expiresAt) return false;
   const diff = new Date(row.expiresAt).getTime() - now.getTime();
   return diff > 0 && diff <= soonThresholdMs;
@@ -101,7 +108,10 @@ export type HealthBadge = {
   tone: "ok" | "warn" | "bad" | "idle";
 };
 
-export function healthBadge(row: AgentCredentialRow, now: Date = new Date()): HealthBadge {
+export function healthBadge(
+  row: AgentCredentialRow,
+  now: Date = new Date(),
+): HealthBadge {
   if (row.health === "expired" || row.pausedRuns?.length) {
     return { label: "Expired · paused", tone: "bad" };
   }
@@ -127,7 +137,8 @@ export interface BannerHold {
   run: PausedRunRef;
 }
 
-const holdTs = (r: PausedRunRef): number => (r.since ? Date.parse(r.since) : Number.NaN);
+const holdTs = (r: PausedRunRef): number =>
+  r.since ? Date.parse(r.since) : Number.NaN;
 
 export function bannerHold(rows: AgentCredentialRow[]): BannerHold | null {
   let worst: BannerHold | null = null;
@@ -161,8 +172,11 @@ export function formatDuration(ms: number): string {
 }
 
 /** Classify a fetch status into the screen's outcome vocabulary. */
-export function classifyCredentialsStatus(status: number): Exclude<CredentialsOutcome, { kind: "ok" }>["kind"] {
-  if (status >= 200 && status < 300) throw new Error("ok is not a failure kind");
+export function classifyCredentialsStatus(
+  status: number,
+): Exclude<CredentialsOutcome, { kind: "ok" }>["kind"] {
+  if (status >= 200 && status < 300)
+    throw new Error("ok is not a failure kind");
   if (status === 401 || status === 403 || status === 404) return "not-found";
   if (status === 501) return "unconfigured";
   return "error";
@@ -220,7 +234,9 @@ export const RUNTIME_CREDENTIAL_ENTRIES: readonly RuntimeCredentialEntry[] = [
 ];
 
 /** Look up an entry by runtime id (undefined for a runtime outside the mirror). */
-export function runtimeCredentialEntry(runtime: string): RuntimeCredentialEntry | undefined {
+export function runtimeCredentialEntry(
+  runtime: string,
+): RuntimeCredentialEntry | undefined {
   return RUNTIME_CREDENTIAL_ENTRIES.find((e) => e.runtime === runtime);
 }
 
@@ -254,7 +270,9 @@ export interface CredentialCreateInput {
  * name (a DNS-1123 Secret name), pins the service-account class, forwards the value verbatim, and
  * includes `teamId` ONLY when a fleet admin has picked a team (an empty hint is inert upstream).
  */
-export function credentialCreateBody(input: CredentialCreateInput): Record<string, string> {
+export function credentialCreateBody(
+  input: CredentialCreateInput,
+): Record<string, string> {
   const body: Record<string, string> = {
     name: input.name.trim(),
     runtime: input.runtime,

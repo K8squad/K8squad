@@ -78,7 +78,9 @@ type ScreenState =
 // The SAME status→state mapping the ArtifactBrowser uses, so the two Run-scoped read models keep
 // one existence-hiding story: 404 is not-found (missing OR denied), 501 is the documented not-wired
 // dev/DB-less answer, 401 is unauthenticated, everything else is a transient error.
-export function classifyBuildStatus(status: number): Exclude<ScreenState, { kind: "ready" } | { kind: "loading" }> {
+export function classifyBuildStatus(
+  status: number,
+): Exclude<ScreenState, { kind: "ready" } | { kind: "loading" }> {
   switch (status) {
     case 401:
       return { kind: "unauthenticated" };
@@ -116,7 +118,13 @@ const preStyle: React.CSSProperties = {
 
 type Viewer =
   | { kind: "diff" }
-  | { kind: "file"; path: string; text: string; size: number; truncated: boolean };
+  | {
+      kind: "file";
+      path: string;
+      text: string;
+      size: number;
+      truncated: boolean;
+    };
 
 export function BuildBrowser({ runId }: { runId: string }) {
   const [state, setState] = useState<ScreenState>({ kind: "loading" });
@@ -144,7 +152,10 @@ export function BuildBrowser({ runId }: { runId: string }) {
           return;
         }
         if (!treeRes.ok || !diffRes.ok) {
-          setState({ kind: "error", status: treeRes.ok ? diffRes.status : treeRes.status });
+          setState({
+            kind: "error",
+            status: treeRes.ok ? diffRes.status : treeRes.status,
+          });
           return;
         }
         setState({
@@ -173,14 +184,33 @@ export function BuildBrowser({ runId }: { runId: string }) {
       );
       if (stale()) return;
       if (!res.ok) {
-        setViewer({ kind: "file", path, text: `(content unavailable — HTTP ${res.status})`, size: 0, truncated: false });
+        setViewer({
+          kind: "file",
+          path,
+          text: `(content unavailable — HTTP ${res.status})`,
+          size: 0,
+          truncated: false,
+        });
         return;
       }
       const body = (await res.json()) as FileResult;
       if (stale()) return;
-      setViewer({ kind: "file", path, text: decodeContent(body.content), size: body.size, truncated: body.truncated });
+      setViewer({
+        kind: "file",
+        path,
+        text: decodeContent(body.content),
+        size: body.size,
+        truncated: body.truncated,
+      });
     } catch {
-      if (!stale()) setViewer({ kind: "file", path, text: "(content fetch failed)", size: 0, truncated: false });
+      if (!stale())
+        setViewer({
+          kind: "file",
+          path,
+          text: "(content fetch failed)",
+          size: 0,
+          truncated: false,
+        });
     } finally {
       if (!stale()) setLoadingPath(null);
     }
@@ -207,7 +237,8 @@ export function BuildBrowser({ runId }: { runId: string }) {
     return (
       <div className="card" data-testid="build-not-found">
         <p className="muted" style={{ margin: 0 }}>
-          No build view for this Run — it does not exist or is not in your Team&apos;s scope.
+          No build view for this Run — it does not exist or is not in your
+          Team&apos;s scope.
         </p>
       </div>
     );
@@ -216,8 +247,8 @@ export function BuildBrowser({ runId }: { runId: string }) {
     return (
       <div className="card" data-testid="build-not-wired">
         <p className="muted" style={{ margin: 0 }}>
-          This apiserver runs without the build-browser read model (dev / DB-less run) and answers
-          its documented 501.
+          This apiserver runs without the build-browser read model (dev /
+          DB-less run) and answers its documented 501.
         </p>
       </div>
     );
@@ -226,8 +257,8 @@ export function BuildBrowser({ runId }: { runId: string }) {
     return (
       <div className="card" data-testid="build-error">
         <p className="muted" style={{ margin: 0 }}>
-          The build workspace could not be reached (HTTP {state.status || "network error"}). Retry
-          shortly.
+          The build workspace could not be reached (HTTP{" "}
+          {state.status || "network error"}). Retry shortly.
         </p>
       </div>
     );
@@ -240,8 +271,9 @@ export function BuildBrowser({ runId }: { runId: string }) {
       <section className="card" data-testid="build-meta">
         <h2 style={{ margin: "0 0 4px" }}>Build workspace</h2>
         <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-          <code>{meta.head.slice(0, 12)}</code> vs base <code>{meta.base.slice(0, 12)}</code> ·{" "}
-          {meta.changedFiles} changed {meta.changedFiles === 1 ? "file" : "files"}
+          <code>{meta.head.slice(0, 12)}</code> vs base{" "}
+          <code>{meta.base.slice(0, 12)}</code> · {meta.changedFiles} changed{" "}
+          {meta.changedFiles === 1 ? "file" : "files"}
         </p>
         <PrCiHeaderStrip prUrl={meta.prUrl} ciStatus={meta.ciStatus} />
       </section>
@@ -254,10 +286,18 @@ export function BuildBrowser({ runId }: { runId: string }) {
           alignItems: "start",
         }}
       >
-        <section className="card" data-testid="build-tree" style={{ overflow: "auto", maxHeight: "70vh" }}>
+        <section
+          className="card"
+          data-testid="build-tree"
+          style={{ overflow: "auto", maxHeight: "70vh" }}
+        >
           <h3 style={{ margin: "0 0 8px" }}>Files</h3>
           {tree.entries.length === 0 ? (
-            <p className="muted" style={{ margin: 0 }} data-testid="build-tree-empty">
+            <p
+              className="muted"
+              style={{ margin: 0 }}
+              data-testid="build-tree-empty"
+            >
               The workspace tree is empty at this ref.
             </p>
           ) : (
@@ -293,7 +333,11 @@ export function BuildBrowser({ runId }: { runId: string }) {
             </ul>
           )}
           {tree.truncated ? (
-            <p className="muted" style={{ margin: "8px 0 0", fontSize: 12 }} data-testid="build-tree-truncated">
+            <p
+              className="muted"
+              style={{ margin: "8px 0 0", fontSize: 12 }}
+              data-testid="build-tree-truncated"
+            >
               Listing truncated at the server cap.
             </p>
           ) : null}
@@ -311,12 +355,19 @@ export function BuildBrowser({ runId }: { runId: string }) {
               Diff
             </button>
             {viewer.kind === "file" ? (
-              <span className="muted" style={{ alignSelf: "center", fontSize: 12 }} data-testid="build-viewer-file-label">
+              <span
+                className="muted"
+                style={{ alignSelf: "center", fontSize: 12 }}
+                data-testid="build-viewer-file-label"
+              >
                 {viewer.path} · {viewer.size} bytes
                 {viewer.truncated ? " · truncated at server cap" : ""}
               </span>
             ) : (
-              <span className="muted" style={{ alignSelf: "center", fontSize: 12 }}>
+              <span
+                className="muted"
+                style={{ alignSelf: "center", fontSize: 12 }}
+              >
                 Unified diff of the Run against its base ref
                 {diff.truncated ? " · truncated at server cap" : ""}
               </span>
@@ -324,7 +375,11 @@ export function BuildBrowser({ runId }: { runId: string }) {
           </div>
           {viewer.kind === "diff" ? (
             diff.patch.length === 0 ? (
-              <p className="muted" style={{ margin: 0 }} data-testid="build-diff-empty">
+              <p
+                className="muted"
+                style={{ margin: 0 }}
+                data-testid="build-diff-empty"
+              >
                 No changes against the base ref.
               </p>
             ) : (
@@ -349,15 +404,32 @@ export function BuildBrowser({ runId }: { runId: string }) {
  * present it renders nothing — the build browser degrades to git-only and never depends on Epic 11
  * to ship (8.7g AC). A ciStatus with no prUrl (or vice-versa) still renders the part that is present.
  */
-function PrCiHeaderStrip({ prUrl, ciStatus }: { prUrl?: string; ciStatus?: string }) {
+function PrCiHeaderStrip({
+  prUrl,
+  ciStatus,
+}: {
+  prUrl?: string;
+  ciStatus?: string;
+}) {
   if (!prUrl && !ciStatus) return null;
   return (
     <div
       data-testid="build-pr-ci-strip"
-      style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", fontSize: 13 }}
+      style={{
+        marginTop: 6,
+        display: "flex",
+        gap: 10,
+        alignItems: "center",
+        fontSize: 13,
+      }}
     >
       {prUrl ? (
-        <a data-testid="build-pr-link" href={prUrl} target="_blank" rel="noopener noreferrer">
+        <a
+          data-testid="build-pr-link"
+          href={prUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
           View pull request
         </a>
       ) : null}

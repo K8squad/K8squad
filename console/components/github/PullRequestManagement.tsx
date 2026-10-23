@@ -22,7 +22,11 @@
 "use client";
 
 import { useState } from "react";
-import { ageLabel, type GithubPR, type GithubStatus } from "@/lib/github-status";
+import {
+  ageLabel,
+  type GithubPR,
+  type GithubStatus,
+} from "@/lib/github-status";
 import {
   GITHUB_REPO_LABEL,
   GITHUB_REPO_URL,
@@ -64,9 +68,16 @@ const STAGE_TONE: Record<PrStage, string> = {
 
 /** The stages in merge-pipeline order, with honest counts (0 is real, not
  * fabricated — an empty stage is a real "no PRs here"). */
-export function stageCounts(prs: GithubPR[]): Array<{ stage: PrStage; count: number }> {
+export function stageCounts(
+  prs: GithubPR[],
+): Array<{ stage: PrStage; count: number }> {
   const order: PrStage[] = ["open", "review", "merged", "closed"];
-  const counts: Record<PrStage, number> = { open: 0, review: 0, merged: 0, closed: 0 };
+  const counts: Record<PrStage, number> = {
+    open: 0,
+    review: 0,
+    merged: 0,
+    closed: 0,
+  };
   for (const pr of prs) counts[prStage(pr)] += 1;
   return order.map((stage) => ({ stage, count: counts[stage] }));
 }
@@ -76,7 +87,10 @@ type CheckTone = "passed" | "failed" | "running" | "pending";
 
 const PASS_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
 
-export function checkTone(state: string, conclusion: string | undefined): CheckTone {
+export function checkTone(
+  state: string,
+  conclusion: string | undefined,
+): CheckTone {
   const c = (conclusion || "").toLowerCase();
   if (c) return PASS_CONCLUSIONS.has(c) ? "passed" : "failed";
   const s = (state || "").toLowerCase();
@@ -128,7 +142,8 @@ export function PullRequestManagement({
 
   const stages = stageCounts(prs);
   const age = data.sync?.ageSeconds;
-  const freshness = age === undefined ? "not synced yet" : `synced ${ageLabel(age)}`;
+  const freshness =
+    age === undefined ? "not synced yet" : `synced ${ageLabel(age)}`;
 
   const selectedPr = prs.find((p) => p.number === selected) ?? prs[0];
 
@@ -242,7 +257,10 @@ export function PullRequestManagement({
                 data-stage={stage}
                 key={stage}
               >
-                <span className="gh-pr-flow__count" data-testid="gh-pr-stage-count">
+                <span
+                  className="gh-pr-flow__count"
+                  data-testid="gh-pr-stage-count"
+                >
                   {count}
                 </span>
                 <span className="gh-pr-flow__label">{STAGE_LABEL[stage]}</span>
@@ -253,9 +271,10 @@ export function PullRequestManagement({
             ))}
           </ol>
           <p className="gh-caption" data-testid="gh-pr-workflow-note">
-            Stages are derived from each mirrored pull request&apos;s raw state and review state. The
-            mirror does not carry GitHub&apos;s merge-queue position, per-PR approvals or review
-            comments, so they are not shown.
+            Stages are derived from each mirrored pull request&apos;s raw state
+            and review state. The mirror does not carry GitHub&apos;s
+            merge-queue position, per-PR approvals or review comments, so they
+            are not shown.
           </p>
         </div>
       </section>
@@ -304,7 +323,9 @@ function PrCard({
   // label reflects the review work item's state so a queued/in-flight review is
   // never mislabelled "Reviewed".
   const reviewHref =
-    pr.review && projectId ? reviewWorkItemHref(projectId, pr.review.workItemId) : "";
+    pr.review && projectId
+      ? reviewWorkItemHref(projectId, pr.review.workItemId)
+      : "";
   const reviewLabel = pr.review
     ? pr.review.state === "done"
       ? "Reviewed"
@@ -348,7 +369,10 @@ function PrCard({
               {reviewLabel} · view review
             </a>
           ) : (
-            <span className="gh-pr-review-badge" data-testid="gh-pr-review-badge">
+            <span
+              className="gh-pr-review-badge"
+              data-testid="gh-pr-review-badge"
+            >
               {reviewLabel}
             </span>
           ))}
@@ -395,7 +419,10 @@ function PrCard({
                   data-status={tone}
                   key={`check-${c.name}-${i}`}
                 >
-                  <span className={`gh-pr-dot gh-pr-dot--${tone}`} aria-hidden="true" />
+                  <span
+                    className={`gh-pr-dot gh-pr-dot--${tone}`}
+                    aria-hidden="true"
+                  />
                   {c.name}
                 </li>
               );
@@ -407,7 +434,9 @@ function PrCard({
       <footer className="gh-pr-card__foot">
         <span className="muted">
           {pr.actor ? `@${pr.actor} · ` : ""}
-          {activity ? `last activity ${activity}` : "last activity not mirrored"}
+          {activity
+            ? `last activity ${activity}`
+            : "last activity not mirrored"}
         </span>
         <button
           type="button"
@@ -425,7 +454,13 @@ function PrCard({
 
 /** The selected-PR detail panel (mockup "PR #142: Detailed View"). Renders only
  * the fields the mirror actually holds plus honest GitHub action deep-links. */
-function PrDetail({ pr, checks }: { pr: GithubPR; checks: GithubStatus["checkRuns"] }) {
+function PrDetail({
+  pr,
+  checks,
+}: {
+  pr: GithubPR;
+  checks: GithubStatus["checkRuns"];
+}) {
   const href = githubPullHref(pr.number, pr.url);
   const activity = timeAgo(pr.updatedAt);
   const stage = prStage(pr);
@@ -433,9 +468,7 @@ function PrDetail({ pr, checks }: { pr: GithubPR; checks: GithubStatus["checkRun
   return (
     <section className="gh-panel" data-testid="gh-pr-detail">
       <header className="gh-panel__head">
-        <h3 className="gh-panel__title">
-          PR #{pr.number}: Detailed View
-        </h3>
+        <h3 className="gh-panel__title">PR #{pr.number}: Detailed View</h3>
         <a
           className="gh-panel__action"
           href={href}

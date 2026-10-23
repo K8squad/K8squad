@@ -19,17 +19,59 @@ import {
 // grouping (agents under a team by NAMESPACE), the role-chip filter facet, and the selection test.
 
 const teams: TeamWire[] = [
-  { name: "Platform Team", namespace: "ns-plat", uid: "t-plat", agentCount: 2, projectCount: 1 },
-  { name: "Growth Team", namespace: "ns-growth", uid: "t-growth", agentCount: 0, projectCount: 0 },
+  {
+    name: "Platform Team",
+    namespace: "ns-plat",
+    uid: "t-plat",
+    agentCount: 2,
+    projectCount: 1,
+  },
+  {
+    name: "Growth Team",
+    namespace: "ns-growth",
+    uid: "t-growth",
+    agentCount: 0,
+    projectCount: 0,
+  },
 ];
 const agents: AgentWire[] = [
-  { id: "a1", name: "agent-7", namespace: "ns-plat", role: "Backend", skillCount: 4, coordinator: false },
-  { id: "a2", name: "agent-9", namespace: "ns-plat", role: "PM", skillCount: 2, coordinator: true },
-  { id: "a3", name: "orphan", namespace: "ns-gone", role: "Backend", skillCount: 0 },
+  {
+    id: "a1",
+    name: "agent-7",
+    namespace: "ns-plat",
+    role: "Backend",
+    skillCount: 4,
+    coordinator: false,
+  },
+  {
+    id: "a2",
+    name: "agent-9",
+    namespace: "ns-plat",
+    role: "PM",
+    skillCount: 2,
+    coordinator: true,
+  },
+  {
+    id: "a3",
+    name: "orphan",
+    namespace: "ns-gone",
+    role: "Backend",
+    skillCount: 0,
+  },
 ];
 const roles: RoleWire[] = [
-  { name: "Backend Engineer", namespace: "ns-plat", uid: "r1", defaultSkills: ["git"] },
-  { name: "Product Manager", namespace: "ns-plat", uid: "r2", defaultSkills: [] },
+  {
+    name: "Backend Engineer",
+    namespace: "ns-plat",
+    uid: "r1",
+    defaultSkills: ["git"],
+  },
+  {
+    name: "Product Manager",
+    namespace: "ns-plat",
+    uid: "r2",
+    defaultSkills: [],
+  },
 ];
 const skills: SkillWire[] = [
   { name: "git", namespace: "ns-plat", uid: "s1", permissions: ["repo"] },
@@ -52,7 +94,10 @@ describe("buildRoster", () => {
 
   it("carries roles, skills, and the synthetic org-default root", () => {
     const r = buildRoster(teams, agents, roles, skills);
-    expect(r.roles.map((x) => x.name)).toEqual(["Backend Engineer", "Product Manager"]);
+    expect(r.roles.map((x) => x.name)).toEqual([
+      "Backend Engineer",
+      "Product Manager",
+    ]);
     expect(r.skills.map((x) => x.name)).toEqual(["git", "kubectl"]);
     expect(r.orgDefault).toEqual({ kind: "orgDefault", name: "Default model" });
   });
@@ -63,18 +108,48 @@ describe("buildRoster", () => {
 describe("dedupeByName / buildRoster role dedupe", () => {
   it("keeps the first occurrence of each name, preserving order", () => {
     const dups = [
-      { name: "Backend Engineer", uid: "r1", namespace: "ns-plat", defaultSkills: [] },
-      { name: "Backend Engineer", uid: "r1b", namespace: "ns-growth", defaultSkills: [] },
-      { name: "Product Manager", uid: "r2", namespace: "ns-plat", defaultSkills: [] },
+      {
+        name: "Backend Engineer",
+        uid: "r1",
+        namespace: "ns-plat",
+        defaultSkills: [],
+      },
+      {
+        name: "Backend Engineer",
+        uid: "r1b",
+        namespace: "ns-growth",
+        defaultSkills: [],
+      },
+      {
+        name: "Product Manager",
+        uid: "r2",
+        namespace: "ns-plat",
+        defaultSkills: [],
+      },
     ];
     expect(dedupeByName(dups).map((d) => d.uid)).toEqual(["r1", "r2"]);
   });
 
   it("collapses duplicate roles/skills so each name appears exactly once in the roster", () => {
     const dupRoles: RoleWire[] = [
-      { name: "Backend Engineer", namespace: "ns-plat", uid: "r1", defaultSkills: ["git"] },
-      { name: "Backend Engineer", namespace: "ns-plat", uid: "r1-again", defaultSkills: ["git"] },
-      { name: "Product Manager", namespace: "ns-plat", uid: "r2", defaultSkills: [] },
+      {
+        name: "Backend Engineer",
+        namespace: "ns-plat",
+        uid: "r1",
+        defaultSkills: ["git"],
+      },
+      {
+        name: "Backend Engineer",
+        namespace: "ns-plat",
+        uid: "r1-again",
+        defaultSkills: ["git"],
+      },
+      {
+        name: "Product Manager",
+        namespace: "ns-plat",
+        uid: "r2",
+        defaultSkills: [],
+      },
     ];
     const dupSkills: SkillWire[] = [
       { name: "git", namespace: "ns-plat", uid: "s1" },
@@ -82,7 +157,10 @@ describe("dedupeByName / buildRoster role dedupe", () => {
       { name: "kubectl", namespace: "ns-plat", uid: "s2" },
     ];
     const r = buildRoster(teams, agents, dupRoles, dupSkills);
-    expect(r.roles.map((x) => x.name)).toEqual(["Backend Engineer", "Product Manager"]);
+    expect(r.roles.map((x) => x.name)).toEqual([
+      "Backend Engineer",
+      "Product Manager",
+    ]);
     expect(r.skills.map((x) => x.name)).toEqual(["git", "kubectl"]);
   });
 });
@@ -115,10 +193,25 @@ describe("teamHierarchy", () => {
 describe("teamSkillSummary", () => {
   it("rolls up team roles' default skills, deduped and attributed to the role", () => {
     const rolesWithSkills: RoleWire[] = [
-      { name: "Backend Engineer", namespace: "ns-plat", uid: "r1", defaultSkills: ["git", "kubectl"] },
-      { name: "SRE", namespace: "ns-plat", uid: "r3", defaultSkills: ["kubectl"] },
+      {
+        name: "Backend Engineer",
+        namespace: "ns-plat",
+        uid: "r1",
+        defaultSkills: ["git", "kubectl"],
+      },
+      {
+        name: "SRE",
+        namespace: "ns-plat",
+        uid: "r3",
+        defaultSkills: ["kubectl"],
+      },
       // A role in a DIFFERENT namespace must not leak into this team's rollup.
-      { name: "Growth PM", namespace: "ns-growth", uid: "r4", defaultSkills: ["ga"] },
+      {
+        name: "Growth PM",
+        namespace: "ns-growth",
+        uid: "r4",
+        defaultSkills: ["ga"],
+      },
     ];
     const r = buildRoster(teams, agents, rolesWithSkills, skills);
     const plat = r.teams.find((t) => t.uid === "t-plat")!;

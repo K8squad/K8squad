@@ -38,7 +38,8 @@ export const REVALIDATE_SAMPLE_N = 1;
  * generation); `dropped_stale_generation` = response generation != rendered
  * generation and the response was dropped; `failed` = network/HTTP/abort, the
  * cached tree was kept with no takeover. */
-export type RevalidateOutcome = "success" | "dropped_stale_generation" | "failed";
+export type RevalidateOutcome =
+  "success" | "dropped_stale_generation" | "failed";
 
 /** REQUIRED reason on `outcome:"failed"` (ISI-5486 §3) — reuses the S1 taxonomy
  * verbatim (project-files.ts FILE_ERR_* / FILE_REASON_*) plus the two transport
@@ -57,7 +58,8 @@ export type RevalidateFailReason =
  * distinguish a busy↔idle flip from a new browse-target — both surface as a
  * generation change — so it reports the generic `generation_changed`; the §6
  * Tile-4 DQL coalesces to exactly this label. */
-export type InvalidateReason = "busy_flip" | "new_browse_target" | "generation_changed";
+export type InvalidateReason =
+  "busy_flip" | "new_browse_target" | "generation_changed";
 
 /** Integer depth of a workspace path — NOT the path string (§8 PII firewall).
  * "" (root) → 0, "a/b/c" → 3. */
@@ -84,7 +86,11 @@ function sampled(): boolean {
  * SSR / node test env / old browsers), try/catch-swallowed, NEVER throws. */
 function send(body: Record<string, unknown>): void {
   try {
-    if (typeof navigator === "undefined" || typeof navigator.sendBeacon !== "function") return;
+    if (
+      typeof navigator === "undefined" ||
+      typeof navigator.sendBeacon !== "function"
+    )
+      return;
     const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
     navigator.sendBeacon(REVALIDATE_TELEMETRY_URL, blob);
   } catch {

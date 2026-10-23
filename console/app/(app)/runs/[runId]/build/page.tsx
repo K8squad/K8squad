@@ -18,9 +18,11 @@ export default async function RunBuildPage({
       <header className="card">
         <h1 style={{ margin: 0 }}>Run {runId} — build</h1>
         <p className="muted" style={{ margin: "6px 0 0" }}>
-          The Run&apos;s build workspace: file tree, per-file bytes, and the diff against its base
-          ref.{" "}
-          <a href={`/runs/${encodeURIComponent(runId)}`}>Back to the live stream</a>
+          The Run&apos;s build workspace: file tree, per-file bytes, and the
+          diff against its base ref.{" "}
+          <a href={`/runs/${encodeURIComponent(runId)}`}>
+            Back to the live stream
+          </a>
         </p>
       </header>
       <BuildBrowser runId={runId} />

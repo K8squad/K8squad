@@ -21,18 +21,33 @@ import {
 } from "@/lib/compose";
 
 function proj(f: Partial<ProjectForm>): ComposeForm {
-  return { kind: "projects", form: { ...emptyForm("projects").form, ...f } as ProjectForm };
+  return {
+    kind: "projects",
+    form: { ...emptyForm("projects").form, ...f } as ProjectForm,
+  };
 }
 function agent(f: Partial<AgentForm>): ComposeForm {
-  return { kind: "agents", form: { ...(emptyForm("agents").form as AgentForm), ...f } };
+  return {
+    kind: "agents",
+    form: { ...(emptyForm("agents").form as AgentForm), ...f },
+  };
 }
 function skill(f: Partial<SkillForm>): ComposeForm {
-  return { kind: "skills", form: { ...(emptyForm("skills").form as SkillForm), ...f } };
+  return {
+    kind: "skills",
+    form: { ...(emptyForm("skills").form as SkillForm), ...f },
+  };
 }
 
 describe("kind allow-list", () => {
   it("accepts exactly the five compose kinds", () => {
-    expect([...COMPOSE_KINDS]).toEqual(["teams", "projects", "agents", "roles", "skills"]);
+    expect([...COMPOSE_KINDS]).toEqual([
+      "teams",
+      "projects",
+      "agents",
+      "roles",
+      "skills",
+    ]);
     expect(isComposeKind("projects")).toBe(true);
     expect(isComposeKind("runs")).toBe(false); // must not proxy an arbitrary upstream path
     expect(isComposeKind("../secrets")).toBe(false);
@@ -41,17 +56,29 @@ describe("kind allow-list", () => {
 
 describe("ref parsing", () => {
   it("splits object refs on namespace/name and secret refs on name/key", () => {
-    expect(parseObjectRef("prod/db")).toEqual({ name: "db", namespace: "prod" });
+    expect(parseObjectRef("prod/db")).toEqual({
+      name: "db",
+      namespace: "prod",
+    });
     expect(parseObjectRef("db")).toEqual({ name: "db" });
-    expect(parseSecretRef("cred/token")).toEqual({ name: "cred", key: "token" });
+    expect(parseSecretRef("cred/token")).toEqual({
+      name: "cred",
+      key: "token",
+    });
     expect(parseSecretRef("cred")).toEqual({ name: "cred" });
   });
 });
 
 describe("toWire nesting + optional omission", () => {
   it("nests project repo and omits empty optionals", () => {
-    const w = toWire(proj({ name: "shop", repoUrl: "https://x/y", goals: "a\n\nb" }));
-    expect(w).toEqual({ name: "shop", repo: { url: "https://x/y" }, goals: ["a", "b"] });
+    const w = toWire(
+      proj({ name: "shop", repoUrl: "https://x/y", goals: "a\n\nb" }),
+    );
+    expect(w).toEqual({
+      name: "shop",
+      repo: { url: "https://x/y" },
+      goals: ["a", "b"],
+    });
     expect("egressPolicyRef" in w).toBe(false); // blank ref omitted, never {name:""}
   });
 
@@ -98,7 +125,10 @@ describe("toWire nesting + optional omission", () => {
     );
     expect(w).toMatchObject({
       credentialClass: "human-seat",
-      fallbackModel: { model: "claude-haiku-4-5", modelEndpointRef: { name: "fb-endpoint", key: "url" } },
+      fallbackModel: {
+        model: "claude-haiku-4-5",
+        modelEndpointRef: { name: "fb-endpoint", key: "url" },
+      },
     });
   });
 
@@ -132,17 +162,30 @@ describe("toWire nesting + optional omission", () => {
 
   it("emits skill git source and drops the inline branch (and vice versa)", () => {
     const git = toWire(
-      skill({ name: "s", sourceType: "git", gitRepoRef: "repo", gitRef: "main", gitPath: "d" }),
+      skill({
+        name: "s",
+        sourceType: "git",
+        gitRepoRef: "repo",
+        gitRef: "main",
+        gitPath: "d",
+      }),
     );
-    expect(git.source).toEqual({ type: "git", git: { repoRef: "repo", ref: "main", path: "d" } });
-    const inline = toWire(skill({ name: "s", sourceType: "inline", inline: "code" }));
+    expect(git.source).toEqual({
+      type: "git",
+      git: { repoRef: "repo", ref: "main", path: "d" },
+    });
+    const inline = toWire(
+      skill({ name: "s", sourceType: "inline", inline: "code" }),
+    );
     expect(inline.source).toEqual({ type: "inline", inline: "code" });
   });
 });
 
 describe("validate mirrors the server field checks", () => {
   it("rejects an invalid DNS-1123 name", () => {
-    expect(validate(proj({ name: "Bad_Name", repoUrl: "https://x" })).name).toMatch(/DNS-1123/);
+    expect(
+      validate(proj({ name: "Bad_Name", repoUrl: "https://x" })).name,
+    ).toMatch(/DNS-1123/);
   });
 
   it("requires repo.url for a project", () => {
@@ -152,7 +195,12 @@ describe("validate mirrors the server field checks", () => {
 
   it("requires all mandatory agent fields", () => {
     const errs = validate(agent({ name: "a" }));
-    for (const f of ["project", "runtimeRef.name", "roleRef.name", "credentialSecretRef.name"])
+    for (const f of [
+      "project",
+      "runtimeRef.name",
+      "roleRef.name",
+      "credentialSecretRef.name",
+    ])
       expect(errs[f]).toBe("is required");
   });
 
@@ -173,7 +221,9 @@ describe("validate mirrors the server field checks", () => {
     const w = toWire(agent({ ...base }));
     expect("model" in w).toBe(false);
     // An inherited agent round-trips: a set model still rides through unchanged.
-    expect(toWire(agent({ ...base, model: "claude-opus-4-8" }))).toMatchObject({ model: "claude-opus-4-8" });
+    expect(toWire(agent({ ...base, model: "claude-opus-4-8" }))).toMatchObject({
+      model: "claude-opus-4-8",
+    });
   });
 
   it("requires an endpoint Secret ref only when BYO is enabled (Story B / AC3, AC5)", () => {
@@ -188,18 +238,30 @@ describe("validate mirrors the server field checks", () => {
     // BYO off (default): a blank endpoint ref is fine.
     expect(isValid(agent({ ...base }))).toBe(true);
     // BYO on + empty ref: blocks with a field error.
-    expect(validate(agent({ ...base, byoEnabled: true }))["modelEndpointRef.name"]).toBe("is required");
+    expect(
+      validate(agent({ ...base, byoEnabled: true }))["modelEndpointRef.name"],
+    ).toBe("is required");
     // BYO on + a ref: valid, and the ref still rides through toWire unchanged.
-    const withRef = agent({ ...base, byoEnabled: true, modelEndpointRef: "my-endpoint/url" });
+    const withRef = agent({
+      ...base,
+      byoEnabled: true,
+      modelEndpointRef: "my-endpoint/url",
+    });
     expect(isValid(withRef)).toBe(true);
-    expect(toWire(withRef)).toMatchObject({ modelEndpointRef: { name: "my-endpoint", key: "url" } });
+    expect(toWire(withRef)).toMatchObject({
+      modelEndpointRef: { name: "my-endpoint", key: "url" },
+    });
   });
 
   it("enforces skill source inline/git exclusivity requirements", () => {
-    expect(validate(skill({ project: "p", name: "s", sourceType: "inline" }))["source.inline"]).toBe(
-      "is required",
+    expect(
+      validate(skill({ project: "p", name: "s", sourceType: "inline" }))[
+        "source.inline"
+      ],
+    ).toBe("is required");
+    const gitErrs = validate(
+      skill({ project: "p", name: "s", sourceType: "git" }),
     );
-    const gitErrs = validate(skill({ project: "p", name: "s", sourceType: "git" }));
     expect(gitErrs["source.git.repoRef"]).toBe("is required");
     expect(gitErrs["source.git.ref"]).toBe("is required");
   });
@@ -208,7 +270,13 @@ describe("validate mirrors the server field checks", () => {
     expect(
       validate({
         kind: "roles",
-        form: { ...emptyForm("roles").form, project: "p", name: "r", promptRef: "pr", runtimeClassHint: "xen" } as never,
+        form: {
+          ...emptyForm("roles").form,
+          project: "p",
+          name: "r",
+          promptRef: "pr",
+          runtimeClassHint: "xen",
+        } as never,
       })["runtimeClassHint"],
     ).toMatch(/gvisor, kata, runc/);
   });

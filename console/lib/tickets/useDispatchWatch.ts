@@ -31,11 +31,7 @@ import type { RunPhase } from "@/lib/agents/types";
 // ── Public contract (stable regardless of which signal path wins) ──────────────────────────────
 
 export type DispatchState =
-  | "queued"
-  | "picking_up"
-  | "working"
-  | "succeeded"
-  | "failed";
+  "queued" | "picking_up" | "working" | "succeeded" | "failed";
 
 /** Ring/motion bucket — maps 1:1 to existing globals.css hues; the card (S2) owns the actual tokens. */
 export type DispatchTone = "idle" | "pending" | "running" | "blocked";
@@ -285,12 +281,19 @@ export function pickDispatchRun(
     const ms = r.startedAt ? Date.parse(r.startedAt) : NaN;
     // `ms > 0` guards a zero-time / negative epoch (Go zero time, or a never-claimed run) so an
     // absent or zero `startedAt` is treated as "no real timestamp", never as "stale".
-    if (!Number.isNaN(ms) && ms > 0 && ms < notBeforeMs - DISPATCH_STALE_SKEW_MS) return false;
+    if (
+      !Number.isNaN(ms) &&
+      ms > 0 &&
+      ms < notBeforeMs - DISPATCH_STALE_SKEW_MS
+    )
+      return false;
     return true;
   };
   const candidates = forItem.filter(fresh);
   if (candidates.length === 0) return null;
-  const matchesAgent = candidates.filter((r) => (r.agents ?? []).includes(agent));
+  const matchesAgent = candidates.filter((r) =>
+    (r.agents ?? []).includes(agent),
+  );
   const pool = matchesAgent.length > 0 ? matchesAgent : candidates;
   return pool.reduce((newest, r) => {
     const a = r.startedAt ? Date.parse(r.startedAt) : NaN;
@@ -301,7 +304,8 @@ export function pickDispatchRun(
   }, pool[0]);
 }
 
-type LifecycleName = "assigned" | "scheduled" | "sandbox_bound" | "started" | "ended";
+type LifecycleName =
+  "assigned" | "scheduled" | "sandbox_bound" | "started" | "ended";
 
 /** Extract the named SSE milestone from a shared-stream event (useRunStream stamps summary
  *  as `"{name}"` or `"{name}: {step}"` on kind LIFECYCLE). */

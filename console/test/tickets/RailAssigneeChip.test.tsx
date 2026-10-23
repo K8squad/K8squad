@@ -24,23 +24,47 @@ function watchAt(state: DispatchState): DispatchWatch {
   return toDispatchWatch({ state, degrade: "none" });
 }
 
-const STATIC = <span data-testid="static-fallback">Requested: agent-x · dispatch pending</span>;
+const STATIC = (
+  <span data-testid="static-fallback">
+    Requested: agent-x · dispatch pending
+  </span>
+);
 
 describe("railAssigneeChip — pure derivation (localRunBadge grammar)", () => {
   it("labels each ladder state as '<agent> <verb>'", () => {
-    expect(railAssigneeChip("claude", watchAt("queued"))?.label).toBe("claude queued");
-    expect(railAssigneeChip("claude", watchAt("picking_up"))?.label).toBe("claude picking up…");
-    expect(railAssigneeChip("claude", watchAt("working"))?.label).toBe("claude working…");
-    expect(railAssigneeChip("claude", watchAt("succeeded"))?.label).toBe("claude finished");
-    expect(railAssigneeChip("claude", watchAt("failed"))?.label).toBe("claude failed");
+    expect(railAssigneeChip("claude", watchAt("queued"))?.label).toBe(
+      "claude queued",
+    );
+    expect(railAssigneeChip("claude", watchAt("picking_up"))?.label).toBe(
+      "claude picking up…",
+    );
+    expect(railAssigneeChip("claude", watchAt("working"))?.label).toBe(
+      "claude working…",
+    );
+    expect(railAssigneeChip("claude", watchAt("succeeded"))?.label).toBe(
+      "claude finished",
+    );
+    expect(railAssigneeChip("claude", watchAt("failed"))?.label).toBe(
+      "claude failed",
+    );
   });
 
   it("maps each state to an EXISTING status hue token (zero new tokens)", () => {
-    expect(railAssigneeChip("a", watchAt("queued"))?.hue).toBe("var(--status-idle)");
-    expect(railAssigneeChip("a", watchAt("picking_up"))?.hue).toBe("var(--status-paused)");
-    expect(railAssigneeChip("a", watchAt("working"))?.hue).toBe("var(--status-running)");
-    expect(railAssigneeChip("a", watchAt("succeeded"))?.hue).toBe("var(--status-running)");
-    expect(railAssigneeChip("a", watchAt("failed"))?.hue).toBe("var(--status-blocked)");
+    expect(railAssigneeChip("a", watchAt("queued"))?.hue).toBe(
+      "var(--status-idle)",
+    );
+    expect(railAssigneeChip("a", watchAt("picking_up"))?.hue).toBe(
+      "var(--status-paused)",
+    );
+    expect(railAssigneeChip("a", watchAt("working"))?.hue).toBe(
+      "var(--status-running)",
+    );
+    expect(railAssigneeChip("a", watchAt("succeeded"))?.hue).toBe(
+      "var(--status-running)",
+    );
+    expect(railAssigneeChip("a", watchAt("failed"))?.hue).toBe(
+      "var(--status-blocked)",
+    );
   });
 
   it("is null (⇒ static fallback) when there is no watch or no agent", () => {
@@ -61,7 +85,11 @@ describe("AssigneeChipView — render across the four chip states", () => {
   for (const [state, label] of cases) {
     it(`renders the ${state} chip with its status label + tone, not the fallback`, () => {
       render(
-        <AssigneeChipView agent="agent-x" watch={watchAt(state)} fallback={STATIC} />,
+        <AssigneeChipView
+          agent="agent-x"
+          watch={watchAt(state)}
+          fallback={STATIC}
+        />,
       );
       const chip = screen.getByTestId("detail-assignee-chip");
       expect(chip).toHaveTextContent(label);
@@ -82,7 +110,13 @@ describe("AssigneeChipView — idle fallback", () => {
   });
 
   it("renders the static fallback when there is no agent to watch", () => {
-    render(<AssigneeChipView agent={null} watch={watchAt("working")} fallback={STATIC} />);
+    render(
+      <AssigneeChipView
+        agent={null}
+        watch={watchAt("working")}
+        fallback={STATIC}
+      />,
+    );
     expect(screen.getByTestId("static-fallback")).toBeInTheDocument();
     expect(screen.queryByTestId("detail-assignee-chip")).toBeNull();
   });

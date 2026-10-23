@@ -40,7 +40,10 @@ import { ProposalCard } from "@/components/discussion/ProposalCard";
 import { TicketWorkingIndicator } from "./TicketWorkingIndicator";
 import { ticketManagerStructuringView } from "@/lib/tickets/working";
 import type { DispatchState } from "@/lib/tickets/useDispatchWatch";
-import { createDiscussionClient, type DiscussionClient } from "@/lib/discussion/api";
+import {
+  createDiscussionClient,
+  type DiscussionClient,
+} from "@/lib/discussion/api";
 import type { Proposal } from "@/lib/discussion/types";
 
 /** The in-flight coordinator orchestration run the "structuring the work" pill tracks. */
@@ -89,7 +92,9 @@ export function TicketProposals({
 }: TicketProposalsProps) {
   // One stable client for the lifetime of the mount (createDiscussionClient is a
   // thin wrapper over fetch; recreating it per render is harmless but pointless).
-  const [api] = useState<DiscussionClient>(() => client ?? createDiscussionClient());
+  const [api] = useState<DiscussionClient>(
+    () => client ?? createDiscussionClient(),
+  );
   const [proposals, setProposals] = useState<Record<string, Proposal>>({});
   const [busyMessageId, setBusyMessageId] = useState<string | undefined>();
   const [load, setLoad] = useState<LoadState>(threadId ? "loading" : "idle");
@@ -135,7 +140,8 @@ export function TicketProposals({
           if (!existing) return cur;
           return { ...cur, [messageId]: { ...existing, phase: res.status } };
         });
-        if (res.status === "executed" || res.status === "confirmed") onExecuted?.();
+        if (res.status === "executed" || res.status === "confirmed")
+          onExecuted?.();
       } finally {
         setBusyMessageId(undefined);
       }
@@ -170,14 +176,20 @@ export function TicketProposals({
   const showFallback = cards.length === 0 && load !== "loading";
 
   return (
-    <section className="card ksq-ticket-proposals" data-testid="detail-proposals">
+    <section
+      className="card ksq-ticket-proposals"
+      data-testid="detail-proposals"
+    >
       <h2>Coordinator proposals</h2>
 
       {/* AC4 — "Manager is structuring the work" pill, reusing the ISI-5174/5196
           working-indicator markup + a11y; shown while the coordinator's propose
           run is live, resolving to structured / couldn’t-structure on terminal. */}
       {structuring && (
-        <div className="ksq-ticket-proposals__working" data-testid="detail-proposals-working">
+        <div
+          className="ksq-ticket-proposals__working"
+          data-testid="detail-proposals-working"
+        >
           <TicketWorkingIndicator view={structuring} />
         </div>
       )}
@@ -189,7 +201,10 @@ export function TicketProposals({
       )}
 
       {cards.length > 0 && (
-        <ul className="ksq-ticket-proposals__list" data-testid="detail-proposals-list">
+        <ul
+          className="ksq-ticket-proposals__list"
+          data-testid="detail-proposals-list"
+        >
           {cards.map((p) => (
             <li key={p.Message.id}>
               <ProposalCard
@@ -204,7 +219,10 @@ export function TicketProposals({
       )}
 
       {showFallback && (
-        <ProposalsFallback hasCoordinator={hasCoordinator} issuesHref={issuesHref} />
+        <ProposalsFallback
+          hasCoordinator={hasCoordinator}
+          issuesHref={issuesHref}
+        />
       )}
     </section>
   );
@@ -228,13 +246,20 @@ function ProposalsFallback({
 }) {
   if (hasCoordinator === false) {
     return (
-      <div className="ksq-empty-hint" data-testid="detail-proposals-no-coordinator">
+      <div
+        className="ksq-empty-hint"
+        data-testid="detail-proposals-no-coordinator"
+      >
         <p className="muted">
-          No coordinator is configured for this project, so mentioning several agents
-          won’t structure the work automatically. Assign agents individually with
-          “Comment &amp; assign” below.
+          No coordinator is configured for this project, so mentioning several
+          agents won’t structure the work automatically. Assign agents
+          individually with “Comment &amp; assign” below.
         </p>
-        <a href={issuesHref} className="ksq-link" data-testid="detail-proposals-assign-link">
+        <a
+          href={issuesHref}
+          className="ksq-link"
+          data-testid="detail-proposals-assign-link"
+        >
           Open the issues board
         </a>
       </div>
@@ -242,9 +267,9 @@ function ProposalsFallback({
   }
   return (
     <p className="muted" data-testid="detail-proposals-empty">
-      No coordinator proposals for this ticket yet. When a coordinator structures the
-      work it mentions here, the proposed sub-tickets will appear above for you to
-      confirm.
+      No coordinator proposals for this ticket yet. When a coordinator
+      structures the work it mentions here, the proposed sub-tickets will appear
+      above for you to confirm.
     </p>
   );
 }
