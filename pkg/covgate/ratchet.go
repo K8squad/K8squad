@@ -27,6 +27,7 @@ package covgate
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 )
@@ -51,7 +52,9 @@ func (f RatchetFailure) String() string {
 	if f.Unbaselined {
 		return fmt.Sprintf("%s: %.1f%% measured but no ratchet baseline entry — cover it and regenerate the baseline in the same PR (go run ./cmd/covgate -regen covgate.baseline.json coverage.out)", f.Package, f.Percent)
 	}
-	return fmt.Sprintf("%s: %.1f%% < %.1f%% ratchet baseline", f.Package, f.Percent, f.Floor)
+	// Measured at 2dp: baseline floors are 1dp-quantized, so a %.1f render of a
+	// boundary miss reads as the impossible "74.9% < 74.9%" (ISI-6539).
+	return fmt.Sprintf("%s: %.2f%% < %.1f%% ratchet baseline", f.Package, f.Percent, f.Floor)
 }
 
 // LoadRatchetBaseline reads the JSON baseline file (map of import path to
@@ -99,13 +102,26 @@ func floor1(v float64) float64 {
 	return float64(int64(v*10)) / 10
 }
 
+// round1 rounds to the nearest one decimal (74.87 -> 74.9, 74.84 -> 74.8).
+// Baseline floors are 1dp values, so the ratchet compares at 1dp granularity:
+// runner-measured coverage wobbles by fractions of a statement between
+// otherwise-identical runs, and a raw float compare against a 1dp floor
+// false-REDs any package sitting inside a half-quantum of its boundary with
+// the impossible-looking "74.9% < 74.9%" (ISI-6539, L5 run 39963772528).
+func round1(v float64) float64 {
+	return math.Floor(v*10+0.5) / 10
+}
+
 // EvaluateRatchet scores packages against the baseline. Fail-closed in the
 // same spirit as Evaluate: RED when any measured package is below its entry
 // or absent from the baseline; ErrNoProfile still applies (nothing measured
 // = build failure). Baseline entries whose package no longer appears in the
 // profile are returned as stale — reported as notices, not failures, since
 // deleted code cannot regress. A package exactly at its baseline PASSES
-// (inclusive boundary, matching Evaluate).
+// (inclusive boundary, matching Evaluate). The comparison happens at the
+// baseline's 1dp quantization: a measured 74.87 clears a 74.9 floor (both
+// display as 74.9), while 74.84 fails — the ratchet's resolution is 0.1pp,
+// not the runner's measurement noise.
 func EvaluateRatchet(pkgs []PackageCoverage, baseline RatchetBaseline) (passed bool, failures []RatchetFailure, stale []string, err error) {
 	if len(pkgs) == 0 {
 		return false, nil, nil, ErrNoProfile
@@ -118,7 +134,7 @@ func EvaluateRatchet(pkgs []PackageCoverage, baseline RatchetBaseline) (passed b
 			failures = append(failures, RatchetFailure{Package: p.Package, Percent: p.Percent, Unbaselined: true})
 			continue
 		}
-		if p.Percent+1e-9 < floor {
+		if round1(p.Percent)+1e-9 < floor {
 			failures = append(failures, RatchetFailure{Package: p.Package, Percent: p.Percent, Floor: floor})
 		}
 	}
