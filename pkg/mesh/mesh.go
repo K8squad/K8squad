@@ -193,6 +193,14 @@ func NewHTTPRouter(client *http.Client, opts ...RouterOption) Router {
 	return a2amesh.NewHTTPRouter(client, opts...)
 }
 
+// NewCrewaiRouter builds the CrewAI wire translator (module mesh/crewaiwire.go,
+// ISI-6547): module a2a ops onto Google A2A 0.3.x JSON-RPC+SSE with C1 reattach
+// (in-flight + bounded completed maps), carrying the given token as the Bearer
+// credential the crew's SimpleTokenAuth server expects.
+func NewCrewaiRouter(client *http.Client, token string) Router {
+	return a2amesh.NewCrewaiRouter(client, token)
+}
+
 // WithRouteHeaders sets the per-Route header carrier seam (module router.go):
 // fn is invoked with the route context on every child POST and its keys/values
 // are stamped onto the request headers. pkg/mesh stays telemetry-SDK-free —

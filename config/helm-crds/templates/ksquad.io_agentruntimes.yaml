@@ -89,9 +89,9 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: spec.type must be one of the conformant runtimes [openclaw
-                claude-code opencode hermes codex goose vibe], or set spec.experimental=true
+                claude-code opencode hermes codex goose vibe crewai], or set spec.experimental=true
                 to admit a vendor-shim runtime (FR-D3)
-              rule: self.type in ['openclaw','claude-code','opencode','hermes','codex','goose','vibe']
+              rule: self.type in ['openclaw','claude-code','opencode','hermes','codex','goose','vibe','crewai']
                 || self.experimental
         type: object
     served: true
