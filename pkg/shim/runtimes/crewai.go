@@ -64,6 +64,7 @@ func (crewAI) Capabilities() a2a.Capabilities {
 		ToolCalls:         false, // no tool-call turns on the A2A wire
 		InteractivePrompt: false, // batch orchestration; no input-required turn
 		BYOModelEndpoint:  true,  // litellm lane: OPENAI_BASE_URL / OPENAI_API_KEY
+		RouterServed:      true,  // tasks reach the standing crew A2A server via crewaiRouter; no one-shot engine launch
 		ArtifactKinds:     []string{"text"},
 		Docker:            true,
 		GitHub:            true,
