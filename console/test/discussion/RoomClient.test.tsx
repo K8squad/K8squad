@@ -91,14 +91,17 @@ function renderClient(client: DiscussionClient) {
 describe("<DiscussionRoomClient> — ISI-5673 routing", () => {
   it("with no ?thread, selects the newest thread and canonicalizes the URL", async () => {
     renderClient(stubClient());
-    await waitFor(() =>
-      expect(screen.getByTestId("mock-room").textContent).toBe("room:newest"),
-    );
-    // The URL is pinned to the resolved thread (replace — no history entry).
-    expect(replace).toHaveBeenCalledWith(
-      "/projects/p1/discussion?thread=newest",
-      { scroll: false },
-    );
+    // Both conditions inside one waitFor: the room marker renders in the
+    // commit that resolves the thread, but the canonicalizing router.replace
+    // fires in a passive effect AFTER that commit — asserting it outside the
+    // poll raced the effect on loaded CI runners (L5 run 39988601486, 0 calls).
+    await waitFor(() => {
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:newest");
+      expect(replace).toHaveBeenCalledWith(
+        "/projects/p1/discussion?thread=newest",
+        { scroll: false },
+      );
+    });
   });
 
   it("honours a ?thread param pointing at a non-first thread", async () => {
