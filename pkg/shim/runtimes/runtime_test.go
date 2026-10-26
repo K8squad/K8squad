@@ -24,10 +24,12 @@ import (
 	"github.com/K8squad/K8squad/pkg/a2a"
 )
 
-// TestV1ShimSetRegistered asserts the shim set (stories 5.5 + 5.8 + ISI-6158)
+// TestV1ShimSetRegistered asserts the shim set (stories 5.5 + 5.8 + ISI-6158 +
+// ISI-6700 claude-code)
 // is registered and keyed on the conformant RuntimeType constants (FR-D3).
 func TestV1ShimSetRegistered(t *testing.T) {
 	want := []string{
+		apiv1alpha1.RuntimeTypeClaudeCode,
 		apiv1alpha1.RuntimeTypeCodex,
 		apiv1alpha1.RuntimeTypeCrewAI,
 		apiv1alpha1.RuntimeTypeGoose,
@@ -58,8 +60,8 @@ func TestV1ShimSetRegistered(t *testing.T) {
 }
 
 func TestGetUnknownRuntimeFailsClosed(t *testing.T) {
-	if _, err := Get("claude-code"); err == nil {
-		t.Fatal("Get(claude-code) should fail closed (Phase 2, not in v1 set)")
+	if _, err := Get("not-a-runtime-type"); err == nil {
+		t.Fatal("Get(not-a-runtime-type) should fail closed (unknown type)")
 	}
 }
 
@@ -101,6 +103,9 @@ func TestCredentialMapping(t *testing.T) {
 		// Codex speaks the OpenAI wire natively, so the per-user credential maps
 		// onto OPENAI_API_KEY (ShapeAPIKey, D1; epic ISI-3647, gate ISI-3660).
 		apiv1alpha1.RuntimeTypeCodex: "OPENAI_API_KEY",
+		// Claude Code Phase 1 maps the per-user secret onto Anthropic native key var
+		// (ShapeAPIKey; ISI-6697 plan Phase 1 / WS-1).
+		apiv1alpha1.RuntimeTypeClaudeCode: "ANTHROPIC_API_KEY",
 	}
 	for typ, wantVar := range cases {
 		rt, _ := Get(typ)

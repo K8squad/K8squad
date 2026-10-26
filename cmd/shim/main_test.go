@@ -64,10 +64,10 @@ func TestCardSubcommand(t *testing.T) {
 }
 
 func TestUnknownRuntimeErrors(t *testing.T) {
-	t.Setenv("KSQUAD_RUNTIME_TYPE", "claude-code") // Phase 2, not in v1 set
+	t.Setenv("KSQUAD_RUNTIME_TYPE", "no-such-runtime") // not in the shim registry
 	t.Setenv("RUNTIME", "")
 	if err := run([]string{"card"}, strings.NewReader(""), &bytes.Buffer{}); err == nil {
-		t.Error("expected error for a runtime not in the v1 shim set")
+		t.Error("expected error for a runtime not in the shim set")
 	}
 }
 
