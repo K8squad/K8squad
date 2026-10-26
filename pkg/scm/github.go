@@ -221,6 +221,14 @@ type GitHubProvider struct {
 	// reconciler logs remaining + reset-in BEFORE each snapshot so an
 	// exhausted shared budget is visible per pass in the operator log.
 	lastReset atomic.Int64
+
+	// lastLimit is the rate-limit window SIZE (X-RateLimit-Limit, e.g. 5000 for
+	// a core PAT, 15000 for a GitHub App token) reported on the most recent API
+	// response, or -1 before any call. It rides the same transport capture and
+	// feeds RateLimitSnapshot (ISI-6546): the remaining-headroom gauge alone
+	// cannot express "remaining < 20%" because the denominator differs across
+	// credential kinds — the <20% alert divides remaining by this limit.
+	lastLimit atomic.Int64
 }
 
 // LastRateRemaining reports the rate-limit headroom seen on the provider's most
@@ -254,6 +262,26 @@ func (p *GitHubProvider) RateBudget() (remaining int64, reset time.Time, ok bool
 	return r, time.Time{}, true
 }
 
+// RateLimitSnapshot reports the headroom AND the window size (X-RateLimit-Limit)
+// seen on the provider's most recent API response, and whether any response has
+// been observed yet. It implements the scm.RateLimitSnapshotReporter seam the
+// repo-sync reconciler reads after a Snapshot (ISI-6546) to feed the per-project
+// remaining+limit gauges, so an alert can fire on remaining/limit < 0.2 without
+// hard-coding 5000 — a GitHub App token reports limit=15000, a secondary limit
+// differs again. A limit of 0 (header absent) is reported as ok=false for the
+// limit so the gauge skips it rather than dividing by zero.
+func (p *GitHubProvider) RateLimitSnapshot() (remaining, limit int64, ok bool) {
+	r := p.lastRate.Load()
+	if r < 0 {
+		return 0, 0, false
+	}
+	l := p.lastLimit.Load()
+	if l < 0 {
+		l = 0
+	}
+	return r, l, true
+}
+
 // rateTrackingTransport records GitHub's X-RateLimit-Remaining / -Reset
 // response headers into shared atomics on every round trip, so the provider's
 // rate-limit headroom is captured from ONE place — every list call, every
@@ -262,6 +290,7 @@ func (p *GitHubProvider) RateBudget() (remaining int64, reset time.Time, ok bool
 type rateTrackingTransport struct {
 	remaining *atomic.Int64
 	reset     *atomic.Int64
+	limit     *atomic.Int64
 	base      http.RoundTripper
 }
 
@@ -280,6 +309,13 @@ func (t *rateTrackingTransport) RoundTrip(req *http.Request) (*http.Response, er
 		if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
 			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
 				t.reset.Store(n)
+			}
+		}
+		if t.limit != nil {
+			if v := resp.Header.Get("X-RateLimit-Limit"); v != "" {
+				if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+					t.limit.Store(n)
+				}
 			}
 		}
 	}
@@ -320,7 +356,8 @@ func (t *httpSpanTransport) RoundTrip(req *http.Request) (*http.Response, error)
 // call at github.com).
 func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvider, error) {
 	p := &GitHubProvider{creds: creds}
-	p.lastRate.Store(-1) // -1 = no response observed yet (LastRateRemaining ok=false)
+	p.lastRate.Store(-1)  // -1 = no response observed yet (LastRateRemaining ok=false)
+	p.lastLimit.Store(-1) // -1 = no response observed yet (RateLimitSnapshot ok=false)
 
 	// Innermost real transport: the per-PAT governor + ETag conditional-request
 	// cache (ISI-5480). It sits BELOW oauth2 so it adds If-None-Match to the
@@ -342,7 +379,7 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 	}
 	// Wrap AFTER auth so the rate headers (present on every GitHub response)
 	// are observed regardless of whether the call was authenticated (GH-3).
-	transport = &rateTrackingTransport{base: transport, remaining: &p.lastRate, reset: &p.lastReset}
+	transport = &rateTrackingTransport{base: transport, remaining: &p.lastRate, reset: &p.lastReset, limit: &p.lastLimit}
 	// Outermost observer: stamps HTTP client semantics onto the active
 	// scm.fetch.<kind> span (ISI-5013). It reads the same request/response the
 	// rate tracker sees, so it can sit above it without losing anything.

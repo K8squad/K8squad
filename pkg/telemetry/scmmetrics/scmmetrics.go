@@ -30,7 +30,8 @@ limitations under the License.
 //	ksquad.scm.sync.duration{provider,trigger}       histogram (s)  per-pass reconcile latency
 //	ksquad.scm.sync.panics.total{provider}           counter    reconcile panics recovered + re-raised (GH-2)
 //	ksquad.scm.mirror.age{project}                   gauge (s)  now - last successful mirror time
-//	ksquad.scm.provider.rate_limit.remaining{provider} gauge    last-seen provider rate-limit headroom
+//	ksquad.scm.provider.rate_limit.remaining{provider,project} gauge  last-seen provider rate-limit headroom
+//	ksquad.scm.provider.rate_limit.limit{provider,project}     gauge  last-seen provider rate-limit window size (ISI-6546)
 //
 // Cardinality firewall (NFR-OBS3): every label is BOUNDED. event is the fixed
 // provider event vocabulary, outcome/reason/trigger are fixed enums, provider is
@@ -63,6 +64,7 @@ const (
 	syncPanicsName    = "ksquad.scm.sync.panics.total"
 	mirrorAgeName     = "ksquad.scm.mirror.age"
 	rateRemainingName = "ksquad.scm.provider.rate_limit.remaining"
+	rateLimitName     = "ksquad.scm.provider.rate_limit.limit"
 )
 
 // Bounded attribute keys.
@@ -112,7 +114,18 @@ type Metrics struct {
 
 	mu            sync.RWMutex
 	mirrorSuccess map[string]time.Time // project -> last successful mirror time
-	rateRemaining map[string]int64     // provider -> last-seen rate-limit headroom
+	rateRemaining map[rateKey]int64    // provider+project -> last-seen rate-limit headroom
+	rateLimit     map[rateKey]int64    // provider+project -> last-seen rate-limit window size (ISI-6546)
+}
+
+// rateKey is the bounded label tuple for the rate-limit gauges: provider is the
+// small provider set and project is the tenant Project set (one series per
+// mirrored repo). ISI-6546 added project so the "remaining < 20%" alert can name
+// WHICH mirror is at risk — the prior provider-only series collapsed every
+// project onto one line and hid which consumer was draining the shared budget.
+type rateKey struct {
+	provider string
+	project  string
 }
 
 // Register creates the scm instruments on meter and wires the two observable
@@ -123,7 +136,8 @@ func Register(meter metric.Meter) (*Metrics, error) {
 	m := &Metrics{
 		now:           time.Now,
 		mirrorSuccess: map[string]time.Time{},
-		rateRemaining: map[string]int64{},
+		rateRemaining: map[rateKey]int64{},
+		rateLimit:     map[rateKey]int64{},
 	}
 
 	var err error
@@ -172,12 +186,33 @@ func Register(meter metric.Meter) (*Metrics, error) {
 
 	if _, err = meter.Int64ObservableGauge(
 		rateRemainingName,
-		metric.WithDescription("Last-seen provider rate-limit headroom (requests remaining) by provider (ISI-4395 GH-3)."),
+		metric.WithDescription("Last-seen provider rate-limit headroom (requests remaining) by provider and project (ISI-4395 GH-3, ISI-6546)."),
 		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
 			m.mu.RLock()
 			defer m.mu.RUnlock()
-			for provider, remaining := range m.rateRemaining {
-				o.Observe(remaining, metric.WithAttributes(attribute.String(attrProvider, provider)))
+			for k, remaining := range m.rateRemaining {
+				o.Observe(remaining, metric.WithAttributes(
+					attribute.String(attrProvider, k.provider),
+					attribute.String(attrProject, k.project),
+				))
+			}
+			return nil
+		}),
+	); err != nil {
+		return nil, err
+	}
+
+	if _, err = meter.Int64ObservableGauge(
+		rateLimitName,
+		metric.WithDescription("Last-seen provider rate-limit window size (requests per window) by provider and project; the denominator for the remaining<20% alert (ISI-6546)."),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			m.mu.RLock()
+			defer m.mu.RUnlock()
+			for k, limit := range m.rateLimit {
+				o.Observe(limit, metric.WithAttributes(
+					attribute.String(attrProvider, k.provider),
+					attribute.String(attrProject, k.project),
+				))
 			}
 			return nil
 		}),
@@ -244,14 +279,25 @@ func (m *Metrics) RecordPanic(ctx context.Context, provider string) {
 	m.syncPanics.Add(ctx, 1, metric.WithAttributes(attribute.String(attrProvider, provider)))
 }
 
-// ObserveRateLimit records the last-seen provider rate-limit headroom for the
-// rate_limit_remaining gauge. A negative remaining is ignored (unknown).
-func (m *Metrics) ObserveRateLimit(provider string, remaining int64) {
+// ObserveRateLimit records the last-seen provider rate-limit headroom (and, when
+// known, the window size) for the rate_limit gauges, labelled by provider and
+// project (ISI-6546). A negative remaining is ignored (unknown). A limit <= 0 is
+// treated as unknown and leaves the limit gauge untouched for that series, so a
+// provider that reports only headroom never publishes a phantom zero ceiling the
+// alert would read as "0% remaining".
+func (m *Metrics) ObserveRateLimit(provider, project string, remaining, limit int64) {
 	if m == nil || provider == "" || remaining < 0 {
 		return
 	}
+	if project == "" {
+		project = "unknown"
+	}
+	k := rateKey{provider: provider, project: project}
 	m.mu.Lock()
-	m.rateRemaining[provider] = remaining
+	m.rateRemaining[k] = remaining
+	if limit > 0 {
+		m.rateLimit[k] = limit
+	}
 	m.mu.Unlock()
 }
 
@@ -263,5 +309,13 @@ func (m *Metrics) ForgetProject(project string) {
 	}
 	m.mu.Lock()
 	delete(m.mirrorSuccess, project)
+	// Drop the project's rate-limit series too (ISI-6546) so a deleted repo
+	// stops reporting a frozen last-seen headroom/limit forever.
+	for k := range m.rateRemaining {
+		if k.project == project {
+			delete(m.rateRemaining, k)
+			delete(m.rateLimit, k)
+		}
+	}
 	m.mu.Unlock()
 }

@@ -118,6 +118,19 @@ type RateBudgetReporter interface {
 	RateBudget() (remaining int64, reset time.Time, ok bool)
 }
 
+// RateLimitSnapshotReporter is an OPTIONAL provider capability (ISI-6546): a
+// provider that tracks BOTH the headroom AND the window SIZE (X-RateLimit-Limit)
+// of its API responses exposes the most recent pair so the reconciler can feed a
+// per-project remaining+limit gauge. The limit is the denominator the "remaining
+// < 20%" alert needs — it cannot be hard-coded to 5000 because a GitHub App
+// installation token reports 15000 and a secondary limit differs again.
+// Providers that cannot report it simply do not implement this; the reconciler
+// type-asserts and falls back to RateLimitReporter. ok is false before any
+// response has been observed; limit is 0 when the header was absent.
+type RateLimitSnapshotReporter interface {
+	RateLimitSnapshot() (remaining, limit int64, ok bool)
+}
+
 // WebhookEvent is the provider-agnostic summary of one webhook delivery,
 // extracted AFTER verification. It exists for logging/trigger attribution
 // only — the mirror is written exclusively from provider snapshots, never
