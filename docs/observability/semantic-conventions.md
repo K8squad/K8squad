@@ -447,7 +447,8 @@ names; the Prometheus exporter renders them with underscores
 | `ksquad.scm.sync.duration` | histogram | s | `provider`, `trigger` | stable | WS-GH | SCM reconcile pass latency in seconds (GH-3). Freshness SLO source: p99 should stay under pollInterval+60s. |
 | `ksquad.scm.sync.panics.total` | counter | 1 | `provider` | stable | WS-GH | SCM reconcile panics recovered and re-raised (GH-2). The nil Client/Providers/Store deref SLO: this must stay 0. |
 | `ksquad.scm.mirror.age` | observable_gauge | s | `project` | stable | WS-GH | Seconds since each Project's last successful mirror pass (GH-3). A stalled reconcile shows an ever-growing age rather than dropping off the series. |
-| `ksquad.scm.provider.rate_limit.remaining` | observable_gauge | 1 | `provider` | stable | WS-GH | Last-seen provider rate-limit headroom (requests remaining) by provider (GH-3). Approaching 0 explains stale mirrors that are not errors. |
+| `ksquad.scm.provider.rate_limit.remaining` | observable_gauge | 1 | `provider`, `project` | stable | WS-GH | Last-seen provider rate-limit headroom (requests remaining) by provider and project (GH-3, ISI-6546). Approaching 0 explains stale mirrors that are not errors; the per-project label attributes drain to a mirror. |
+| `ksquad.scm.provider.rate_limit.limit` | observable_gauge | 1 | `provider`, `project` | stable | WS-GH | Last-seen provider rate-limit window size (total requests per window) by provider and project (ISI-6546). The denominator for the <20%-headroom alert: remaining/limit. |
 
 ## Credential go-live gate telemetry
 

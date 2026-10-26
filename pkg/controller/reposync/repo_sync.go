@@ -373,7 +373,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	// Feed the provider rate-limit headroom gauge from whatever the pass saw,
 	// success or failure (GH-3): a snapshot that just tripped the limit reports
 	// 0-ish headroom, which is exactly the signal the dashboard needs.
-	r.observeRateLimit(provider)
+	r.observeRateLimit(provider, projectKey)
 	if err != nil {
 		logger.Error(err, "repo-sync: provider snapshot failed", "project", req.NamespacedName)
 		reason = reasonProviderFail
@@ -654,16 +654,24 @@ func (r *Reconciler) recordSyncHistory(ctx context.Context, project *ksquadapi.P
 // observeRateLimit feeds the provider rate-limit headroom gauge when the
 // provider implements the optional scm.RateLimitReporter seam (GH-3). Providers
 // that cannot report headroom are simply skipped.
-func (r *Reconciler) observeRateLimit(provider scm.SourceProvider) {
+func (r *Reconciler) observeRateLimit(provider scm.SourceProvider, projectKey string) {
 	if r.Metrics == nil {
 		return
 	}
-	reporter, ok := provider.(scm.RateLimitReporter)
-	if !ok {
-		return
+	// Prefer the richer seam (ISI-6546): headroom + window size, so the gauge
+	// carries the denominator the "remaining < 20%" alert divides by. A provider
+	// that reports only headroom (older seam) still feeds the remaining gauge
+	// with limit=0, which the alert rule treats as "unknown ceiling" and skips.
+	if snap, ok := provider.(scm.RateLimitSnapshotReporter); ok {
+		if remaining, limit, seen := snap.RateLimitSnapshot(); seen {
+			r.Metrics.ObserveRateLimit(provider.Name(), projectKey, remaining, limit)
+			return
+		}
 	}
-	if remaining, seen := reporter.LastRateRemaining(); seen {
-		r.Metrics.ObserveRateLimit(provider.Name(), remaining)
+	if reporter, ok := provider.(scm.RateLimitReporter); ok {
+		if remaining, seen := reporter.LastRateRemaining(); seen {
+			r.Metrics.ObserveRateLimit(provider.Name(), projectKey, remaining, 0)
+		}
 	}
 }
 

@@ -165,13 +165,51 @@ func TestMirrorAgeSkipsFailedPass(t *testing.T) {
 func TestRateLimitGauge(t *testing.T) {
 	meter, reader := newTestMeter(t)
 	m, _ := Register(meter)
-	m.ObserveRateLimit("github", 4321)
-	m.ObserveRateLimit("github", -1) // unknown: must not overwrite
-	m.ObserveRateLimit("github", 4000)
+	m.ObserveRateLimit("github", "ns/app", 4321, 5000)
+	m.ObserveRateLimit("github", "ns/app", -1, 5000) // unknown remaining: must not overwrite
+	m.ObserveRateLimit("github", "ns/app", 4000, 5000)
 
 	g := collect(t, reader)[rateRemainingName].Data.(metricdata.Gauge[int64])
 	if len(g.DataPoints) != 1 || g.DataPoints[0].Value != 4000 {
 		t.Fatalf("rate gauge = %+v, want single point value 4000", g.DataPoints)
+	}
+}
+
+// TestRateLimitPerProjectAndLimit verifies ISI-6546: the remaining gauge carries
+// a per-project series (so the <20% alert can name the at-risk mirror), the
+// limit gauge publishes the window size as the alert denominator, and a reading
+// with an unknown (<=0) limit leaves the prior limit gauge untouched rather than
+// publishing a phantom zero ceiling.
+func TestRateLimitPerProjectAndLimit(t *testing.T) {
+	meter, reader := newTestMeter(t)
+	m, _ := Register(meter)
+	m.ObserveRateLimit("github", "bmad/demo", 4059, 5000)
+	m.ObserveRateLimit("github", "sympozium/todo", 900, 5000)
+	m.ObserveRateLimit("github", "sympozium/todo", 850, 0) // unknown limit: keep prior 5000
+
+	snap := collect(t, reader)
+	rem := snap[rateRemainingName].Data.(metricdata.Gauge[int64])
+	if len(rem.DataPoints) != 2 {
+		t.Fatalf("remaining gauge = %d points, want 2 (one per project)", len(rem.DataPoints))
+	}
+	lim := snap[rateLimitName].Data.(metricdata.Gauge[int64])
+	for _, dp := range lim.DataPoints {
+		if dp.Value != 5000 {
+			t.Errorf("limit gauge point = %d, want 5000 (unknown limit must not overwrite)", dp.Value)
+		}
+	}
+	if len(lim.DataPoints) != 2 {
+		t.Fatalf("limit gauge = %d points, want 2", len(lim.DataPoints))
+	}
+
+	// ForgetProject drops both series for the removed project.
+	m.ForgetProject("sympozium/todo")
+	snap = collect(t, reader)
+	if g := snap[rateRemainingName].Data.(metricdata.Gauge[int64]); len(g.DataPoints) != 1 {
+		t.Errorf("remaining gauge after ForgetProject = %d points, want 1", len(g.DataPoints))
+	}
+	if g := snap[rateLimitName].Data.(metricdata.Gauge[int64]); len(g.DataPoints) != 1 {
+		t.Errorf("limit gauge after ForgetProject = %d points, want 1", len(g.DataPoints))
 	}
 }
 
@@ -183,6 +221,6 @@ func TestNilReceiverSafe(t *testing.T) {
 	m.RecordWebhook(ctx, "push", OutcomeAccepted)
 	m.RecordSync(ctx, SyncOutcome{})
 	m.RecordPanic(ctx, "github")
-	m.ObserveRateLimit("github", 1)
+	m.ObserveRateLimit("github", "ns/app", 1, 5000)
 	m.ForgetProject("ns/app")
 }
