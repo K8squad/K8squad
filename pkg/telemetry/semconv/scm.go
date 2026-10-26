@@ -177,7 +177,7 @@ type MetricConvention struct {
 	Brief      string
 }
 
-// SCMMetricConventions documents the six GitHub-sync metrics the operator emits
+// SCMMetricConventions documents the seven GitHub-sync metrics the operator emits
 // on telemetry.Meter() (GH-1..3). All are Stable — scm_conformance_test.go
 // drives the real pkg/telemetry/scmmetrics emitter and asserts each one is
 // produced with these labels.
@@ -209,8 +209,13 @@ var SCMMetricConventions = []MetricConvention{
 	},
 	{
 		Name: "ksquad.scm.provider.rate_limit.remaining", Instrument: InstrumentObservableGauge, Unit: "1",
-		Labels: []string{"provider"}, Stability: Stable, Workstream: "WS-GH",
-		Brief: "Last-seen provider rate-limit headroom (requests remaining) by provider (GH-3). Approaching 0 explains stale mirrors that are not errors.",
+		Labels: []string{"provider", "project"}, Stability: Stable, Workstream: "WS-GH",
+		Brief: "Last-seen provider rate-limit headroom (requests remaining) by provider and project (GH-3, ISI-6546). Approaching 0 explains stale mirrors that are not errors; the per-project label attributes drain to a mirror.",
+	},
+	{
+		Name: "ksquad.scm.provider.rate_limit.limit", Instrument: InstrumentObservableGauge, Unit: "1",
+		Labels: []string{"provider", "project"}, Stability: Stable, Workstream: "WS-GH",
+		Brief: "Last-seen provider rate-limit window size (total requests per window) by provider and project (ISI-6546). The denominator for the <20%-headroom alert: remaining/limit.",
 	},
 }
 

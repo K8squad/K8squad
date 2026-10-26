@@ -72,7 +72,7 @@ func emitAllSCMMetrics(t *testing.T) (names map[string]bool, labelsByMetric map[
 		Success:  true, // stamps the mirror-age gauge for the project
 	})
 	m.RecordPanic(ctx, "github")
-	m.ObserveRateLimit("github", 4821)
+	m.ObserveRateLimit("github", "team-a/proj-1", 4821, 5000)
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
