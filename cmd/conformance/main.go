@@ -75,11 +75,23 @@ func run(args []string, stdout *os.File) error {
 	}
 
 	var reports []conformance.Report
+	var skipped []string
+	explicit := *runtimeName != ""
 	allOK := true
 	for _, name := range targets {
 		rt, err := runtimes.Get(name)
 		if err != nil {
 			return err
+		}
+		// On the full-registry sweep the Ollama lane only certifies runtimes
+		// that advertise the BYO model-endpoint seam; one that honestly does
+		// not (e.g. an Anthropic-wire-only adapter) is not part of this lane
+		// and is skipped rather than failed — mirroring conformance's own
+		// TestOllamaLane t.Skipf. An explicitly named -runtime still runs so
+		// the tested refuse-path stays reachable from the CLI.
+		if !explicit && lane == conformance.LaneOllama && !rt.Capabilities().BYOModelEndpoint {
+			skipped = append(skipped, name)
+			continue
 		}
 		rep := conformance.VerifyRuntime(rt, opts)
 		reports = append(reports, rep)
@@ -97,6 +109,9 @@ func run(args []string, stdout *os.File) error {
 	} else {
 		for _, rep := range reports {
 			fmt.Fprint(stdout, rep.String())
+		}
+		for _, name := range skipped {
+			fmt.Fprintf(stdout, "SKIP  %s [lane=%s]\n    - no byoModelEndpoint; not part of the %s lane\n", name, lane, lane)
 		}
 		fmt.Fprintf(stdout, "\n%d runtime(s) checked on the %s lane: %s\n", len(reports), lane, verdict(allOK))
 	}
