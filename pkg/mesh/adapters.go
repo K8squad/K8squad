@@ -141,3 +141,27 @@ func NewCrewAIAdapter(host PlatformHost, opts ...Option) (RuntimeAdapter, error)
 	}
 	return a2amesh.NewCrewAdapter(host, ksquadRuntimeSpec(rt), opts...)
 }
+
+// NewClaudeAdapter builds the claude-code RuntimeAdapter (chapter §9.3 P4.4 —
+// the mesh half of the approved ISI-6697 Phase 1 plan, WS-2; module half:
+// ISI-6130, vendored in third_party): Anthropic's Claude Code behind the same
+// 7-op RuntimeAdapter seam. Like the opencode/codex/vibe/crewai adapters it
+// lands as a NEW ADAPTER ONLY — zero control-plane change. The standing child
+// process is \`shim supervisor\` with KSQUAD_RUNTIME_TYPE=claude-code; the
+// per-task surface is the one-shot headless \`claude -p\` print-mode JSON
+// stream built by the k8squad shim engine (WS-1, pkg/shim/runtimes). The
+// runtime-specific halves — the launch env (the ANTHROPIC_MODEL pin; the
+// caller-supplied credential wins untouched) and the agent card — are built
+// by the module from the injected RuntimeSpec, sourced from the same
+// declarative runtime the shim serves, so the capability contract the mesh
+// announces is exactly the one the process serves.
+func NewClaudeAdapter(host PlatformHost, opts ...Option) (RuntimeAdapter, error) {
+	if host == nil {
+		return nil, fmt.Errorf("mesh: NewClaudeAdapter requires a PlatformHost")
+	}
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeClaudeCode)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: claude-code runtime not registered: %w", err)
+	}
+	return a2amesh.NewClaudeCodeAdapter(host, ksquadRuntimeSpec(rt), opts...)
+}

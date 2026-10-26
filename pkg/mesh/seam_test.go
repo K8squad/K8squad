@@ -92,6 +92,9 @@ func TestNewAdapters_RequireHost(t *testing.T) {
 	if _, err := NewCodexAdapter(nil); err == nil {
 		t.Fatal("NewCodexAdapter(nil) = nil error, want the PlatformHost requirement")
 	}
+	if _, err := NewClaudeAdapter(nil); err == nil {
+		t.Fatal("NewClaudeAdapter(nil) = nil error, want the PlatformHost requirement")
+	}
 }
 
 func TestSeamSentinels_AreModuleSentinels(t *testing.T) {

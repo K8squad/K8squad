@@ -304,8 +304,15 @@ func buildRuntimeAdapter(runtimeType string, host mesh.PlatformHost, opts ...mes
 		return mesh.NewCrewAIAdapter(host, append([]mesh.Option{
 			mesh.WithRouter(mesh.NewCrewaiRouter(nil, os.Getenv("AUTH_TOKEN"))),
 		}, opts...)...)
+	case "claude-code":
+		// The claude-code credential — a stored Anthropic API key today, a
+		// CLAUDE_CODE_OAUTH_TOKEN subscription seat once the ISI-3661 board
+		// ToS gate clears (approved ISI-6697 plan) — rides the envelope's
+		// caller-supplied env, so the adapter never interprets secret
+		// material: a plain bind, no crewai-style AUTH_TOKEN router lane.
+		return mesh.NewClaudeAdapter(host, opts...)
 	default:
-		return nil, fmt.Errorf("no RuntimeAdapter bound for runtime type %q (have: opencode, codex, crewai)", runtimeType)
+		return nil, fmt.Errorf("no RuntimeAdapter bound for runtime type %q (have: opencode, codex, crewai, claude-code)", runtimeType)
 	}
 }
 

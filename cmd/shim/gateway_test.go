@@ -499,6 +499,17 @@ func TestBuildRuntimeAdapterBindsDeclaredType(t *testing.T) {
 	}
 }
 
+// The claude-code case binds NewClaudeAdapter (ISI-6697 Phase 1 WS-2): the
+// nil-host guard fires before the registry lookup, so the binding is provable
+// even on a tree where the claude-code shim runtime registration (WS-1,
+// ISI-6700) has not landed yet, and stays a silent extra proof once it has.
+func TestBuildRuntimeAdapterBindsClaudeCode(t *testing.T) {
+	_, err := buildRuntimeAdapter("claude-code", nil)
+	if err == nil || !strings.Contains(err.Error(), "NewClaudeAdapter requires a PlatformHost") {
+		t.Fatalf("claude-code must route to NewClaudeAdapter, got %v", err)
+	}
+}
+
 // buildGateway assembles through the same binding: a codex pool builds
 // (the runtime re-check — a second runtime drives the gateway with zero
 // control-plane change), and an unknown type fails the build honestly.
