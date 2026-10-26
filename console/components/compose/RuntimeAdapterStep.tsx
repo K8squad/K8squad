@@ -12,10 +12,13 @@
 // affordance, then renders `children` (the unchanged ModelSelector, so the persisted
 // shape is always the same model triple).
 //
-//   - claude:   token-only in v1 (OQ5) — a DISABLED "Sign in with Claude" (OAuth)
-//               CTA marked *coming soon* beside the working API-token path. Curated
-//               Anthropic ids flow through ModelSelector unchanged. Do NOT block the
-//               model UI on OAuth.
+//   - claude:   API-key onboarding end-to-end (ISI-6702, WS-4): a claudeSlot renders
+//               the BYO Anthropic-key paste form + team picker (ISI-3983) with the
+//               ANTHROPIC_API_KEY test-connection probe, so a user attaches their key
+//               right here. The subscription "Sign in with Claude" (OAuth) CTA stays
+//               DISABLED (ToS-gated, ISI-3661 — Phase 2/3). Without a slot the branch
+//               degrades to a pointer note (fail-open). Curated Anthropic ids flow
+//               through ModelSelector unchanged; the model UI is never blocked on OAuth.
 //   - codex:    API token; curated ids. No live model listing.
 //   - opencode: provider + token/endpoint. v1 degrades to manual model entry (the
 //               fail-open state); the live fetch-then-pick (ProviderModelPicker +
@@ -59,6 +62,7 @@ export function RuntimeAdapterStep({
   children,
   opencodeSlot,
   vibeSlot,
+  claudeSlot,
 }: {
   adapter: RuntimeAdapter;
   onAdapterChange: (a: RuntimeAdapter) => void;
@@ -75,6 +79,13 @@ export function RuntimeAdapterStep({
    * ISI-6380). Absent ⇒ vibe degrades to a pointer note — the flow is never blocked.
    */
   vibeSlot?: ReactNode;
+  /**
+   * Credential-attach region for the claude branch (ISI-6702 WS-4): the BYO
+   * Anthropic-key paste form + team picker (ISI-3983) with the
+   * ANTHROPIC_API_KEY test probe. Absent ⇒ the pointer note (fail-open),
+   * mirroring the opencode/vibe seams.
+   */
+  claudeSlot?: ReactNode;
 }) {
   const tint = ADAPTER_TINT[adapter];
   return (
@@ -120,11 +131,14 @@ export function RuntimeAdapterStep({
               Sign in with Claude{" "}
               <span className="chip chip--soon">coming soon</span>
             </button>
-            <p className="muted">
-              Claude uses your API token in v1 — pick a curated Anthropic model
-              below. One-click &ldquo;Sign in with Claude&rdquo; (OAuth) is
-              coming soon.
-            </p>
+            {claudeSlot ?? (
+              <p className="muted" data-testid="claude-cred-note">
+                Claude Code runs on your Anthropic API key — attach it on the
+                Credentials screen or under Settings &rarr; LLM (Claude tab),
+                then pick a curated Anthropic model below. One-click &ldquo;Sign
+                in with Claude&rdquo; (OAuth, subscription) is coming soon.
+              </p>
+            )}
           </>
         )}
         {adapter === "codex" && (

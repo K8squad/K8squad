@@ -25,7 +25,8 @@
 //     mirroring ISI-4430 D3 (helm required). The fallback/BYO controls do not bypass
 //     it — only a non-empty primary enables Save.
 //   - Frame-4 (AC5): RuntimeAdapterStep fronts ModelSelector, branching the
-//     credential path per adapter (claude token-only + coming-soon OAuth CTA / codex
+//     credential path per adapter (claude BYO Anthropic-key attach + coming-soon OAuth
+//     CTA — ISI-6702 / codex
 //     token / opencode BYO endpoint → manual entry, the fail-open state / vibe
 //     Mistral endpoint via a mistral-pinned ProviderModelPicker / goose preview-disabled
 //     CTA — ISI-6380).
@@ -35,6 +36,14 @@ import { useEffect, useState } from "react";
 import { ModelSelector } from "@/components/compose/ModelSelector";
 import { ProviderModelPicker } from "@/components/compose/ProviderModelPicker";
 import { RuntimeAdapterStep } from "@/components/compose/RuntimeAdapterStep";
+import {
+  CreateCredentialForm,
+  TeamPicker,
+} from "@/components/credentials/CreateCredentialForm";
+import type {
+  CredentialTeamList,
+  CredentialTeamOption,
+} from "@/lib/credentials";
 import {
   emptyModelConfigForm,
   isModelConfigValid,
@@ -90,6 +99,34 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
   // guided provider flow still works), so it never blocks the surface.
   const [endpoints, setEndpoints] = useState<ModelEndpointRow[]>([]);
   const [fallbackOpen, setFallbackOpen] = useState(false);
+  // Fleet-admin team context for the Claude key-attach lane (ISI-6702 WS-4, reusing
+  // the ISI-3983/3937 picker): a fleet admin with more than one Team picks where the
+  // Anthropic-key Secret lands; a single-team (or failed) list omits the hint upstream,
+  // so the lane never blocks on it.
+  const [teams, setTeams] = useState<CredentialTeamOption[]>([]);
+  const [selectedTeam, setSelectedTeam] = useState<string>("");
+  useEffect(() => {
+    if (!isAdmin) return; // non-admins never see the attach lane (the form is admin-only)
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/squad/teams", { cache: "no-store" });
+        if (!r.ok) return;
+        const body = (await r.json().catch(() => ({}))) as CredentialTeamList;
+        const list = (body?.teams ?? []).filter(
+          (t): t is CredentialTeamOption => !!t,
+        );
+        if (!alive) return;
+        setTeams(list);
+        if (list.length === 1) setSelectedTeam(list[0].uid);
+      } catch {
+        /* best-effort: no picker, own-team default upstream */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [isAdmin]);
 
   // Hydrate in one ordered pass (ISI-5302): the saved endpoints must load BEFORE the
   // model config, because the persisted spec is adapter-agnostic and the adapter is
@@ -222,6 +259,41 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
     </div>
   );
 
+  // The Claude key-attach block (ISI-6702 WS-4): the ISI-3983 BYO paste form + fleet
+  // team picker, pinned to the claude-code runtime, with the ANTHROPIC_API_KEY
+  // test-connection probe. The OAuth CTA itself stays disabled inside
+  // RuntimeAdapterStep (ToS-gated, ISI-3661 — never a live subscription click).
+  const needsTeamSelection = teams.length > 1;
+  const claudeKeyAttach = (
+    <div
+      className="settings-modelpriority__claude"
+      data-testid="modelpriority-claude"
+    >
+      <p className="muted">
+        Claude Code runs on your Anthropic API key — paste it, Save, and Test
+        connection (a live probe against api.anthropic.com). The key is stored
+        as a per-team Secret (ANTHROPIC_API_KEY) and never shown back.
+        Subscription sign-in stays gated on a board Terms-of-Service decision
+        (ISI-3661).
+      </p>
+      {needsTeamSelection && (
+        <TeamPicker
+          teams={teams}
+          selected={selectedTeam}
+          onSelect={setSelectedTeam}
+          prompt
+        />
+      )}
+      <CreateCredentialForm
+        fixedRuntime="claude-code"
+        title="Attach an Anthropic API key"
+        lede="Bring your own Anthropic API key — KSquad stores it as a per-team Kubernetes Secret and never shows it back. Subscription sign-in (Sign in with Claude) is pending a board Terms-of-Service decision (ISI-3661) — no ETA."
+        teamId={selectedTeam}
+        teamReady={!needsTeamSelection || selectedTeam !== ""}
+      />
+    </div>
+  );
+
   async function onSave() {
     setAttempted(true);
     if (!valid) return;
@@ -304,6 +376,7 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
             vibeSlot={
               form.adapter === "vibe" ? byoPicker("vibe", "mistral") : undefined
             }
+            claudeSlot={form.adapter === "claude" ? claudeKeyAttach : undefined}
           >
             {form.adapter === "opencode" || form.adapter === "vibe" ? (
               <></>
