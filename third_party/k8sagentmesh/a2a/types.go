@@ -663,12 +663,17 @@ type AuthInfo struct {
 // rateLimitSignal advertises that the runtime emits the standardized §4
 // EventRateLimited signal (story 5.10) — a peer that negotiates it false must
 // not rely on the signal and stays on the 2.11 backoff-only path.
+// RouterServed marks a runtime whose tasks never pass through the one-shot
+// shim engine: instead they are routed to a standing server process (e.g. a
+// crew A2A server) via a mesh adapter router lane. Router-served runtimes do
+// not implement Command and are skipped in the engine-path conformance checks.
 type Capabilities struct {
 	Streaming         bool     `json:"streaming"`
 	ToolCalls         bool     `json:"toolCalls"`
 	InteractivePrompt bool     `json:"interactivePrompt"`
 	BYOModelEndpoint  bool     `json:"byoModelEndpoint"`
 	RateLimitSignal   bool     `json:"rateLimitSignal"`
+	RouterServed      bool     `json:"routerServed,omitempty"`
 	ArtifactKinds     []string `json:"artifactKinds"`
 	Docker            bool     `json:"docker"`
 	GitHub            bool     `json:"github"`

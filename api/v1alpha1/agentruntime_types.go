@@ -47,13 +47,18 @@ const (
 
 	// RuntimeTypeVibe is the Mistral vibe coding-agent flavor (ISI-6158).
 	RuntimeTypeVibe = "vibe"
+
+	// RuntimeTypeCrewAI is the CrewAI multi-agent flavor (ISI-6569, P4.3):
+	// an always-on-pool runtime served through the module crewaiRouter lane
+	// (adapter #5) - wiring only, zero control-plane change.
+	RuntimeTypeCrewAI = "crewai"
 )
 
 // AgentRuntimeSpec defines the desired state of AgentRuntime (arch §5.3,
 // story 1.3 Task 0 — minimal authoring so Agent.spec.runtimeRef has a
 // target; the richer runtime policy surface lands with the sandbox stories).
 //
-// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes codex goose vibe], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes','codex','goose','vibe'] || self.experimental"
+// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes codex goose vibe crewai], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes','codex','goose','vibe','crewai'] || self.experimental"
 type AgentRuntimeSpec struct {
 	// Type is the coding-agent flavor this runtime serves (arch §5.3):
 	// openclaw, claude-code, opencode, hermes, codex or goose out of the box. The

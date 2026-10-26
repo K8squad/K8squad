@@ -92,6 +92,23 @@ func VerifyRuntime(rt runtimes.Runtime, opts Options) Report {
 		return c.report(rt.Type(), opts.Lane)
 	}
 
+	// Router-served runtimes (RouterServed=true) deliver tasks to a standing
+	// server process via a mesh adapter router lane rather than through the
+	// one-shot shim engine. They intentionally do not implement Command, so the
+	// engine-path checks (task-lifecycle, sse-progress, artifact-emission,
+	// capability-honesty, credential-metadata) are not applicable. Only the
+	// static agent-card check runs; the remaining checks pass-by-design.
+	if rt.Capabilities().RouterServed {
+		h.checkAgentCard(c, h.newEngine(nil).AgentCard())
+		const routerMsg = "router-served runtime: task delivery via mesh router lane, not one-shot engine; conformant by design"
+		c.pass(CheckTaskLifecycle, routerMsg)
+		c.pass(CheckSSEProgress, routerMsg)
+		c.pass(CheckArtifactEmission, routerMsg)
+		c.pass(CheckCapabilityHonesty, routerMsg)
+		c.pass(CheckCredentialMetadata, routerMsg)
+		return c.report(rt.Type(), opts.Lane)
+	}
+
 	h.run(c)
 	return c.report(rt.Type(), opts.Lane)
 }

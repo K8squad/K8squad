@@ -117,3 +117,27 @@ func NewVibeAdapter(host PlatformHost, opts ...Option) (RuntimeAdapter, error) {
 	}
 	return a2amesh.NewVibeAdapter(host, ksquadRuntimeSpec(rt), opts...)
 }
+
+// NewCrewAIAdapter builds adapter #5 (chapter 9.3 P4.3, ISI-6569 - the host
+// half of ISI-6547): CrewAI behind the same 7-op RuntimeAdapter seam. Like
+// adapters #1-#3 it lands as a NEW ADAPTER ONLY - zero control-plane line
+// changes. The standing child process is the crew project's A2A server
+// (python + crewai[a2a]==1.15.28, pinned by Dockerfile.toolchain-crewai):
+// the module's crewLaunch stamps the crewai flavor + the litellm lane env,
+// and the default Router is the crewai wire translator. The gateway wires
+// the AUTH_TOKEN-bearing crewaiRouter (the same token the crew's
+// SimpleTokenAuth server reads - the host-side half of the ISI-6547 wire
+// contract). The pool is provisioned always-on
+// (KSQUAD_MESH_LIFECYCLE_ALWAYS_UP=true, Hibernate off): crews hold open
+// SSE connections, so Hibernate/Wake stay the cooperative no-ops the module
+// adapter overrides them with.
+func NewCrewAIAdapter(host PlatformHost, opts ...Option) (RuntimeAdapter, error) {
+	if host == nil {
+		return nil, fmt.Errorf("mesh: NewCrewAIAdapter requires a PlatformHost")
+	}
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeCrewAI)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: crewai runtime not registered: %w", err)
+	}
+	return a2amesh.NewCrewAdapter(host, ksquadRuntimeSpec(rt), opts...)
+}
