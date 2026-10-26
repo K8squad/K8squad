@@ -46,3 +46,32 @@ describe("<RuntimeAdapterStep> — vibe + goose branches (ISI-6380)", () => {
     expect(screen.queryByTestId("vibe-cred-note")).toBeNull();
   });
 });
+
+describe("<RuntimeAdapterStep> — claude branch (ISI-6702)", () => {
+  it("renders the pointer note when no claudeSlot is supplied (fail-open contract)", () => {
+    render(
+      <RuntimeAdapterStep adapter="claude" onAdapterChange={() => {}}>
+        <div />
+      </RuntimeAdapterStep>,
+    );
+    expect(screen.getByTestId("claude-cred-note")).toBeTruthy();
+    expect(screen.queryByTestId("creds-create-form")).toBeNull();
+  });
+
+  it("renders the claudeSlot content when one is supplied, and the OAuth CTA stays disabled", () => {
+    render(
+      <RuntimeAdapterStep
+        adapter="claude"
+        onAdapterChange={() => {}}
+        claudeSlot={<div data-testid="claude-slot-content">slot</div>}
+      >
+        <div />
+      </RuntimeAdapterStep>,
+    );
+    expect(screen.getByTestId("claude-slot-content")).toBeTruthy();
+    expect(screen.queryByTestId("claude-cred-note")).toBeNull();
+    // The subscription path is ToS-gated (ISI-3661): never a live OAuth click.
+    const cta = screen.getByTestId("claude-oauth-cta") as HTMLButtonElement;
+    expect(cta.disabled).toBe(true);
+  });
+});

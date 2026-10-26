@@ -5224,6 +5224,7 @@ a:hover {
   margin: 0;
   font-size: 13px;
 }
+.settings-modelpriority__claude,
 .settings-modelpriority__opencode,
 .settings-modelpriority__fallback {
   display: flex;
