@@ -401,9 +401,31 @@ values and the kind CI propagation test.
 > The other chart, `deploy/helm/ksquad`, also ships no CRDs (services only) and
 > likewise depends on `k8squad-crds` being installed first (ADR-0002 §8).
 
+## Upgrading / rolling the control plane
+
+Always roll from a **fresh `origin/main` worktree** (the chart of record), and
+gate the roll on `make helm-preflight` **from that same worktree** before any
+`helm upgrade`:
+
+```sh
+make helm-preflight                                  # fails closed if the tree is stale (ISI-6740)
+helm upgrade k8squad config/helm -n k8squad-system \
+  --reuse-values --set controlPlane.image.tag=<sha>  # only if preflight passed
+```
+
+`helm-preflight` runs the chart guard tests (`go test ./config/helm/...`), which
+pin the apiserver ClusterRole to its least-privilege set (`rbac_lockstep_test.go`
+— `persistentvolumeclaims/get`, `secrets/get`, …). Rolling from a stale checkout
+that predates one of those grants fails the preflight here instead of silently
+installing a regressed ClusterRole — the exact failure mode behind the ISI-6739
+fleet-wide File-Explorer HTTP 500 (release rev 17 rendered from a pre-fix
+feature-branch tree). CI runs these tests on every PR; this is the deploy-time
+mirror for the manual `helm upgrade` path, which CI cannot see.
+
 ## Verification
 
 ```sh
+make helm-preflight # pre-roll gate: lint + template + chart guard tests, fail closed (ISI-6740)
 make helm-lint      # helm lint both charts (config/helm + config/helm-crds)
 make helm-template  # helm template both charts (local render, no cluster)
 

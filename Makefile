@@ -80,6 +80,23 @@ helm-template: ## Render both Helm charts locally (no cluster needed).
 	$(HELM) template k8squad-crds $(CRDS_CHART_DIR)
 	$(HELM) template k8squad $(CHART_DIR) --set modelConfig.default.model=make-template-default
 
+# ISI-6740 — mandatory pre-roll gate. Run this from the EXACT worktree you are
+# about to `helm upgrade` from, BEFORE the upgrade. It fails closed if that tree
+# is stale: `go test ./config/helm/...` runs the chart guard tests, which pin the
+# apiserver ClusterRole to its least-privilege set (rbac_lockstep_test.go —
+# persistentvolumeclaims/get ISI-5685, secrets/get ISI-5420, …). A checkout that
+# predates one of those grants fails the lockstep test here instead of silently
+# rolling a chart whose apiserver RBAC has regressed. That regression is exactly
+# what produced the ISI-6739 fleet-wide File-Explorer HTTP 500: release rev 17 was
+# rendered from a feature-branch tree predating the PVC-get fix, so the live
+# ClusterRole never carried the rule. This turns the README's prose "roll from a
+# fresh origin/main worktree" step into a mechanical gate. helm-lint/helm-template
+# also prove the tree renders. CI already runs these tests on every PR; this is the
+# deploy-time mirror for the manual `helm upgrade` path, which CI cannot see.
+.PHONY: helm-preflight
+helm-preflight: helm-lint helm-template ## Pre-roll gate: fail closed if the chart tree about to be rolled has regressed (run before `helm upgrade`).
+	go test ./config/helm/...
+
 .PHONY: helm-package
 helm-package: helm-sync-crds ## Package both charts into .cr-release-packages/ (what CI publishes to charts.k8squad.io).
 	mkdir -p .cr-release-packages
