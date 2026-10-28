@@ -57,7 +57,7 @@ func (e *recordingEffects) Terminal(s reconcile.Step)    { e.terminals = append(
 // migrationFile locates a checked-in migration by name (repo-root relative from
 // ./pkg/coord, overridable via COORD_MIGRATIONS_DIR), FATALing if absent — a gate
 // never passes without its real precondition.
-func migrationFile(t *testing.T, name string) string {
+func migrationFile(t testing.TB, name string) string {
 	t.Helper()
 	dir := os.Getenv("COORD_MIGRATIONS_DIR")
 	candidates := []string{}

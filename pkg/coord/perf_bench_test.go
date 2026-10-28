@@ -160,10 +160,15 @@ func BenchmarkP4OutboxDeliveryLag(b *testing.B) {
 	dsn := perfDSNOrSkip(b)
 	db := openDB(b, dsn)
 
-	// Provision 0001 spine + 0003 outbox (the §17.4 seam substrate).
+	// Provision 0001 spine + 0003 outbox + 0022 trace_carrier (the §17.4 seam
+	// substrate). 0022 adds coord.outbox.trace_carrier, which
+	// events.CaptureForWorkItem writes on every capture (ISI-4238/4440 run
+	// tracing) — 0003 alone is an incomplete outbox schema; mirror the chaos
+	// suite bootstrap (TestSpineProdOutbox, prod_outbox_chaos_test.go).
 	mustExec(b, db, `DROP SCHEMA IF EXISTS coord CASCADE`)
 	mustExec(b, db, coordMigrationSQL(b))
 	mustExec(b, db, outboxMigrationSQL(b))
+	mustExec(b, db, migrationFile(b, "0022_coord_outbox_trace_carrier.sql"))
 
 	// Split b.N across the two arms so each measures the SAME write path under a
 	// different delivery health. The write path is ClaimNext+WithOutboxCapture:
