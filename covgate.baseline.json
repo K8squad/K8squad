@@ -48,7 +48,7 @@
   "github.com/K8squad/K8squad/pkg/controller/projectpvc": 65.7,
   "github.com/K8squad/K8squad/pkg/controller/reposync": 77.4,
   "github.com/K8squad/K8squad/pkg/controller/reviewtrigger": 89.8,
-  "github.com/K8squad/K8squad/pkg/controller/run": 82.9,
+  "github.com/K8squad/K8squad/pkg/controller/run": 90.0,
   "github.com/K8squad/K8squad/pkg/controller/rundrive": 71.8,
   "github.com/K8squad/K8squad/pkg/controller/team": 78.7,
   "github.com/K8squad/K8squad/pkg/coord": 23.9,
