@@ -21,7 +21,7 @@
   "github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readclient": 74.4,
   "github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readserver": 88.4,
   "github.com/K8squad/K8squad/internal/cifailuredispatch": 86.2,
-  "github.com/K8squad/K8squad/internal/discussion": 40.9,
+  "github.com/K8squad/K8squad/internal/discussion": 47.0,
   "github.com/K8squad/K8squad/internal/discussionindex": 80.2,
   "github.com/K8squad/K8squad/internal/handoffmirror": 56.1,
   "github.com/K8squad/K8squad/internal/index": 66.6,
