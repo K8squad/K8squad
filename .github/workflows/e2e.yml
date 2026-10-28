@@ -144,15 +144,21 @@ jobs:
           set -euo pipefail
           # ISI-3475: the harness (TestSquadSmoke) needs the ksquad.io CRD group registered
           # and the default toolchain catalog (kubectl@1.31 ...) present, or it skips-with-reason.
-          # config/helm is the Story 1.4 skeleton chart: CRDs + control-plane namespace + the
-          # default toolchain catalog. It does NOT yet ship the operator/apiserver Deployments
-          # (wired in later epics) — until the operator lands and is chart-deployed here, the
-          # harness's sandbox/telemetry assertions skip-with-reason while its capability-manifest
-          # assertions run against whatever the operator resolves. Nothing is silently dropped.
+          # ADR-0002 Option B (ISI-3518): config/helm ships NO CRDs — the ksquad.io
+          # CRDs live in the standalone config/helm-crds chart and must be installed (and
+          # established, hence --wait) BEFORE the control-plane chart: config/helm renders
+          # ModelConfig/OTelConfig/Toolchain CRs that bind to the registered CRDs. Canonical
+          # order: config/helm-crds/README.md. (--include-crds is a helm template flag,
+          # invalid on helm install — it slipped in when the CRD split landed.)
+          # The control-plane services stay off in this lane (controlPlane.enabled=false by
+          # default) — the harness's sandbox/telemetry assertions skip-with-reason while its
+          # capability-manifest assertions run against whatever the operator resolves.
+          # Nothing is silently dropped.
+          helm install ksquad-e2e-crds config/helm-crds --wait --timeout 120s
           helm install ksquad-e2e config/helm \
             --namespace ksquad-system --create-namespace \
             --set modelConfig.default.model=claude-sonnet-4 \
-            --include-crds --wait --timeout 120s
+            --wait --timeout 120s
           echo "Installed toolchains in the default catalog:"
           kubectl get toolchains.ksquad.io -A -o custom-columns=NAME:.metadata.name,VERSIONS:.spec.versions[*].version || true
 
