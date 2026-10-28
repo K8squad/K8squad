@@ -14,7 +14,7 @@
   "github.com/K8squad/K8squad/conformance": 75.6,
   "github.com/K8squad/K8squad/db": 8.6,
   "github.com/K8squad/K8squad/internal/a2a": 77,
-  "github.com/K8squad/K8squad/internal/apiserver": 74.8,
+  "github.com/K8squad/K8squad/internal/apiserver": 75.7,
   "github.com/K8squad/K8squad/internal/artifactbrowser": 54.1,
   "github.com/K8squad/K8squad/internal/buildbrowser": 76.4,
   "github.com/K8squad/K8squad/internal/buildbrowser/readerpod": 87,
