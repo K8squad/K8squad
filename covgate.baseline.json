@@ -87,6 +87,6 @@
   "github.com/K8squad/K8squad/pkg/telemetry/tracing": 96.8,
   "github.com/K8squad/K8squad/pkg/toolchain": 72.2,
   "github.com/K8squad/K8squad/pkg/toolcred": 89.6,
-  "github.com/K8squad/K8squad/pkg/warmpool": 79.4,
+  "github.com/K8squad/K8squad/pkg/warmpool": 89.6,
   "github.com/K8squad/K8squad/pkg/workspace": 94.1
 }
