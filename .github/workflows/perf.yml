@@ -117,6 +117,11 @@ jobs:
           # trust auth (see service comment).
           DATABASE_URL: postgres://postgres@localhost:5432/perf?sslmode=disable
         run: |
+          # WS-2 (ISI-6800): pipefail so a crashed/FATAL bench (go test != 0)
+          # reddens this step instead of hiding behind tee's exit 0
+          # (gate-integrity). AC7 skip-with-reason semantics unchanged: the
+          # present=false guards live in earlier steps; in-bench t.Skip exits 0.
+          set -o pipefail
           go test -tags=chaos -run '^$' \
             -bench 'BenchmarkP1ClaimLatency|BenchmarkP4OutboxDeliveryLag' \
             -benchtime=200x -count=6 ./pkg/coord/ | tee new-p1p4.txt
@@ -183,6 +188,9 @@ jobs:
       - name: Run P2 benchmark
         if: steps.guard.outputs.present == 'true'
         run: |
+          # WS-2 (ISI-6800): pipefail — a crashed bench must redden the step,
+          # not hide behind tee's exit 0. Skips (guard absent / t.Skip) exit 0.
+          set -o pipefail
           go test -run '^$' -bench 'BenchmarkP2WarmPoolConvergence' \
             -benchtime=2000x -count=6 ./pkg/warmpool/ | tee new-p2.txt
       - name: Restore cached main baseline (P2)
@@ -247,5 +255,8 @@ jobs:
           # -race surfaces any fan-out data race; the bench Fatal-fails on a
           # dropped event, so a passing run is the zero-drop gate against the
           # real Hub.Publish path.
+          # WS-2 (ISI-6800): pipefail — a crashed bench must redden the step,
+          # not hide behind tee's exit 0. Skips (guard absent / t.Skip) exit 0.
+          set -o pipefail
           go test -run '^$' -bench 'BenchmarkP3SSE' \
             -benchtime=2000x -race -count=1 ./internal/apiserver/ | tee new-p3.txt
