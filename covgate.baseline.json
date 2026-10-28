@@ -36,7 +36,7 @@
   "github.com/K8squad/K8squad/internal/webhook/v1alpha1": 83.6,
   "github.com/K8squad/K8squad/internal/workitemindex": 68.2,
   "github.com/K8squad/K8squad/pkg/a2a": 75,
-  "github.com/K8squad/K8squad/pkg/auth": 56.3,
+  "github.com/K8squad/K8squad/pkg/auth": 86.0,
   "github.com/K8squad/K8squad/pkg/capability": 84.9,
   "github.com/K8squad/K8squad/pkg/contextasm": 88.2,
   "github.com/K8squad/K8squad/pkg/controller/cifailure": 90,
