@@ -32,7 +32,7 @@
   "github.com/K8squad/K8squad/internal/recallsource": 92.5,
   "github.com/K8squad/K8squad/internal/reviewdispatch": 85,
   "github.com/K8squad/K8squad/internal/runsource": 44.6,
-  "github.com/K8squad/K8squad/internal/webhook": 50,
+  "github.com/K8squad/K8squad/internal/webhook": 76,
   "github.com/K8squad/K8squad/internal/webhook/v1alpha1": 83.6,
   "github.com/K8squad/K8squad/internal/workitemindex": 68.2,
   "github.com/K8squad/K8squad/pkg/a2a": 75,
