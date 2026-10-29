@@ -38,26 +38,100 @@ P4_ISO_FACTOR = 1.50 # perfgate.P4IsoFactor
 # `BenchmarkP1ClaimLatency-6   200   763444 ns/op   0.9510 p95-ms`
 # Custom metrics appear as `<value> <unit>` pairs after ns/op.
 _LINE = re.compile(r'^Benchmark(\S+?)(?:-\d+)?\s+\d+\s+(.*)$')
+# WS-4 (ISI-6821): go test -bench pre-prints the padded Benchmark<Name>-N<TAB>
+# header BEFORE the bench body runs (testing.processBench), so a log line the
+# body emits (e.g. a relay WARN) lands between the header and the
+# iterations+metrics row that report() prints afterwards. That physical line
+# fails _LINE and its metrics were silently dropped - P4 ungated. _HEAD opens
+# a pending row for such a header; _CONT_* close it from later metric rows.
+_HEAD = re.compile(r'^Benchmark(\S+?)(?:-\d+)?(?=[ \t]|$)[ \t]*(.*)$')
+# A metrics continuation: an optional bare iteration count, then one or more
+# <value> <unit> pairs and NOTHING else. Timestamped log noise
+# (2026/10/28 19:44:15 WARN ...) deliberately fails this shape: after the
+# leading digits comes /, not whitespace-then-value.
+_CONT_ROW = re.compile(r'^\d+(?:[ \t]+[0-9.]+[ \t]+\S+)+[ \t]*$')
+_CONT_TAIL = re.compile(r'^[0-9.]+[ \t]+\S+(?:[ \t]+[0-9.]+[ \t]+\S+)*[ \t]*$')
+_SKIP_MARK = '--- SKIP:'
 _METRIC = re.compile(r'([0-9.]+)\s+(\S+)')
 
 
-def parse(path):
-    """path -> {benchname: {metric_unit: [values...]}} (multiple -count rows aggregate)."""
+def parse_text(text):
+    """bench text -> ({benchname: {unit: [values...]}}, {self-skipped benchnames}).
+
+    Multiple -count rows aggregate. A header whose metrics did not follow on the
+    same physical line opens a pending row; interleaved non-bench lines inside
+    the open block are skipped without closing it, so trailing metrics rows
+    still land. A b.Skip marker (--- SKIP:) marks the bench self-skipped so the
+    gate can tell a deliberate skip from a present-but-unparseable row.
+    """
     out = {}
+    skipped = set()
+    pending_name = None
+    pending_payload = []
+    last_name = None
+
+    def emit(name, payload):
+        bucket = out.setdefault(name, {})
+        for val, unit in _METRIC.findall(payload):
+            bucket.setdefault(unit, []).append(float(val))
+
+    def flush():
+        nonlocal pending_name
+        if pending_name is not None:
+            emit(pending_name, " ".join(pending_payload))
+            pending_name = None
+            pending_payload.clear()
+
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        m = _LINE.match(s)
+        if m:
+            # Complete single-physical-line row: clean output, or the interleave
+            # happened after report() had already written everything.
+            flush()
+            emit(m.group(1), m.group(2))
+            last_name = m.group(1)
+            continue
+        if s.startswith('Benchmark'):
+            mh = _HEAD.match(s)
+            if mh:
+                flush()
+                pending_name = mh.group(1)
+                last_name = pending_name
+                if _SKIP_MARK in s:
+                    skipped.add(pending_name)
+                continue
+        if pending_name is not None and (_CONT_ROW.match(s) or _CONT_TAIL.match(s)):
+            if _CONT_ROW.match(s):
+                # Drop the bare leading iteration count: in _METRIC.findall it
+                # pairs with the ns/op value and fabricates a bogus unit.
+                s = re.sub(r'^\d+[ \t]+', '', s, count=1)
+            pending_payload.append(s)
+            continue
+        if _SKIP_MARK in s and last_name is not None:
+            skipped.add(pending_name if pending_name is not None else last_name)
+            continue
+        # Anything else is interleaved log noise inside an open bench block:
+        # skip the line, keep the block open.
+    flush()
+    return out, skipped
+
+
+def parse_file(path):
+    """path -> ({benchname: {unit: [values...]}}, {self-skipped names})."""
     try:
         with open(path) as fh:
             text = fh.read()
     except FileNotFoundError:
-        return out
-    for line in text.splitlines():
-        m = _LINE.match(line.strip())
-        if not m:
-            continue
-        name, rest = m.group(1), m.group(2)
-        bucket = out.setdefault(name, {})
-        for val, unit in _METRIC.findall(rest):
-            bucket.setdefault(unit, []).append(float(val))
-    return out
+        text = ''
+    return parse_text(text)
+
+
+def parse(path):
+    """path -> {benchname: {metric_unit: [values...]}} (baseline form)."""
+    return parse_file(path)[0]
 
 
 def median(vals):
@@ -71,16 +145,27 @@ def rel(main_v, branch_v):
     return (branch_v - main_v) / main_v
 
 
-def gate_p1p4(new, base):
+def gate_p1p4(new, base, skipped=frozenset()):
     ok = True
     # ---- P4: branch-internal iso-ratio, always gated ----
     p4 = new.get('P4OutboxDeliveryLag', {})
     iso = median(p4.get('iso-ratio', []))
     if iso is None:
-        # The bench self-skipped (no committed samples / no DATABASE_URL). Never
-        # a silent green — announce it.
-        print("::notice::P4 skip-with-reason: no iso-ratio metric emitted "
-              "(bench skipped — no Postgres or lane drained). Not gated this run.")
+        if 'P4OutboxDeliveryLag' in new and 'P4OutboxDeliveryLag' not in skipped:
+            # WS-4 (ISI-6821) guardrail: the bench header IS in the text and the
+            # bench did not self-skip, yet zero iso-ratio samples parsed - the
+            # present-but-unparseable case. Never a benign skip: that is the
+            # exact silent-ungate class WS-2 closed for crashed benches.
+            ok = False
+            print("::error::P4 FAIL  BenchmarkP4OutboxDeliveryLag rows present but zero "
+                  "iso-ratio samples parsed (present-but-unparseable is never a benign "
+                  "skip - ISI-6821). File a gate-integrity issue; do not re-run to green.")
+        else:
+            # The bench self-skipped (no committed samples / no DATABASE_URL) or
+            # the lane was drained (no header at all). Never a silent green -
+            # announce it.
+            print("::notice::P4 skip-with-reason: no iso-ratio metric emitted "
+                  "(bench skipped - no Postgres or lane drained). Not gated this run.")
     elif iso <= P4_ISO_FACTOR:
         print(f"P4 PASS  write p95 sick/healthy = {iso:.2f}x (max {P4_ISO_FACTOR:.2f}x) — §17.4 isolation holds")
     else:
@@ -133,13 +218,14 @@ def main():
     ap.add_argument('--kind', choices=['p1p4', 'p2'], default='p1p4')
     args = ap.parse_args()
 
-    new = parse(args.new)
+    new, new_skipped = parse_file(args.new)
     base = parse(args.baseline) if args.baseline else {}
     if not new:
         print(f"::error::gate: no Benchmark rows parsed from {args.new} — the perf lane measured nothing.")
         return 1
 
-    ok = gate_p1p4(new, base) if args.kind == 'p1p4' else gate_p2(new, base)
+    ok = (gate_p1p4(new, base, new_skipped) if args.kind == 'p1p4'
+          else gate_p2(new, base))
     return 0 if ok else 1
 
 

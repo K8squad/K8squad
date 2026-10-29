@@ -205,6 +205,21 @@ jobs:
       - name: Enforce the metric-label cardinality allowlist
         run: scripts/ci/obs-cardinality-gate.sh
 
+  perf-gate-parser:
+    name: perf / gate.py parser unit tests
+    runs-on: [self-hosted, linux, x64]
+    # WS-4 (ISI-6821): the perf gate parser must survive interleaved bench-time
+    # log lines - a WARN between the pre-printed Benchmark header and its
+    # metrics row used to zero out the P4 iso-ratio samples and silently ungate
+    # P4 - and present-but-metricless P4 rows must redden the gate, never
+    # benign-skip. Pure stdlib unittest on every PR: parser teeth belong on the
+    # PR path, unlike the noisy benches themselves (perf.yml).
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run gate.py parser unit tests
+        run: python3 .github/perf/gate_test.py -v
+
   migrations:
     name: db / migrations self-check
     runs-on: [self-hosted, linux, x64]
