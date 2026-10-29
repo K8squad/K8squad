@@ -11,254 +11,211 @@
 #
 # Format reference: https://trivy.dev/latest/docs/configuration/filtering/#trivyignore
 #
+# --- ISI-6822 fleet renewal 2026-10-29 (was: all 71 entries expired 2026-10-28 together) ---
+# Full re-verification sweep, evidence per entry below. Upstream checks + `trivy rootfs` on the
+# candidate binaries + `trivy image` on the bases (DB 2026-10-29):
+#   DELETED (15) — fixes verified landed:
+#     oras-go 2.6.1 CVEs (50163/85731): helm v3.22.1 vendors oras-go 2.6.2, trivy-clean.
+#     x/mod CVEs (56864/56865): gh v2.103.3 vendors x/mod 0.41.0, trivy-clean.
+#     npm bundled CVEs (14257/69152/69192/73566): npm 12.2.1 bundles brace-expansion 5.0.12,
+#       ip-address 10.7.2, node-tar 7.5.22 — verified from the 12.2.1 tarball; pin re-pinned.
+#     util-linux CVEs (53612/53613/53614/76642/78408/78409/78410): python:3.12-alpine rebased
+#       onto alpine 3.24.3 shipping util-linux 2.42.3-r1 — trivy image scan clean 2026-10-29.
+#   PIN BUMPS in the same PR (fixes verified in-binary via go buildinfo + trivy):
+#     helm v3.21.4→v3.22.1 (go1.26.9, x/net 0.60.0, oras 2.6.2), kubectl v1.36.4→v1.36.6
+#     (go1.26.10), gh v2.98.0→v2.103.3 (go1.27.3, grpc 1.84.0), dtctl v0.38.0→v0.45.0
+#     (go1.26.10, grpc 1.83.2), npm 12.0.2→12.2.1; docker-cli apk pass +brotli-libs +libcurl.
+#   NEW (4) — advisories the 2026-10 DB added against still-shipping versions: 111943, 56851,
+#     56857, GHSA-hrxh-6v49-42gf.
+#   STAGGER: expiry dates are now split per carrier group (11-12 runtime bases / 11-19
+#     clusterctl / 11-26 kubectl+docker-cli) so the fleet can never expire as one batch again.
+#
 # --- active suppressions ---
 # openssl CVE batch in the ksquad-console RUNTIME base (gcr.io/distroless/nodejs24-debian12:nonroot,
 # libssl3 3.0.18-1~deb12u2, debian 12.13). Fixes exist upstream (libssl3 3.0.19/3.0.20-1~deb12u2 in
 # bookworm security) and ride the next distroless tag rebuild; distroless has no package manager so
 # the image cannot be patched in-repo. Remediation is external (upstream distroless base rebuild) —
-# there is no open in-repo ticket: origin was ISI-2852 (done), renewal is ISI-4695. Durable action:
-# remove these entries once the rebuilt base carries libssl3 >= 3.0.20 (check the runtime base pin in
-# Dockerfile.console).
-# Re-verified 2026-09-20 (ISI-4695): inspected the live nonroot manifest's dpkg status.d — the base
-# STILL ships libssl3 3.0.18-1~deb12u2, so the distroless rebuild has NOT landed and every CVE below
-# is still present and unpatchable-in-repo. Renewed (not blind) to a fresh near-term expiry.
-# Re-verified 2026-10-08 (ISI-4695 cadence): runtime base pin in Dockerfile.console is UNCHANGED
-# (gcr.io/distroless/nodejs24-debian12:nonroot) — no distroless rebuild adopted in-repo, so every
-# openssl CVE below remains present and unpatchable-in-repo. Renewed to a fresh near-term expiry.
-# Re-verified 2026-10-29 (ISI-6823): Dockerfile.console runtime base pin UNCHANGED
-# (gcr.io/distroless/nodejs24-debian12:nonroot) — distroless rebuild still not adopted in-repo, so every
-# openssl CVE below remains present and unpatchable-in-repo. Staggered renewal to 2026-11-12.
-# CVE-2026-31789   expires:2026-11-12   justification:CRITICAL openssl heap overflow (32-bit X.509); runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+# there is no open in-repo ticket: origin was ISI-2852 (done), renewal cadence is ISI-4695.
+# Re-verified 2026-10-08 (ISI-4695 cadence): base pin UNCHANGED, no rebuild adopted in-repo.
+# Re-verified 2026-10-29 (ISI-6822): inspected the live nonroot manifest dpkg status.d + trivy
+# image scan — the base STILL ships libssl3 3.0.18-1~deb12u2 (fixes 3.0.19/3.0.20-1~deb12u2),
+# so the distroless rebuild STILL has not landed and every CVE below remains present and
+# unpatchable-in-repo. Renewed (not blind).
+# CVE-2026-31789   expires:2026-11-12   justification:CRITICAL openssl heap overflow (32-bit X.509); runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
 CVE-2026-31789
-# CVE-2026-28387   expires:2026-11-12   justification:HIGH openssl DANE TLSA use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+# CVE-2026-28387   expires:2026-11-12   justification:HIGH openssl DANE TLSA use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
 CVE-2026-28387
-# CVE-2026-28388   expires:2026-11-12   justification:HIGH openssl delta-CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+# CVE-2026-28388   expires:2026-11-12   justification:HIGH openssl delta-CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
 CVE-2026-28388
-# CVE-2026-28389   expires:2026-11-12   justification:HIGH openssl CMS processing DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+# CVE-2026-28389   expires:2026-11-12   justification:HIGH openssl CMS processing DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
 CVE-2026-28389
-# CVE-2026-28390   expires:2026-11-12   justification:HIGH openssl CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+# CVE-2026-28390   expires:2026-11-12   justification:HIGH openssl CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
 CVE-2026-28390
-# CVE-2026-45447   expires:2026-11-12   justification:HIGH openssl PKCS7_verify use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+# CVE-2026-45447   expires:2026-11-12   justification:HIGH openssl PKCS7_verify use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
 CVE-2026-45447
 
-# --- ISI-3923: 2026-09 CVE batch surfaced by the Trivy DB across the toolchain images ---
-# These are baked into UPSTREAM release binaries we download by pinned version (helm, kubectl,
-# gh, dtctl, docker-cli) or bundled inside npm shipped in node:22-alpine — none are patchable in
-# this repo, they clear only when the upstream tool ships a rebuild compiled with the fixed dep.
-# All toolchain-image-only (no runtime/console exposure). Tracked by ISI-3923 (open remediation that
-# bumps the pinned upstream versions / npm as patched releases land) — durable pointer for whoever
-# hits the next red gate; the 2026-09-20 renewal itself is ISI-4695. Re-justify before expiry rather
-# than blind-renew.
-# Re-verified 2026-09-20 (ISI-4695): every pin below is UNCHANGED in-repo since these entries were
-# written — helm v3.21.4, kubectl v1.36.4, gh v2.98.0, dtctl v0.38.0, docker:29-cli, npm 12.0.2
-# (node:22-alpine), python:3.12-alpine. No upstream fix has been pulled in, so all remain valid and
-# unpatchable-in-repo. Renewed (not blind) to a fresh near-term expiry.
-# Re-verified 2026-10-08 (ISI-4695 cadence): re-grepped the Dockerfile.toolchain-* ARG pins — all
-# STILL identical (helm v3.21.4, kubectl v1.36.4, gh v2.98.0, dtctl v0.38.0, docker:29-cli,
-# npm 12.0.2 / node:22-alpine, python:3.12-alpine). No upstream fix adopted; all remain valid and
-# unpatchable-in-repo. Renewed to a fresh near-term expiry.
-# Re-verified 2026-10-29 (ISI-6823): re-grepped every Dockerfile.toolchain-* ARG pin — helm v3.21.4,
-# kubectl v1.36.4, gh v2.98.0, dtctl v0.38.0, docker:29-cli, npm 12.0.2 (node:22-alpine),
-# python:3.12-alpine ALL still identical; no upstream fix adopted in-repo, all remain valid and
-# unpatchable-in-repo. Staggered renewal to 2026-11-17. (npm latest is 12.2.1; a pin bump + toolchain
-# image rebuild to clear the brace-expansion/ip-address/node-tar batch is tracked as follow-up under
-# ISI-3444/ISI-3923 — NOT blind-renewed or blind-bumped here.)
+# openssl DTLS info disclosure — originally fleet-wide alpine libcrypto3/libssl3 3.3.7-r1.
+# Re-verified 2026-10-29 (ISI-6822): the alpine:3.21 rolling tag now ships libcrypto3/libssl3
+# 3.3.7-r2 (APKINDEX + trivy image scan clean), so every alpine-final toolchain image cleared.
+# Sole remaining carrier: the distroless nodejs24 runtime base (debian libssl3 3.0.18-1~deb12u2,
+# fix 3.0.22-1~deb12u2 per trivy 2026-10-29) — patch rides the same distroless rebuild as the
+# batch above.
+# CVE-2026-84782   expires:2026-11-12   justification:HIGH openssl DTLS info disclosure; alpine fleet cleared via rebuilt alpine:3.21 base (3.3.7-r2, verified 2026-10-29); remaining carrier distroless nodejs24 runtime base (libssl3 3.0.18, fix 3.0.22 pending distroless rebuild)
+CVE-2026-84782
+
+# ansible-core 2.17.6 — argument injection in ansible-galaxy.
+# Re-verified 2026-10-29 (ISI-6822): 2.17 line moved to 2.17.9 but its changelog still carries no
+# CVE-2026-11332 fix (fix shipped on other lines; ansible-core latest is 2.21.5). A 2.17→2.21 pin
+# bump is a compat decision for the ansible toolchain owner, not a hotfix — tracked separately.
+# CVE-2026-11332   expires:2026-11-12   justification:HIGH ansible-core argument injection in ansible-galaxy (v2.17.6); re-verified 2026-10-29: 2.17.9 still carries no fix on the 2.17 line, suppress pending upstream 2.17.x GA fix or deliberate pin bump
+CVE-2026-11332
+
+# --- ISI-3923/6822: upstream-binary CVE batch — sole remaining carriers after the 2026-10-29 pin bumps ---
+# helm v3.22.1 (go1.26.9, x/net 0.60.0, oras 2.6.2), kubectl v1.36.6 (go1.26.10), gh v2.103.3
+# (go1.27.3, grpc 1.84.0, x/mod 0.41.0) and dtctl v0.45.0 (go1.26.10, grpc 1.83.2) are all
+# trivy-clean as of 2026-10-29 — their former entries were deleted. Everything in this section
+# survives ONLY on clusterctl v1.9.6 or the docker:29-cli / kubectl pins below; none are
+# rebuildable in-repo (static upstream binaries).
 #
-# Go stdlib / x-net advisories fixed in Go 1.26.6 — present in the helm v3.21.4 and kubectl
-# v1.36.4 release binaries (compiled with Go 1.26.5). Download-only, not rebuildable in-repo.
-# CVE-2026-33818   expires:2026-11-17   justification:HIGH Go encoding/asn1 DoS; upstream helm/kubectl binary compiled with Go 1.26.5, fix rides next release built on Go 1.26.6
+# Go stdlib / x-net advisories fixed in Go 1.26.6 — former helm/kubectl carriers are clean after
+# the bumps; clusterctl v1.9.6 is compiled with go1.22.12, far below every fix floor.
+# CVE-2026-33818   expires:2026-11-19   justification:HIGH Go encoding/asn1 DoS (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-33818
-# CVE-2026-39821   expires:2026-11-17   justification:HIGH Go net/http via x/net/idna; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+# CVE-2026-39821   expires:2026-11-19   justification:HIGH Go net/http via x/net/idna (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-39821
-# CVE-2026-46600   expires:2026-11-17   justification:HIGH Go x/net/dns/dnsmessage DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+# CVE-2026-46600   expires:2026-11-19   justification:HIGH Go x/net/dns/dnsmessage DoS (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-46600
-# CVE-2026-56853   expires:2026-11-17   justification:HIGH Go net/http unencrypted HTTP/2; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+# CVE-2026-56853   expires:2026-11-19   justification:HIGH Go net/http unencrypted HTTP/2 (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-56853
-# CVE-2026-56858   expires:2026-11-17   justification:HIGH Go html/template XSS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+# CVE-2026-56858   expires:2026-11-19   justification:HIGH Go html/template XSS (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-56858
-# CVE-2026-56859   expires:2026-11-17   justification:HIGH Go encoding/xml DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+# CVE-2026-56859   expires:2026-11-19   justification:HIGH Go encoding/xml DoS (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-56859
-# CVE-2026-56860   expires:2026-11-17   justification:HIGH Go net/url DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+# CVE-2026-56860   expires:2026-11-19   justification:HIGH Go net/url DoS (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-56860
-# CVE-2026-56862   expires:2026-11-17   justification:HIGH Go crypto/tls DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+# CVE-2026-56862   expires:2026-11-19   justification:HIGH Go crypto/tls DoS (fix Go 1.26.6); sole carrier clusterctl v1.9.6 (go1.22.12) after helm/kubectl bumps, fix rides CAPI upgrade
 CVE-2026-56862
 #
-# helm v3.21.4 binary vendored modules (fixes in x/crypto 0.55.0 / oras-go 2.6.2).
-# CVE-2026-56854   expires:2026-11-17   justification:CRITICAL golang.org/x/crypto/ssh; vendored in upstream helm v3.21.4 binary (helm exposes no SSH server), fix rides next helm release
+# x/crypto/ssh (fix 0.55.0) — helm v3.22.1 vendors x/crypto 0.57.0 (clean); clusterctl v1.9.6
+# vendors x/crypto 0.31.0.
+# CVE-2026-56854   expires:2026-11-19   justification:CRITICAL golang.org/x/crypto/ssh (fix 0.55.0); helm v3.22.1 now clean (x/crypto 0.57.0), sole carrier clusterctl v1.9.6 (0.31.0), fix rides CAPI upgrade
 CVE-2026-56854
-# CVE-2026-50163   expires:2026-11-17   justification:HIGH oras.land/oras-go/v2 info disclosure/arbitrary-file; vendored in upstream helm v3.21.4 binary (oras-go v2.6.1), fix rides next helm release
-CVE-2026-50163
-# CVE-2026-85731   expires:2026-11-17   justification:HIGH oras.land/oras-go/v2 (v2.6.1, fix 2.6.2); sibling advisory on the same helm-vendored oras-go, gates toolchain/helm (Build Images run 35329871343), rides next helm release
-CVE-2026-85731
 #
-# gh v2.98.0 binary vendored golang.org/x/mod (fix 0.40.0).
-# CVE-2026-56864   expires:2026-11-17   justification:HIGH golang.org/x/mod malicious GOSUMDB arbitrary module; vendored in upstream gh v2.98.0 binary, fix rides next gh release
-CVE-2026-56864
-# CVE-2026-56865   expires:2026-11-17   justification:HIGH golang.org/x/mod/sumdb/tlog; vendored in upstream gh v2.98.0 binary, fix rides next gh release
-CVE-2026-56865
-#
-# grpc-go (google.golang.org/grpc v1.83.0) vendored in the gh v2.98.0 and dtctl v0.38.0 upstream
-# binaries; the 1.83.2 upstream bump clears both advisories below at once.
-# CVE-2026-84304   expires:2026-11-17   justification:HIGH google.golang.org/grpc; vendored in upstream gh v2.98.0 / dtctl v0.38.0 binaries, fix rides next upstream release
+# grpc-go — gh v2.103.3 (grpc 1.84.0) and dtctl v0.45.0 (grpc 1.83.2) are clean after the bumps;
+# clusterctl v1.9.6 still vendors grpc 1.65.1.
+# CVE-2026-84304   expires:2026-11-19   justification:HIGH google.golang.org/grpc (fix 1.83.1); gh v2.103.3 + dtctl v0.45.0 now clean, sole carrier clusterctl v1.9.6 (grpc 1.65.1), fix rides CAPI upgrade
 CVE-2026-84304
-# CVE-2026-84445   expires:2026-11-17   justification:HIGH google.golang.org/grpc (v1.83.0, fix 1.83.2); sibling advisory on the same gh/dtctl-vendored grpc, gates toolchain/gh + toolchain/dtctl (Build Images run 35329871343), rides next upstream release
+# CVE-2026-84445   expires:2026-11-19   justification:HIGH google.golang.org/grpc (v1.65.1, fix 1.82.2+); gh v2.103.3 + dtctl v0.45.0 now clean, sole carrier clusterctl v1.9.6, fix rides CAPI upgrade
 CVE-2026-84445
 #
-# docker:29-cli binary vendored github.com/moby/go-archive (fix 0.3.0).
-# CVE-2026-17106   expires:2026-11-17   justification:HIGH github.com/moby/go-archive arbitrary-file; vendored in upstream docker:29-cli binary, fix rides next docker-cli release
-CVE-2026-17106
-#
-# npm 12.0.2 bundled deps in the node:22-alpine toolchain image; patched versions ride a future
-# npm release the node toolchain then re-pins (Dockerfile.toolchain-node NPM_VERSION, ISI-3444).
-# CVE-2026-14257   expires:2026-11-17   justification:HIGH brace-expansion DoS (fix 5.0.8); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
-CVE-2026-14257
-# CVE-2026-69152   expires:2026-11-17   justification:HIGH brace-expansion DoS bypass of CVE-2026-14257 (fix 5.0.9); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
-CVE-2026-69152
-# CVE-2026-69192   expires:2026-11-17   justification:HIGH ip-address inconsistent IP parsing (fix 10.3.1); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
-CVE-2026-69192
-# CVE-2026-73566   expires:2026-11-17   justification:HIGH node-tar DoS via crafted long-path (fix 7.5.21); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
-CVE-2026-73566
-#
-# alpine util-linux (libuuid) in the python:3.12-alpine toolchain base; fix (util-linux 2.42.3)
-# pending in the alpine repo. Dockerfile.toolchain-python apk-upgrades util-linux, so these
-# clear automatically once the repo carries 2.42.3 — kept as a dated backstop until then.
-# CVE-2026-53612   expires:2026-11-17   justification:HIGH util-linux TOCTOU in mount (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
-CVE-2026-53612
-# CVE-2026-53613   expires:2026-11-17   justification:HIGH util-linux TOCTOU in mount (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
-CVE-2026-53613
-# CVE-2026-53614   expires:2026-11-17   justification:HIGH util-linux SUID mount nosuid/noexec bypass (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
-CVE-2026-53614
-# CVE-2026-76642   expires:2026-11-17   justification:HIGH util-linux failed external mount helper (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
-CVE-2026-76642
-# CVE-2026-78408   expires:2026-11-17   justification:HIGH util-linux nsenter --join-cgroup leaks root (fix 2.42.3-r1); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
-CVE-2026-78408
-# CVE-2026-78409   expires:2026-11-17   justification:HIGH util-linux X-mount.subdir detached-tree (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
-CVE-2026-78409
-# CVE-2026-78410   expires:2026-11-17   justification:HIGH util-linux restricted bind mounts not pinned (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
-CVE-2026-78410
-
-# --- ISI-5768: 2026-10 CVE batch — fleet-wide + new toolchain images (Ops/Bluebox/Security/Design/Content waves) ---
-#
-# Fleet-wide alpine libcrypto3/libssl3 (CVE-2026-84782):
-# Fix exists in alpine (3.3.7-r2); toolchain Dockerfiles that do `apk upgrade libcrypto3 libssl3`
-# already pick it up automatically. Those that don't are suppressed here pending a systematic
-# apk-upgrade pass across all remaining Dockerfiles (clusterctl already fixed in this PR).
-# Verified 2026-10-13 (ISI-5768): fix present in alpine 3.21 repo; only images without the apk
-# upgrade step are affected.
-# Re-verified 2026-10-29 (ISI-6823): clusterctl v1.9.5 + terraform v1.9.8 pins UNCHANGED (both still the
-# latest adopted in-repo); Dockerfile.toolchain-python keeps its `apk upgrade libcrypto3 libssl3 util-linux`
-# backstop but the alpine repo fix is not confirmed landed, so every entry below stays valid and
-# unpatchable-in-repo. Staggered renewal: fleet-alpine libcrypto3/libssl3 -> 2026-11-19;
-# fleet Go stdlib/x-net + clusterctl-vendored -> 2026-11-21.
-# CVE-2026-84782   expires:2026-11-19   justification:HIGH openssl DTLS info disclosure (3.3.7-r1→r2); alpine base, fix available via apk upgrade; systematic Dockerfile fix pending
-CVE-2026-84782
-#
-# Fleet-wide Go stdlib / x/net advisories fixed in Go 1.26.9 + x/net 0.60.0 — present in the
-# upstream release binaries (helm v3.21.4, kubectl v1.36.4, gh v2.98.0, dtctl v0.38.0,
-# clusterctl v1.9.5, terraform v1.9.8) compiled with Go 1.26.5 and vendored x/net 0.56.0 or
-# earlier. Download-only, not rebuildable in-repo; fix rides next upstream release.
-# CVE-2026-78667   expires:2026-11-21   justification:HIGH stdlib net/http DoS (Go 1.26.5→1.26.9); upstream binaries compiled with Go 1.26.5, fix rides next upstream release
+# Go stdlib advisories fixed in Go 1.26.9 — helm v3.22.1 (go1.26.9), kubectl v1.36.6 (go1.26.10),
+# gh v2.103.3 (go1.27.3), dtctl v0.45.0 (go1.26.10) all clean; clusterctl v1.9.6 (go1.22.12) remains.
+# CVE-2026-78667   expires:2026-11-19   justification:HIGH stdlib net/http DoS (Go 1.26.5→1.26.9); all bumped binaries clean, sole carrier clusterctl v1.9.6 (go1.22.12), fix rides CAPI upgrade
 CVE-2026-78667
-# CVE-2026-78669   expires:2026-11-21   justification:HIGH x/net+stdlib HTTP/2 DoS (x/net 0.56.0→0.60.0); upstream binaries, fix rides next upstream release
-CVE-2026-78669
-# CVE-2026-97031   expires:2026-11-21   justification:HIGH stdlib crypto/tls DoS (Go 1.26.5→1.26.9); upstream binaries compiled with Go 1.26.5, fix rides next upstream release
+# CVE-2026-97031   expires:2026-11-19   justification:HIGH stdlib crypto/tls DoS (Go 1.26.5→1.26.9); all bumped binaries clean, sole carrier clusterctl v1.9.6 (go1.22.12), fix rides CAPI upgrade
 CVE-2026-97031
+
+# --- kubectl v1.36.6 + docker:29-cli toolchain (staggered latest: shortest unblock paths) ---
+# CVE-2026-78669   expires:2026-11-26   justification:HIGH x/net HTTP/2 DoS (fix 0.60.0); kubectl v1.36.6 still vendors x/net 0.56.0 and docker:29-cli buildx/compose plugins 0.58/0.59 (verified 2026-10-29), helm/gh/dtctl clean after bumps; fix rides next kubectl patch / docker-cli release / plugin refresh
+CVE-2026-78669
+# CVE-2026-17106   expires:2026-11-26   justification:HIGH github.com/moby/go-archive arbitrary-file (v0.2.0, fix 0.3.0); docker:29-cli binary still vendors 0.2.0 (trivy-verified 2026-10-29), fix rides next docker-cli release
+CVE-2026-17106
+
+# --- ISI-5768/6822: clusterctl v1.9.6 static binary — vendored module CVEs (kubernetes-sigs/cluster-api) ---
+# Verified 2026-10-29 (ISI-6822): v1.9.6 is the newest 1.9.x release and is NOT a security
+# refresh — `go version -m` + trivy on the release binary show go1.22.12, x/crypto 0.31.0,
+# x/net 0.33.0, grpc 1.65.1, otel/sdk 1.28.0, x/text 0.21.0, oauth2 0.24.0: every advisory
+# below is still present and none is patchable in-repo (static binary from a GitHub release).
+# CAPI 1.9 is EOL (current release lines: v1.12–v1.14); the durable fix is a clusterctl line
+# upgrade, which is a breaking CAPI migration decision to be tracked as its own issue, not a
+# .trivyignore renewal. Until then these stay suppressed on a short leash.
 #
-# clusterctl v1.9.5 binary — vendored module CVEs (kubernetes-sigs/cluster-api).
-# clusterctl v1.9.5 is the latest CAPI 1.9 release; it vendors older x/crypto, x/net, x/oauth2,
-# x/text, otel/sdk, google.golang.org/grpc, and stdlib from an earlier Go. None are
-# rebuildable in-repo (static binary downloaded from GitHub release). Fix rides next
-# clusterctl release that bumps the affected deps.
-# Verified 2026-10-13 (ISI-5768): clusterctl v1.9.5 is the latest 1.9.x; all CVEs below
-# are present in the static binary and not patchable in-repo. Tracked under ISI-5768 Ops wave.
-#
-# stdlib (Go 1.22.x / older) — present in clusterctl v1.9.5 which was compiled with an older toolchain
-# CVE-2025-61726   expires:2026-11-21   justification:CRITICAL stdlib x/net RCE; clusterctl v1.9.5 compiled with older Go, fix rides next clusterctl release
+# stdlib (Go 1.22.12) — clusterctl v1.9.6
+# CVE-2025-61726   expires:2026-11-19   justification:CRITICAL stdlib x/net RCE (fix Go 1.24.12+); clusterctl v1.9.6 compiled with go1.22.12 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2025-61726
-# CVE-2025-61729   expires:2026-11-21   justification:CRITICAL stdlib DoS; clusterctl v1.9.5 compiled with older Go, fix rides next clusterctl release
+# CVE-2025-61729   expires:2026-11-19   justification:CRITICAL stdlib DoS (fix Go 1.24.11+); clusterctl v1.9.6 compiled with go1.22.12 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2025-61729
-# CVE-2025-68121   expires:2026-11-21   justification:CRITICAL stdlib net/http (fix Go 1.24.13); clusterctl v1.9.5 compiled with older Go, not rebuildable in-repo, fix rides next clusterctl release
+# CVE-2025-68121   expires:2026-11-19   justification:CRITICAL stdlib net/http (fix Go 1.24.13); clusterctl v1.9.6 compiled with go1.22.12 (re-verified 2026-10-29), not rebuildable in-repo, fix rides CAPI line upgrade
 CVE-2025-68121
+# CVE-2026-56857   expires:2026-11-19   justification:HIGH stdlib (fix Go 1.26.9/1.27.2); NEW advisory vs the 2026-10-28 batch, still shipping in clusterctl v1.9.6 (go1.22.12, verified 2026-10-29), fix rides CAPI line upgrade
+CVE-2026-56857
+# CVE-2026-111943   expires:2026-11-19   justification:HIGH stdlib crypto/x509 MITM via untrusted intermediate certs (fix Go 1.26.10/1.27.3); NEW advisory — carriers clusterctl v1.9.6 (go1.22.12) and helm v3.22.1 (go1.26.9, verified 2026-10-29), fix rides next upstream rebuilds
+CVE-2026-111943
 #
-# golang.org/x/crypto v0.31.0 vendored in clusterctl v1.9.5 (fix 0.35.0+)
-# CVE-2025-22869   expires:2026-11-21   justification:HIGH x/crypto/ssh DoS (v0.31.0→0.35.0); vendored in clusterctl v1.9.5 static binary, fix rides next clusterctl release
+# golang.org/x/crypto v0.31.0 vendored in clusterctl v1.9.6
+# CVE-2025-22869   expires:2026-11-19   justification:HIGH x/crypto/ssh DoS (v0.31.0→0.35.0); vendored in clusterctl v1.9.6 static binary (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2025-22869
-# CVE-2025-47913   expires:2026-11-21   justification:HIGH x/crypto/ssh/agent panic (v0.31.0→0.43.0); vendored in clusterctl v1.9.5 static binary, fix rides next clusterctl release
+# CVE-2025-47913   expires:2026-11-19   justification:HIGH x/crypto/ssh/agent panic (v0.31.0→0.43.0); vendored in clusterctl v1.9.6 static binary (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2025-47913
-# CVE-2026-39828   expires:2026-11-21   justification:HIGH x/crypto/ssh unauthorized cmd exec; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39828   expires:2026-11-19   justification:HIGH x/crypto/ssh unauthorized cmd exec (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39828
-# CVE-2026-39829   expires:2026-11-21   justification:HIGH x/crypto/ssh DoS crafted pubkey; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39829   expires:2026-11-19   justification:HIGH x/crypto/ssh DoS crafted pubkey (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39829
-# CVE-2026-39830   expires:2026-11-21   justification:HIGH x/crypto/ssh DoS resource leak; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39830   expires:2026-11-19   justification:HIGH x/crypto/ssh DoS resource leak (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39830
-# CVE-2026-39831   expires:2026-11-21   justification:HIGH x/crypto/ssh security key bypass; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39831   expires:2026-11-19   justification:HIGH x/crypto/ssh security key bypass (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39831
-# CVE-2026-39832   expires:2026-11-21   justification:HIGH x/crypto/ssh/agent key restriction bypass; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39832   expires:2026-11-19   justification:HIGH x/crypto/ssh/agent key restriction bypass (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39832
-# CVE-2026-39835   expires:2026-11-21   justification:HIGH x/crypto/ssh DoS crafted cert; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39835   expires:2026-11-19   justification:HIGH x/crypto/ssh DoS crafted cert (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39835
-# CVE-2026-39836   expires:2026-11-21   justification:HIGH x/crypto/ssh; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39836   expires:2026-11-19   justification:HIGH x/crypto/ssh (fix 0.52.0 x/crypto or Go 1.26.3 stdlib); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39836
-# CVE-2026-42499   expires:2026-11-21   justification:HIGH x/crypto/ssh; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-42499   expires:2026-11-19   justification:HIGH x/crypto/ssh (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-42499
-# CVE-2026-42504   expires:2026-11-21   justification:HIGH x/crypto/ssh; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-42504   expires:2026-11-19   justification:HIGH x/crypto/ssh (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-42504
-# CVE-2026-42508   expires:2026-11-21   justification:HIGH x/crypto/ssh/knownhosts revocation bypass; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-42508   expires:2026-11-19   justification:HIGH x/crypto/ssh/knownhosts revocation bypass (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-42508
-# CVE-2026-46595   expires:2026-11-21   justification:HIGH x/crypto/ssh auth bypass; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-46595   expires:2026-11-19   justification:HIGH x/crypto/ssh auth bypass (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-46595
-# CVE-2026-46597   expires:2026-11-21   justification:HIGH x/crypto/ssh DoS AES-GCM; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-46597   expires:2026-11-19   justification:HIGH x/crypto/ssh DoS AES-GCM (fix 0.52.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-46597
 #
-# golang.org/x/net v0.33.0 vendored in clusterctl v1.9.5 (fix 0.53.0+)
-# CVE-2026-25681   expires:2026-11-21   justification:HIGH x/net/html XSS/arbitrary code exec; vendored in clusterctl v1.9.5 (x/net v0.33.0), fix rides next clusterctl release
+# golang.org/x/net v0.33.0 vendored in clusterctl v1.9.6
+# CVE-2026-25681   expires:2026-11-19   justification:HIGH x/net/html XSS/arbitrary code exec (fix 0.55.0); vendored in clusterctl v1.9.6 (x/net 0.33.0, re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-25681
-# CVE-2026-25679   expires:2026-11-21   justification:HIGH x/net; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-25679   expires:2026-11-19   justification:HIGH x/net (fix 0.55.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-25679
-# CVE-2026-27136   expires:2026-11-21   justification:HIGH x/net/html XSS bypass; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-27136   expires:2026-11-19   justification:HIGH x/net/html XSS bypass (fix 0.55.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-27136
-# CVE-2026-27145   expires:2026-11-21   justification:HIGH x/net; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-27145   expires:2026-11-19   justification:HIGH x/net (fix 0.55.0 x/net or Go 1.26.4 stdlib); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-27145
-# CVE-2026-33811   expires:2026-11-21   justification:HIGH x/net; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-33811   expires:2026-11-19   justification:HIGH x/net (fix 0.55.0 x/net or Go 1.26.3 stdlib); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-33811
-# CVE-2026-33814   expires:2026-11-21   justification:HIGH x/net HTTP/2 DoS; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-33814   expires:2026-11-19   justification:HIGH x/net HTTP/2 DoS (fix 0.53.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-33814
-# CVE-2026-39820   expires:2026-11-21   justification:HIGH x/net; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39820   expires:2026-11-19   justification:HIGH x/net (fix 0.55.0 x/net or Go 1.26.3 stdlib); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39820
-# CVE-2026-39822   expires:2026-11-21   justification:HIGH x/net; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39822   expires:2026-11-19   justification:HIGH x/net (fix 0.55.0 x/net or Go 1.26.5 stdlib); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39822
 #
-# google.golang.org/grpc v1.65.1 vendored in clusterctl v1.9.5 (fix 1.71.0+)
-# CVE-2026-33186   expires:2026-11-21   justification:CRITICAL grpc-go (v1.65.1); vendored in clusterctl v1.9.5 static binary, fix rides next clusterctl release
+# google.golang.org/grpc v1.65.1 vendored in clusterctl v1.9.6
+# CVE-2026-33186   expires:2026-11-19   justification:CRITICAL grpc-go (v1.65.1, fix 1.79.3); vendored in clusterctl v1.9.6 static binary (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-33186
+# GHSA-hrxh-6v49-42gf   expires:2026-11-19   justification:HIGH grpc-go (v1.65.1, fix 1.82.1); NEW advisory vs the 2026-10-28 batch, still vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
+GHSA-hrxh-6v49-42gf
 #
-# golang.org/x/oauth2 v0.24.0 vendored in clusterctl v1.9.5 (fix 0.27.0)
-# CVE-2025-22868   expires:2026-11-21   justification:HIGH x/oauth2/jws unexpected memory; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# golang.org/x/oauth2 v0.24.0 vendored in clusterctl v1.9.6
+# CVE-2025-22868   expires:2026-11-19   justification:HIGH x/oauth2/jws unexpected memory (fix 0.27.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2025-22868
 #
-# golang.org/x/text v0.21.0 vendored in clusterctl v1.9.5 (fix 0.39.0)
-# CVE-2026-56852   expires:2026-11-21   justification:HIGH x/text; vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# golang.org/x/text vendored in clusterctl v1.9.6 (0.21.0) and kubectl v1.36.6 (0.39.0)
+# CVE-2026-56852   expires:2026-11-19   justification:HIGH x/text (fix 0.39.0); vendored in clusterctl v1.9.6 (0.21.0, re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-56852
+# CVE-2026-56851   expires:2026-11-19   justification:HIGH x/text (fix 0.41.0); NEW advisory vs the 2026-10-28 batch — carriers clusterctl v1.9.6 (0.21.0) and kubectl v1.36.6 (0.39.0, verified 2026-10-29), fix rides CAPI upgrade / next kubectl patch
+CVE-2026-56851
 #
-# go.opentelemetry.io/otel/sdk v1.28.0 vendored in clusterctl v1.9.5 (fix v1.40.0+)
-# CVE-2026-24051   expires:2026-11-21   justification:HIGH otel-go PATH hijacking (v1.28.0→1.40.0); vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# go.opentelemetry.io/otel/sdk v1.28.0 vendored in clusterctl v1.9.6
+# CVE-2026-24051   expires:2026-11-19   justification:HIGH otel-go PATH hijacking (v1.28.0→1.40.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-24051
-# CVE-2026-39883   expires:2026-11-21   justification:HIGH otel-go PATH hijacking BSD/Solaris (v1.28.0→1.43.0); vendored in clusterctl v1.9.5, fix rides next clusterctl release
+# CVE-2026-39883   expires:2026-11-19   justification:HIGH otel-go PATH hijacking BSD/Solaris (v1.28.0→1.43.0); vendored in clusterctl v1.9.6 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-39883
 #
-# stdlib misc in clusterctl v1.9.5 (older Go)
-# CVE-2026-32280   expires:2026-11-21   justification:HIGH stdlib; clusterctl v1.9.5 compiled with older Go, fix rides next clusterctl release
+# stdlib misc in clusterctl v1.9.6 (go1.22.12)
+# CVE-2026-32280   expires:2026-11-19   justification:HIGH stdlib (fix Go 1.26.2); clusterctl v1.9.6 compiled with go1.22.12 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-32280
-# CVE-2026-32281   expires:2026-11-21   justification:HIGH stdlib; clusterctl v1.9.5 compiled with older Go, fix rides next clusterctl release
+# CVE-2026-32281   expires:2026-11-19   justification:HIGH stdlib (fix Go 1.26.2); clusterctl v1.9.6 compiled with go1.22.12 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-32281
-# CVE-2026-32283   expires:2026-11-21   justification:HIGH stdlib; clusterctl v1.9.5 compiled with older Go, fix rides next clusterctl release
+# CVE-2026-32283   expires:2026-11-19   justification:HIGH stdlib (fix Go 1.26.2); clusterctl v1.9.6 compiled with go1.22.12 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-32283
-#
-# ansible-core 2.17.6 METADATA — no GA fix available as of 2026-10-13.
-# CVE-2026-11332 (ansible-galaxy role install arg injection) fix ships in 2.16.19/2.18.18/2.19.11+
-# etc. but only RC versions exist at time of writing; 2.17.x line has no announced GA fix.
-# Pin is ansible-core==2.17.6; suppress until upstream ships a 2.17.x GA fix or pin is bumped.
-# Re-verified 2026-10-29 (ISI-6823): pin still ansible-core==2.17.6; no 2.17.x GA fix announced upstream.
-# Staggered renewal to 2026-11-24.
-# CVE-2026-11332   expires:2026-11-24   justification:HIGH ansible-core argument injection in ansible-galaxy (v2.17.6); no GA fix on 2.17 line as of 2026-10-13, suppress pending upstream 2.17.x patch or pin bump
-CVE-2026-11332
