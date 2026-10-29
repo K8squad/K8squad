@@ -9,5 +9,7 @@ LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
 # ISI-3923: pull the current alpine openssl fix (libcrypto3 >= 3.5.8-r0, CVE-2026-14456)
 # at build time instead of waiting on the rolling docker:29-cli base ref — same pattern
 # as Dockerfile.toolchain-python (ISI-3444).
-RUN apk upgrade --no-cache libcrypto3 libssl3
+# ISI-6822 (2026-10-29): also pull brotli-libs >= 1.2.1-r0 (CVE-2026-111497) and
+# libcurl >= 8.23.0-r0 (CVE-2026-92392) now shipped by the docker:29-cli alpine 3.24.3 base.
+RUN apk upgrade --no-cache libcrypto3 libssl3 brotli-libs libcurl
 ENTRYPOINT ["/usr/local/bin/docker"]
