@@ -293,3 +293,31 @@ func TestConformance_Goose_A2ALifecycle(t *testing.T) {
 		})
 	}
 }
+
+// TestConformance_CrewAI_RouterServed pins the router-served branch (ISI-6569,
+// ISI-6547): adapter #5 (crewai) advertises RouterServed=true, so VerifyRuntime
+// certifies it via the static agent-card check plus the by-design pass of the
+// five engine-path dimensions — never launching a one-shot engine. The report
+// still carries every AllChecks() dimension and reads conformant, so a
+// router-served runtime can neither silently skip a check nor read red.
+func TestConformance_CrewAI_RouterServed(t *testing.T) {
+	rt, err := runtimes.Get("crewai")
+	if err != nil {
+		t.Fatalf("crewai not registered: %v", err)
+	}
+	if !rt.Capabilities().RouterServed {
+		t.Fatalf("crewai must advertise RouterServed=true to hit the router-served conformance branch")
+	}
+	rep := VerifyRuntime(rt, Options{Lane: LaneDefault})
+	if len(rep.Results) != len(AllChecks()) {
+		t.Fatalf("report has %d results, want %d (a dimension was skipped)", len(rep.Results), len(AllChecks()))
+	}
+	for _, res := range rep.Results {
+		if !res.Pass {
+			t.Errorf("[crewai] %s FAILED: %s", res.Check, res.Detail)
+		}
+	}
+	if !rep.OK() {
+		t.Errorf("crewai is NOT conformant on the default lane\n%s", rep)
+	}
+}
