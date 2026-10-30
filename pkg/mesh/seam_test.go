@@ -47,6 +47,8 @@ func TestKsquadRuntimeSpec_Mapping(t *testing.T) {
 	}{
 		{runtimeType: apiv1alpha1.RuntimeTypeOpenCode},
 		{runtimeType: apiv1alpha1.RuntimeTypeCodex},
+		{runtimeType: apiv1alpha1.RuntimeTypeVibe},
+		{runtimeType: apiv1alpha1.RuntimeTypeCrewAI},
 	} {
 		rt, err := runtimes.Get(tc.runtimeType)
 		if err != nil {
@@ -94,6 +96,26 @@ func TestNewAdapters_RequireHost(t *testing.T) {
 	}
 	if _, err := NewClaudeAdapter(nil); err == nil {
 		t.Fatal("NewClaudeAdapter(nil) = nil error, want the PlatformHost requirement")
+	}
+	if _, err := NewVibeAdapter(nil); err == nil {
+		t.Fatal("NewVibeAdapter(nil) = nil error, want the PlatformHost requirement")
+	}
+	// Adapter #5 (crewai, ISI-6569) rides the same nil-host contract.
+	if _, err := NewCrewAIAdapter(nil); err == nil {
+		t.Fatal("NewCrewAIAdapter(nil) = nil error, want the PlatformHost requirement")
+	}
+}
+
+// TestRouterConstructors_Delegate pins the host-side Router re-export seam: the
+// default HTTP router and the crewai wire translator (ISI-6547/ISI-6569) each
+// hand back a non-nil module Router. A nil client is the documented
+// no-deadline default, so the constructors stay call-safe without a server.
+func TestRouterConstructors_Delegate(t *testing.T) {
+	if r := NewHTTPRouter(nil); r == nil {
+		t.Fatal("NewHTTPRouter(nil) = nil Router, want the module default router")
+	}
+	if r := NewCrewaiRouter(nil, "token"); r == nil {
+		t.Fatal("NewCrewaiRouter(nil) = nil Router, want the crewai wire translator")
 	}
 }
 
