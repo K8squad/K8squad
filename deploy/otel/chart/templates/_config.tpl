@@ -103,6 +103,19 @@ processors:
     send_batch_size: 8192
     send_batch_max_size: 16384
     timeout: 5s
+  # Logs-only batch cap (ISI-7108). The shared `batch` above (8k–16k records)
+  # keeps metrics/traces well under Dynatrace's 10 MB per-request OTLP limit, but
+  # container-log records from the node-logs daemonset are far larger per item —
+  # an 8k–16k log batch regularly exceeds 10 MB, so DT returns HTTP 413
+  # (non-retryable) and every log batch is dropped (signal=logs, dropped_items
+  # in the gateway log; `fetch logs` for ksquad namespaces returns 0 in
+  # oat05854). A smaller logs batch keeps each OTLP request under the limit.
+  # Only the logs pipeline uses this; metrics/traces keep the larger `batch` for
+  # throughput.
+  batch/logs:
+    send_batch_size: 1000
+    send_batch_max_size: 1500
+    timeout: 5s
 exporters:
   otlphttp/vendor:
     endpoint: {{ .Values.collector.vendor.endpoint | quote }}
@@ -145,7 +158,9 @@ service:
       exporters: [otlphttp/vendor]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+      # batch/logs (not batch) — caps each OTLP request under DT's 10 MB limit so
+      # logs stop dropping with HTTP 413 (ISI-7108).
+      processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch/logs]
       exporters: [otlphttp/vendor]
 {{- end -}}
 
