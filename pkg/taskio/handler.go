@@ -33,6 +33,12 @@ type Store interface {
 	// signal ISI-5602's github-writeback query consumes. Attribution/provenance are
 	// the token's principal/run — never client-supplied.
 	PostInitialFindings(ctx context.Context, workItemID, principal, runID, body string) (Comment, error)
+	// PostSummary appends the run's single end-of-run structured SUMMARY (ISI-7094):
+	// a first-class top-level comment tagged kind='summary' and stamped with the
+	// run id, which the platform's settle path treats as the agent having satisfied
+	// the exactly-one-summary invariant (so it will NOT synthesize a duplicate).
+	// Attribution/provenance are the token's principal/run — never client-supplied.
+	PostSummary(ctx context.Context, workItemID, principal, runID, body string) (Comment, error)
 	// PostChange appends one agent-reported change ref (M1.5/ISI-4131) attributed
 	// to principal/runID and returns it. ErrInvalidChangeRef for a bad kind/ref.
 	PostChange(ctx context.Context, workItemID, principal, runID, kind, ref, summary string) (ChangeRef, error)
@@ -93,10 +99,12 @@ type TaskDetail struct {
 }
 
 // postCommentRequest is the post-comment body: {"body": "...", "kind": "..."}.
-// kind is optional (ADR-0029 Option B, ISI-5603): the empty default is a plain
-// thread comment (behaviour unchanged); CommentKindInitialFindings additionally
-// emits the 'initial_findings_authored' audit signal ISI-5602's github-writeback
-// query consumes. Any other value is rejected (closed enum, §postChange discipline).
+// kind is optional (ADR-0029 Option B, ISI-5603; ISI-7094): the empty default is
+// a plain thread comment (behaviour unchanged); CommentKindInitialFindings
+// additionally emits the 'initial_findings_authored' audit signal ISI-5602's
+// github-writeback query consumes; CommentKindSummary posts the run's single
+// end-of-run structured recap (kind='summary'), which settle counts toward the
+// exactly-one-summary invariant. Any other value is rejected (closed enum).
 type postCommentRequest struct {
 	Body string `json:"body"`
 	Kind string `json:"kind,omitempty"`
@@ -105,6 +113,12 @@ type postCommentRequest struct {
 // CommentKindInitialFindings marks a post-comment as the run's single early
 // initial-findings/plan note (ADR-0029 Option B). The empty kind is a plain comment.
 const CommentKindInitialFindings = "initial_findings"
+
+// CommentKindSummary marks a post-comment as the run's single end-of-run
+// structured summary (ISI-7094): a first-class top-level comment the settle path
+// counts toward the exactly-one-summary invariant. The agent posts this as its
+// final act (What I did / What changed / Decisions / Next steps / Evidence).
+const CommentKindSummary = "summary"
 
 // postChangeRequest is the post-change body (M1.5): {"kind":"commit",
 // "ref":"<sha or PR url>", "summary":"what changed"}.
@@ -307,8 +321,10 @@ func (h *Handler) postComment(w http.ResponseWriter, r *http.Request, tok RunTok
 		c, err = h.store.PostComment(r.Context(), tok.WorkItemID, tok.Principal, req.Body)
 	case CommentKindInitialFindings:
 		c, err = h.store.PostInitialFindings(r.Context(), tok.WorkItemID, tok.Principal, tok.RunID, req.Body)
+	case CommentKindSummary:
+		c, err = h.store.PostSummary(r.Context(), tok.WorkItemID, tok.Principal, tok.RunID, req.Body)
 	default:
-		writeError(w, http.StatusBadRequest, "kind must be empty or initial_findings")
+		writeError(w, http.StatusBadRequest, "kind must be empty, initial_findings or summary")
 		return
 	}
 	if err != nil {

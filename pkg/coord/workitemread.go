@@ -121,7 +121,7 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 		SELECT wi.id::text, wi.title, wi.state, wi.blocked_reason, wi.priority, wi.labels,
 		       wi.parent_id::text,
 		       c.holder_principal, c.assignee_agent, c.run_id::text, wi.updated_at,
-		       (SELECT count(*) FROM coord.comment k WHERE k.work_item_id = wi.id),
+		       (SELECT count(*) FROM coord.comment k WHERE k.work_item_id = wi.id AND k.kind IN ('human','summary')),
 		       (SELECT count(*) FROM coord.change_ref r WHERE r.work_item_id = wi.id)
 		  FROM coord.work_item wi
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id

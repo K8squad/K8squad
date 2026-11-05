@@ -65,7 +65,7 @@ func newMirrorFixture(t *testing.T) *mirrorFixture {
 	m.lookup = func(context.Context, string) (string, error) {
 		return "11111111-1111-1111-1111-111111111111", nil
 	}
-	m.append = func(_ context.Context, workItemID, author, body string) error {
+	m.append = func(_ context.Context, workItemID, author, runID, body string) error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.calls++

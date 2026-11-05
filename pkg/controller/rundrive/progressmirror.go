@@ -95,9 +95,10 @@ type ProgressMirror struct {
 	// checkout claim (coord.claim.assignee_agent — default over db). "" when
 	// unset/unresolvable. Test seam.
 	assignee func(ctx context.Context, workItemID string) string
-	// append appends one comment (default: coord.AppendComment over db).
-	// Test seam.
-	append func(ctx context.Context, workItemID, author, body string) error
+	// append appends one PROGRESS comment (default: coord.AppendProgress over db,
+	// ISI-7094 — tagged kind='progress' with the run id so the thread excludes it
+	// and the console groups it under the per-run Activity expander). Test seam.
+	append func(ctx context.Context, workItemID, author, runID, body string) error
 	// publish emits the liveness projection of a mirrored comment as a
 	// run-entity outbox event (default: events.CaptureRunForWorkItem over db),
 	// which the apiserver's run-event projector fans onto the EXISTING per-run
@@ -131,8 +132,8 @@ func NewProgressMirror(db *sql.DB) *ProgressMirror {
 	}
 	m.lookup = m.lookupDispatchMarker
 	m.assignee = m.lookupAssigneeAgent
-	m.append = func(ctx context.Context, workItemID, author, body string) error {
-		_, err := coord.AppendComment(ctx, m.db, workItemID, author, body)
+	m.append = func(ctx context.Context, workItemID, author, runID, body string) error {
+		_, err := coord.AppendProgress(ctx, m.db, workItemID, author, runID, body)
 		return err
 	}
 	m.publish = func(ctx context.Context, workItemID, runID, eventType string, payload []byte) error {
@@ -187,7 +188,7 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 	if name := m.agentName(ctx, wi); name != "" {
 		author = "agent:" + name
 	}
-	if err := m.append(ctx, wi, author, body); err != nil {
+	if err := m.append(ctx, wi, author, runID, body); err != nil {
 		return nil // the durable comment is the source of truth — no comment, no liveness echo
 	}
 	// Liveness echo (ISI-5193): now that the comment is durable, project it as a

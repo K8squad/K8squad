@@ -55,6 +55,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // SettleLaneOf maps a terminal reconcile step onto the board lane the settle
@@ -200,18 +201,169 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 		}
 	}
 
-	// (3) The change summary line — the one engine comment the settle owes the
-	// ticket thread for EVERY terminal outcome, success included (ISI-4237 fix
-	// scope). A coord.comment INSERT never touches coord.work_item, so it is
-	// compatible with the succeeded no-mutation contract above. One line,
-	// honest, agent-attributed when known; the outcome verb matches the step.
+	// (3) The per-run SUMMARY — the ISI-7094 two-phase invariant. A completed run
+	// owes the thread EXACTLY ONE kind='summary' comment. The agent authors a rich
+	// structured recap as its final act (taskio post-comment kind=summary); if it
+	// omitted one, the PLATFORM synthesizes a minimal summary from the run record
+	// HERE, in the terminal txn, so the invariant holds structurally and never on
+	// agent goodwill (the ISI-7088 key decision). When the agent already
+	// summarised, the engine's terminal fact still belongs on the thread — but as a
+	// PROGRESS row (it joins the per-run Activity feed), never a second summary. A
+	// coord.comment INSERT never touches coord.work_item, so both branches stay
+	// compatible with the succeeded no-mutation contract above.
+	runParam := sql.NullString{}
+	if runID != "" {
+		runParam = sql.NullString{String: runID, Valid: true}
+	}
+	hasSummary := false
+	if runID != "" {
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM coord.comment
+				 WHERE work_item_id = $1::uuid AND run_id = $2::uuid AND kind = 'summary')`,
+			workItemID, runID).Scan(&hasSummary); err != nil {
+			return "", false, fmt.Errorf("coord.SettleTerminalLane: summary presence: %w", err)
+		}
+	}
+
+	if hasSummary {
+		// Agent already summarised — the engine terminal line lands as a progress
+		// row (the one-line outcome belongs in the Activity feed, not as a second
+		// top-level summary).
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
+			VALUES ($1::uuid, $2, $3, 'progress', $4::uuid)`,
+			workItemID, principal, settleSummary(terminalStep, lane, moved, agent.String), runParam); err != nil {
+			return "", false, fmt.Errorf("coord.SettleTerminalLane: terminal progress: %w", err)
+		}
+		return lane, moved, nil
+	}
+
+	// Agent omitted a summary — the platform synthesizes the required one from the
+	// durable run record (change refs, artifacts, outcome), carrying NO progress
+	// tokens so the recap reads human-first.
+	body, err := synthesizeSummary(ctx, tx, workItemID, runID, terminalStep, lane, moved, agent.String)
+	if err != nil {
+		return "", false, fmt.Errorf("coord.SettleTerminalLane: synthesize summary: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO coord.comment (work_item_id, author_principal, body)
-		VALUES ($1::uuid, $2, $3)`,
-		workItemID, principal, settleSummary(terminalStep, lane, moved, agent.String)); err != nil {
+		INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
+		VALUES ($1::uuid, $2, $3, 'summary', $4::uuid)`,
+		workItemID, principal, body, runParam); err != nil {
 		return "", false, fmt.Errorf("coord.SettleTerminalLane: summary: %w", err)
 	}
 	return lane, moved, nil
+}
+
+// synthesizeSummary builds the platform's minimal structured recap for a run that
+// reached a terminal step WITHOUT the agent authoring its own summary (ISI-7094 /
+// the ISI-7088 "platform always synthesizes" invariant). It reads the durable run
+// record — the change refs (commits / PRs) and artifacts the run reported — and
+// composes the five-part template the agent template mirrors: What I did / What
+// changed / Decisions / Next steps / Evidence. It deliberately carries NO
+// [run/[tool/[status progress tokens (a summary is the human-readable recap; the
+// step-by-step detail lives in the Activity feed). The record reads are
+// best-effort: a query hiccup degrades a section to its honest-empty wording
+// rather than failing the settle (the summary comment must always land).
+func synthesizeSummary(ctx context.Context, tx *sql.Tx, workItemID, runID, terminalStep, lane string, moved bool, agent string) (string, error) {
+	runParam := sql.NullString{}
+	if runID != "" {
+		runParam = sql.NullString{String: runID, Valid: true}
+	}
+
+	outcome := map[string]string{
+		"succeeded": "Run succeeded",
+		"failed":    "Run failed (retry budget exhausted)",
+		"cancelled": "Run was cancelled",
+	}[terminalStep]
+	if outcome == "" {
+		outcome = "Run reached terminal step " + terminalStep
+	}
+	who := ""
+	if agent != "" {
+		who = " by agent " + agent
+	}
+
+	// What changed: the run's reported commits / PRs, bounded.
+	var changes []string
+	if rows, err := tx.QueryContext(ctx, `
+		SELECT kind, ref, COALESCE(summary, '')
+		  FROM coord.change_ref
+		 WHERE work_item_id = $1::uuid
+		   AND ($2::uuid IS NULL OR run_id = $2::uuid)
+		 ORDER BY created_at ASC
+		 LIMIT 20`, workItemID, runParam); err == nil {
+		for rows.Next() {
+			var kind, ref, summary string
+			if err := rows.Scan(&kind, &ref, &summary); err != nil {
+				break
+			}
+			line := "- " + kind + " " + ref
+			if summary != "" {
+				line += " — " + summary
+			}
+			changes = append(changes, line)
+		}
+		_ = rows.Close()
+	}
+
+	// Evidence: the run's reported artifacts, bounded.
+	var artifacts []string
+	if rows, err := tx.QueryContext(ctx, `
+		SELECT kind, uri
+		  FROM coord.artifact
+		 WHERE work_item_id = $1::uuid
+		   AND ($2::uuid IS NULL OR run_id = $2::uuid)
+		 ORDER BY created_at ASC
+		 LIMIT 20`, workItemID, runParam); err == nil {
+		for rows.Next() {
+			var kind, uri string
+			if err := rows.Scan(&kind, &uri); err != nil {
+				break
+			}
+			artifacts = append(artifacts, "- "+kind+": "+uri)
+		}
+		_ = rows.Close()
+	}
+
+	return renderSynthesizedSummary(outcome, who, terminalStep, runID, changes, artifacts), nil
+}
+
+// renderSynthesizedSummary composes the five-part platform summary from already-read
+// pieces. Kept pure (no db) so the template — and the ISI-7094 invariant that a
+// summary carries NO [run/[tool/[status progress tokens — is unit-testable.
+func renderSynthesizedSummary(outcome, who, terminalStep, runID string, changes, artifacts []string) string {
+	next := map[string]string{
+		"succeeded": "Awaiting human review; move the ticket to done when the work is accepted.",
+		"failed":    "The ticket is back on the dispatchable lane for another attempt or human attention.",
+		"cancelled": "The run was stopped; no further automated work is queued.",
+	}[terminalStep]
+	if next == "" {
+		next = "See the ticket lane for the current state."
+	}
+
+	var b strings.Builder
+	b.WriteString("Run summary (auto-generated — the agent did not post one)\n\n")
+	b.WriteString("What I did: " + outcome + who + ".\n\n")
+	b.WriteString("What changed:\n")
+	if len(changes) > 0 {
+		b.WriteString(strings.Join(changes, "\n") + "\n")
+	} else {
+		b.WriteString("No commits or pull requests were reported for this run.\n")
+	}
+	b.WriteString("\nDecisions and why: Not captured by the agent. See the per-run Activity feed for the step-by-step detail.\n")
+	b.WriteString("\nNext steps: " + next + "\n")
+	b.WriteString("\nEvidence: run_id=")
+	if runID != "" {
+		b.WriteString(runID)
+	} else {
+		b.WriteString("(unknown)")
+	}
+	b.WriteString("; terminal step=" + terminalStep + ".\n")
+	if len(artifacts) > 0 {
+		b.WriteString("Artifacts:\n" + strings.Join(artifacts, "\n") + "\n")
+	}
+	return b.String()
 }
 
 // settleSummary renders the one-line change summary. It names the agent when
