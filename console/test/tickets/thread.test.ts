@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   authorKind,
   buildActivity,
+  commentKind,
   mergeLiveThinking,
   normalizeThread,
   subTicketProgress,
@@ -297,5 +298,45 @@ describe("subTicketStatus", () => {
       todo: 0,
       total: 0,
     });
+  });
+});
+
+describe("commentKind (two-phase comment class, ISI-7094)", () => {
+  it("reads the three contract values, either casing", () => {
+    expect(commentKind({ kind: "summary" })).toBe("summary");
+    expect(commentKind({ Kind: "PROGRESS" })).toBe("progress");
+    expect(commentKind({ kind: "human" })).toBe("human");
+  });
+  it("returns undefined for an empty/unknown value (falls back to human)", () => {
+    expect(commentKind({})).toBeUndefined();
+    expect(commentKind({ kind: "" })).toBeUndefined();
+    expect(commentKind({ kind: "bogus" })).toBeUndefined();
+  });
+});
+
+describe("normalizeThread carries two-phase kind + runId (ISI-7095)", () => {
+  it("surfaces a summary comment's kind + runId off the wire", () => {
+    const t = normalizeThread({
+      WorkItemID: "wi-1",
+      Comments: [
+        {
+          author: "agent:builder",
+          body: "What I did: wired the seam. Next: review.",
+          createdAt: "2026-11-05T10:00:00Z",
+          kind: "summary",
+          runId: "abcd1234-0000-0000-0000-000000000000",
+        },
+        {
+          author: "user:alice",
+          body: "thanks",
+          createdAt: "2026-11-05T10:05:00Z",
+        },
+      ],
+    });
+    expect(t.comments[0].kind).toBe("summary");
+    expect(t.comments[0].runId).toBe("abcd1234-0000-0000-0000-000000000000");
+    // A plain human comment omits both (undefined), never fabricates a run.
+    expect(t.comments[1].kind).toBeUndefined();
+    expect(t.comments[1].runId).toBeUndefined();
   });
 });

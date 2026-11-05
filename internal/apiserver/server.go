@@ -1341,6 +1341,20 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// Two-phase comment UI (ISI-7095 / ISI-7088): GET /api/work-items/{id}/activity
+		// — the per-run PROGRESS feed (kind=progress rows) the default thread above
+		// excludes (ISI-7094), backing the console's "Activity (N events)" expander.
+		// Same choke point, same Team fence, same read-only posture as the thread read.
+		// Nil reader ⇒ 501, in lockstep with the thread route.
+		workItemActivity := s.router.Path("/api/work-items/{id}/activity").Subrouter()
+		workItemActivity.Use(authz)
+		if opts.WorkItemReads != nil {
+			workItemActivity.HandleFunc("", workItemActivityHandler(opts.WorkItemReads)).Methods(http.MethodGet)
+		} else {
+			workItemActivity.HandleFunc("", notImplemented("work-item activity read", "ISI-7095: wire a coord.WorkItemReadStore (Postgres) to enable")).
+				Methods(http.MethodGet)
+		}
+
 		// 8.18 global search (ISI-2912): the read side of the coord.work_item full-text
 		// index (migration 0012) — GET /api/search?q=…. Behind the same choke point; the
 		// handler derives the RBAC scope from AuthorContext and pkg/search applies it

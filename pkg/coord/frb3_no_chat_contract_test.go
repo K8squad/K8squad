@@ -495,6 +495,7 @@ var allowedSurface = map[string]string{
 	"WorkItemReadStore.ListReviewItems":        "§13 cross-Project in_review card list, Team-scoped (admin→fleet) — the ADR-0026 §3.2 review arm of the Needs-Human-Decision read; custody-free board projection, read-only",
 	"ReviewItem":                               "§13 one in_review card projected cross-Project (id/projectUID/title/updatedAt/assignee) for the ADR-0026 §3.3 run-join; read-only",
 	"WorkItemReadStore.ReadWorkItemThread":     "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
+	"WorkItemReadStore.ReadWorkItemActivity":   "§6.1 one ticket's kind='progress' feed (run sub-steps) the thread excludes (ISI-7094) — the console per-run Activity expander backing read (ISI-7095), Team-scoped, read-only",
 	"WorkItemReadStore.ProjectStatusSnapshots": "§6.5 project status-history rollup: daily per-status snapshots reconstructed from state_transition audit rows, Team-scoped (ISI-4509 read-only)",
 	"WorkItemReadStore.FleetStatusSnapshots":   "§6.5 fleet/Team-wide status-history rollup: daily per-status snapshots across every board Project in scope, Team-scoped (admin→fleet), read-only — the ISI-5706 WS-1c generalization of ProjectStatusSnapshots (project_id filter dropped)",
 	"WorkItemReadStore.FleetRunPhaseSnapshots": "§6.5 fleet/Team-wide run-phase-history rollup: daily per-run-phase snapshots reconstructed from the coord.run_phase_transition journal (migration 0037), Team-scoped (admin→fleet), read-only — the ISI-5744 WS-3 (ISI-5750) run-side mirror of FleetStatusSnapshots",

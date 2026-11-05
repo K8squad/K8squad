@@ -43,6 +43,10 @@ type WorkItemReader interface {
 	// ReadWorkItemThread returns one ticket's full thread (comments, status
 	// history, change refs), Team-scoped.
 	ReadWorkItemThread(ctx context.Context, workItemID, teamID string) (coord.WorkItemThread, error)
+	// ReadWorkItemActivity returns one ticket's PROGRESS feed (ISI-7095) — the
+	// run sub-step rows the default thread excludes (ISI-7094), for the console's
+	// per-run "Activity (N events)" expander. Team-scoped exactly like the thread.
+	ReadWorkItemActivity(ctx context.Context, workItemID, teamID string) ([]coord.TaskComment, error)
 }
 
 // workItemListHandler answers GET /api/projects/{projectId}/work-items.
@@ -109,6 +113,35 @@ func workItemThreadHandler(store WorkItemReader) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, thread)
+	}
+}
+
+// workItemActivityHandler answers GET /api/work-items/{id}/activity — the
+// per-run PROGRESS feed for the console's "Activity (N events)" expander
+// (ISI-7095). It is the two-phase sibling of workItemThreadHandler: that route
+// serves the human+summary thread, this one the run sub-steps (kind=progress)
+// the thread excludes. Always a JSON array (never null) so the client renders an
+// empty expander rather than crashing on a run with no mirrored progress.
+func workItemActivityHandler(store WorkItemReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := discussion.AuthFromContext(r.Context()); !ok {
+			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
+		id, ok := pathVar(r, "id")
+		if !ok || id == "" {
+			writeJSONError(w, http.StatusBadRequest, "work item id required")
+			return
+		}
+		teamID := authTeamScope(r)
+		activity, err := store.ReadWorkItemActivity(r.Context(), id, teamID)
+		if mapWorkItemReadError(w, err) {
+			return
+		}
+		if activity == nil {
+			activity = []coord.TaskComment{}
+		}
+		writeJSON(w, http.StatusOK, activity)
 	}
 }
 
