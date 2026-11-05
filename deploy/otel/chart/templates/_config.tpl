@@ -109,7 +109,7 @@ processors:
   # log batch (the shared `batch` above) produces a >10 MB OTLP request and DT
   # returns HTTP 413 (non-retryable) → every log batch is dropped (signal=logs,
   # dropped_items in the gateway log; `fetch logs` for ksquad namespaces returns
-  # 0 in oat05854).
+  # 0 in the vendor tenant).
   #
   # Record-count batching CANNOT bound request bytes here: live, even an
   # 800-record batch exceeded 10485760 bytes (>13 KB/record, and LLM-completion

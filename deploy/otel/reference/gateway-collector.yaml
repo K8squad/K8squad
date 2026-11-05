@@ -136,7 +136,8 @@ spec:
         timeout: 5s
     exporters:
       otlphttp/vendor:
-        endpoint: https://oat05854.dev.dynatracelabs.com/api/v2/otlp
+        # Your Dynatrace tenant's OTLP API, e.g. https://<your-tenant>.live.dynatrace.com/api/v2/otlp
+        endpoint: https://YOUR_TENANT.live.dynatrace.com/api/v2/otlp
         headers:
           Authorization: "${env:KSQUAD_OTLP_AUTH}"
         tls:
