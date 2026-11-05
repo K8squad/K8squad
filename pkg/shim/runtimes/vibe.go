@@ -129,7 +129,7 @@ func (r vibe) Command(lc LaunchContext) (ExecSpec, error) {
 		Env:          env,
 		WorkDir:      lc.WorkDir,
 		WorkDirFiles: []WorkDirFile{ctxFile},
-		Parse:        parseVibeLine,
+		Parse:        newVibeParser(),
 		// ISI-4224: vibe emits a terminal session_end JSON marker when its
 		// session completes. The runner's SettleLine quiet window force-settles
 		// the task after this marker, so lingering async handles (uv cleanup,
@@ -184,64 +184,90 @@ type vibeEvent struct {
 //	{"type":"session_end"}
 //	{"type":"session_failed","error":"max turns reached"}
 //
-// A non-JSON line (diagnostics / tracebacks) degrades to an untrusted message
-// event — parse failure MUST NOT kill a running task. session_end itself is
-// not emitted as Progress; the runner's SettleLine detector handles it.
-func parseVibeLine(line string) []Progress {
-	var ev vibeEvent
-	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+// A non-JSON line (diagnostics / tracebacks) degrades to an untrusted
+// thinking-tier message event — parse failure MUST NOT kill a running task.
+//
+// ISI-7098 thinking-vs-deliverable: the parser is per-run STATEFUL. A
+// one-deep hold-back keeps the most recent agent_message unemitted until the
+// stream proves it superseded (a newer agent_message releases it as
+// thinking-tier) or terminal: session_end releases it as the run's ONE
+// deliverable; session_failed releases it as thinking and the failure text
+// becomes the deliverable. The hold is bounded (one message) and liveness is
+// preserved — vibe always prints its terminal line before exiting, so every
+// held message is released. The runner's SettleLine detector still handles
+// settle detection off the same session_end line.
+func newVibeParser() func(line string) []Progress {
+	var held string // most recent agent_message, the deliverable candidate
+	release := func(kind string) []Progress {
+		if held == "" {
+			return nil
+		}
+		text := held
+		held = ""
 		return []Progress{{
 			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: line, Trust: "untrusted"},
+			Message: &a2a.MessagePayload{Role: "agent", Kind: kind, Text: text, Trust: "untrusted"},
 		}}
 	}
-	switch ev.Type {
-	case "tool_call":
-		if ev.Tool == "" {
+	return func(line string) []Progress {
+		var ev vibeEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			return []Progress{{
+				Kind:    a2a.EventMessage,
+				Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindThinking, Text: line, Trust: "untrusted"},
+			}}
+		}
+		switch ev.Type {
+		case "tool_call":
+			if ev.Tool == "" {
+				return nil
+			}
+			tool := &a2a.ToolPayload{Name: ev.Tool, Phase: "result"}
+			if ev.ExitCode != nil {
+				ok := *ev.ExitCode == 0
+				tool.OK = &ok
+			} else {
+				tool.OK = vibeStatusOK(ev.Status)
+			}
+			var args string
+			if len(ev.Arguments) > 0 {
+				args = string(ev.Arguments)
+			}
+			return []Progress{{Kind: a2a.EventTool, Tool: tool, ToolArgs: args}}
+		case "agent_message":
+			if ev.Text == "" {
+				return nil
+			}
+			// A newer message supersedes the held one: release it as thinking.
+			out := release(a2a.MessageKindThinking)
+			held = ev.Text
+			return out
+		case "usage":
+			if u := vibeUsagePayload(ev.InputTokens, ev.OutputTokens); u != nil {
+				return []Progress{{Kind: a2a.EventUsage, Usage: u}}
+			}
+			return nil
+		case "session_end":
+			// SettleLine handles settle detection off this same line; the parser
+			// releases the held message as the run's deliverable (ISI-7098).
+			return release(a2a.MessageKindDeliverable)
+		case "session_failed", "error":
+			msg := ev.Error
+			if msg == "" {
+				msg = ev.Message
+			}
+			if msg == "" {
+				msg = "vibe session failed"
+			}
+			out := release(a2a.MessageKindThinking)
+			return append(out, Progress{
+				Kind: a2a.EventMessage,
+				// ISI-7098: the failure text is a failed run's terminal answer.
+				Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: msg, Trust: "untrusted"},
+			})
+		default:
 			return nil
 		}
-		tool := &a2a.ToolPayload{Name: ev.Tool, Phase: "result"}
-		if ev.ExitCode != nil {
-			ok := *ev.ExitCode == 0
-			tool.OK = &ok
-		} else {
-			tool.OK = vibeStatusOK(ev.Status)
-		}
-		var args string
-		if len(ev.Arguments) > 0 {
-			args = string(ev.Arguments)
-		}
-		return []Progress{{Kind: a2a.EventTool, Tool: tool, ToolArgs: args}}
-	case "agent_message":
-		if ev.Text == "" {
-			return nil
-		}
-		return []Progress{{
-			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: ev.Text, Trust: "untrusted"},
-		}}
-	case "usage":
-		if u := vibeUsagePayload(ev.InputTokens, ev.OutputTokens); u != nil {
-			return []Progress{{Kind: a2a.EventUsage, Usage: u}}
-		}
-		return nil
-	case "session_end":
-		// Handled by SettleLine; no Progress emitted.
-		return nil
-	case "session_failed", "error":
-		msg := ev.Error
-		if msg == "" {
-			msg = ev.Message
-		}
-		if msg == "" {
-			msg = "vibe session failed"
-		}
-		return []Progress{{
-			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: msg, Trust: "untrusted"},
-		}}
-	default:
-		return nil
 	}
 }
 

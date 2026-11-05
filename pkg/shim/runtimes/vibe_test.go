@@ -107,9 +107,9 @@ func TestVibeCommandExecSpec(t *testing.T) {
 func TestVibeModelPrecedence(t *testing.T) {
 	rt, _ := Get(apiv1alpha1.RuntimeTypeVibe)
 	cases := []struct {
-		name       string
-		lc         LaunchContext
-		wantModel  string
+		name      string
+		lc        LaunchContext
+		wantModel string
 	}{
 		{
 			"default", LaunchContext{WorkDir: "/w"},
@@ -269,12 +269,12 @@ func TestVibeParseLineProgress(t *testing.T) {
 			},
 		},
 		{
-			"agent_message",
+			"agent_message_held_until_terminal",
 			`{"type":"agent_message","text":"Done — 3 files changed."}`,
-			a2a.EventMessage,
+			"", // ISI-7098: held back until the stream proves it terminal
 			func(t *testing.T, ps []Progress) {
-				if ps[0].Message.Text != "Done — 3 files changed." {
-					t.Errorf("Message.Text = %q", ps[0].Message.Text)
+				if len(ps) != 0 {
+					t.Errorf("agent_message must be held, not emitted: %v", ps)
 				}
 			},
 		},
@@ -321,11 +321,59 @@ func TestVibeParseLineProgress(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ps := parseVibeLine(tc.line)
+			parse := newVibeParser()
+			ps := parse(tc.line)
 			if tc.check != nil {
 				tc.check(t, ps)
 			}
 		})
+	}
+}
+
+// TestVibeParserThinkingVsDeliverable asserts the ISI-7098 tiering: a
+// superseded agent_message releases as thinking when a newer one arrives,
+// tool calls pass through without releasing the hold, and the held message
+// releases as the run's ONE deliverable at session_end.
+func TestVibeParserThinkingVsDeliverable(t *testing.T) {
+	parse := newVibeParser()
+
+	// First message: held, nothing emitted yet.
+	if ps := parse(`{"type":"agent_message","text":"first draft"}`); len(ps) != 0 {
+		t.Fatalf("first agent_message must be held; got %v", ps)
+	}
+	// A tool call between messages does not release the hold.
+	if ps := parse(`{"type":"tool_call","tool":"bash","status":"completed","exit_code":0}`); len(ps) != 1 || ps[0].Kind != a2a.EventTool {
+		t.Fatalf("tool_call must pass through as one EventTool; got %v", ps)
+	}
+	// Second message supersedes the first: released as thinking.
+	ps := parse(`{"type":"agent_message","text":"the real answer"}`)
+	if len(ps) != 1 || ps[0].Message.Kind != a2a.MessageKindThinking || ps[0].Message.Text != "first draft" {
+		t.Fatalf("superseded message must release as thinking; got %+v", ps)
+	}
+	// Terminal: the held message releases as the deliverable.
+	ps = parse(`{"type":"session_end"}`)
+	if len(ps) != 1 || ps[0].Message.Kind != a2a.MessageKindDeliverable || ps[0].Message.Text != "the real answer" {
+		t.Fatalf("session_end must release the held message as the deliverable; got %+v", ps)
+	}
+}
+
+// TestVibeParserFailureDeliverable asserts a failed session releases the held
+// message as thinking and the failure text as the deliverable (the failed
+// run's terminal answer).
+func TestVibeParserFailureDeliverable(t *testing.T) {
+	parse := newVibeParser()
+	if ps := parse(`{"type":"agent_message","text":"partial work"}`); len(ps) != 0 {
+		t.Fatalf("agent_message must be held; got %v", ps)
+	}
+	ps := parse(`{"type":"session_failed","error":"max turns reached"}`)
+	if len(ps) != 2 {
+		t.Fatalf("session_failed must release held-as-thinking then the failure deliverable; got %+v", ps)
+	}
+	if ps[0].Message.Kind != a2a.MessageKindThinking || ps[0].Message.Text != "partial work" {
+		t.Errorf("held message must release as thinking; got %+v", ps[0])
+	}
+	if ps[1].Message.Kind != a2a.MessageKindDeliverable || !strings.Contains(ps[1].Message.Text, "max turns") {
+		t.Errorf("failure text must be the deliverable; got %+v", ps[1])
 	}
 }
 

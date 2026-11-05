@@ -323,12 +323,30 @@ type StatusPayload struct {
 	TraceID string `json:"traceID,omitempty"`
 }
 
+// Message tier vocabulary (ISI-7098, two-tier comment model): every
+// EventMessage carries exactly one tier. "thinking" is ephemeral
+// reasoning/narration — live-streamed, never the durable record.
+// "deliverable" is the run's ONE final answer — the text the durable
+// comment tier is built from. Absent ("") is legacy/unclassified:
+// emitters that predate ISI-7098 set no tier and consumers may treat an
+// absent tier as thinking-tier for display purposes (an untagged message is
+// never promoted to the durable tier without an explicit tag or the host
+// engine's terminal backstop).
+const (
+	MessageKindThinking    = "thinking"
+	MessageKindDeliverable = "deliverable"
+)
+
 // MessagePayload is the payload of an EventMessage event (spec §4). Trust is
 // always "untrusted": agent text is never executed, only displayed (F16).
+// Kind is the ISI-7098 message tier (see the MessageKind* vocabulary);
+// EventTool payloads carry no tier — tool calls are thinking-tier by
+// definition.
 type MessagePayload struct {
 	Role  string `json:"role"`
 	Text  string `json:"text"`
 	Trust string `json:"trust"`
+	Kind  string `json:"kind,omitempty"`
 }
 
 // ToolPayload is the payload of an EventTool event (spec §4). Phase is

@@ -729,9 +729,10 @@ func crewPartsText(parts []crewWirePart) string {
 	return sb.String()
 }
 
-// crewMessageEvent builds an EventMessage from agent-side text (F16: untrusted,
-// display only).
-func crewMessageEvent(taskID string, seq uint64, role, text string) a2a.Event {
+// crewMessageEvent builds an EventMessage from agent-side text (F16:
+// untrusted, display only). kind is the ISI-7098 message tier — thinking for
+// intermediate crew narration, deliverable for the terminal answer.
+func crewMessageEvent(taskID string, seq uint64, role, kind, text string) a2a.Event {
 	if role == "" {
 		role = "agent"
 	}
@@ -744,6 +745,7 @@ func crewMessageEvent(taskID string, seq uint64, role, text string) a2a.Event {
 			Role:  role,
 			Text:  text,
 			Trust: "untrusted",
+			Kind:  kind,
 		},
 	}
 }
@@ -793,6 +795,12 @@ type crewStream struct {
 	endpoint string
 	taskID   string // module a2a_task_id
 	st       *crewTaskState
+	// lastArtifactText remembers the newest artifact text for the ISI-7098
+	// terminal backstop in applyStatus: crew artifacts arrive before the
+	// terminal status, so when no terminal status message carries text, the
+	// last artifact text is promoted to the run's deliverable. Pump-goroutine
+	// only (apply/applyTask/emitArtifact/applyStatus all run on the pump).
+	lastArtifactText string
 
 	body   io.ReadCloser // non-nil on the SSE path
 	events chan a2a.Event
@@ -965,7 +973,8 @@ func (s *crewStream) apply(f *crewFrame) bool {
 		return false
 	case crewFrameMessage:
 		if text := crewPartsText(f.message.Parts); text != "" {
-			s.send(crewMessageEvent(s.taskID, s.st.nextSeq(), f.message.Role, text))
+			// ISI-7098: crew message frames are intermediate narration.
+			s.send(crewMessageEvent(s.taskID, s.st.nextSeq(), f.message.Role, a2a.MessageKindThinking, text))
 		}
 		return false
 	}
@@ -977,13 +986,26 @@ func (s *crewStream) apply(f *crewFrame) bool {
 // of the module terminal states (defense against an unknown-terminal state).
 func (s *crewStream) applyStatus(ws crewWireStatus, final bool) bool {
 	state, reason := crewMapState(ws.State)
+	// ISI-7098: the terminal status observation is the one point the router
+	// knows the run is done. A terminal status message is the run's ONE
+	// deliverable; intermediate status text streams as thinking. When the
+	// terminal status carries no text, the last artifact text is promoted
+	// (crews deliver their final output as artifacts before completing).
+	terminal := state.IsTerminal() || final
 	if ws.Message != nil {
 		if text := crewPartsText(ws.Message.Parts); text != "" {
 			if reason == "" {
 				reason = a2a.ToolErrorSummary(text)
 			}
-			s.send(crewMessageEvent(s.taskID, s.st.nextSeq(), ws.Message.Role, text))
+			kind := a2a.MessageKindThinking
+			if terminal {
+				kind = a2a.MessageKindDeliverable
+			}
+			s.send(crewMessageEvent(s.taskID, s.st.nextSeq(), ws.Message.Role, kind, text))
 		}
+	}
+	if terminal && ws.Message == nil && s.lastArtifactText != "" {
+		s.send(crewMessageEvent(s.taskID, s.st.nextSeq(), "agent", a2a.MessageKindDeliverable, s.lastArtifactText))
 	}
 	sp := a2a.StatusPayload{State: state, Reason: reason}
 	seq := s.st.nextSeq()
@@ -1006,7 +1028,11 @@ func (s *crewStream) emitArtifact(art crewWireArte) {
 	ref := crewArtifactRefEvent(s.taskID, s.st.nextSeq(), googleID, art)
 	s.send(ref)
 	if text := crewPartsText(art.Parts); text != "" {
-		s.send(crewMessageEvent(s.taskID, s.st.nextSeq(), "agent", text))
+		// ISI-7098: artifacts stream as thinking-tier narration; the newest
+		// text is remembered and promoted by applyStatus at terminal (no
+		// double tagging: artifact text itself stays thinking).
+		s.lastArtifactText = text
+		s.send(crewMessageEvent(s.taskID, s.st.nextSeq(), "agent", a2a.MessageKindThinking, text))
 	}
 }
 

@@ -391,8 +391,30 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 		}
 	}
 
+	// ISI-7098: per-run deliverable bookkeeping for the funnel below and
+	// the terminal backstop after the runner returns.
+	sawDeliverable := false
+	lastText := ""
 	outcome, err := e.runner.Run(ctx, spec, func(p Progress) {
 		hashToolArgs(p)
+		// ISI-7098 exactly-one-deliverable: this funnel is the single choke
+		// point every message passes before it reaches the wire. The first
+		// deliverable-tagged message stands; any later one is demoted to
+		// thinking so the invariant holds structurally, never on parser
+		// goodwill. The run's last non-deliverable text feeds the terminal
+		// backstop below (runtimes whose stream cannot mark the final answer
+		// in-band).
+		if p.Kind == a2a.EventMessage && p.Message != nil {
+			if p.Message.Kind == a2a.MessageKindDeliverable {
+				if sawDeliverable {
+					p.Message.Kind = a2a.MessageKindThinking
+				} else {
+					sawDeliverable = true
+				}
+			} else if p.Message.Text != "" {
+				lastText = p.Message.Text
+			}
+		}
 		// ISI-4238: usage payloads without a model (runtimes that report
 		// tokens but not which model served them — opencode v1.18.27's
 		// step-finish omits modelID) are attributed to the run's RESOLVED
@@ -467,6 +489,31 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	if e.telemetry != nil {
 		e.telemetry.RunEnd(telCtx, e.labels(tk), tk.id, string(terminalState), terminalReason)
 		e.telemetry.FinishTask(telCtx, tk.id)
+	}
+	// ISI-7098 terminal backstop: runtimes whose stream cannot mark the final
+	// answer in-band (opencode's step_finish fires mid-run, codex completes
+	// agent_message items per turn, the opaque default lane has no structure)
+	// still owe the wire exactly one deliverable. When no parser tagged one,
+	// promote the run's last message text; a failed run with no message text
+	// falls back to the terminal reason as the answer. A canceled run emits
+	// nothing — the cancel is the outcome. Emitted before terminate() so the
+	// deliverable precedes the terminal status event in seq order.
+	if !sawDeliverable && terminalState != a2a.TaskCanceled {
+		text := lastText
+		if text == "" && terminalState == a2a.TaskFailed && terminalReason != "" {
+			text = terminalReason
+		}
+		if text != "" {
+			tk.emitProgress(Progress{
+				Kind: a2a.EventMessage,
+				Message: &a2a.MessagePayload{
+					Role:  "agent",
+					Text:  text,
+					Trust: "untrusted",
+					Kind:  a2a.MessageKindDeliverable,
+				},
+			})
+		}
 	}
 	tk.terminate(terminalState, terminalReason)
 }

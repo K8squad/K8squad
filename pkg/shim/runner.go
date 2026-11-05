@@ -466,6 +466,11 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 						Role:  "agent",
 						Text:  line,
 						Trust: "untrusted",
+						// ISI-7098: the opaque default lane (runtimes
+						// without a structured parser) is thinking-tier
+						// narration; the engine's terminal backstop
+						// promotes the last message to the deliverable.
+						Kind: a2a.MessageKindThinking,
 					},
 				})
 			}

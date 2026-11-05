@@ -204,7 +204,7 @@ func parseCodexLine(line string) []Progress {
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
 		return []Progress{{
 			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: line, Trust: "untrusted"},
+			Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindThinking, Text: line, Trust: "untrusted"},
 		}}
 	}
 	switch ev.Type {
@@ -227,8 +227,9 @@ func parseCodexLine(line string) []Progress {
 			msg = "codex error"
 		}
 		return []Progress{{
-			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: msg, Trust: "untrusted"},
+			Kind: a2a.EventMessage,
+			// ISI-7098: the error text is a failed run's terminal answer.
+			Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: msg, Trust: "untrusted"},
 		}}
 	default: // thread.started, turn.started, item.started/updated, future shapes
 		return nil
@@ -277,9 +278,13 @@ func progressFromCodexItem(it *codexItem) []Progress {
 		if it.Text == "" {
 			return nil
 		}
+		// ISI-7098: codex completes agent_message items per turn (mid-run
+		// too), so the parser cannot know which one is final at emit time —
+		// every message streams as thinking-tier and the engine's terminal
+		// backstop promotes the run's last message to the deliverable.
 		return []Progress{{
 			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: it.Text, Trust: "untrusted"},
+			Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindThinking, Text: it.Text, Trust: "untrusted"},
 		}}
 	case "error":
 		msg := it.Message
@@ -290,8 +295,9 @@ func progressFromCodexItem(it *codexItem) []Progress {
 			return nil
 		}
 		return []Progress{{
-			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: msg, Trust: "untrusted"},
+			Kind: a2a.EventMessage,
+			// ISI-7098: the error text is a failed run's terminal answer.
+			Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: msg, Trust: "untrusted"},
 		}}
 	default: // reasoning, file_change, todo_list, future shapes: bookkeeping
 		return nil

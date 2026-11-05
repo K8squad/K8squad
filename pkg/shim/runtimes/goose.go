@@ -380,19 +380,23 @@ func newGooseParser() func(line string) []Progress {
 	toolCalls := map[string]gooseToolRef{} // toolRequest id → name + extension
 
 	// flush emits any pending coalesced deltas as message events, thinking
-	// first (arrival order: reasoning precedes the answer).
-	flush := func(out []Progress) []Progress {
+	// first (arrival order: reasoning precedes the answer). ISI-7098: every
+	// flushed message carries its tier — thinking deltas are always
+	// thinking-tier; answer text is thinking-tier mid-run (pre-tool narration)
+	// and deliverable-tier when flushed by the terminal "complete" event, so
+	// exactly one text per run is tagged the deliverable.
+	flush := func(out []Progress, textKind string) []Progress {
 		if thinkBuf.Len() > 0 {
 			out = append(out, Progress{
 				Kind:    a2a.EventMessage,
-				Message: &a2a.MessagePayload{Role: "agent", Text: thinkBuf.String(), Trust: "untrusted"},
+				Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindThinking, Text: thinkBuf.String(), Trust: "untrusted"},
 			})
 			thinkBuf.Reset()
 		}
 		if textBuf.Len() > 0 {
 			out = append(out, Progress{
 				Kind:    a2a.EventMessage,
-				Message: &a2a.MessagePayload{Role: "agent", Text: textBuf.String(), Trust: "untrusted"},
+				Message: &a2a.MessagePayload{Role: "agent", Kind: textKind, Text: textBuf.String(), Trust: "untrusted"},
 			})
 			textBuf.Reset()
 		}
@@ -407,7 +411,7 @@ func newGooseParser() func(line string) []Progress {
 			}
 			return []Progress{{
 				Kind:    a2a.EventMessage,
-				Message: &a2a.MessagePayload{Role: "agent", Text: line, Trust: "untrusted"},
+				Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindThinking, Text: line, Trust: "untrusted"},
 			}}
 		}
 		sawJSON = true
@@ -422,18 +426,18 @@ func newGooseParser() func(line string) []Progress {
 				case "thinking":
 					// A kind switch flushes the other buffer (order preserved).
 					if textBuf.Len() > 0 {
-						out = flush(out)
+						out = flush(out, a2a.MessageKindThinking)
 					}
 					thinkBuf.WriteString(blk.Thinking)
 				case "text":
 					if thinkBuf.Len() > 0 {
-						out = flush(out)
+						out = flush(out, a2a.MessageKindThinking)
 					}
 					textBuf.WriteString(blk.Text)
 				case "toolRequest":
 					// A tool request flushes pending deltas first (the answer
 					// text before a tool call is complete at that point).
-					out = flush(out)
+					out = flush(out, a2a.MessageKindThinking)
 					if blk.ToolCall == nil || blk.ToolCall.Value == nil {
 						continue // unresolved call shape: bookkeeping, skip
 					}
@@ -453,7 +457,7 @@ func newGooseParser() func(line string) []Progress {
 						ToolArgs: string(blk.ToolCall.Value.Arguments),
 					})
 				case "toolResponse":
-					out = flush(out)
+					out = flush(out, a2a.MessageKindThinking)
 					ref := toolCalls[blk.ID]
 					tool := &a2a.ToolPayload{Name: ref.name, Phase: "result", Server: ref.server}
 					res := blk.ToolResult
@@ -482,7 +486,10 @@ func newGooseParser() func(line string) []Progress {
 			// contract as opencode's step_finish). No reasoning tokens are
 			// fabricated: on the captured wire total = input + output (+cache),
 			// so there is nothing left to attribute.
-			out = flush(out)
+			//
+			// ISI-7098: the answer text flushed by the terminal event is the
+			// run's deliverable — the one message tagged as the final answer.
+			out = flush(out, a2a.MessageKindDeliverable)
 			return append(out, Progress{
 				Kind: a2a.EventUsage,
 				Usage: &a2a.UsagePayload{
@@ -506,8 +513,9 @@ func newGooseParser() func(line string) []Progress {
 			}
 			out = append(out,
 				Progress{
-					Kind:    a2a.EventMessage,
-					Message: &a2a.MessagePayload{Role: "agent", Text: detail, Trust: "untrusted"},
+					Kind: a2a.EventMessage,
+					// ISI-7098: the error text is a failed run's terminal answer.
+					Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: detail, Trust: "untrusted"},
 				},
 				Progress{
 					Kind:  a2a.EventUsage,
