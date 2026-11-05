@@ -54,7 +54,10 @@ func openTaskIOTestDB(t *testing.T) *sql.DB {
 // so drift between the migrations and the adapter goes RED here (0001 base +
 // 0015 change_ref, which the M1.5 read/write path rides on; 0018 claim assignee;
 // 0020 create-fields, which the shared ReadTaskDetail read selects — ISI-4409;
-// 0021 requested_agent, which that same read selects since ISI-4574).
+// 0021 requested_agent, which that same read selects since ISI-4574; 0028 comment
+// payload; 0042 comment kind+run_id, which ReadTaskDetail's readComments now
+// selects — ISI-7094: without it the shared read SELECTs a `kind`/`run_id` that
+// the test schema lacks and every GetTask/checkout 500s).
 func applyCoordSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -62,7 +65,7 @@ func applyCoordSchema(t *testing.T, db *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
 		t.Fatalf("reset coord schema: %v", err)
 	}
-	for _, name := range []string{"0001_coord_schema.sql", "0015_work_item_change_ref.sql", "0018_claim_assignee.sql", "0020_work_item_create_fields.sql", "0021_work_item_requested_agent.sql", "0028_comment_payload.sql"} {
+	for _, name := range []string{"0001_coord_schema.sql", "0015_work_item_change_ref.sql", "0018_claim_assignee.sql", "0020_work_item_create_fields.sql", "0021_work_item_requested_agent.sql", "0028_comment_payload.sql", "0042_comment_kind.sql"} {
 		var mig []byte
 		var err error
 		for _, c := range []string{
