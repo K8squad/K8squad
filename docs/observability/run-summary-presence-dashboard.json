@@ -1,0 +1,73 @@
+{
+  "//": "Run summary-presence health — Dynatrace dashboard-as-code (ISI-7096, child of ISI-7088). The observability surface for the two-phase comment feature ISI-7094 landed: per-completed-run summary presence + length, and the missing-summary regression guard. Portable template (no tenant IDs): import via the Dynatrace Dashboards app or dtctl. DQL is written against the ksquad.run.summary.* metric keys emitted by pkg/coord/runsummaryobs.go and syntax-validated against the DT dev tenant (oat05854); Dynatrace preserves the dotted OTLP keys (see docs/observability/github-sync-slos.yaml). STATUS: schema-built; field/metric names validated against the emitter, NOT yet against live output — the metrics flow once an operator carrying ISI-7096 is deployed and a run reaches a terminal step. Do not treat rendered numbers as validated until then (ISI-7096 live-verify follow-up).",
+  "version": 18,
+  "variables": [
+    {
+      "key": "outcome",
+      "type": "query",
+      "visible": true,
+      "input": "timeseries c = sum(ksquad.run.summary.present), by:{outcome}, from:-24h | fields outcome",
+      "multiple": true
+    }
+  ],
+  "tiles": {
+    "0": {
+      "type": "markdown",
+      "content": "# Run summary-presence health (ISI-7088 / ISI-7096)\nEvery completed run owes the thread **exactly one** `kind='summary'` comment — the agent authors it, or the platform synthesizes one in the terminal settle (ISI-7094). This dashboard is the observability layer + **regression guard** for that invariant.\n\n- **Missing-summary** (red tile) is the whole-feature regression guard — it must stay **0**. The sibling Davis detector (`run-summary-presence-detector.json`) alerts on any non-zero value.\n- **Source** = who put the summary on the thread: `agent` (self-authored), `synthesized` (platform fallback), `absent` (**regression** — no summary).\n\n> ⚠️ Skeleton pending live-data validation (ISI-7096 follow-up). Metrics flow once an operator carrying ISI-7096 is deployed and a run completes. Empty tiles = *not yet measurable*, not a failure."
+    },
+    "1": {
+      "type": "data",
+      "title": "⚠ Completed runs with NO summary (must be 0)",
+      "query": "timeseries missing = sum(ksquad.run.summary.present, filter: { present == \"false\" }), from:-1h | fieldsAdd missing_total = arraySum(missing)",
+      "visualization": "singleValue",
+      "visualizationSettings": { "thresholds": [{ "rules": [{ "value": 0, "color": "#7dc540" }, { "value": 1, "color": "#dc172a" }] }] }
+    },
+    "2": {
+      "type": "data",
+      "title": "Summary presence rate (target 100%)",
+      "query": "timeseries present = sum(ksquad.run.summary.present, filter: { present == \"true\" }), total = sum(ksquad.run.summary.present), from:-1h | fieldsAdd rate = 100.0 * arraySum(present) / arraySum(total)",
+      "visualization": "singleValue",
+      "visualizationSettings": { "unitsOverrides": [{ "unit": "Percent" }] }
+    },
+    "3": {
+      "type": "data",
+      "title": "Completed runs observed (liveness)",
+      "query": "timeseries runs = sum(ksquad.run.summary.present), from:-1h | fieldsAdd runs_total = arraySum(runs)",
+      "visualization": "singleValue"
+    },
+    "4": {
+      "type": "data",
+      "title": "Completed runs by summary source",
+      "query": "timeseries runs = sum(ksquad.run.summary.present), by:{source}, from:-6h",
+      "visualization": "lineChart"
+    },
+    "5": {
+      "type": "data",
+      "title": "Completed runs by outcome + source",
+      "query": "timeseries runs = sum(ksquad.run.summary.present), by:{outcome, source}, filter:{in(outcome, array($outcome))}, from:-6h",
+      "visualization": "barChart"
+    },
+    "6": {
+      "type": "data",
+      "title": "Summary length p50 / p99 by source (chars)",
+      "query": "timeseries len_p50 = percentile(ksquad.run.summary.length, 50), len_p99 = percentile(ksquad.run.summary.length, 99), by:{source}, from:-6h",
+      "visualization": "lineChart"
+    },
+    "7": {
+      "type": "data",
+      "title": "Summary length distribution (avg by outcome)",
+      "query": "timeseries len_avg = avg(ksquad.run.summary.length), by:{outcome}, from:-6h",
+      "visualization": "barChart"
+    }
+  },
+  "layouts": {
+    "0": { "x": 0, "y": 0, "w": 24, "h": 3 },
+    "1": { "x": 0, "y": 3, "w": 8, "h": 4 },
+    "2": { "x": 8, "y": 3, "w": 8, "h": 4 },
+    "3": { "x": 16, "y": 3, "w": 8, "h": 4 },
+    "4": { "x": 0, "y": 7, "w": 12, "h": 6 },
+    "5": { "x": 12, "y": 7, "w": 12, "h": 6 },
+    "6": { "x": 0, "y": 13, "w": 12, "h": 6 },
+    "7": { "x": 12, "y": 13, "w": 12, "h": 6 }
+  }
+}
