@@ -123,13 +123,16 @@ spec:
         send_batch_size: 8192
         send_batch_max_size: 16384
         timeout: 5s
-      # Logs-only batch cap (ISI-7108). 8k–16k container-log records exceed
-      # Dynatrace's 10 MB per-request OTLP limit → HTTP 413 (non-retryable) →
-      # every log batch dropped. Smaller logs batch keeps each request under
-      # the limit. Metrics/traces keep the larger `batch` for throughput.
+      # Logs-only batch cap (ISI-7108 / ISI-7110). 8k–16k container-log records
+      # exceed Dynatrace's 10 MB per-request OTLP limit → HTTP 413
+      # (non-retryable) → every log batch dropped. The observed 413 dropped only
+      # 1166 records yet exceeded 10 MB ⇒ ≥ ~9 KB/record. send_batch_max_size is
+      # a HARD per-request ceiling (enforced on size-trigger AND timeout flush,
+      # re-chunking larger upstream batches), so 800 × ~9 KB ≈ 7.2 MB keeps
+      # ~28% headroom under 10 MB. Metrics/traces keep the larger `batch`.
       batch/logs:
-        send_batch_size: 1000
-        send_batch_max_size: 1500
+        send_batch_size: 800
+        send_batch_max_size: 800
         timeout: 5s
     exporters:
       otlphttp/vendor:
