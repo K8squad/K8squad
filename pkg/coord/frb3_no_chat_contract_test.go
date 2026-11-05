@@ -601,6 +601,23 @@ var allowedSurface = map[string]string{
 	"NewProdReattachReader":                  "ADR-0020 §5(a) constructor (re-attach reader)",
 	"ProdReattachReader.UnsettledDispatches": "ADR-0020 §5(a) latest unsettled non-terminal dispatch lap per work item, within the supervisor session-retention window",
 	"ReattachTarget":                         "ADR-0020 §5(a) (a2aTaskID, runID) pair a re-attach Submit needs — coord ids only, no content",
+
+	// ISI-7096 (child of ISI-7088) per-completed-run summary-presence
+	// observability: a bounded metric read-out of the committed coord.comment
+	// summary row (present/length/source), NOT an agent-to-agent channel — it
+	// is a post-commit, best-effort telemetry guard over the ISI-7094 two-phase
+	// summary invariant, carries no worker content, and emits only bounded enums.
+	"EmitRunSummaryObservation":              "ISI-7096 post-commit best-effort summary-presence metric over the committed coord.comment summary row (regression guard for the ISI-7094 two-phase invariant)",
+	"RunSummaryObservation":                  "ISI-7096 pure value identifying one completed run to observe (work_item/run/terminal step/engine principal — coord ids only)",
+	"RunSummaryMetrics":                      "ISI-7096 bounded summary-presence metric façade (PhaseMetrics discipline; tests assert with a fake)",
+	"NewOTelRunSummaryMetrics":               "ISI-7096 constructor registering ksquad.run.summary.present/.length on the operator OTel meter",
+	"OTelRunSummaryMetrics":                  "ISI-7096 RunSummaryMetrics impl on real OTel instruments (phasespan PrometheusPhaseMetrics discipline — exported concrete type)",
+	"OTelRunSummaryMetrics.RecordRunSummary": "ISI-7096 record one completed-run summary observation (counter + length histogram)",
+	"OTelRunSummaryMetrics.Signals":          "ISI-7096 emitted metric names (cardinality proof)",
+	"SetRunSummaryMetrics":                   "ISI-7096 bootstrap installer for the process summary-presence emitter (nop until installed; phasespan discipline)",
+	"SummarySourceAgent":                     "ISI-7096 summary-source enum: the agent authored its own kind='summary' recap",
+	"SummarySourceSynthesized":               "ISI-7096 summary-source enum: the platform synthesized the required summary (settle fallback)",
+	"SummarySourceAbsent":                    "ISI-7096 summary-source enum: NO summary on a completed run — the regression the detector alerts on",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

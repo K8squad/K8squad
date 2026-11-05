@@ -1562,6 +1562,19 @@ func main() {
 			scmMetrics = nil
 		}
 
+		// ISI-7096 (child of ISI-7088): register the per-completed-run
+		// summary-presence instruments on the operator's OTel meter so every
+		// terminal settle emits ksquad.run.summary.present / .length. This is
+		// the regression guard for the two-phase comment feature — the
+		// missing-summary detector fires on present="false". A registration
+		// failure leaves the process-wide emitter nop (no metric), never a dead
+		// controller.
+		if rsMetrics, rsErr := coord.NewOTelRunSummaryMetrics(telemetry.Meter()); rsErr != nil {
+			ctrl.Log.Error(rsErr, "run summary-presence metrics disabled (Register failed)")
+		} else {
+			coord.SetRunSummaryMetrics(rsMetrics)
+		}
+
 		// ISI-4750 E4 (ISI-4776): the system PR-review dispatch trigger. It rides
 		// the SAME repo-sync reconcile as the mirror + issue-link passes. The pure
 		// decision core (pkg/controller/reviewtrigger) is bound here to its three
