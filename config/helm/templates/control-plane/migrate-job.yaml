@@ -1,0 +1,79 @@
+{{- if and .Values.controlPlane.enabled .Values.controlPlane.migrations.enabled }}
+{{- $ns := include "k8squad.namespace" . }}
+{{- $c := "apiserver" }}
+{{- /*
+  Schema-migration gate (ISI-7109). A Helm pre-install/pre-upgrade hook Job runs the apiserver
+  image with --migrate-only, applying db/migrations to HEAD and exiting BEFORE the operator and
+  apiserver Deployments roll. Helm blocks the release on a hook Job until it completes, so a
+  newly-landed migration can never be mid-apply while a rolled operator already serves terminal
+  settles against the new columns — the ~7-minute 42703 window observed in ISI-7104 (operator
+  image 56a59df5 rolled and ran INSERT/SELECT against coord.comment.kind/.run_id before
+  0042_comment_kind applied).
+
+  Fail-closed: --migrate-only exits non-zero if Apply fails (backoffLimit then marks the Job
+  failed), the pre-upgrade hook fails, `helm upgrade` aborts, and the old schema-compatible pods
+  keep serving rather than rolling onto a drifted schema.
+
+  SA: runs under the namespace `default` ServiceAccount — migrations touch only Postgres (via the
+  DATABASE_URL Secret), never the Kubernetes API, and `default` always exists, so the hook has no
+  ordering dependency on the chart's own ServiceAccount resources on a fresh install. imagePullSecrets
+  are set directly on the pod (not inherited from an SA) so a private ghcr image still pulls.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ksquad-migrate
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "migrate") | nindent 4 }}
+  annotations:
+    # Run before the rest of the release on both install and upgrade. Weight -5 orders this after
+    # the chart-owned dev DSN Secret (weight -10, inline-dsn path only); production supplies the DSN
+    # via an out-of-band existingSecret that already exists, so ordering is moot there.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    # Delete a prior Job before re-creating (hook names are stable) and tidy up on success. A FAILED
+    # Job is intentionally retained so its logs explain an aborted upgrade.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.controlPlane.migrations.backoffLimit | default 1 }}
+  {{- with .Values.controlPlane.migrations.activeDeadlineSeconds }}
+  activeDeadlineSeconds: {{ . }}
+  {{- end }}
+  {{- with .Values.controlPlane.migrations.ttlSecondsAfterFinished }}
+  ttlSecondsAfterFinished: {{ . }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: default
+      {{- with .Values.controlPlane.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: migrate
+        image: {{ include "k8squad.image" (dict "root" $ "component" $c) }}
+        imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy | default "IfNotPresent" }}
+        args:
+        - --migrate-only
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        {{- include "k8squad.databaseEnv" . | nindent 8 }}
+        {{- include "k8squad.otelEnv" . | nindent 8 }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          {{- toYaml (.Values.controlPlane.migrations.resources | default dict) | nindent 10 }}
+{{- end }}

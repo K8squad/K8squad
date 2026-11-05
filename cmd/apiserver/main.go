@@ -65,8 +65,18 @@ func main() {
 		configPath  = flag.String("config", "/etc/ksquad/apiserver-config.json", "Path to apiserver configuration file")
 		databaseURL = flag.String("database-url", "", "Postgres connection URL (overrides config/env)")
 		httpPort    = flag.Int("http-port", 0, "HTTP port (overrides config)")
+		// migrate-only runs the shared forward-only migrations to completion and exits — it never
+		// binds the HTTP server. This is the entrypoint for the Helm pre-install/pre-upgrade hook Job
+		// (config/helm/templates/control-plane/migrate-job.yaml), so the schema reaches HEAD BEFORE the
+		// operator/apiserver Deployments roll. Without that gate a newly-landed migration (e.g.
+		// 0042_comment_kind) could be mid-apply while a rolled operator already serves terminal settles
+		// against the new columns — the 7-minute 42703 window observed in ISI-7104 (ISI-7109).
+		migrateOnly = flag.Bool("migrate-only", false, "Apply schema migrations to HEAD, then exit without serving (also KSQUAD_MIGRATE_ONLY=1)")
 	)
 	flag.Parse()
+	if os.Getenv("KSQUAD_MIGRATE_ONLY") == "1" {
+		*migrateOnly = true
+	}
 
 	cfg, err := apiserver.LoadConfig(*configPath)
 	if err != nil {
@@ -165,6 +175,17 @@ func main() {
 	// still boots.
 	dbmigrate.VerifyAndLog(migCtx, db)
 	migCancel()
+
+	// migrate-only gate (ISI-7109): the schema is now at HEAD and verified. When run as the Helm
+	// pre-install/pre-upgrade hook Job we exit 0 here — the HTTP server is never bound and the Job
+	// completes, which is Helm's signal to proceed with rolling the operator/apiserver Deployments.
+	// Exiting here (not earlier) guarantees the Job fails loudly (non-zero via the Fatalf above) if
+	// Apply fails, so Helm aborts the upgrade and the old, schema-compatible pods keep serving rather
+	// than a new operator racing an unapplied migration.
+	if *migrateOnly {
+		log.Printf("ksquad-apiserver: --migrate-only complete, schema at HEAD; exiting without serving")
+		return
+	}
 
 	// §13 identity resolver. Production resolves the forwarded ksquad_session cookie through the
 	// Postgres auth.session store (ISI-2758, db/migrations/0006_auth_schema.sql); a dev sessions file

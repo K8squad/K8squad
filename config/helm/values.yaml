@@ -87,6 +87,29 @@ controlPlane:
     # a real credential here.
     dsn: ""
 
+  # Schema-migration gate (ISI-7109). A Helm pre-install/pre-upgrade hook Job runs
+  # the apiserver image with --migrate-only, applying db/migrations to HEAD and
+  # exiting BEFORE the operator/apiserver Deployments roll. This closes the ISI-7104
+  # race: a rolled operator serving terminal settles against new columns (e.g.
+  # 0042_comment_kind) while the migration was still mid-apply produced ~7 min of
+  # hard 42703 "column does not exist" Reconciler errors. The Job is fail-closed —
+  # if migrations fail the hook fails, `helm upgrade` aborts, and the old,
+  # schema-compatible pods keep serving rather than rolling onto a drifted schema.
+  migrations:
+    # Run the pre-upgrade migration hook Job. Keep true in production. Set false
+    # only when migrations are applied out-of-band (the apiserver still applies
+    # HEAD on its own startup as the fail-closed backstop).
+    enabled: true
+    # Job retry budget. 0 = no retries (fail fast on the first error).
+    backoffLimit: 1
+    # Hard wall-clock cap for the migration Job; Helm waits for the hook up to its
+    # own timeout, this bounds a wedged apply so the release does not hang forever.
+    activeDeadlineSeconds: 300
+    # How long completed/failed hook Jobs linger for log inspection before the
+    # cluster GCs them (seconds). Independent of Helm's hook-delete-policy.
+    ttlSecondsAfterFinished: 300
+    resources: {}
+
   # OTLP exporter wiring → the observability gateway collector (live since
   # ISI-3484). Injected as OTEL_EXPORTER_OTLP_* on every workload.
   otel:

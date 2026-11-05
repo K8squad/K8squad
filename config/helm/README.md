@@ -422,6 +422,27 @@ fleet-wide File-Explorer HTTP 500 (release rev 17 rendered from a pre-fix
 feature-branch tree). CI runs these tests on every PR; this is the deploy-time
 mirror for the manual `helm upgrade` path, which CI cannot see.
 
+### Schema-migration gate (ISI-7109)
+
+A roll that lands a new `db/migrations` file is gated on that migration applying
+**before** the operator and apiserver Deployments roll. A `pre-install`/`pre-upgrade`
+hook Job (`ksquad-migrate`) runs the apiserver image with `--migrate-only` — it
+applies migrations to HEAD and exits without serving — and Helm blocks the release
+on that Job until it completes. This closes the ISI-7104 race: the ISI-7088
+observability operator image rolled and began serving terminal-settle reconciles
+against `coord.comment.kind`/`.run_id` before `0042_comment_kind` had applied,
+producing ~7 minutes of hard `42703` "column does not exist" Reconciler errors.
+
+The gate is **fail-closed**: if migrations fail, `--migrate-only` exits non-zero, the
+hook Job fails, `helm upgrade` aborts, and the old, schema-compatible pods keep
+serving rather than rolling onto a drifted schema. The apiserver still applies HEAD
+on its own startup (`cmd/apiserver`, the ISI-5051 backstop), so the Job is a timing
+gate, not the only migration path. Toggle with `controlPlane.migrations.enabled`
+(default `true`; set `false` only when migrations are applied out-of-band). The Job
+reads the same `DATABASE_URL` Secret as the other components — on production
+(`existingSecret`) it pre-exists; on the dev inline-DSN path the chart-owned Secret
+is hook-annotated to lead the Job so a fresh install can read it.
+
 ## Verification
 
 ```sh
