@@ -596,7 +596,20 @@ func (e *ProdEffects) Terminal(s reconcile.Step) {
 
 	if err := tx.Commit(); err != nil {
 		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: commit: %w", err))
+		return
 	}
+
+	// ISI-7096 summary-presence guard: now that the terminal settle (and its
+	// agent-or-synthesized summary) is committed, re-query the committed
+	// coord.comment state and emit the bounded summary-presence/length metric.
+	// Best-effort and post-commit (phasespan discipline): the board move has
+	// already landed, so observability can never fail it.
+	EmitRunSummaryObservation(e.ctx, e.db, RunSummaryObservation{
+		WorkItemID:      e.workItemID,
+		RunID:           e.runID,
+		TerminalStep:    string(s),
+		EnginePrincipal: e.principal,
+	})
 }
 
 // audit appends one §6.5 provenance row for an effect. to carries the effect's target

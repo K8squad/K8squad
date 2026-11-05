@@ -314,6 +314,19 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 	if err := tx.Commit(); err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: commit: %w", event, err)
 	}
+
+	// ISI-7096 summary-presence guard: a terminal re-entry (FailEnter,
+	// CancelEnter) just committed its settle + summary. Emit the committed
+	// summary-presence/length metric post-commit, best-effort (phasespan
+	// discipline). A non-terminal re-entry (RetryEnter → claiming_sandbox) is a
+	// no-op inside EmitRunSummaryObservation (settleIsTerminal gate), matching
+	// SettleTerminalLane: a retry lap owes no summary.
+	coord.EmitRunSummaryObservation(ctx, c.db, coord.RunSummaryObservation{
+		WorkItemID:      workItemID,
+		RunID:           runID,
+		TerminalStep:    toState,
+		EnginePrincipal: c.principal,
+	})
 	return fenceAfter, true, nil
 }
 

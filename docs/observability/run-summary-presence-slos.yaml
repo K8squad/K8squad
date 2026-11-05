@@ -1,0 +1,117 @@
+# Run summary-presence — SLOs / KPIs + missing-summary detector
+# (ISI-7096, child of ISI-7088; the two-phase comment feature ISI-7094 landed).
+#
+# Test-consumable KPI definitions for the ISI-7096 acceptance criteria and the
+# Testing Architect. Each KPI is a Dynatrace DQL query plus a threshold and a
+# comparator, so a harness can run the query (e.g. `dtctl query -f -`), read the
+# named numeric field, and assert it against the threshold. The metric keys are
+# the OTel names emitted by pkg/coord/runsummaryobs.go
+# (EmitRunSummaryObservation, registered on the operator meter in
+# cmd/operator/main.go). Dynatrace preserves the dotted keys (consistent with
+# the sibling ksquad.scm.* / ksquad.controller.* metrics already in the tenant —
+# see docs/observability/github-sync-slos.yaml).
+#
+# STATUS: the DQL is syntax-validated against the DT dev tenant
+# (oat05854.dev.apps.dynatracelabs.com — the env the operator's gateway
+# collector exports OTLP to, deploy/otel/reference/gateway-collector.yaml). Live
+# threshold evaluation is gated on the ksquad.run.summary.* metrics actually
+# flowing — i.e. an operator carrying ISI-7096 deployed to the DT-exporting env
+# AND at least one run reaching a terminal step (succeeded/failed/cancelled).
+# Until then every query returns empty (no data), which a harness MUST treat as
+# "not yet measurable", NOT as pass/fail.
+
+meta:
+  slo_domain: run-summary-presence
+  parent_issue: ISI-7088
+  issue: ISI-7096
+  window: 1h            # rolling evaluation window; widen for release gates
+  dt_tenant_context: prod   # dtctl ctx `prod` = oat05854.dev.apps.dynatracelabs.com
+  empty_result_means: not_yet_measurable
+  metrics:
+    present: ksquad.run.summary.present   # counter{outcome,source,present}; one record per completed run
+    length:  ksquad.run.summary.length    # histogram{outcome,source} ({char}); summary length distribution
+  # Bounded label vocabularies (NFR-OBS3 cardinality firewall):
+  labels:
+    outcome: [succeeded, failed, cancelled]
+    source:  [agent, synthesized, absent]   # absent = the regression (no summary on a completed run)
+    present: ["true", "false"]
+
+kpis:
+  # AC2 — the regression guard for the whole feature.
+  - id: missing_summary_zero
+    title: Completed runs with NO summary == 0
+    rationale: >
+      EmitRunSummaryObservation re-queries the committed coord.comment state
+      after every terminal settle. A completed run that carries zero
+      kind='summary' comments records present="false" / source="absent" — the
+      ISI-7094 two-phase invariant regressing (a broken synthesize fallback, or
+      a terminal run that bypassed settle). Any non-zero value is a regression
+      and drives the missing-summary detector below.
+    metric: ksquad.run.summary.present
+    dql: |
+      timeseries missing = sum(ksquad.run.summary.present, filter: { present == "false" }), from:-1h
+    value_expr: sum(missing)
+    comparator: eq
+    threshold: 0
+
+  # AC1 — per-completed-run presence coverage.
+  - id: summary_presence_rate
+    title: Summary presence rate == 1.0
+    rationale: >
+      Fraction of completed runs that carry a summary (agent-authored OR
+      platform-synthesized). The platform synthesizes if the agent omits one, so
+      a healthy fleet is 1.0; anything below means missing summaries slipped
+      through — the same signal as missing_summary_zero, expressed as a rate.
+    metric: ksquad.run.summary.present
+    dql: |
+      timeseries
+        present = sum(ksquad.run.summary.present, filter: { present == "true" }),
+        total   = sum(ksquad.run.summary.present),
+        from: -1h
+    value_expr: sum(present) / sum(total)
+    comparator: gte
+    threshold: 1.0
+
+  - id: completed_runs_positive
+    title: Completed runs observed > 0
+    rationale: >
+      Liveness of the emission path itself (AC1). Every terminal settle emits
+      ksquad.run.summary.present exactly once; zero over the window means the
+      guard is a blind spot — the operator is not emitting, or no run completed.
+    metric: ksquad.run.summary.present
+    dql: |
+      timeseries runs = sum(ksquad.run.summary.present), from:-1h
+    value_expr: sum(runs)
+    comparator: gt
+    threshold: 0
+
+# Supporting signals (not gated KPIs; surfaced on the dashboard for triage).
+supporting:
+  - id: runs_by_source
+    metric: ksquad.run.summary.present
+    dql: |
+      timeseries runs = sum(ksquad.run.summary.present), by:{source, outcome}, from:-1h
+  - id: summary_length_percentiles
+    metric: ksquad.run.summary.length
+    dql: |
+      timeseries len_p50 = percentile(ksquad.run.summary.length, 50), len_p99 = percentile(ksquad.run.summary.length, 99), by:{source}, from:-1h
+
+# --- Missing-summary Davis detector (AC2) -----------------------------------
+# Deployed from run-summary-presence-detector.json (sibling file) via
+# `dtctl create anomaly-detector -f run-summary-presence-detector.json`.
+#
+# Per the ISI-5488 hard-won notes, the detector MUST use the **ui** variant
+# analyzer `dt.statistics.ui.anomaly_detection.StaticThresholdAnomalyDetectionAnalyzer`
+# with input key `query` (the non-ui variant uses `timeSeriesData` and is
+# rejected by the anomaly-detection schema), posted in RAW Settings API format
+# `{schemaId, scope, value}` (dtctl's flattened format mangles
+# eventTemplate.properties). alertCondition ABOVE, threshold 0 — a single
+# missing summary fires the event.
+detector:
+  schema: builtin:davis.anomaly-detectors
+  analyzer: dt.statistics.ui.anomaly_detection.StaticThresholdAnomalyDetectionAnalyzer
+  file: run-summary-presence-detector.json
+  query: |
+    timeseries missing = sum(ksquad.run.summary.present, filter: { present == "false" }), from:now()-15m, to:now()
+  alertCondition: ABOVE
+  threshold: 0
