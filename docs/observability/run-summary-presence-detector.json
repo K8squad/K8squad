@@ -1,5 +1,5 @@
 {
-  "//": "ISI-7096 (child of ISI-7088) missing-summary Davis detector. The regression guard for the two-phase comment feature (ISI-7094): fires when a run reaches a terminal state carrying ZERO kind='summary' comments. DEPLOY: dtctl create settings -f <(jq .value run-summary-presence-detector.json) --schema builtin:davis.anomaly-detectors --scope environment  (or 'dtctl apply' to update). SCHEMA NOTE: builtin:davis.anomaly-detectors wants a FLAT value — analyzer.input as an ARRAY of {key,value} pairs and analyzer.name (NOT the nested detectorConfiguration/eventTemplate.properties object form); top-level title/description/source/executionSettings required. AGGREGATION NOTE: the metric ksquad.run.summary.present is a delta counter — timeseries sum() RATE-NORMALIZES to ~0 in this tenant, so the detector MUST use count() (verified live oat05854: sum->0, count->real). threshold ABOVE 0, 1 violating sample. constraint: dealertingSamples (3) <= slidingWindow (5). LIVE (2026-11-05, ISI-7102): deployed to oat05854 + AC2 verified (synthetic present=false injected via gateway OTLP -> detector query count()=1 -> Davis problem).",
+  "//": "ISI-7096 (child of ISI-7088) missing-summary Davis detector. The regression guard for the two-phase comment feature (ISI-7094): fires when a run reaches a terminal state carrying ZERO kind='summary' comments. DEPLOY: dtctl create settings -f <(jq .value run-summary-presence-detector.json) --schema builtin:davis.anomaly-detectors --scope environment  (or 'dtctl apply' to update). SCHEMA NOTE: builtin:davis.anomaly-detectors wants a FLAT value — analyzer.input as an ARRAY of {key,value} pairs and analyzer.name (NOT the nested detectorConfiguration/eventTemplate.properties object form); top-level title/description/source/executionSettings required. AGGREGATION NOTE: the metric ksquad.run.summary.present is a delta counter — timeseries sum() RATE-NORMALIZES to ~0 in this tenant, so the detector MUST use count() (verified live oat05854: sum->0, count->real). threshold ABOVE 0, 1 violating sample, slidingWindow 15 (1-min interval) so a TRANSIENT single missing-summary run latches the alert for the full 15-min window — a smaller window misses a one-off regression. constraint: dealertingSamples (3) <= slidingWindow (5). LIVE (2026-11-05, ISI-7102): deployed to oat05854 + AC2 verified (synthetic present=false injected via gateway OTLP -> detector query count()=1 -> Davis problem).",
   "schemaId": "builtin:davis.anomaly-detectors",
   "scope": "environment",
   "value": {
@@ -19,7 +19,7 @@
         },
         {
           "key": "slidingWindow",
-          "value": "5"
+          "value": "15"
         },
         {
           "key": "dealertingSamples",
@@ -27,7 +27,7 @@
         },
         {
           "key": "query",
-          "value": "timeseries missing = count(ksquad.run.summary.present, filter: { present == \"false\" }), from:now()-15m, to:now()"
+          "value": "timeseries missing = count(ksquad.run.summary.present, filter: { present == \"false\" }, default:0), from:now()-15m, to:now(), interval:1m"
         },
         {
           "key": "threshold",
