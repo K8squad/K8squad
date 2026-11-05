@@ -66,6 +66,19 @@ func (c *CoordStore) PostInitialFindings(ctx context.Context, workItemID, princi
 	return Comment{Author: tc.Author, Body: tc.Body, CreatedAt: tc.CreatedAt}, nil
 }
 
+// PostSummary appends the run's single end-of-run structured summary via the
+// sanctioned append-only path, tagged kind='summary' and stamped with the run id
+// (ISI-7094). Settle counts this toward the exactly-one-summary invariant, so a
+// run that posts one here will NOT get a platform-synthesized duplicate.
+// Attribution/provenance are the token's principal/run — never client-supplied.
+func (c *CoordStore) PostSummary(ctx context.Context, workItemID, principal, runID, body string) (Comment, error) {
+	tc, err := coord.AppendSummary(ctx, c.db, workItemID, principal, runID, body)
+	if err != nil {
+		return Comment{}, mapCoordErr(err)
+	}
+	return Comment{Author: tc.Author, Body: tc.Body, CreatedAt: tc.CreatedAt}, nil
+}
+
 // PostChange appends one agent-reported change ref via the sanctioned
 // append-only path (M1.5/ISI-4131). Attribution/provenance are the token's
 // principal/run — never client-supplied.

@@ -48,6 +48,15 @@ type TaskComment struct {
 	Author    string    `json:"author"`
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Kind is the two-phase class (ISI-7094): 'human' (default top-level comment),
+	// 'summary' (the one per-run recap), or 'progress' (a run sub-step). The
+	// default top-level read (readComments) returns only human+summary; progress
+	// is read separately via ReadRunActivity. Empty on the wire only for a reader
+	// that predates 0042 (never for a row this server wrote — kind is NOT NULL).
+	Kind string `json:"kind,omitempty"`
+	// RunID is the Run a progress/summary row belongs to (ISI-7094); "" for a
+	// human comment and for legacy progress rows written before 0042.
+	RunID string `json:"runId,omitempty"`
 	// References are the structured ticket links the comment carried (ISI-5214);
 	// read straight off coord.comment.payload, never a render-time refetch. nil /
 	// omitted for a plain comment, so an older reader and a link-free comment are
@@ -172,11 +181,17 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	return td, nil
 }
 
+// readComments reads the DEFAULT top-level thread (ISI-7094): human + summary
+// comments only. Progress rows (the run sub-step firehose the ProgressMirror
+// mirrors — [run …][tool]…[status]) are STORED but excluded here so the thread
+// reads like a conversation, not a log; the console surfaces them separately
+// under its per-run "Activity (N events)" expander via ReadRunActivity.
 func readComments(ctx context.Context, db *sql.DB, workItemID string) ([]TaskComment, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT author_principal, body, created_at, payload
+		SELECT author_principal, body, created_at, payload, kind, run_id::text
 		  FROM coord.comment
 		 WHERE work_item_id = $1::uuid
+		   AND kind IN ('human', 'summary')
 		 ORDER BY created_at ASC, id ASC`, workItemID)
 	if err != nil {
 		return nil, fmt.Errorf("coord.ReadTaskDetail: read comments for %s: %w", workItemID, err)
@@ -187,14 +202,57 @@ func readComments(ctx context.Context, db *sql.DB, workItemID string) ([]TaskCom
 	for rows.Next() {
 		var c TaskComment
 		var payload []byte
-		if err := rows.Scan(&c.Author, &c.Body, &c.CreatedAt, &payload); err != nil {
+		var runID sql.NullString
+		if err := rows.Scan(&c.Author, &c.Body, &c.CreatedAt, &payload, &c.Kind, &runID); err != nil {
 			return nil, fmt.Errorf("coord.ReadTaskDetail: scan comment: %w", err)
 		}
+		c.RunID = runID.String
 		c.References = referencesFromPayload(payload)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("coord.ReadTaskDetail: iterate comments: %w", err)
+	}
+	return out, nil
+}
+
+// ReadRunActivity reads the PROGRESS rows for a work item — the run sub-steps
+// (tool results, status transitions, LLM digests, narration) the default thread
+// (readComments) excludes. It is the console's "Activity (N events)" backing
+// query (ISI-7095): chronological, carrying each row's run id so the client can
+// group the feed per run. A legacy progress row written before 0042 carries a
+// NULL run_id ("" here); the console lumps those into one legacy group. Read-only
+// and safe for concurrent use.
+func ReadRunActivity(ctx context.Context, db *sql.DB, workItemID string) ([]TaskComment, error) {
+	if db == nil {
+		return nil, errors.New("coord.ReadRunActivity: nil db")
+	}
+	if workItemID == "" {
+		return nil, fmt.Errorf("coord.ReadRunActivity: workItemID required")
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT author_principal, body, created_at, kind, run_id::text
+		  FROM coord.comment
+		 WHERE work_item_id = $1::uuid
+		   AND kind = 'progress'
+		 ORDER BY created_at ASC, id ASC`, workItemID)
+	if err != nil {
+		return nil, fmt.Errorf("coord.ReadRunActivity: read progress for %s: %w", workItemID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []TaskComment
+	for rows.Next() {
+		var c TaskComment
+		var runID sql.NullString
+		if err := rows.Scan(&c.Author, &c.Body, &c.CreatedAt, &c.Kind, &runID); err != nil {
+			return nil, fmt.Errorf("coord.ReadRunActivity: scan progress: %w", err)
+		}
+		c.RunID = runID.String
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("coord.ReadRunActivity: iterate progress: %w", err)
 	}
 	return out, nil
 }
@@ -239,6 +297,65 @@ func AppendComment(ctx context.Context, db *sql.DB, workItemID, author, body str
 		return TaskComment{}, fmt.Errorf("coord.AppendComment: insert comment for %s: %w", workItemID, err)
 	}
 	return TaskComment{Author: author, Body: body, CreatedAt: created}, nil
+}
+
+// AppendProgress appends one PROGRESS comment (ISI-7094) — a run sub-step the
+// operator-side ProgressMirror mirrors ([run …][tool]…[status], LLM digests).
+// It is stored on the SAME append-only coord.comment table as every other
+// comment but tagged kind='progress' and stamped with its run id, so the default
+// thread (readComments) excludes it and the console groups it per run under the
+// Activity expander (ReadRunActivity). runID may be "" for a progress event that
+// could not be keyed to a run (it then joins the legacy ungrouped Activity bucket).
+func AppendProgress(ctx context.Context, db *sql.DB, workItemID, author, runID, body string) (TaskComment, error) {
+	if db == nil {
+		return TaskComment{}, errors.New("coord.AppendProgress: nil db")
+	}
+	if workItemID == "" || author == "" || body == "" {
+		return TaskComment{}, fmt.Errorf("coord.AppendProgress: workItemID, author and body are required")
+	}
+	runParam := sql.NullString{}
+	if runID != "" {
+		runParam = sql.NullString{String: runID, Valid: true}
+	}
+	var created time.Time
+	err := db.QueryRowContext(ctx, `
+		INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
+		VALUES ($1::uuid, $2, $3, 'progress', $4::uuid)
+		RETURNING created_at`, workItemID, author, body, runParam).Scan(&created)
+	if err != nil {
+		return TaskComment{}, fmt.Errorf("coord.AppendProgress: insert comment for %s: %w", workItemID, err)
+	}
+	return TaskComment{Author: author, Body: body, CreatedAt: created, Kind: "progress", RunID: runID}, nil
+}
+
+// AppendSummary appends one SUMMARY comment (ISI-7094) — the per-run structured
+// recap a run owes the thread (the agent authors it as its final act; the
+// platform synthesizes a minimal one at settle when the agent omits it, so the
+// "exactly one summary" invariant holds structurally — see settle.go). It is a
+// first-class top-level comment (readComments includes kind='summary'), stamped
+// with its run id so settle can answer "did THIS run already summarise?" before
+// synthesizing. Callers must not embed the [run/[tool/[status progress tokens in
+// body — a summary is the human-readable recap, never a log line.
+func AppendSummary(ctx context.Context, db *sql.DB, workItemID, author, runID, body string) (TaskComment, error) {
+	if db == nil {
+		return TaskComment{}, errors.New("coord.AppendSummary: nil db")
+	}
+	if workItemID == "" || author == "" || body == "" {
+		return TaskComment{}, fmt.Errorf("coord.AppendSummary: workItemID, author and body are required")
+	}
+	runParam := sql.NullString{}
+	if runID != "" {
+		runParam = sql.NullString{String: runID, Valid: true}
+	}
+	var created time.Time
+	err := db.QueryRowContext(ctx, `
+		INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
+		VALUES ($1::uuid, $2, $3, 'summary', $4::uuid)
+		RETURNING created_at`, workItemID, author, body, runParam).Scan(&created)
+	if err != nil {
+		return TaskComment{}, fmt.Errorf("coord.AppendSummary: insert comment for %s: %w", workItemID, err)
+	}
+	return TaskComment{Author: author, Body: body, CreatedAt: created, Kind: "summary", RunID: runID}, nil
 }
 
 // AppendInitialFindings appends the run's ONE early initial-findings note

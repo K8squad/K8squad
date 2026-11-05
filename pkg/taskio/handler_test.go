@@ -20,6 +20,9 @@ type fakeStore struct {
 	lastInitialWI   string
 	lastInitialRun  string
 	lastInitialBody string
+	lastSummaryWI   string
+	lastSummaryRun  string
+	lastSummaryBody string
 	lastChangeWI    string
 	lastChange      ChangeRef
 	lastStatusWI    string
@@ -52,6 +55,14 @@ func (f *fakeStore) PostInitialFindings(_ context.Context, wi, principal, runID,
 	f.lastAuthor = principal
 	f.lastInitialRun = runID
 	f.lastInitialBody = body
+	return Comment{Author: principal, Body: body, CreatedAt: time.Unix(0, 0)}, nil
+}
+
+func (f *fakeStore) PostSummary(_ context.Context, wi, principal, runID, body string) (Comment, error) {
+	f.lastSummaryWI = wi
+	f.lastAuthor = principal
+	f.lastSummaryRun = runID
+	f.lastSummaryBody = body
 	return Comment{Author: principal, Body: body, CreatedAt: time.Unix(0, 0)}, nil
 }
 
@@ -202,6 +213,30 @@ func TestPostCommentDefaultKindUnchanged(t *testing.T) {
 	}
 	if store.lastInitialWI != "" {
 		t.Fatalf("initial-findings path taken for default kind (wi=%q)", store.lastInitialWI)
+	}
+}
+
+// ISI-7094: kind:"summary" routes the body through the end-of-run summary path,
+// carrying the token's run so settle can match the exactly-one-summary invariant.
+func TestPostCommentSummary(t *testing.T) {
+	store := &fakeStore{}
+	h, m := newTestHandler(t, store)
+	tok, _ := m.Mint("run-A", "wi-1", "agent-A")
+
+	w := do(t, h, http.MethodPost, "/post-comment", tok, `{"body":"What I did: shipped X","kind":"summary"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if store.lastSummaryWI != "wi-1" || store.lastSummaryRun != "run-A" || store.lastAuthor != "agent-A" {
+		t.Fatalf("summary routed to wi=%q run=%q author=%q, want wi-1/run-A/agent-A",
+			store.lastSummaryWI, store.lastSummaryRun, store.lastAuthor)
+	}
+	if store.lastSummaryBody != "What I did: shipped X" {
+		t.Fatalf("summary body = %q", store.lastSummaryBody)
+	}
+	// Neither the plain nor the initial-findings path must have been taken.
+	if store.lastCommentWI != "" || store.lastInitialWI != "" {
+		t.Fatalf("other path invoked (comment=%q initial=%q)", store.lastCommentWI, store.lastInitialWI)
 	}
 }
 
