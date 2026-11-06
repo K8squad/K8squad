@@ -123,9 +123,21 @@ spec:
         send_batch_size: 8192
         send_batch_max_size: 16384
         timeout: 5s
+      # Logs-only pre-batch (ISI-7108 / ISI-7110). Container-log records are much
+      # larger than metric/span points (k8Squad agent/LLM log bodies >13 KB in
+      # prod), so an 8k–16k log batch exceeds DT's 10 MB OTLP limit → HTTP 413
+      # (non-retryable) → every log batch dropped. Record-count batching can't
+      # bound bytes (even an 800-record batch exceeded 10 MB live). The hard
+      # 10 MB guarantee is the byte-sizer batcher on otlphttp/vendor below; this
+      # batch/logs only bounds the in-memory batch + pre-coalesces.
+      batch/logs:
+        send_batch_size: 800
+        send_batch_max_size: 800
+        timeout: 5s
     exporters:
       otlphttp/vendor:
-        endpoint: https://oat05854.dev.dynatracelabs.com/api/v2/otlp
+        # Your Dynatrace tenant's OTLP API, e.g. https://<your-tenant>.live.dynatrace.com/api/v2/otlp
+        endpoint: https://YOUR_TENANT.live.dynatrace.com/api/v2/otlp
         headers:
           Authorization: "${env:KSQUAD_OTLP_AUTH}"
         tls:
@@ -138,6 +150,16 @@ spec:
           storage: file_storage/queue
           num_consumers: 10
           queue_size: 10000
+          # Payload-size-aware batching (ISI-7110). Hard ceiling on each OTLP
+          # request's serialized size so a verbose-log burst can't exceed DT's
+          # 10 MB limit; the byte sizer re-splits oversized batches into ≤ 8 MiB
+          # requests (~2 MB headroom for framing). Only ever splits logs —
+          # traces/metrics requests are already far smaller.
+          batch:
+            flush_timeout: 5s
+            min_size: 0
+            max_size: 8388608
+            sizer: bytes
         retry_on_failure:
           enabled: true
           initial_interval: 5s
@@ -163,5 +185,7 @@ spec:
           exporters: [otlphttp/vendor]
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+          # batch/logs (not batch) — caps each OTLP request under DT's 10 MB
+          # limit so logs stop dropping with HTTP 413 (ISI-7108).
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch/logs]
           exporters: [otlphttp/vendor]

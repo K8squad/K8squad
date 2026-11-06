@@ -21,9 +21,12 @@ collector:
   serviceNamespace: k8squad-test
 
   # Vendor backend (Dynatrace OTLP). Auth token is NEVER in values — it is
-  # referenced from an out-of-band Secret created before install.
+  # referenced from an out-of-band Secret created before install. Set the
+  # endpoint to your own Dynatrace tenant's OTLP API, e.g.
+  #   https://<your-tenant>.live.dynatrace.com/api/v2/otlp
+  # (override via --set collector.vendor.endpoint=... or a values override file).
   vendor:
-    endpoint: "https://oat05854.dev.dynatracelabs.com/api/v2/otlp"
+    endpoint: "https://YOUR_TENANT.live.dynatrace.com/api/v2/otlp"
   authSecretRef:
     name: dynatrace-otlp
     key: token

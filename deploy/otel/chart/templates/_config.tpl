@@ -103,6 +103,27 @@ processors:
     send_batch_size: 8192
     send_batch_max_size: 16384
     timeout: 5s
+  # Logs-only pre-batch (ISI-7108 / ISI-7110). Container-log records from the
+  # node-logs daemonset are far larger per item than metric/span points —
+  # k8Squad agent/LLM-I-O log bodies ran >13 KB/record in prod, so an 8k–16k
+  # log batch (the shared `batch` above) produces a >10 MB OTLP request and DT
+  # returns HTTP 413 (non-retryable) → every log batch is dropped (signal=logs,
+  # dropped_items in the gateway log; `fetch logs` for ksquad namespaces returns
+  # 0 in the vendor tenant).
+  #
+  # Record-count batching CANNOT bound request bytes here: live, even an
+  # 800-record batch exceeded 10485760 bytes (>13 KB/record, and LLM-completion
+  # log lines are variable/unbounded). The hard 10 MB guarantee is the
+  # byte-sizer batcher on the `otlphttp/vendor` exporter below (max 8 MiB/
+  # request). This `batch/logs` is kept only to bound the in-memory batch handed
+  # to that exporter (the pod sets no memory limit, so memory_limiter falls back
+  # to node memory) and to pre-coalesce; it is NOT the thing keeping us under
+  # 10 MB. Only the logs pipeline uses it; metrics/traces keep the larger
+  # `batch` for throughput.
+  batch/logs:
+    send_batch_size: 800
+    send_batch_max_size: 800
+    timeout: 5s
 exporters:
   otlphttp/vendor:
     endpoint: {{ .Values.collector.vendor.endpoint | quote }}
@@ -120,6 +141,20 @@ exporters:
       storage: file_storage/queue
       num_consumers: 10
       queue_size: 10000
+      # Payload-size-aware batching (ISI-7110). Hard ceiling on each OTLP
+      # request's serialized size so a verbose-log burst can never exceed
+      # Dynatrace's 10 MB /api/v2/otlp limit (HTTP 413, non-retryable). The
+      # `batch` processors upstream are record-count based and cannot bound
+      # bytes when log records are large/variable (>13 KB observed); the byte
+      # sizer re-splits any oversized batch into ≤ 8 MiB requests. 8 MiB leaves
+      # ~2 MB headroom for OTLP/proto framing under the 10 MB cap. Applies to
+      # every signal on this exporter — traces/metrics requests are already far
+      # smaller, so this only ever splits the oversized logs requests.
+      batch:
+        flush_timeout: 5s
+        min_size: 0
+        max_size: 8388608
+        sizer: bytes
     retry_on_failure:
       enabled: true
       initial_interval: 5s
@@ -145,7 +180,9 @@ service:
       exporters: [otlphttp/vendor]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+      # batch/logs (not batch) — caps each OTLP request under DT's 10 MB limit so
+      # logs stop dropping with HTTP 413 (ISI-7108).
+      processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch/logs]
       exporters: [otlphttp/vendor]
 {{- end -}}
 
