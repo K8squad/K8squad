@@ -228,7 +228,19 @@ export function MessageItem({
       )}
 
       <WorkingIndicators watches={workingByMessageId?.[message.id]} />
-      <ThinkingStream rows={thinkingByMessageId?.[message.id]} />
+      {/*
+        ISI-7101 (WS-4, two-tier comments): while a dispatched run for THIS
+        message is still working, its live thinking stream renders OPEN in
+        italic ("working…" — the in-progress tier); once every watch has settled
+        (replied/failed) it falls back to the collapsed "Run activity" affordance
+        and the posted reply message stands as the one clean comment.
+      */}
+      <ThinkingStream
+        rows={thinkingByMessageId?.[message.id]}
+        active={(workingByMessageId?.[message.id] ?? []).some(
+          (w) => w.phase === "working",
+        )}
+      />
 
       {message.replies && message.replies.length > 0 ? (
         <ul className="ksq-thread" data-testid="replies">

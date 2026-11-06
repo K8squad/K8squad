@@ -637,6 +637,36 @@ function ActivityRow({
       </li>
     );
   }
+  // ISI-7101 (WS-4, two-tier comments) — the LIVE thinking tier: rows still
+  // streaming off the per-run SSE bus render as the EPHEMERAL in-progress tier —
+  // italic, muted, smaller (the same visual convention the thin status-event rows
+  // own) — never as settled comment bubbles. On the run's terminal milestone the
+  // reconciling thread reload materializes the durable rows and mergeLiveThinking
+  // de-dupes these away, leaving the ONE clean summary comment as the settled
+  // entry. A live row the ISI-7098 wire stamps 'deliverable' is the run's final
+  // answer arriving live — it skips this branch and renders upright, because it
+  // IS the clean comment, not thinking.
+  if (item.kind === "comment" && item.comment && item.live && item.liveTier !== "deliverable") {
+    return (
+      <li
+        className="ksq-activity ksq-activity--live"
+        data-testid="activity-live"
+        data-live-tier={item.liveTier ?? "thinking"}
+      >
+        <span
+          className="ksq-activity__dot ksq-activity__dot--live"
+          aria-hidden="true"
+        />
+        <span className="muted ksq-activity__live-author">
+          {displayName(item.comment.author)}
+        </span>
+        <span className="muted ksq-activity__live-body">
+          {envelopeSnippet(parseProgressEnvelope(item.comment.body ?? ""))}
+        </span>
+        <time className="ksq-ticket-id">{fmt(item.at)}</time>
+      </li>
+    );
+  }
   if (item.kind === "comment" && item.comment) {
     const meta = runMeta.get(
       runCommentKey(item.comment.author, item.at, item.comment.body),
@@ -1903,6 +1933,9 @@ function TicketBody({
       author: ev.actor,
       body: ev.summary ?? "",
       at: ev.ts,
+      // ISI-7098 tier passthrough (ISI-7101): a 'deliverable' frame is the run
+      // ONE final answer — the clean-comment tier, never the italic thinking row.
+      ...(ev.tier ? { kind: ev.tier } : {}),
     })),
     ...ambientThinking,
   ];

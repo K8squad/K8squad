@@ -1324,6 +1324,35 @@
   display: inline-block;
 }
 
+/* ---- ISI-7101 (WS-4, two-tier comments): the LIVE thinking tier ---- */
+/* A row still streaming off the per-run SSE bus — the ephemeral in-progress
+   tier, not a settled comment. Same quieter convention the workflow rows own
+   (ISI-4706): smaller + italic, so the eye lands on the settled bubbles (the
+   ONE clean summary) while the live reasoning reads as clearly in-flight. The
+   mono timestamp keeps its upright .ksq-ticket-id treatment via the row's own
+   child rules above (shared with --event/--change). No colour override — the
+   row's spans are already .muted, and compositing opacity at this size breaks
+   the 4.5:1 AA floor (see the NB above). */
+.ksq-activity--live {
+  font-size: 0.82rem;
+  font-style: italic;
+}
+.ksq-activity--live .ksq-ticket-id {
+  font-style: normal;
+}
+.ksq-activity__live-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* The live dot pulses while the run streams — the same heartbeat the run-meta
+   strip uses (.ksq-runcomment__dot--live), so "this row is still moving" reads
+   at a glance. Reduced-motion users get the steady accent dot, no pulse. */
+.ksq-activity__dot--live {
+  background: var(--accent);
+  animation: ksq-live-pulse 1.6s ease-in-out infinite;
+  align-self: center;
+}
+
 /* ---- S3 (ISI-4449): agent-run → GitHub-style comment renderer ---- */
 /* A comment bubble is a two-column row: avatar on the spine + bubble body. The
    spine is the connecting line GitHub draws down a comment thread. */
@@ -1546,7 +1575,8 @@
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ksq-runcomment__dot--live {
+  .ksq-runcomment__dot--live,
+  .ksq-activity__dot--live {
     animation: none;
   }
 }

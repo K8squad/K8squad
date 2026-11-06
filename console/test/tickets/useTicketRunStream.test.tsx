@@ -140,6 +140,41 @@ describe("useTicketRunStream — live tail + terminal resolve (ISI-5206)", () =>
     ]);
   });
 
+  it("carries the ISI-7098 tier through: a 'deliverable' frame is the clean-comment kind (ISI-7101)", () => {
+    const instances = stubEventSource();
+    const { result } = renderHook(() =>
+      useTicketRunStream("run-7", "in_progress", undefined, () => {}),
+    );
+    act(() => {
+      instances[0].emit("thinking", {
+        runId: "run-7",
+        author: "agent:sam",
+        body: "final: the fix landed",
+        at: "2026-11-06T10:00:00.000Z",
+        kind: "deliverable",
+      });
+      instances[0].emit("thinking", {
+        runId: "run-7",
+        author: "agent:sam",
+        body: "[run run-7] still working",
+        at: "2026-11-06T10:00:01.000Z",
+        kind: "thinking",
+      });
+      // A legacy envelope with no kind decodes as the thinking tier (no key).
+      instances[0].emit("thinking", {
+        runId: "run-7",
+        author: "agent:sam",
+        body: "[run run-7] legacy row",
+        at: "2026-11-06T10:00:02.000Z",
+      });
+    });
+    expect(result.current.map((r) => r.kind ?? "thinking")).toEqual([
+      "deliverable",
+      "thinking",
+      "thinking",
+    ]);
+  });
+
   it("fires onEnded exactly once on the run's terminal `ended` milestone", () => {
     const instances = stubEventSource();
     const onEnded = vi.fn();

@@ -313,6 +313,20 @@ export interface ActivityItem {
   comment?: ThreadComment;
   change?: ThreadChangeRef;
   event?: ThreadStatusChange;
+  /**
+   * ISI-7101 (WS-4, two-tier comments): true when this row arrived off the LIVE
+   * per-run SSE thinking stream rather than the durable thread read — the
+   * ephemeral in-progress tier, rendered italic/demoted while the run works and
+   * de-duped away once the reconciling reload materializes the durable row.
+   */
+  live?: boolean;
+  /**
+   * The ISI-7098 wire tier for a live row: 'thinking' (the default, including
+   * legacy un-stamped envelopes) is the italic in-progress tier; 'deliverable'
+   * is the run ONE final answer arriving live — rendered as the upright
+   * clean-comment bubble, never italic.
+   */
+  liveTier?: "thinking" | "deliverable";
 }
 
 /** A principal like "agent:builder" is an agent; anything else is a person.
@@ -382,6 +396,12 @@ export interface LiveThinkingRow {
   author: string;
   body: string;
   at: string;
+  /**
+   * The ISI-7098 wire tier when the envelope stamps it: 'deliverable' = the
+   * run ONE final answer (the clean-comment tier, rendered upright);
+   * 'thinking' / absent = the in-progress tier (the legacy decode rule).
+   */
+  kind?: "thinking" | "deliverable";
 }
 
 /**
@@ -419,6 +439,10 @@ export function mergeLiveThinking(
       who: row.author,
       authorKind: authorKind(row.author),
       comment: { author: row.author, body: row.body, createdAt: row.at },
+      // ISI-7101: flag the row as the LIVE tier (italic while working, deduped
+      // on the durable handoff) and carry the ISI-7098 wire tier through.
+      live: true,
+      liveTier: row.kind ?? "thinking",
     });
   }
   const at = (s: string) => {

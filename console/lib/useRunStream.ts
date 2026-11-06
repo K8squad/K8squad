@@ -40,6 +40,14 @@ export type RunEvent = {
   actor: string; // agent·role, server-stamped
   ts: string; // server timestamp (client-stamped for outbox events, which carry no ts)
   summary?: string;
+  /**
+   * The ISI-7098 wire tier (WS-1) carried on a thinking frame payload
+   * ('thinking' | 'deliverable'): thinking = ephemeral in-progress reasoning
+   * (the italic live tier), deliverable = the run ONE final answer (the
+   * clean-comment tier). Absent = a legacy envelope, treated as thinking for
+   * display. Carried as 'tier' so it never collides with kind: RunEventKind.
+   */
+  tier?: "thinking" | "deliverable";
 };
 
 export type StreamStatus = "connecting" | "open" | "error";
@@ -108,12 +116,17 @@ function thinkingEvent(id: string, raw: unknown): RunEvent | null {
   const author = typeof r.author === "string" ? r.author : "";
   const body = typeof r.body === "string" ? r.body : "";
   if (!body) return null;
+  // ISI-7098 tier on the envelope: 'deliverable' marks the run ONE final
+  // answer; 'thinking' (and anything absent/unknown) is the in-progress tier.
+  const tier =
+    r.kind === "thinking" || r.kind === "deliverable" ? r.kind : undefined;
   return {
     id,
     kind: "THINKING",
     actor: author || "unknown",
     ts: typeof r.at === "string" && r.at ? r.at : new Date().toISOString(),
     summary: body,
+    ...(tier ? { tier } : {}),
   };
 }
 
