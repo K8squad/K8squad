@@ -30,8 +30,13 @@ type fakeWorkItemReader struct {
 	gotThreadID  string
 	thread       coord.WorkItemThread
 
-	listErr   error
-	threadErr error
+	activityCalled bool
+	gotActivityID  string
+	activity       []coord.TaskComment
+
+	listErr     error
+	threadErr   error
+	activityErr error
 }
 
 func (f *fakeWorkItemReader) ListWorkItems(_ context.Context, teamID, projectID, parentID string) ([]coord.BoardItem, error) {
@@ -44,6 +49,12 @@ func (f *fakeWorkItemReader) ReadWorkItemThread(_ context.Context, workItemID, t
 	f.threadCalled = true
 	f.gotThreadID, f.gotTeam = workItemID, teamID
 	return f.thread, f.threadErr
+}
+
+func (f *fakeWorkItemReader) ReadWorkItemActivity(_ context.Context, workItemID, teamID string) ([]coord.TaskComment, error) {
+	f.activityCalled = true
+	f.gotActivityID, f.gotTeam = workItemID, teamID
+	return f.activity, f.activityErr
 }
 
 // testReadServer wires the two M1.5 read routes with a human (alice) session on
@@ -195,17 +206,87 @@ func TestWorkItemThreadNotFound(t *testing.T) {
 	}
 }
 
-// TestWorkItemReadsNotWired — a nil reader keeps BOTH GETs at the documented
-// 501 (a DB-less dev run), exactly like the other read models.
+// TestWorkItemReadsNotWired — a nil reader keeps the read GETs at the documented
+// 501 (a DB-less dev run), exactly like the other read models — including the
+// two-phase Activity feed (ISI-7095), in lockstep with the thread route.
 func TestWorkItemReadsNotWired(t *testing.T) {
 	h := testReadServer(t, uuid.New(), nil)
-	for _, path := range []string{"/api/projects/proj-ok/work-items", "/api/work-items/wi-1"} {
+	for _, path := range []string{"/api/projects/proj-ok/work-items", "/api/work-items/wi-1", "/api/work-items/wi-1/activity"} {
 		rec := httptest.NewRecorder()
 		req := withSession(httptest.NewRequest(http.MethodGet, path, nil), devToken)
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotImplemented {
 			t.Fatalf("%s: got %d, want 501", path, rec.Code)
 		}
+	}
+}
+
+// TestWorkItemActivityOK — the two-phase Activity feed (ISI-7095) returns the
+// per-run PROGRESS rows as a JSON array, Team-scoped, each carrying its kind +
+// run id so the console groups the expander per run.
+func TestWorkItemActivityOK(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	store := &fakeWorkItemReader{activity: []coord.TaskComment{
+		{Author: "run/abcd1234", Body: "[tool:edit/result(ok)] wired the seam", Kind: "progress", RunID: "abcd1234-0000-0000-0000-000000000000"},
+		{Author: "run/abcd1234", Body: "[status] in_review", Kind: "progress", RunID: "abcd1234-0000-0000-0000-000000000000"},
+	}}
+	h := testReadServer(t, teamID, store)
+
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/work-items/wi-1/activity", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !store.activityCalled || store.gotActivityID != "wi-1" || store.gotTeam != teamID.String() {
+		t.Fatalf("store call: called=%v id=%q team=%q", store.activityCalled, store.gotActivityID, store.gotTeam)
+	}
+	var got []coord.TaskComment
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 2 {
+		t.Fatalf("body: %v %+v", err, got)
+	}
+	if got[0].Kind != "progress" || got[0].RunID == "" {
+		t.Fatalf("progress row lost its kind/runId: %+v", got[0])
+	}
+}
+
+// TestWorkItemActivityEmptyIsArray — a run with no mirrored progress renders
+// `[]`, never `null`, so the console maps the expander unconditionally.
+func TestWorkItemActivityEmptyIsArray(t *testing.T) {
+	store := &fakeWorkItemReader{}
+	h := testReadServer(t, uuid.New(), store)
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/work-items/wi-1/activity", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if b := rec.Body.String(); b == "null" || b == "" {
+		t.Fatalf("empty activity must be [], got %q", b)
+	}
+}
+
+// TestWorkItemActivityNotFound — the store's tenancy sentinel maps to 404
+// (existence-hiding), the same fence the thread read applies.
+func TestWorkItemActivityNotFound(t *testing.T) {
+	store := &fakeWorkItemReader{activityErr: coord.ErrWorkItemNotFound}
+	h := testReadServer(t, uuid.New(), store)
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/work-items/wi-gone/activity", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404", rec.Code)
+	}
+}
+
+// TestWorkItemActivityUnauthenticated — behind the §13 choke point: no session,
+// no progress feed.
+func TestWorkItemActivityUnauthenticated(t *testing.T) {
+	h := testReadServer(t, uuid.New(), &fakeWorkItemReader{})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/work-items/wi-1/activity", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401", rec.Code)
 	}
 }
 

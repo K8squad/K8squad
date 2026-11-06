@@ -29,6 +29,20 @@ export interface ThreadComment {
   body: string;
   createdAt: string;
   references?: TicketReference[];
+  /**
+   * The two-phase class (ISI-7094 / ISI-7088): "human" (a person's top-level
+   * comment, the default), "summary" (the ONE per-run structured recap the run
+   * owes the thread), or "progress" (a run sub-step). The default thread read
+   * (GET /api/work-items/{id}) returns only human + summary; progress rows come
+   * from the separate Activity feed (GET …/activity, lib/tickets/activity.ts).
+   * Empty only for a legacy row a pre-0042 server wrote — treated as "human".
+   */
+  kind?: "human" | "summary" | "progress";
+  /**
+   * The Run a summary/progress row belongs to (ISI-7094); "" for a human comment
+   * and for legacy progress rows. The console groups the Activity expander by it.
+   */
+  runId?: string;
 }
 
 /** One agent-reported change ref (coord.change_ref) — commit SHA or PR URL. */
@@ -123,17 +137,37 @@ export function commentReferences(
   return out;
 }
 
+/**
+ * Read a comment's two-phase `kind` off the wire (ISI-7094), either casing. Only
+ * the three contract values survive; anything else (an empty legacy row, a typo
+ * from a future server) returns undefined so the renderer falls back to its
+ * "treat as human" default rather than inventing a class. The default thread read
+ * only ever carries human/summary — a progress value here would be a server bug,
+ * but it is mapped faithfully rather than hidden.
+ */
+export function commentKind(
+  o: Record<string, unknown>,
+): "human" | "summary" | "progress" | undefined {
+  const raw = str(o, "kind", "Kind").toLowerCase();
+  if (raw === "human" || raw === "summary" || raw === "progress") return raw;
+  return undefined;
+}
+
 /** Map the raw wire object (either casing) into the clean shape. */
 export function normalizeThread(raw: unknown): NormalizedThread {
   const r = (raw ?? {}) as Record<string, unknown>;
   const comments = arr(r, "Comments", "comments").map((c) => {
     const o = c as Record<string, unknown>;
     const references = commentReferences(o);
+    const kind = commentKind(o);
+    const runId = str(o, "runId", "RunID");
     return {
       author: str(o, "author", "Author"),
       body: str(o, "body", "Body"),
       createdAt: str(o, "createdAt", "CreatedAt"),
       ...(references.length > 0 ? { references } : {}),
+      ...(kind ? { kind } : {}),
+      ...(runId ? { runId } : {}),
     };
   });
   const changeRefs = arr(r, "ChangeRefs", "changeRefs").map((c) => {

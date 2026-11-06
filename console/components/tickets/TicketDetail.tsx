@@ -74,6 +74,12 @@ import {
   envelopeSnippet,
   type ProgressSegment,
 } from "@/lib/tickets/progressEnvelope";
+import {
+  fetchRunActivity,
+  groupActivityByRun,
+  activityEventCount,
+  type RunActivityGroup,
+} from "@/lib/tickets/activity";
 import { MentionPopover } from "@/components/discussion/MentionPopover";
 import { Markdown } from "@/components/markdown/Markdown";
 import {
@@ -789,6 +795,107 @@ function ToolChip({
 }
 
 /**
+ * ISI-7095 (ISI-7088) — the two-phase comment UI's per-run "Activity (N events)"
+ * expander. ISI-7094 moved the run sub-step firehose ([run …][tool]…[status]) OUT
+ * of the default thread into a kind='progress' feed; this surfaces it WITHOUT
+ * reburying the summary: one disclosure, COLLAPSED BY DEFAULT, that groups the
+ * progress log per run (chronologically) and renders each row through the same
+ * ProgressBody the thread used to inline.
+ *
+ * The feed is fetched once on mount so the header can show the honest "(N events)"
+ * count; a ticket with no progress (count 0) renders nothing — no empty expander
+ * on a human-only discussion thread (AC: "discussion threads unaffected"). A
+ * store-less or older deployment answers 404/501 → the expander stays silent
+ * rather than surfacing a scary error on what is a progressive-enhancement.
+ */
+function RunActivityLog({ workItemId }: { workItemId: string }) {
+  const [open, setOpen] = useState(false);
+  const [groups, setGroups] = useState<RunActivityGroup[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    fetchRunActivity(workItemId)
+      .then((progress) => {
+        if (!alive) return;
+        setGroups(groupActivityByRun(progress));
+        setLoaded(true);
+      })
+      .catch(() => {
+        // Progressive enhancement: a deployment without the …/activity route
+        // (404/501) just shows no expander — the summary-first thread already
+        // stands on its own.
+        if (alive) setLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [workItemId]);
+
+  const count = activityEventCount(groups);
+  if (!loaded || count === 0) return null;
+
+  return (
+    <section className="ksq-activity-log" data-testid="run-activity-log">
+      <button
+        type="button"
+        className="ksq-activity-log__toggle"
+        data-testid="run-activity-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="ksq-activity-log__caret" aria-hidden="true">
+          {open ? "▾" : "▸"}
+        </span>
+        Activity ({count} {count === 1 ? "event" : "events"})
+      </button>
+      {open && (
+        <div className="ksq-activity-log__body" data-testid="run-activity-body">
+          {groups.map((g) => (
+            <div
+              key={g.runId || "earlier"}
+              className="ksq-activity-log__run"
+              data-testid="run-activity-group"
+              data-run-id={g.runId}
+            >
+              <h4 className="ksq-activity-log__run-head">
+                <span className="ksq-activity-log__run-label">
+                  {g.runId ? (
+                    <>
+                      run <code className="ksq-ticket-id">{g.label}</code>
+                    </>
+                  ) : (
+                    "earlier activity"
+                  )}
+                </span>
+                <span className="muted ksq-activity-log__run-count">
+                  {g.events.length}{" "}
+                  {g.events.length === 1 ? "event" : "events"}
+                </span>
+              </h4>
+              <ol className="ksq-activity-log__events">
+                {g.events.map((e, i) => (
+                  <li
+                    key={`${g.runId}-${i}`}
+                    className="ksq-activity-log__event"
+                    data-testid="run-activity-event"
+                  >
+                    <time className="ksq-ticket-id ksq-activity-log__event-time">
+                      {fmt(e.createdAt)}
+                    </time>
+                    <ProgressBody body={e.body ?? ""} />
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
  * The S3 anatomy (ISI-4449 · ISI-4433 Frame 02-B): one agent run rendered as a
  * GitHub-style comment. Avatar on the spine, a header (name + agent/human pill +
  * mono timestamp), the run meta strip (run-id + a live status dot that pulses
@@ -875,11 +982,19 @@ function RunCommentCard({
     );
   }
 
+  // ISI-7095: a kind='summary' comment is the run's first-class recap (the
+  // "what did the agent do / what is next" a new reader answers from alone). It
+  // keeps the run-bubble anatomy but earns a distinct marker chip + data hook so
+  // CSS can lift it above the chatter — it is NOT progress, and must never read
+  // as one more log line.
+  const isSummary = comment.kind === "summary";
+
   return (
     <li
       className="ksq-activity ksq-activity--comment ksq-runcomment"
       data-testid="activity-comment"
       data-role={item.authorKind}
+      data-comment-kind={comment.kind ?? "human"}
       style={accentStyle}
     >
       <span
@@ -899,6 +1014,15 @@ function RunCommentCard({
           >
             {item.authorKind}
           </span>
+          {isSummary && (
+            <span
+              className="ksq-chip ksq-chip--summary"
+              data-testid="activity-summary-chip"
+              title="The run's structured recap — what it did and what is next"
+            >
+              summary
+            </span>
+          )}
           <time className="ksq-ticket-id ksq-runcomment__time">
             {fmt(item.at)}
           </time>
@@ -2062,6 +2186,13 @@ function TicketBody({
                 )}
               </ul>
             )}
+
+            {/* ISI-7095 (ISI-7088) — two-phase comment UI: the run sub-step
+              firehose no longer inlines into the thread above (ISI-7094 tags it
+              kind='progress' and the default read drops it). It surfaces HERE,
+              under one "Activity (N events)" expander grouped per run, collapsed
+              by default — so the summary leads and the log is one click away. */}
+            <RunActivityLog workItemId={thread.workItemId} />
 
             {/* ISI-4918 (S7 of ISI-4853): the ISI-4495 "▶ Agent re-triggered" receipt is
               FOLDED INTO the honest ladder above — a plain comment that re-dispatches a
