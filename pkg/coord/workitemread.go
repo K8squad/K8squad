@@ -202,6 +202,37 @@ func (s *WorkItemReadStore) ReadWorkItemThread(ctx context.Context, workItemID, 
 	return WorkItemThread{TaskDetail: td, StatusHistory: history}, nil
 }
 
+// ReadWorkItemActivity returns the PROGRESS feed for one ticket (ISI-7095) — the
+// run sub-step rows (ProgressMirror's [run …][tool]…[status] firehose) that
+// ReadWorkItemThread EXCLUDES from the default thread (ISI-7094). It is the
+// console's "Activity (N events)" expander backing read: chronological, each row
+// carrying its run id so the client groups the feed per run. teamID fences
+// tenancy exactly like ReadWorkItemThread — a cross-Team probe reads as
+// ErrWorkItemNotFound (404), never a cross-tenant 403 that would leak existence.
+func (s *WorkItemReadStore) ReadWorkItemActivity(ctx context.Context, workItemID, teamID string) ([]TaskComment, error) {
+	if workItemID == "" {
+		return nil, fmt.Errorf("coord.ReadWorkItemActivity: workItemID required")
+	}
+
+	// Tenancy pre-check on the item's own row — the SAME fence ReadWorkItemThread
+	// applies (ReadRunActivity has no team parameter by design, mirroring
+	// ReadTaskDetail: the task-io caller is fenced by its run token).
+	var itemTeam sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT team_id FROM coord.work_item WHERE id = $1::uuid`, workItemID).Scan(&itemTeam)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrWorkItemNotFound
+	case err != nil:
+		return nil, fmt.Errorf("coord.ReadWorkItemActivity: read team: %w", err)
+	}
+	if teamID != "" && (!itemTeam.Valid || itemTeam.String != teamID) {
+		return nil, ErrWorkItemNotFound
+	}
+
+	return ReadRunActivity(ctx, s.db, workItemID)
+}
+
 // readStatusHistory tails the §6.5 audit rows for one item, newest first —
 // the "status changes" the M1.5 AC wants visible on the ticket. ISI-4237:
 // the filter is the ENGINE-PROGRESS set, not just human/agent lane moves —

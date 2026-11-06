@@ -49,7 +49,7 @@ kpis:
       and drives the missing-summary detector below.
     metric: ksquad.run.summary.present
     dql: |
-      timeseries missing = sum(ksquad.run.summary.present, filter: { present == "false" }), from:-1h
+      timeseries missing = count(ksquad.run.summary.present, filter: { present == "false" }), from:-1h
     value_expr: sum(missing)
     comparator: eq
     threshold: 0
@@ -65,8 +65,8 @@ kpis:
     metric: ksquad.run.summary.present
     dql: |
       timeseries
-        present = sum(ksquad.run.summary.present, filter: { present == "true" }),
-        total   = sum(ksquad.run.summary.present),
+        present = count(ksquad.run.summary.present, filter: { present == "true" }),
+        total   = count(ksquad.run.summary.present),
         from: -1h
     value_expr: sum(present) / sum(total)
     comparator: gte
@@ -80,7 +80,7 @@ kpis:
       guard is a blind spot — the operator is not emitting, or no run completed.
     metric: ksquad.run.summary.present
     dql: |
-      timeseries runs = sum(ksquad.run.summary.present), from:-1h
+      timeseries runs = count(ksquad.run.summary.present), from:-1h
     value_expr: sum(runs)
     comparator: gt
     threshold: 0
@@ -90,7 +90,7 @@ supporting:
   - id: runs_by_source
     metric: ksquad.run.summary.present
     dql: |
-      timeseries runs = sum(ksquad.run.summary.present), by:{source, outcome}, from:-1h
+      timeseries runs = count(ksquad.run.summary.present), by:{source, outcome}, from:-1h
   - id: summary_length_percentiles
     metric: ksquad.run.summary.length
     dql: |
@@ -112,6 +112,6 @@ detector:
   analyzer: dt.statistics.ui.anomaly_detection.StaticThresholdAnomalyDetectionAnalyzer
   file: run-summary-presence-detector.json
   query: |
-    timeseries missing = sum(ksquad.run.summary.present, filter: { present == "false" }), from:now()-15m, to:now()
+    timeseries missing = count(ksquad.run.summary.present, filter: { present == "false" }), from:now()-15m, to:now()
   alertCondition: ABOVE
   threshold: 0

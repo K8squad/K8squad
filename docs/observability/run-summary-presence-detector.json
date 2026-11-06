@@ -1,38 +1,67 @@
 {
-  "//": "ISI-7096 (child of ISI-7088) missing-summary Davis detector. The regression guard for the two-phase comment feature (ISI-7094): fires when a run reaches a terminal state carrying ZERO kind='summary' comments. Deploy with `dtctl create anomaly-detector -f run-summary-presence-detector.json`. RAW Settings API format {schemaId, scope, value} — dtctl's flattened format mangles eventTemplate.properties (ISI-5488). The analyzer MUST be the `ui` variant with input key `query`; the non-ui StaticThresholdAnomalyDetectionAnalyzer uses `timeSeriesData` and is rejected by builtin:davis.anomaly-detectors. STATUS: schema-built + DQL syntax-validated against oat05854; goes live once ksquad.run.summary.present flows (operator carrying ISI-7096 deployed + a terminal run). Live-verify tracked on ISI-7096 follow-up.",
+  "//": "ISI-7096 (child of ISI-7088) missing-summary Davis detector. The regression guard for the two-phase comment feature (ISI-7094): fires when a run reaches a terminal state carrying ZERO kind='summary' comments. DEPLOY: dtctl create settings -f <(jq .value run-summary-presence-detector.json) --schema builtin:davis.anomaly-detectors --scope environment  (or 'dtctl apply' to update). SCHEMA NOTE: builtin:davis.anomaly-detectors wants a FLAT value — analyzer.input as an ARRAY of {key,value} pairs and analyzer.name (NOT the nested detectorConfiguration/eventTemplate.properties object form); top-level title/description/source/executionSettings required. AGGREGATION NOTE: the metric ksquad.run.summary.present is a delta counter — timeseries sum() RATE-NORMALIZES to ~0 in this tenant, so the detector MUST use count() (verified live oat05854: sum->0, count->real). threshold ABOVE 0, 1 violating sample, slidingWindow 15 (1-min interval) so a TRANSIENT single missing-summary run latches the alert for the full 15-min window — a smaller window misses a one-off regression. constraint: dealertingSamples (3) <= slidingWindow (5). LIVE (2026-11-05, ISI-7102): deployed to oat05854 + AC2 verified (synthetic present=false injected via gateway OTLP -> detector query count()=1 -> Davis problem).",
   "schemaId": "builtin:davis.anomaly-detectors",
   "scope": "environment",
   "value": {
-    "enabled": true,
-    "summary": "k8Squad: completed run with no summary comment (ISI-7088 regression guard)",
-    "detectorConfiguration": {
-      "query": "timeseries missing = sum(ksquad.run.summary.present, filter: { present == \"false\" }), from:now()-15m, to:now()",
-      "analyzer": {
-        "type": "dt.statistics.ui.anomaly_detection.StaticThresholdAnomalyDetectionAnalyzer",
-        "input": {
-          "query": "timeseries missing = sum(ksquad.run.summary.present, filter: { present == \"false\" }), from:now()-15m, to:now()"
+    "analyzer": {
+      "input": [
+        {
+          "key": "alertCondition",
+          "value": "ABOVE"
         },
-        "threshold": "0.0",
-        "alertCondition": "ABOVE",
-        "alertOnMissingData": false,
-        "violatingSamples": 1,
-        "slidingWindow": 1,
-        "dealertingSamples": 3
-      }
+        {
+          "key": "alertOnMissingData",
+          "value": "false"
+        },
+        {
+          "key": "violatingSamples",
+          "value": "1"
+        },
+        {
+          "key": "slidingWindow",
+          "value": "15"
+        },
+        {
+          "key": "dealertingSamples",
+          "value": "3"
+        },
+        {
+          "key": "query",
+          "value": "timeseries missing = count(ksquad.run.summary.present, filter: { present == \"false\" }, default:0), from:now()-15m, to:now(), interval:1m"
+        },
+        {
+          "key": "threshold",
+          "value": "0"
+        }
+      ],
+      "name": "dt.statistics.ui.anomaly_detection.StaticThresholdAnomalyDetectionAnalyzer"
     },
+    "description": "A k8Squad run reached a terminal state (succeeded/failed/cancelled) with ZERO kind='summary' comments. The ISI-7088 two-phase invariant regressing: the platform synthesize-fallback in pkg/coord/settle.go should guarantee exactly one summary per completed run. Investigate pkg/coord/settle.go (synthesizeSummary) + the terminal settle callers (prodeffects.go / rundrive/store.go) + the coord.comment rows for the affected run.",
+    "enabled": true,
     "eventTemplate": {
-      "title": "k8Squad: run completed without a summary comment",
-      "description": "{dims} — a run reached a terminal state (succeeded/failed/cancelled) with ZERO kind='summary' comments. This is the ISI-7088 two-phase invariant regressing: the platform synthesize-fallback in coord/settle.go should guarantee exactly one summary per completed run. Investigate: pkg/coord/settle.go (synthesizeSummary), the terminal settle callers (prodeffects.go / rundrive/store.go), and the coord.comment rows for the affected run.",
-      "eventType": "CUSTOM_ALERT",
-      "davisMerge": true,
-      "metadata": {},
       "properties": [
+        {
+          "key": "event.type",
+          "value": "CUSTOM_ALERT"
+        },
         {
           "key": "event.name",
           "value": "k8Squad run completed without a summary (ISI-7096)"
+        },
+        {
+          "key": "event.description",
+          "value": "A completed run carried zero kind='summary' comments (ISI-7088 regression guard)."
+        },
+        {
+          "key": "dt.source_entity",
+          "value": "{dims:dt.source_entity}"
         }
       ]
     },
-    "eventEntityDimensionKey": null
+    "executionSettings": {
+      "actor": "97e8c860-1b2b-4995-b55a-d72382d35243"
+    },
+    "source": "Davis Anomaly Detection",
+    "title": "k8Squad: run completed without a summary comment (ISI-7096)"
   }
 }

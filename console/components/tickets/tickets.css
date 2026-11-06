@@ -1351,6 +1351,91 @@
   display: none;
 }
 
+/* ---- Two-phase comment UI (ISI-7095 / ISI-7088) ---------------------------
+   The summary chip lifts a kind='summary' bubble above the chatter: a filled
+   accent pill (not the hollow role chip) so the eye lands on the run's recap —
+   the "what did the agent do / what is next" a new reader answers from alone. */
+.ksq-chip--summary {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-1);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.68rem;
+}
+/* Give the whole summary bubble a quiet accent edge so it reads as first-class
+   even when scrolled past its chip. */
+.ksq-runcomment[data-comment-kind="summary"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+/* The per-run "Activity (N events)" expander: the progress firehose, collapsed
+   by default, grouped per run. Deliberately quieter than a comment bubble — it
+   is the log, not the conversation. */
+.ksq-activity-log {
+  margin-top: 12px;
+}
+.ksq-activity-log__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.ksq-activity-log__toggle:hover {
+  color: var(--text-1);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.ksq-activity-log__caret {
+  font-size: 0.7rem;
+}
+.ksq-activity-log__body {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ksq-activity-log__run {
+  border-inline-start: 2px solid var(--border);
+  padding-inline-start: 12px;
+}
+.ksq-activity-log__run-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.ksq-activity-log__run-count {
+  font-weight: 400;
+}
+.ksq-activity-log__events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ksq-activity-log__event {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.85rem;
+}
+.ksq-activity-log__event-time {
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+
 .ksq-runcomment__avatar {
   flex: 0 0 auto;
   width: 32px;
