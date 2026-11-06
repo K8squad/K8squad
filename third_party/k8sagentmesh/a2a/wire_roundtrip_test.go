@@ -108,3 +108,47 @@ func TestAgentCardWireRoundTrip(t *testing.T) {
 		t.Fatalf("decoded card = %+v, want %+v", out, in)
 	}
 }
+
+// TestMessageKindWireRoundTrip pins the ISI-7098 message-tier seam: the tier
+// rides as an optional "kind" key on MessagePayload, survives the round trip,
+// and stays absent for legacy emitters — a consumer that predates the
+// two-tier model decodes the same body with an empty tier and may treat it as
+// thinking-tier for display purposes.
+func TestMessageKindWireRoundTrip(t *testing.T) {
+	tagged := MessagePayload{Role: "agent", Text: "the final answer", Trust: "untrusted", Kind: MessageKindDeliverable}
+	raw, err := json.Marshal(tagged)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wireKind := "\"kind\":\"" + MessageKindDeliverable + "\""
+	if !strings.Contains(string(raw), wireKind) {
+		t.Fatalf("wire body lacks the deliverable kind: %s", raw)
+	}
+	var out MessagePayload
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Kind != MessageKindDeliverable {
+		t.Fatalf("decoded Kind = %q, want %q", out.Kind, MessageKindDeliverable)
+	}
+
+	legacy := MessagePayload{Role: "agent", Text: "old emitter text", Trust: "untrusted"}
+	rawLegacy, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy: %v", err)
+	}
+	if strings.Contains(string(rawLegacy), "kind") {
+		t.Fatalf("legacy body must omit the kind key (omitempty): %s", rawLegacy)
+	}
+	var outLegacy MessagePayload
+	if err := json.Unmarshal(rawLegacy, &outLegacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if outLegacy.Kind != "" {
+		t.Fatalf("decoded legacy Kind = %q, want empty (unclassified)", outLegacy.Kind)
+	}
+
+	if MessageKindThinking == "" || MessageKindDeliverable == "" || MessageKindThinking == MessageKindDeliverable {
+		t.Fatalf("tier vocabulary must be two distinct non-empty values: %q / %q", MessageKindThinking, MessageKindDeliverable)
+	}
+}

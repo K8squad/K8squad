@@ -54,6 +54,15 @@ const DefaultSchemaVersion = a2awire.DefaultSchemaVersion
 // onto ToolPayload.Summary (ISI-5211). Re-exported from the module wire type.
 const ToolErrorSummaryMax = a2awire.ToolErrorSummaryMax
 
+// MessageKindThinking / MessageKindDeliverable re-export the ISI-7098
+// message-tier vocabulary: thinking = ephemeral reasoning (live-stream only),
+// deliverable = the run's one final answer (what the durable comment tier is
+// built from). See the module wire type for the full contract.
+const (
+	MessageKindThinking    = a2awire.MessageKindThinking
+	MessageKindDeliverable = a2awire.MessageKindDeliverable
+)
+
 // Task states (spec §3.1), re-exported from the module.
 const (
 	TaskSubmitted     = a2awire.TaskSubmitted

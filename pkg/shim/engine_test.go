@@ -1275,3 +1275,106 @@ func TestSubmitTaskWarmsOllamaRoute(t *testing.T) {
 		t.Fatalf("non-Ollama endpoint got a Warmup (%+v); only Ollama-style routes should warm", *vendor.Warmup)
 	}
 }
+
+// deliverableTexts collects the text of every deliverable-tagged message.
+func deliverableTexts(events []a2a.Event) []string {
+	var out []string
+	for _, ev := range events {
+		if ev.Type != a2a.EventMessage {
+			continue
+		}
+		if p, ok := ev.Payload.(a2a.MessagePayload); ok && p.Kind == a2a.MessageKindDeliverable {
+			out = append(out, p.Text)
+		}
+	}
+	return out
+}
+
+// TestDriveDeliverableBackstop asserts the ISI-7098 exactly-one-deliverable
+// contract on the engine funnel: a legacy (untagged) stream gets exactly one
+// deliverable — the run's LAST message text, emitted before the terminal
+// status event; a parser-tagged deliverable stands and suppresses the
+// backstop; a second tagged deliverable is demoted to thinking; a canceled
+// run gets no backstop deliverable.
+func TestDriveDeliverableBackstop(t *testing.T) {
+	t.Run("legacy stream promotes last message", func(t *testing.T) {
+		runner := &fakeRunner{emits: []Progress{msg("step one"), msg("the final answer")}, outcome: Outcome{State: a2a.TaskCompleted}}
+		e := testEngine(t, runner)
+		if _, err := e.SubmitTask(context.Background(), a2a.Task{A2ATaskID: "run-d1"}); err != nil {
+			t.Fatal(err)
+		}
+		ch, err := e.StreamEvents(context.Background(), "run-d1", 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		events := drain(t, ch)
+		got := deliverableTexts(events)
+		if len(got) != 1 || got[0] != "the final answer" {
+			t.Fatalf("deliverables = %v, want exactly [the final answer] (terminal backstop)", got)
+		}
+		// The deliverable must precede the terminal status event (seq order).
+		for i, ev := range events {
+			if ev.Type == a2a.EventStatus {
+				if sp, ok := ev.Payload.(a2a.StatusPayload); ok && sp.State.IsTerminal() {
+					if i == 0 || events[i-1].Type != a2a.EventMessage {
+						t.Errorf("terminal status at %d is not preceded by the deliverable message", i)
+					}
+					break
+				}
+			}
+		}
+	})
+
+	t.Run("parser-tagged deliverable suppresses backstop", func(t *testing.T) {
+		tagged := Progress{Kind: a2a.EventMessage, Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: "goose final", Trust: "untrusted"}}
+		runner := &fakeRunner{emits: []Progress{msg("narration"), tagged}, outcome: Outcome{State: a2a.TaskCompleted}}
+		e := testEngine(t, runner)
+		if _, err := e.SubmitTask(context.Background(), a2a.Task{A2ATaskID: "run-d2"}); err != nil {
+			t.Fatal(err)
+		}
+		ch, _ := e.StreamEvents(context.Background(), "run-d2", 0)
+		got := deliverableTexts(drain(t, ch))
+		if len(got) != 1 || got[0] != "goose final" {
+			t.Fatalf("deliverables = %v, want exactly [goose final] (tagged, no restatement)", got)
+		}
+	})
+
+	t.Run("second tagged deliverable demotes to thinking", func(t *testing.T) {
+		mk := func(text string) Progress {
+			return Progress{Kind: a2a.EventMessage, Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: text, Trust: "untrusted"}}
+		}
+		runner := &fakeRunner{emits: []Progress{mk("first final"), mk("late error")}, outcome: Outcome{State: a2a.TaskFailed}}
+		e := testEngine(t, runner)
+		if _, err := e.SubmitTask(context.Background(), a2a.Task{A2ATaskID: "run-d3"}); err != nil {
+			t.Fatal(err)
+		}
+		ch, _ := e.StreamEvents(context.Background(), "run-d3", 0)
+		events := drain(t, ch)
+		if got := deliverableTexts(events); len(got) != 1 || got[0] != "first final" {
+			t.Fatalf("deliverables = %v, want exactly [first final] (first stands)", got)
+		}
+		demoted := false
+		for _, ev := range events {
+			if ev.Type == a2a.EventMessage {
+				if p, ok := ev.Payload.(a2a.MessagePayload); ok && p.Kind == a2a.MessageKindThinking && p.Text == "late error" {
+					demoted = true
+				}
+			}
+		}
+		if !demoted {
+			t.Error("the second deliverable-tagged message must be demoted to thinking on the wire")
+		}
+	})
+
+	t.Run("canceled run gets no deliverable", func(t *testing.T) {
+		runner := &fakeRunner{emits: []Progress{msg("partial")}, outcome: Outcome{State: a2a.TaskCanceled}}
+		e := testEngine(t, runner)
+		if _, err := e.SubmitTask(context.Background(), a2a.Task{A2ATaskID: "run-d4"}); err != nil {
+			t.Fatal(err)
+		}
+		ch, _ := e.StreamEvents(context.Background(), "run-d4", 0)
+		if got := deliverableTexts(drain(t, ch)); len(got) != 0 {
+			t.Fatalf("deliverables = %v, want none on a canceled run", got)
+		}
+	})
+}

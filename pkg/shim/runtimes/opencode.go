@@ -397,7 +397,7 @@ func parseOpenCodeLine(line string) []Progress {
 	if err := json.Unmarshal([]byte(line), &ev); err != nil {
 		return []Progress{{
 			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: line, Trust: "untrusted"},
+			Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindThinking, Text: line, Trust: "untrusted"},
 		}}
 	}
 	switch ev.Type {
@@ -455,9 +455,13 @@ func parseOpenCodeLine(line string) []Progress {
 		if ev.Part == nil || ev.Part.Text == "" {
 			return nil
 		}
+		// ISI-7098: opencode emits step_finish per agent step (mid-run too),
+		// so the parser cannot know which text part is final at emit time —
+		// every text part streams as thinking-tier and the engine's terminal
+		// backstop promotes the run's last message to the deliverable.
 		return []Progress{{
 			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: ev.Part.Text, Trust: "untrusted"},
+			Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindThinking, Text: ev.Part.Text, Trust: "untrusted"},
 		}}
 	case "step_finish":
 		if usage := usageFromStepFinish(ev.Part); usage != nil {
@@ -479,8 +483,9 @@ func parseOpenCodeLine(line string) []Progress {
 		}
 		out := []Progress{
 			{
-				Kind:    a2a.EventMessage,
-				Message: &a2a.MessagePayload{Role: "agent", Text: text, Trust: "untrusted"},
+				Kind: a2a.EventMessage,
+				// ISI-7098: the error text is a failed run's terminal answer.
+				Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: text, Trust: "untrusted"},
 			},
 			{
 				Kind:  a2a.EventUsage,

@@ -450,3 +450,33 @@ func TestGooseParserPostJSONNonJSONDegrades(t *testing.T) {
 		t.Fatalf("post-stream non-JSON must degrade to an opaque message event, got %+v", events)
 	}
 }
+
+// TestGooseParserTiers asserts the ISI-7098 message tiers on the captured
+// forced-tool-loop fixture: thinking deltas and pre-tool answer text flush as
+// thinking-tier; the answer text flushed by the terminal complete event is the
+// run's ONE deliverable.
+func TestGooseParserTiers(t *testing.T) {
+	parse := newGooseParser()
+	type tiered struct{ kind, text string }
+	var got []tiered
+	for _, line := range gooseToolFixture() {
+		for _, p := range parse(line) {
+			if p.Kind == a2a.EventMessage && p.Message != nil {
+				got = append(got, tiered{p.Message.Kind, p.Message.Text})
+			}
+		}
+	}
+	want := []tiered{
+		{a2a.MessageKindThinking, "The user "},
+		{a2a.MessageKindThinking, "TOOLPROBE"},
+		{a2a.MessageKindDeliverable, "done"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("tiered messages = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tiered[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
