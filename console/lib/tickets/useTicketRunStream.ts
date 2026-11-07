@@ -103,7 +103,14 @@ export function useTicketRunStream(
       id
         ? events
             .filter((e) => e.kind === "THINKING")
-            .map((e) => ({ author: e.actor, body: e.summary ?? "", at: e.ts }))
+            .map((e) => ({
+              author: e.actor,
+              body: e.summary ?? "",
+              at: e.ts,
+              // ISI-7098 tier passthrough (ISI-7101): a 'deliverable' frame is
+              // the run ONE final answer — the clean-comment tier, never italic.
+              ...(e.tier ? { kind: e.tier } : {}),
+            }))
         : [],
     [id, events],
   );

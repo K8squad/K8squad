@@ -643,6 +643,31 @@ a.ksq-ticket-chip:hover {
   flex: 1 1 auto;
   white-space: pre-wrap;
   word-break: break-word;
+  /* ISI-7101 (WS-4, two-tier comments): the live reasoning tier renders in
+     italic — clearly in-progress, never prose. The affordance it sits in
+     (ThinkingStream) is open + "working…" while the run streams and collapses
+     to "Run activity" once it settles, so the italic marks the ephemeral tier. */
+  font-style: italic;
+}
+
+/* ---- ISI-7101 (WS-4): the deliverable tier — the run ONE final answer ---- */
+/* A live envelope stamped kind='deliverable' (the ISI-7098 wire) is the clean
+   comment arriving ahead of the durable reply message. It renders UPRIGHT —
+   never italic — above the thinking stream, in the body face (not mono), so it
+   already reads as the answer the posted reply will confirm. */
+.ksq-thinking-list--final {
+  border-top-style: solid;
+}
+.ksq-thinking--final {
+  font-family: var(--font-body, var(--font-mono));
+  font-size: 0.92rem;
+  color: var(--text-1);
+}
+.ksq-thinking--final .ksq-thinking__author {
+  color: var(--text-2);
+}
+.ksq-thinking__body--final {
+  font-style: normal;
 }
 
 /* Party session framing (ISI-5589 WS-E) — the round + budget meter container

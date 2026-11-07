@@ -29,6 +29,14 @@ export interface ThinkingRow {
   body: string;
   seq: number;
   at: string;
+  /**
+   * The ISI-7098 wire tier (WS-1, PR #977): "thinking" = ephemeral reasoning
+   * (the italic in-progress tier), "deliverable" = the run's ONE final answer
+   * (the clean-comment tier). Absent = legacy/unclassified envelope — decoded
+   * as thinking for display, per the wire contract's legacy rule. Optional and
+   * additive: an older backend that never stamps it renders unchanged.
+   */
+  kind?: "thinking" | "deliverable";
 }
 
 /**
@@ -52,12 +60,17 @@ export function parseThinkingRow(raw: string): ThinkingRow | null {
   const e = obj as Record<string, unknown>;
   const body = typeof e.body === "string" ? e.body : "";
   if (!body) return null;
+  // ISI-7098 tier: honor the stamped kind; anything else (absent, or a value a
+  // future server coined) decodes as the legacy thinking tier, never crashes.
+  const kind =
+    e.kind === "thinking" || e.kind === "deliverable" ? e.kind : undefined;
   return {
     runId: typeof e.runId === "string" ? e.runId : "",
     author: typeof e.author === "string" ? e.author : "",
     body,
     seq: typeof e.seq === "number" ? e.seq : 0,
     at: typeof e.at === "string" ? e.at : "",
+    ...(kind ? { kind } : {}),
   };
 }
 

@@ -110,7 +110,7 @@ describe("DiscussionRoom — live chat (ISI-5208)", () => {
     expect(screen.getByText(/john is working/i)).toBeTruthy();
   });
 
-  it("folds the raw run activity behind a collapsed toggle, stripping wire markers (ISI-5696)", async () => {
+  it("streams the live tier OPEN while working, then folds it away once replied (ISI-5696 + ISI-7101)", async () => {
     const { emit } = await mountAndPost();
     await waitFor(() => screen.getByTestId("working-indicator"));
 
@@ -137,12 +137,37 @@ describe("DiscussionRoom — live chat (ISI-5208)", () => {
       expect(rows[0].textContent).not.toContain("[tool:");
     });
 
-    // Demoted: the activity lives inside a <details> that is CLOSED by default, so
-    // none of the stream is visible in the default transcript. The compact
-    // "working" indicator is the primary in-flight signal instead.
+    // ISI-7101 (WS-4, two-tier comments): WHILE the dispatch is still working the
+    // activity expander is OPEN by default and labelled "working…" — the live
+    // reasoning streams visibly in italic (the in-progress tier). The compact
+    // working indicator stays the primary in-flight signal alongside it.
     const details = screen.getByTestId("activity-details");
     expect(details.tagName).toBe("DETAILS");
-    expect((details as HTMLDetailsElement).open).toBe(false);
+    expect((details as HTMLDetailsElement).open).toBe(true);
+    expect(screen.getByTestId("activity-toggle").textContent).toContain(
+      "working…",
+    );
+
+    // Once the agent's reply lands (the watch resolves to replied), the one clean
+    // comment IS the transcript and the stream folds back behind the collapsed
+    // "Run activity" affordance — the ISI-5696 demotion holds for the settled and
+    // later-reader views.
+    act(() =>
+      emit({
+        kind: "room",
+        event: { type: "message.created", message: agentReply("m-reply") },
+      }),
+    );
+    await waitFor(() => {
+      const chip = screen.getByTestId("working-indicator");
+      expect(chip).toHaveAttribute("data-phase", "replied");
+    });
+    await waitFor(() =>
+      expect((details as HTMLDetailsElement).open).toBe(false),
+    );
+    expect(screen.getByTestId("activity-toggle").textContent).toContain(
+      "Run activity",
+    );
   });
 
   it("resolves the chip to 'replied' when the agent reply lands over the same channel", async () => {
