@@ -227,14 +227,20 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 	}
 
 	if hasSummary {
-		// Agent already summarised — the engine terminal line lands as a progress
-		// row (the one-line outcome belongs in the Activity feed, not as a second
-		// top-level summary).
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
-			VALUES ($1::uuid, $2, $3, 'progress', $4::uuid)`,
-			workItemID, principal, settleSummary(terminalStep, lane, moved, agent.String), runParam); err != nil {
-			return "", false, fmt.Errorf("coord.SettleTerminalLane: terminal progress: %w", err)
+		// Agent already summarised — for a non-succeeded run the engine
+		// terminal line still lands as a progress row (the outcome reason
+		// belongs in the Activity feed, not as a second top-level summary).
+		// ISI-7099 (ISI-7074 WS-2): a SUCCEEDED run writes no row at all —
+		// success already lives in run metadata (work_item.state plus the
+		// state_transition audit row above); the "Run succeeded" one-liner
+		// was canned noise on top of the run's clean comment.
+		if terminalStep != "succeeded" {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
+				VALUES ($1::uuid, $2, $3, 'progress', $4::uuid)`,
+				workItemID, principal, settleSummary(terminalStep, lane, moved, agent.String), runParam); err != nil {
+				return "", false, fmt.Errorf("coord.SettleTerminalLane: terminal progress: %w", err)
+			}
 		}
 		return lane, moved, nil
 	}

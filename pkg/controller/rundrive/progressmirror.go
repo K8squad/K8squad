@@ -37,6 +37,14 @@ limitations under the License.
 // and terminal status events bypass the guard so the outcome always lands.
 // This is deliberately the sanctioned §6.1 write path (coord.AppendComment),
 // never a lateral INSERT of its own.
+//
+// ISI-7099 (ISI-7074 WS-2) splits the mirror into two tiers: ephemeral
+// thinking (non-deliverable messages, tool calls) publishes to the live run
+// SSE stream ONLY — never a durable coord.comment row — while the WS-1
+// deliverable-tagged message becomes the run's ONE kind='summary' comment
+// (coord.AppendSummary, counted by settle's exactly-one invariant), immune to
+// the flood guard. Usage digests and terminal status rows stay kind='progress'
+// Activity rows.
 package rundrive
 
 import (
@@ -79,6 +87,13 @@ const (
 	// (worst case one duplicate comment on a live replay — acceptable, and
 	// far better than unbounded growth over the operator's lifetime).
 	progressMirrorMaxTracked = 4096
+	// progressMirrorThinkingInterval paces the EPHEMERAL thinking tier
+	// (ISI-7099 / ISI-7074 WS-2): SSE-only rows are cheap (one outbox event,
+	// no durable coord.comment), so the plan's "relax rather than drop"
+	// applies — 4x looser than the durable-row guard so the live trace stays
+	// rich, while still bounding per-run outbox churn. The deliverable and
+	// terminal statuses bypass every guard.
+	progressMirrorThinkingInterval = 250 * time.Millisecond
 )
 
 // ProgressMirror is the operator-side a2a.EventSink that mirrors shim progress
@@ -108,15 +123,29 @@ type ProgressMirror struct {
 	// signal; the reload thread still carries the row. Test seam.
 	publish func(ctx context.Context, workItemID, runID, eventType string, payload []byte) error
 
-	// minInterval bounds the per-run comment rate: events arriving faster
-	// are DROPPED (not queued — the next event after the window lands, so
-	// the thread still advances). Terminal status events bypass the guard.
+	// appendSummary appends the run's ONE deliverable comment (default:
+	// coord.AppendSummary over db — ISI-7099 / ISI-7074 WS-2, kind='summary',
+	// run-id stamped so settle's exactly-one invariant counts it). Test seam.
+	appendSummary func(ctx context.Context, workItemID, author, runID, body string) error
+
+	// minInterval bounds the per-run DURABLE row rate (progress-tier rows):
+	// events arriving faster are DROPPED (not queued — the next event after
+	// the window lands, so the thread still advances). Terminal status events
+	// bypass the guard, and the deliverable tier is never guarded at all.
 	// Field (not const) so tests can zero or stretch it.
 	minInterval time.Duration
 
-	mu      sync.Mutex
-	lastSeq map[string]uint64    // a2aTaskID → last mirrored seq (at-least-once dedup, C4)
-	lastAt  map[string]time.Time // runID → last comment time (flood guard)
+	// pubInterval bounds the per-run EPHEMERAL thinking-publish rate: the
+	// outbox event is still a DB write, so chatty narration stays paced, but
+	// looser than minInterval because a dropped live row costs only liveness,
+	// never the thread. Field (not const) so tests can zero or stretch it.
+	pubInterval time.Duration
+
+	mu        sync.Mutex
+	lastSeq   map[string]uint64    // a2aTaskID → last mirrored seq (at-least-once dedup, C4)
+	lastAt    map[string]time.Time // runID → last durable row time (flood guard)
+	lastPubAt map[string]time.Time // runID → last ephemeral publish (relaxed pacing)
+	delivered map[string]bool      // runID → deliverable summary already written (exactly-one)
 
 	wiCache    sync.Map // a2aTaskID → workItemID (resolved lookups only)
 	agentCache sync.Map // workItemID → agentName (resolved non-empty only)
@@ -127,13 +156,20 @@ func NewProgressMirror(db *sql.DB) *ProgressMirror {
 	m := &ProgressMirror{
 		db:          db,
 		minInterval: progressMirrorMinInterval,
+		pubInterval: progressMirrorThinkingInterval,
 		lastSeq:     make(map[string]uint64),
 		lastAt:      make(map[string]time.Time),
+		lastPubAt:   make(map[string]time.Time),
+		delivered:   make(map[string]bool),
 	}
 	m.lookup = m.lookupDispatchMarker
 	m.assignee = m.lookupAssigneeAgent
 	m.append = func(ctx context.Context, workItemID, author, runID, body string) error {
 		_, err := coord.AppendProgress(ctx, m.db, workItemID, author, runID, body)
+		return err
+	}
+	m.appendSummary = func(ctx context.Context, workItemID, author, runID, body string) error {
+		_, err := coord.AppendSummary(ctx, m.db, workItemID, author, runID, body)
 		return err
 	}
 	m.publish = func(ctx context.Context, workItemID, runID, eventType string, payload []byte) error {
@@ -151,11 +187,19 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 		return nil
 	}
 	runID := cleanRunID(ev.A2ATaskID)
-	body := mirrorBody(runID, ev)
+	t := mirrorTierOf(ev)
+	var body string
+	switch t {
+	case mirrorTierDeliverable:
+		body = deliverableBody(ev)
+	default:
+		body = mirrorBody(runID, ev)
+	}
 	if body == "" {
 		return nil // not a progress surface (usage/skill-load/…, or empty text)
 	}
 
+	reserveDeliverable := false
 	m.mu.Lock()
 	if ev.Seq <= m.lastSeq[ev.A2ATaskID] {
 		m.mu.Unlock()
@@ -164,15 +208,39 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 	if len(m.lastSeq) >= progressMirrorMaxTracked {
 		m.lastSeq = make(map[string]uint64)
 		m.lastAt = make(map[string]time.Time)
+		m.lastPubAt = make(map[string]time.Time)
+		m.delivered = make(map[string]bool)
 	}
 	m.lastSeq[ev.A2ATaskID] = ev.Seq
-	if !isTerminalEvent(ev) {
+	switch {
+	case t == mirrorTierDeliverable || (t == mirrorTierProgress && isTerminalEvent(ev)):
+		// The deliverable and the terminal status bypass every guard: the
+		// run's one comment and its outcome must never be dropped (ISI-7099).
+	case t == mirrorTierEphemeral:
+		if last, ok := m.lastPubAt[runID]; ok && time.Since(last) < m.pubInterval {
+			m.mu.Unlock()
+			return nil // ephemeral pacing (relaxed): drop, never queue — liveness is lossy by design
+		}
+		m.lastPubAt[runID] = time.Now()
+	default:
 		if last, ok := m.lastAt[runID]; ok && time.Since(last) < m.minInterval {
 			m.mu.Unlock()
-			return nil // flood guard: drop, never queue
+			return nil // flood guard on durable rows: drop, never queue
+		}
+		m.lastAt[runID] = time.Now()
+	}
+	// ISI-7099 exactly-one: the first deliverable stands; a later one is
+	// demoted to the ephemeral tier so the thread never gains a second
+	// comment. The engine funnel (ISI-7098) already enforces this upstream —
+	// this is the mirror-side structural pin, never parser goodwill.
+	if t == mirrorTierDeliverable {
+		if m.delivered[runID] {
+			t = mirrorTierEphemeral
+		} else {
+			m.delivered[runID] = true
+			reserveDeliverable = true
 		}
 	}
-	m.lastAt[runID] = time.Now()
 	m.mu.Unlock()
 
 	wi, err := m.workItem(ctx, ev.A2ATaskID)
@@ -188,15 +256,75 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 	if name := m.agentName(ctx, wi); name != "" {
 		author = "agent:" + name
 	}
-	if err := m.append(ctx, wi, author, runID, body); err != nil {
-		return nil // the durable comment is the source of truth — no comment, no liveness echo
+	switch t {
+	case mirrorTierEphemeral:
+		// ISI-7099: thinking/tool narration lives on the live run SSE stream
+		// ONLY — never a durable coord.comment row (FR-B3 §6.1: the ephemeral
+		// tier routes through the run outbox, not a comment INSERT).
+		m.publishThinking(ctx, wi, runID, author, body, ev.Seq)
+		return nil
+	case mirrorTierDeliverable:
+		if m.appendSummary == nil || m.appendSummary(ctx, wi, author, runID, body) != nil {
+			if reserveDeliverable {
+				m.mu.Lock()
+				m.delivered[runID] = false // a later deliverable may retry; settle's synth backstops the recap
+				m.mu.Unlock()
+			}
+			return nil // dropped — settle's synthesized-summary backstop still owes the run exactly one recap
+		}
+	default:
+		if err := m.append(ctx, wi, author, runID, body); err != nil {
+			return nil // the durable comment is the source of truth — no comment, no liveness echo
+		}
 	}
-	// Liveness echo (ISI-5193): now that the comment is durable, project it as a
-	// run-entity outbox event so the per-run SSE hub live-appends the same row to
-	// the ticket without a second EventSource. Purely best-effort — a publish miss
-	// only delays the row to the next thread reload, never the run.
+	// Liveness echo (ISI-5193): the row is durable (or the deliverable just
+	// landed), so project it as a run-entity outbox event so the per-run SSE hub
+	// can live-append it to the ticket. Purely best-effort — a publish miss only
+	// delays the row to the next thread reload, never the run.
 	m.publishThinking(ctx, wi, runID, author, body, ev.Seq)
 	return nil
+}
+
+// mirrorTier classifies an event into its ISI-7099 handling tier: the WS-1
+// deliverable (a kind=deliverable message) is the run's ONE durable comment;
+// usage digests and terminal status stay kind='progress' Activity rows; every
+// other progress surface (thinking messages, tool calls) is EPHEMERAL — live
+// SSE only, never a durable coord.comment row.
+type mirrorTier int
+
+const (
+	mirrorTierEphemeral   mirrorTier = iota // thinking/tool narration: live SSE echo only
+	mirrorTierProgress                      // usage digests + terminal status: durable Activity row + echo
+	mirrorTierDeliverable                   // the WS-1 final answer: the run's one kind='summary' comment
+)
+
+// mirrorTierOf classifies ev. An EventMessage tagged kind=deliverable (WS-1,
+// ISI-7098) is the deliverable; any other message — kind absent
+// (legacy/unclassified) or thinking — and every tool call is ephemeral, per
+// the board's default that thinking is live-only (ISI-7074 decision 3).
+func mirrorTierOf(ev wire.Event) mirrorTier {
+	if ev.Type == wire.EventMessage {
+		if p, ok := mirrorMessagePayload(ev.Payload); ok && p.Kind == wire.MessageKindDeliverable {
+			return mirrorTierDeliverable
+		}
+		return mirrorTierEphemeral
+	}
+	if ev.Type == wire.EventTool {
+		return mirrorTierEphemeral
+	}
+	return mirrorTierProgress
+}
+
+// deliverableBody renders the run's ONE durable comment from the WS-1
+// deliverable text: clean prose, never the [run/[untrusted] progress tokens —
+// a summary is the human-readable recap the board reads (AppendSummary
+// contract), and the agent principal already carries F16 provenance.
+func deliverableBody(ev wire.Event) string {
+	p, ok := mirrorMessagePayload(ev.Payload)
+	if !ok {
+		return ""
+	}
+	return truncateRun(p.Text)
 }
 
 // thinkingEventType is the SSE event name (outbox event_type) the ticket's
@@ -217,9 +345,10 @@ type thinkingPayload struct {
 	At     string `json:"at"` // RFC3339Nano, UTC — client-render timestamp until reload
 }
 
-// publishThinking emits one mirrored comment as a run-entity outbox event. All
-// failures (nil seam, marshal error, DB hiccup, non-uuid run id) are swallowed:
-// the liveness echo must never perturb a run whose durable record already landed.
+// publishThinking emits one mirrored row — durable comment or ephemeral
+// thinking — as a run-entity outbox event. All failures (nil seam, marshal
+// error, DB hiccup, non-uuid run id) are swallowed: the liveness echo must
+// never perturb a run whose durable record already landed.
 func (m *ProgressMirror) publishThinking(ctx context.Context, workItemID, runID, author, body string, seq uint64) {
 	if m.publish == nil {
 		return
