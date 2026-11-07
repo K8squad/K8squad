@@ -101,11 +101,24 @@ export function Markdown({ children, className, testId }: Props) {
               </a>
             );
           },
-          // Code fences: highlight.js output; hljs escapes its output so
-          // dangerouslySetInnerHTML is safe here.
-          code({ className: cls, children: codeChildren, ...rest }) {
-            const isBlock = !!(rest as { node?: { type?: string } }).node;
+          // Block fence container: exactly ONE <pre> per code block (ISI-7197).
+          // The code component below must NOT emit its own <pre> — doing so
+          // rendered fences as pre-in-pre and inline code as a <pre> inside
+          // <p> (the renderer-side artifacts WS-5 was scoped to find).
+          pre({ children }) {
+            return <pre className="ksq-markdown__pre">{children}</pre>;
+          },
+          // Code elements: highlight ONLY fenced code that names a language
+          // (block code carries a language-* className). Inline spans — and
+          // fences with no language tag — render as plain <code>:
+          // react-markdown v9+ passes `node` for inline code too, so node
+          // presence is NOT a block discriminator.
+          code({ className: cls, children: codeChildren }) {
             const lang = /language-(\w+)/.exec(cls ?? "")?.[1] ?? null;
+            if (!lang) {
+              // Inline code — no highlighting.
+              return <code className={cls}>{codeChildren}</code>;
+            }
             const src =
               typeof codeChildren === "string"
                 ? codeChildren
@@ -113,21 +126,12 @@ export function Markdown({ children, className, testId }: Props) {
                   ? codeChildren.join("")
                   : String(codeChildren ?? "");
 
-            if (!isBlock && !cls) {
-              // Inline code — no highlighting.
-              return <code className={cls}>{codeChildren}</code>;
-            }
-
             const html = highlightCode(src.replace(/\n$/, ""), lang);
             return (
-              <pre
-                className={`ksq-markdown__pre${lang ? ` language-${lang}` : ""}`}
-              >
-                <code
-                  className={cls}
-                  dangerouslySetInnerHTML={{ __html: html }}
-                />
-              </pre>
+              <code
+                className={cls}
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
             );
           },
         }}
