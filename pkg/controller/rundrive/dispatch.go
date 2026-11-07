@@ -427,6 +427,17 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		env.SystemContext = sysCtx
 	}
 
+	// ISI-7100 (WS-3 of the ISI-7074 comment-quality plan): every dispatch
+	// carries the final-comment contract in its system context. WS-2 passes
+	// the deliverable-tagged final message through VERBATIM as the run's one
+	// durable comment; the contract shapes that message at the prompt — the
+	// board-approved default, no extra model call — identically for every
+	// runtime and lane (stdin via EnvelopePrompt, env-channel via the spilled
+	// context file, mesh crewaiRouter via crewTaskText). Appended AFTER any
+	// assembled context so it is the closing instruction the model reads;
+	// with the side-channel off it is the entire context.
+	env.SystemContext = appendFinalCommentContract(env.SystemContext)
+
 	// Resolve the EFFECTIVE model endpoint across the Model-Per-Role tiers
 	// (ISI-4430 S4: agent → role → system-default ModelConfig). An Agent with
 	// no BYO modelEndpointRef resolves to an empty ModelRoute (the runtime's
