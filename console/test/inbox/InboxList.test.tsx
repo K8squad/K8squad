@@ -267,3 +267,73 @@ describe("InboxList filters (E3)", () => {
     );
   });
 });
+
+// WS-6.4 / ISI-7226 — multi-option polish on the inline choose_one row: letter chips
+// a/b/c…, a visible Recommended badge, and number-key picks capped at 1–5.
+describe("InboxList multi-option polish (WS-6.4 / ISI-7226)", () => {
+  const multi = {
+    key: "decision:dm-multi",
+    ticketId: "wi-4",
+    projectId: "squad-a/web",
+    title: "Which retry policy?",
+    decisionType: "choose_one",
+    unread: true,
+    decision: {
+      messageId: "dm-multi",
+      allowReject: true,
+      options: [
+        { id: "fixed", label: "Fixed 3x", recommended: true },
+        { id: "expo", label: "Exponential 5x" },
+        { id: "cb", label: "Circuit break" },
+        { id: "ff", label: "Fail fast" },
+        { id: "qd", label: "Queue and drain" },
+        { id: "man", label: "Manual page" },
+      ],
+    },
+  };
+
+  it("renders letter chips a/b/c… on the inline options plus a visible Recommended badge", async () => {
+    stubFetch([multi]);
+    render(<InboxList />);
+    await screen.findByText("Which retry policy?");
+    const letters = screen
+      .getAllByTestId("inline-option-letter")
+      .map((el) => el.textContent);
+    expect(letters).toEqual(["a", "b", "c", "d", "e", "f"]);
+    const badge = screen.getByTestId("inline-option-recommended");
+    expect(badge.textContent).toBe("Recommended");
+    // The first inline option's accessible name carries the letter + recommendation.
+    expect(screen.getAllByTestId("inline-option")[0]).toHaveAttribute(
+      "aria-label",
+      "Option a: Fixed 3x (recommended)",
+    );
+  });
+
+  it("a number key 1–5 answers the row inline with the typed option id", async () => {
+    stubFetch([multi]);
+    const client = stubClient();
+    render(<InboxList client={client} />);
+    await screen.findByText("Which retry policy?");
+    fireEvent.keyDown(screen.getByRole("list"), { key: "3" }); // c — Circuit break
+    await waitFor(() =>
+      expect(client.answered).toEqual([
+        {
+          projectId: "squad-a/web",
+          messageId: "dm-multi",
+          body: { selectedOptionIds: ["cb"] },
+        },
+      ]),
+    );
+  });
+
+  it("number keys beyond 5 are a no-op (a11y contract caps the keys at five)", async () => {
+    stubFetch([multi]);
+    const client = stubClient();
+    render(<InboxList client={client} />);
+    await screen.findByText("Which retry policy?");
+    fireEvent.keyDown(screen.getByRole("list"), { key: "6" });
+    // Nothing fires: give the async path a beat to (not) run.
+    await new Promise((r) => setTimeout(r, 25));
+    expect(client.answered).toEqual([]);
+  });
+});
