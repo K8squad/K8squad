@@ -144,6 +144,9 @@ type checkoutResponse struct {
 type Handler struct {
 	minter *Minter
 	store  Store
+	// raise is the OPTIONAL decision-raise seam (ISI-7224, WS-6.2): nil => the
+	// /request-decision verb answers 501 (unwired), never a silent no-op.
+	raise DecisionRaiser
 }
 
 // NewHandler binds a verifier and a store. Both are required.
@@ -164,6 +167,8 @@ func (h *Handler) Mux() http.Handler {
 	mux.HandleFunc("/post-change", h.auth(h.instrument("post_change", h.postChange)))
 	mux.HandleFunc("/update-status", h.auth(h.instrument("update_status", h.updateStatus)))
 	mux.HandleFunc("/checkout", h.auth(h.instrument("checkout", h.checkout)))
+	// ISI-7224 (WS-6.2): every runtime raises board decisions through this verb.
+	mux.HandleFunc("/request-decision", h.auth(h.instrument("request_decision", h.requestDecision)))
 	return mux
 }
 

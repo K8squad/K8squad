@@ -751,6 +751,9 @@ func main() {
 	// operator minted could not be verified here anyway, so fail visible rather
 	// than mount an endpoint that rejects every real token.
 	var taskIOHandler http.Handler
+	// taskIO keeps the concrete handler so the decision-raise seam (ISI-7224)
+	// can be wired once the discussion store exists below.
+	var taskIO *taskio.Handler
 	// OrgOps (ISI-3626) shares the SAME run-token verifier as task-io — one
 	// KSQUAD_COORD_TOKEN drives both surfaces — so the minter is built once here
 	// and reused below.
@@ -765,7 +768,8 @@ func main() {
 			log.Printf("ksquad-apiserver: task-io seam disabled (store): %v", serr)
 		default:
 			runTokenMinter = minter
-			taskIOHandler = taskio.NewHandler(minter, store).Mux()
+			taskIO = taskio.NewHandler(minter, store)
+			taskIOHandler = taskIO.Mux()
 			log.Printf("ksquad-apiserver: task-io seam ready (/api/task-io: get-task/post-comment/post-change/update-status/checkout)")
 		}
 	} else {
@@ -791,6 +795,20 @@ func main() {
 	// (WorkItemWrites above, WorkItemDispatch when the informer cache is up) — they fan
 	// only into those, and stay documented-501 otherwise (server.go enforces the pair).
 	discussionStore := discussion.NewStore(db)
+
+	// ISI-7224 (ISI-7074 WS-6.2): the run-scoped decision-raise verb rides the
+	// task-io seam - the shared typed helper resolves the raising run's room
+	// thread over the SAME propose-mode dispatch ledger and posts the inert
+	// decision card (single validation point, no new custody semantics; the
+	// existing resume_agent_on_answer continuation moves the ticket on answer).
+	if taskIO != nil {
+		if dr, derr := apiserver.NewTaskIODecisionRaise(db, discussionStore); derr == nil {
+			taskIO.WithDecisionRaiser(dr)
+			log.Printf("ksquad-apiserver: task-io decision raise ready (/api/task-io/request-decision; ISI-7224 WS-6.2)")
+		} else {
+			log.Printf("ksquad-apiserver: task-io decision raise unwired: %v", derr)
+		}
+	}
 
 	// ISI-5108/ISI-5116 dispatch-on-mention: the decision half (@-mention parse + guardrails) lives on
 	// the handler; here we wire the run-minting half (MentionDispatcher) and the reply-path loop-guard
