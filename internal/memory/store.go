@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -460,6 +461,33 @@ func (s *PgVectorStore) SupersedeWorkItemRecords(ctx context.Context, squadID, w
 		squadID, KindWorkItem, keepID, ProvenanceSourceWorkItem, workItemID)
 	if err != nil {
 		return 0, fmt.Errorf("supersede work item records: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// RetractDiscussionThreadRecords is the discussion-side reset companion (ISI-7228 GAP-3, the
+// sibling of SupersedeWorkItemRecords): a thread reset (ADR-0030 reset-marker) hides the pre-marker
+// transcript from the room, and this soft-retracts the indexer's projected records for that hidden
+// window so recall stops surfacing cleared transcripts as duplicate knowledge. Soft-retract only — a
+// §7.4 invalidated_at stamp, never a DELETE; the rows stay queryable for audit. The thread id and
+// authored time live in the record's provenance jsonb (stamped by discussionindex), so the predicate
+// is a jsonb filter — no schema change. Not part of the Backend seam: this is the writer-side store
+// companion the discussionindex retractor binds to.
+func (s *PgVectorStore) RetractDiscussionThreadRecords(ctx context.Context, squadID, threadID string, before time.Time) (int64, error) {
+	if squadID == "" || threadID == "" {
+		return 0, fmt.Errorf("retract discussion thread records: squadID and threadID are required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE memory.memory_records SET invalidated_at = now()
+		 WHERE squad_id = $1::uuid
+		   AND kind = $2
+		   AND invalidated_at IS NULL
+		   AND provenance->>'source' = $3
+		   AND provenance->>'thread_id' = $4
+		   AND (provenance->>'written_at')::timestamptz < $5`,
+		squadID, KindDiscussion, ProvenanceSourceDiscussion, threadID, before)
+	if err != nil {
+		return 0, fmt.Errorf("retract discussion thread records: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
