@@ -120,17 +120,28 @@ type DecisionRequest struct {
 	AnsweredAt     *time.Time      `json:"answeredAt,omitempty"`
 }
 
+// maxDecisionOptions is the hard cap on choose_* options (O3 default: FE renders number-key
+// shortcuts 1–9, so a 10th option has no key and breaks the keyboard contract).
+const maxDecisionOptions = 9
+
 // Validate enforces the per-mode minimum contract before anything is persisted.
+//
+// Rule: choose_one and choose_many require >=2 options (a single-option "choice" is not a choice;
+// use approve for genuine binaries or free_form for open answers). approve and free_form are explicit
+// opt-outs of this rule — they carry no options by construction.
 func (p DecisionRequestPayload) Validate() error {
 	if p.Title == "" {
 		return fmt.Errorf("%w: a decision_request requires a title", ErrInvalidDecisionPayload)
 	}
 	switch p.Mode {
 	case DecisionModeApprove, DecisionModeFreeForm:
-		// approve carries no options; free_form answers via text (allowFreeText is implied).
+		// approve carries no options (genuine binary); free_form answers via text (allowFreeText implied).
 	case DecisionModeChooseOne, DecisionModeChooseMany:
-		if len(p.Options) == 0 {
-			return fmt.Errorf("%w: mode %q requires at least one option", ErrInvalidDecisionPayload, p.Mode)
+		if len(p.Options) < 2 {
+			return fmt.Errorf("%w: mode %q requires at least 2 options (got %d)", ErrInvalidDecisionPayload, p.Mode, len(p.Options))
+		}
+		if len(p.Options) > maxDecisionOptions {
+			return fmt.Errorf("%w: mode %q exceeds the %d-option cap (got %d)", ErrInvalidDecisionPayload, p.Mode, maxDecisionOptions, len(p.Options))
 		}
 		seen := make(map[string]struct{}, len(p.Options))
 		for _, o := range p.Options {
