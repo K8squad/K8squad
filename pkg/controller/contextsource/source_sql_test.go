@@ -101,6 +101,10 @@ func TestSourceWorkItemDiscussionRun(t *testing.T) {
 	mock.ExpectQuery(`FROM discussion.mention_dispatch`).
 		WithArgs("wi-1").
 		WillReturnRows(sqlmock.NewRows([]string{"thread_id", "message_id"}).AddRow("thr-9f3", "msg-trig"))
+	// ISI-7216 C2: the thread's immutable title rides the room context.
+	mock.ExpectQuery(`FROM discussion.thread`).
+		WithArgs("thr-9f3").
+		WillReturnRows(sqlmock.NewRows([]string{"title"}).AddRow("Intake latency after the MoE swap"))
 	mock.ExpectQuery(`FROM discussion.message WHERE id`).
 		WithArgs("msg-trig").
 		WillReturnRows(sqlmock.NewRows([]string{"body"}).AddRow("@ada please benchmark the MoE swap"))
@@ -121,6 +125,9 @@ func TestSourceWorkItemDiscussionRun(t *testing.T) {
 	d := facts.Discussion
 	if d.ThreadID != "thr-9f3" || d.TriggerMessage != "@ada please benchmark the MoE swap" {
 		t.Errorf("thread/trigger = %q / %q", d.ThreadID, d.TriggerMessage)
+	}
+	if d.ThreadTitle != "Intake latency after the MoE swap" {
+		t.Errorf("thread title = %q", d.ThreadTitle)
 	}
 	// Transcript reversed to chronological (oldest→newest).
 	if len(d.Transcript) != 2 || d.Transcript[0].Author != "henrik" || d.Transcript[1].Author != "ada" {
@@ -246,6 +253,10 @@ func TestSourceProjectMeta(t *testing.T) {
 	}
 	if meta.RepoURL != "https://github.com/acme/w" || meta.ProjectRevision != "3" || len(meta.Goals) != 1 {
 		t.Errorf("meta = %+v", meta)
+	}
+	// ISI-7216 C2: the project's identity (CRD name) rides the envelope.
+	if meta.Name != "proj-1" {
+		t.Errorf("project identity not gathered: %q", meta.Name)
 	}
 	// WS-E (ISI-5280): the new non-secret descriptor fields are injected.
 	if meta.Conventions != "Conventional commits; squash-merge; review before merge." {

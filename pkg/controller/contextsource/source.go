@@ -227,6 +227,17 @@ func (s *Source) discussionContext(ctx context.Context, workItemID string) (*con
 		return nil, fmt.Errorf("resolve discussion dispatch for work item %s: %w", workItemID, err)
 	}
 
+	// Thread title (ISI-7216 C2): the immutable topic of the room the run is
+	// about — the "issue" half of the discussion envelope's parity with a
+	// ticket run's own subject. Tolerant: a missing thread row yields an empty
+	// title (no element), never a failed assembly.
+	var threadTitle sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT title FROM discussion.thread WHERE id = $1::uuid`, threadID).
+		Scan(&threadTitle); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read discussion thread %s title: %w", threadID, err)
+	}
+
 	// Triggering message — the @-mention that minted the run, the real topic.
 	var trigger sql.NullString
 	if err := s.db.QueryRowContext(ctx,
@@ -294,6 +305,7 @@ func (s *Source) discussionContext(ctx context.Context, workItemID string) (*con
 
 	return &contextasm.DiscussionContext{
 		ThreadID:       threadID,
+		ThreadTitle:    threadTitle.String,
 		TriggerMessage: trigger.String,
 		Transcript:     transcript,
 		Roster:         entries,
@@ -372,11 +384,15 @@ func (s *Source) ProjectMeta(ctx context.Context, projectRef, revision string) (
 	}
 	return contextasm.ProjectMeta{
 		ProjectRevision: gen,
-		RepoURL:         proj.Spec.Repo.URL,
-		RepoRef:         proj.Spec.Repo.Ref,
-		Goals:           proj.Spec.Goals,
-		Conventions:     proj.Spec.Conventions,
-		ArchDocRefs:     proj.Spec.ArchDocRefs,
+		// Project identity (ISI-7216 C2): the CRD name is the project's
+		// board/console identity — declarative, non-secret, same allowlist
+		// discipline as the other descriptor fields.
+		Name:        proj.Name,
+		RepoURL:     proj.Spec.Repo.URL,
+		RepoRef:     proj.Spec.Repo.Ref,
+		Goals:       proj.Spec.Goals,
+		Conventions: proj.Spec.Conventions,
+		ArchDocRefs: proj.Spec.ArchDocRefs,
 	}, nil
 }
 
