@@ -25,6 +25,7 @@ import (
 // stamps the verbatim ref — the record never becomes LESS recallable than before).
 type ProjectRefResolver struct {
 	reader client.Reader
+	stop   context.CancelFunc
 
 	mu    sync.Mutex
 	byRef map[string]string // "namespace/name" slug → Project CR uid
@@ -65,7 +66,7 @@ func NewProjectRefResolver(ctx context.Context, syncTimeout time.Duration) (*Pro
 			return nil, fmt.Errorf("informer cache did not sync within %s", syncTimeout)
 		}
 	}
-	return &ProjectRefResolver{reader: c, byRef: map[string]string{}}, nil
+	return &ProjectRefResolver{reader: c, stop: cancel, byRef: map[string]string{}}, nil
 }
 
 // ResolveProjectUID implements discussionindex.ProjectResolver: it maps a thread's
