@@ -900,3 +900,47 @@ func TestRolePromptInjectedForDiscussionRun(t *testing.T) {
 	assert.Less(t, strings.Index(prompt, "Decompose and delegate"), strings.Index(prompt, "intake agent feels slow"),
 		"role directive renders before the untrusted discussion transcript")
 }
+
+// ISI-7215 C1: a capability briefing (AssembleRequest.Capabilities) is
+// injected as an authoritative, must-include element right after the team
+// roster, so the agent reads WHAT it can do — act via tools, not narrate —
+// before the task itself.
+func TestCapabilitiesInjectedAfterTeamRoster(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 200_000)
+	req.RolePrompt = "You are the coordinator. Decompose and delegate."
+	req.TeamRoster = "## Your team (assignable agents)\n\n- winston — role: architect"
+	req.Capabilities = "## Your capabilities — the tool surface wired to THIS run\n\n- ksquad-memory-authoring: work_item_create — create a sub-ticket."
+	res, err := a.Assemble(context.Background(), req)
+	require.NoError(t, err)
+
+	// Ordered: roleDirective, teamRoster, capabilities — all authoritative.
+	require.GreaterOrEqual(t, len(res.Envelope.Elements), 3)
+	assert.Equal(t, "roleDirective", res.Envelope.Elements[0].Kind)
+	assert.Equal(t, "teamRoster", res.Envelope.Elements[1].Kind)
+	third := res.Envelope.Elements[2]
+	assert.Equal(t, TierAuthoritative, third.Tier)
+	assert.Equal(t, "capabilities", third.Kind)
+	assert.Equal(t, "capabilityManifest", third.Provenance.Source)
+	assert.Contains(t, third.Content, "work_item_create")
+
+	// Renders inside the authoritative block of the system prompt, before
+	// any untrusted block the agent might weigh instead of acting.
+	prompt := res.Injection.SystemPrompt()
+	assert.Contains(t, prompt, "work_item_create — create a sub-ticket")
+	assert.Less(t, strings.Index(prompt, "work_item_create"), strings.Index(prompt, "UNTRUSTED RECALL"))
+}
+
+// ISI-7215 C1: an empty briefing injects nothing (no empty stub element) —
+// runs without a recorded manifest keep their exact prior envelope.
+func TestCapabilitiesEmptyOmitted(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 200_000)
+	res, err := a.Assemble(context.Background(), req)
+	require.NoError(t, err)
+	for _, el := range res.Envelope.Elements {
+		assert.NotEqual(t, "capabilities", el.Kind)
+	}
+}
