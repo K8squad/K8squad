@@ -92,6 +92,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
 	"github.com/K8squad/K8squad/pkg/mesh"
 	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
+	"github.com/K8squad/K8squad/pkg/recallhealth"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/scmwriteback"
 	"github.com/K8squad/K8squad/pkg/taskio"
@@ -522,12 +523,24 @@ func main() {
 			EmbedderEndpoint: os.Getenv("KSQUAD_MEMORY_EMBEDDER_ENDPOINT"),
 			EmbedderModel:    os.Getenv("KSQUAD_MEMORY_EMBEDDER_MODEL"),
 		}
+		// ISI-7228 GAP-5 (ISI-7233): recall degradation — a store that will
+		// not open, the HashingEmbedder fallback, an assembly whose recall
+		// tier comes back empty (ticked from contextsource) — is fail-open by
+		// design and until now SILENT. Register the bounded
+		// ksquad_recall_degraded instruments on the manager registry (the
+		// operator /metrics endpoint) so the state is operator-visible.
+		// Observability only; no behavior change to recall itself.
+		recallhealth.Register(metrics.Registry)
 		memCtx, memCancel := context.WithTimeout(ctx, 30*time.Second)
 		if memStore, memErr := memory.Open(memCtx, memCfg); memErr != nil {
 			ctrl.Log.Error(memErr, "memory recall disabled: memory store unavailable (untrusted-recall tier stays empty)")
+			recallhealth.Boot(recallhealth.ReasonMemoryOpenFailed)
 		} else {
 			ctxDeps.Memory = memory.NewReadService(memStore, memory.NewEmbedder(memCfg))
 			ctrl.Log.Info("memory recall wired (fresh + pinned arms)", "embedderEndpoint", memCfg.EmbedderEndpoint)
+			if memCfg.EmbedderEndpoint == "" {
+				recallhealth.Boot(recallhealth.ReasonEmbedderFallback)
+			}
 		}
 		memCancel()
 		// ISI-4384 / WS-E (ADR-0021 D5): register the control-plane health
