@@ -338,3 +338,75 @@ func TestGrantSetZeroValueDenies(t *testing.T) {
 	assert.True(t, g.Empty())
 	assert.Nil(t, g.List())
 }
+
+// ---- ISI-7221 (A1/B2): discussion-source runs are always propose-gated ----------
+
+// TestResolveGrantDiscussionRunAlwaysProposeGated (ISI-7221 A1): a
+// source=discussion thread-run whose agent is author-capable is ALWAYS
+// propose-gated - coordinator.propose is derived from the run's discussion
+// source alone (label ksquad.io/work-item-source=discussion), even when the
+// coordinator Role's CoordinatorMode is auto/"". A room thread-run must never
+// direct-execute authoring: its creates/assigns raise human-confirmed proposals.
+func TestResolveGrantDiscussionRunAlwaysProposeGated(t *testing.T) {
+	team := teamWithGrants("squad")        // no explicit grants: coordinator default path
+	role := roleCRMode("role-manager", "") // auto mode
+	agent := agentWithRole("john", "role-manager")
+	run := grantRun("squad", "john")
+	run.Labels = map[string]string{api.LabelWorkItemSource: "discussion"}
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor), "coordinator is author-capable by default")
+	assert.True(t, got.Has(CapabilityCoordinatorPropose), "a discussion-source run is always propose-gated")
+}
+
+// TestResolveGrantDiscussionRunTeamGrantedProposeGated (ISI-7221 B2): capability
+// parity - a non-coordinator agent granted work_item.author through the Team
+// grant store is ALSO propose-gated in a discussion run. The gate is a property
+// of the run source, not of the Role, so widening authoring to more roles
+// (Team.Spec.Grants) can never widen a discussion run past the human gate.
+func TestResolveGrantDiscussionRunTeamGrantedProposeGated(t *testing.T) {
+	team := teamWithGrants("squad",
+		api.CapabilityGrant{Role: "dev", Capabilities: []string{CapabilityWorkItemAuthor}})
+	role := roleCR("dev", false)
+	agent := agentWithRole("coder", "dev")
+	run := grantRun("squad", "coder")
+	run.Labels = map[string]string{api.LabelWorkItemSource: "discussion"}
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor))
+	assert.True(t, got.Has(CapabilityCoordinatorPropose), "author-capable discussion runs are propose-gated regardless of Role")
+}
+
+// TestResolveGrantTicketRunAutoStaysAuto (ISI-7221 A1 guard): WITHOUT the
+// discussion label, an auto-mode coordinator run keeps direct-execute
+// authoring - the A1 derivation must not leak into board ticket runs.
+func TestResolveGrantTicketRunAutoStaysAuto(t *testing.T) {
+	team := teamWithGrants("squad")
+	role := roleCRMode("role-manager", "auto")
+	agent := agentWithRole("john", "role-manager")
+	run := grantRun("squad", "john") // no discussion label: a board ticket run
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor))
+	assert.False(t, got.Has(CapabilityCoordinatorPropose), "a ticket run in auto mode must not be propose-gated")
+}
+
+// TestResolveGrantDiscussionNoAuthorNotProposeGated (ISI-7221 A1
+// deny-by-default): a discussion run whose agent holds NO authoring grant gets
+// no propose cap - the derived gate rides the authoring grant; it never widens
+// authoring by itself.
+func TestResolveGrantDiscussionNoAuthorNotProposeGated(t *testing.T) {
+	team := teamWithGrants("squad")
+	role := roleCR("dev", false) // non-coordinator, no Team grant
+	agent := agentWithRole("coder", "dev")
+	run := grantRun("squad", "coder")
+	run.Labels = map[string]string{api.LabelWorkItemSource: "discussion"}
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, role, agent), run)
+	require.NoError(t, err)
+	assert.False(t, got.Has(CapabilityCoordinatorPropose), "no author grant means no propose cap (deny-by-default)")
+	assert.True(t, got.Empty())
+}

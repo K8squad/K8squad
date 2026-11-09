@@ -490,3 +490,60 @@ func TestProposalDismissAgentForbidden(t *testing.T) {
 		t.Fatal("agent dismiss must not reach the lifecycle")
 	}
 }
+
+// ---- ISI-7221 (A2): the confirmed proposal surfaces the board deep link ----------
+
+// TestProposalConfirmCreateTicketDeepLink (ISI-7221 A2): the executed create
+// carries a board deep link - the result JSON carries url + title, and the
+// post-back body renders the work item as a markdown link pointing at the
+// /projects/{projectId}/issues/{workItemId} route, so a human in the thread can
+// click straight through to the created ticket ("no link / can't find it").
+func TestProposalConfirmCreateTicketDeepLink(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	life := &fakeProposalLifecycle{}
+	life.payload = discussion.ProposalPayload{Action: discussion.ProposalActionCreateTicket, Title: "ship it"}
+	writer := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-9", State: "backlog"}}
+	h := testProposalServer(t, teamID, life, writer, &fakeDispatcher{})
+
+	msgID := uuid.NewString()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postProposalVerb(projUUID, msgID, "confirm", devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(life.completeResult, &res); err != nil {
+		t.Fatalf("result json: %v", err)
+	}
+	wantURL := "/projects/" + projUUID + "/issues/wi-9"
+	if res["url"] != wantURL {
+		t.Fatalf("result url: got %v, want %q", res["url"], wantURL)
+	}
+	if res["title"] != "ship it" {
+		t.Fatalf("result title: %v", res["title"])
+	}
+	wantLink := "created work item [ship it](" + wantURL + ")"
+	if !strings.Contains(life.completeBody, wantLink) {
+		t.Fatalf("post-back body should deep-link the ticket as markdown: %q", life.completeBody)
+	}
+}
+
+// TestProposalConfirmAssignAgentDeepLink (ISI-7221 A2): the executed assign
+// post-back also deep-links the ticket it acted on.
+func TestProposalConfirmAssignAgentDeepLink(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	life := &fakeProposalLifecycle{}
+	life.payload = discussion.ProposalPayload{Action: discussion.ProposalActionAssignAgent, TicketID: "wi-7", AssigneeAgentID: "quill"}
+	disp := &fakeDispatcher{result: coord.WorkItemDispatchResult{WorkItemID: "wi-7", FromState: "backlog", ToState: "requested", RequestedAgent: "quill"}}
+	h := testProposalServer(t, teamID, life, &fakeWorkItemWriter{}, disp)
+
+	msgID := uuid.NewString()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postProposalVerb(projUUID, msgID, "confirm", devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(life.completeBody, "](/projects/"+projUUID+"/issues/wi-7)") {
+		t.Fatalf("assign post-back body should deep-link the ticket: %q", life.completeBody)
+	}
+}
