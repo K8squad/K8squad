@@ -264,6 +264,16 @@ type AssembleRequest struct {
 	// control-plane-authored (never sourced from the sandbox), so it rides the
 	// authoritative tier alongside the task directives.
 	TeamRoster string
+	// Capabilities is the capability-aware briefing (ISI-7215 C1, parent
+	// ISI-7075): the run's ACTUAL tool surface, derived control-plane-side
+	// from the Run's recorded CapabilityManifest (pkg/capbrief) — the same
+	// immutable audit truth the sandbox MCP wiring follows. Empty for a run
+	// with no recorded manifest. When set it is injected as an authoritative,
+	// must-include element ("capabilities") right after the team roster: the
+	// agent learns what it can do — and that the deliverable is to ACT via
+	// tools, not narrate — before it reads the task, so it acts on the board
+	// instead of writing a log about it.
+	Capabilities string
 }
 
 // AssembleResult is the assembled envelope, the budget actually applied, the
@@ -365,7 +375,7 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 		return nil, fmt.Errorf("contextasm: github details: %w", err)
 	}
 
-	env := a.buildEnvelope(req.RolePrompt, req.TeamRoster, wi, meta, recall, arts, gh, req.Run.Spec.Inputs)
+	env := a.buildEnvelope(req.RolePrompt, req.TeamRoster, req.Capabilities, wi, meta, recall, arts, gh, req.Run.Spec.Inputs)
 
 	// Deterministic resume (AC3): when resuming, reuse the budget the snapshot
 	// pinned rather than re-resolving from the live Project/Agent. Combined
@@ -584,7 +594,7 @@ func envelopeTelemetryStats(env *Envelope) assembleStats {
 
 // buildEnvelope tier-stamps the gathered facts (the ONLY envelope
 // construction path — server-side constants by source, F16).
-func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, gh GitHubDetails, inputs map[string]string) *Envelope {
+func (a *Assembler) buildEnvelope(rolePrompt, teamRoster, capabilities string, wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, gh GitHubDetails, inputs map[string]string) *Envelope {
 	b := newEnvelopeBuilder()
 
 	// — Role behavior prompt (ISI-5223): the dispatched agent's resolved Role
@@ -604,6 +614,16 @@ func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFact
 	// invalid name, stalling the assign half of decompose-and-delegate.
 	if teamRoster != "" {
 		b.addAuthoritative("teamRoster", teamRoster, Provenance{Source: "team"})
+	}
+
+	// — Capability briefing (ISI-7215 C1): the run's actual tool surface,
+	// control-plane-derived from the recorded CapabilityManifest, placed after
+	// the roster so the agent knows HOW to act (the tools wired to THIS run)
+	// before it reads the task. Must-include, never truncated (budget.go) — an
+	// agent that loses its capability list regresses to narrating what it
+	// "would" do, the exact ISI-7075 defect.
+	if capabilities != "" {
+		b.addAuthoritative("capabilities", capabilities, Provenance{Source: "capabilityManifest"})
 	}
 
 	// — Authoritative: the task itself (must-include, 5.9) —

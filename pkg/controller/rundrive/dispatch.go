@@ -40,6 +40,7 @@ import (
 	"github.com/K8squad/K8squad/internal/a2a"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/capability"
+	"github.com/K8squad/K8squad/pkg/capbrief"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	"github.com/K8squad/K8squad/pkg/coord"
@@ -965,6 +966,7 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 		Existing:      run.Status.ContextSnapshot,
 		RolePrompt:    rolePrompt,
 		TeamRoster:    teamRoster,
+		Capabilities:  capbrief.Brief(run),
 	})
 	if err != nil {
 		return "", err

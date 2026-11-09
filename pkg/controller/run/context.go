@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/capbrief"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
@@ -151,6 +152,7 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 		ContextWindow: window,
 		RolePrompt:    rolePrompt,
 		TeamRoster:    teamRoster,
+		Capabilities:  capbrief.Brief(run),
 	})
 	if err != nil {
 		return fmt.Errorf("assemble context for run %s/%s: %w", run.Namespace, run.Name, err)
