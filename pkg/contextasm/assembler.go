@@ -626,6 +626,21 @@ func (a *Assembler) buildEnvelope(rolePrompt, teamRoster, capabilities string, w
 		b.addAuthoritative("capabilities", capabilities, Provenance{Source: "capabilityManifest"})
 	}
 
+	// — Board-decision contract (ISI-7225, ISI-7074 WS-6.3): the ONE
+	// server-authored escalation directive EVERY runtime's context carries:
+	// when a board decision is needed, raise it through the WS-6.2 task-io
+	// request-decision verb with 2-5 labeled options + a recommendation —
+	// never a bare yes/no or open question. Placed after the roster and the
+	// capability briefing but before the task itself: it is how-to-escalate
+	// behavior (the same class as the role directive), not task content, and
+	// reading it before the work is what stops the mid-task bare 'should I?'
+	// ask. Must-include (budget.go): truncating the contract away on a small
+	// window silently regresses every runtime to unshaped asks — the failure
+	// WS-6 exists to end. The >=2 floor itself stays enforced server-side by
+	// the WS-6.2 helper (ISI-7224), so this text drifting can weaken wording,
+	// never the floor.
+	b.addAuthoritative("boardDecisionContract", boardDecisionContract, Provenance{Source: "system"})
+
 	// — Authoritative: the task itself (must-include, 5.9) —
 	b.addAuthoritative("description", joinTitleBody(wi.Title, wi.Description), Provenance{Source: "workItem"})
 	for i, ac := range wi.AcceptanceCriteria {

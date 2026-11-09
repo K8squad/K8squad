@@ -1036,3 +1036,63 @@ func TestDiscussionThreadTitleInjectedAsProjectMeta(t *testing.T) {
 		assert.NotEqual(t, "discussionThread", el.Kind, "no thread element without a title")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Board-decision contract (ISI-7225, ISI-7074 WS-6.3)
+// ---------------------------------------------------------------------------
+
+// ISI-7225: every assembled envelope carries the board-decision contract as
+// an authoritative system-sourced element — no role prompt and no roster
+// needed, so plain IC runs get it exactly like coordinators do. It names the
+// WS-6.2 verb, the 2-5 option band with a recommendation, and vetoes bare
+// yes/no asks and open questions (plan WS-6.3 wording).
+func TestBoardDecisionContractInEveryEnvelope(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	res, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+	require.NoError(t, err)
+
+	var el *Element
+	for i := range res.Envelope.Elements {
+		if res.Envelope.Elements[i].Kind == "boardDecisionContract" {
+			el = &res.Envelope.Elements[i]
+			break
+		}
+	}
+	require.NotNil(t, el, "boardDecisionContract element present in every envelope")
+	assert.Equal(t, TierAuthoritative, el.Tier)
+	assert.Equal(t, "system", el.Provenance.Source)
+
+	assert.Contains(t, el.Content, "request-decision")
+	assert.Contains(t, el.Content, "2-5 options")
+	assert.Contains(t, el.Content, "recommended")
+	assert.Contains(t, el.Content, "Never a bare yes/no")
+	assert.Contains(t, el.Content, "CoordinatorMode=propose")
+
+	// Renders inside the authoritative block, before any untrusted block.
+	prompt := res.Injection.SystemPrompt()
+	assert.Less(t, strings.Index(prompt, "request-decision"), strings.Index(prompt, "UNTRUSTED RECALL"))
+}
+
+// ISI-7225: ordered after roleDirective and teamRoster — escalation behavior
+// framing, ahead of the task content itself.
+func TestBoardDecisionContractOrderedAfterRoster(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 200_000)
+	req.RolePrompt = "You are the coordinator. Decompose and delegate."
+	req.TeamRoster = "## Your team (assignable agents)\n\n- winston — role: architect"
+	res, err := a.Assemble(context.Background(), req)
+	require.NoError(t, err)
+
+	require.GreaterOrEqual(t, len(res.Envelope.Elements), 3)
+	assert.Equal(t, "roleDirective", res.Envelope.Elements[0].Kind)
+	assert.Equal(t, "teamRoster", res.Envelope.Elements[1].Kind)
+	assert.Equal(t, "boardDecisionContract", res.Envelope.Elements[2].Kind)
+}
+
+// ISI-7225: the board-decision contract is must-include — never truncated.
+func TestBoardDecisionContractIsMustInclude(t *testing.T) {
+	assert.True(t, isMustInclude(Element{Tier: TierAuthoritative, Kind: "boardDecisionContract"}))
+	assert.False(t, isMustInclude(Element{Tier: TierUntrustedRecall, Kind: "boardDecisionContract"}))
+}

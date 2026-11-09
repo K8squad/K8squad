@@ -245,7 +245,10 @@ func isMustInclude(el Element) bool {
 	// role mapping: must-include for the same reason — truncating it strips the
 	// only valid assignee names from context, breaking the assign half of
 	// decompose-and-delegate ("Invalid agent names").
-	case "roleDirective", "teamRoster", "description", "acceptanceCriteria", "goal", "comment":
+	// boardDecisionContract (ISI-7225) is the WS-6.3 board-decision prompt
+	// directive: truncating it away on a small window silently regresses
+	// agents to bare yes/no asks — the exact failure WS-6 exists to end.
+	case "roleDirective", "teamRoster", "boardDecisionContract", "description", "acceptanceCriteria", "goal", "comment":
 		return true
 	}
 	return false
