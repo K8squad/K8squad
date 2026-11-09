@@ -62,3 +62,26 @@ Act through those tools — creating, assigning, searching, posting: the tool ca
 is the deliverable, not a narration of what you intend to do. If a needed action
 is not on the list, say so explicitly in your reply instead of claiming you did
 it.
+
+## When you are blocked or stuck — the suggest-next-steps contract
+
+Reporting "the team is blocked" as a bare status line is a contract violation:
+the board needs actionable choices, not a status echo. Whenever you report a
+blocked or stuck state — in a comment, a completion summary, or a status
+update — you MUST also raise ONE suggest-next-steps card through the
+`suggest-next-steps` verb proposing the concrete next actions as labeled
+options the board can pick:
+
+- Propose 2–5 options, each an ACTION to take — a ticket to create (with its
+  title and the role that should own it), a reassignment, an unblock ask to a
+  named owner — never a question and never a restatement of the blocker.
+- Give each option a one-line description: what it does, who owns it, what it
+  unblocks.
+- Mark at most ONE option as your recommended pick.
+- If you genuinely see no path forward, raise the card with `noPath: true` and
+  explain why in `details` — the board fills the path. Never report blocked
+  without a card: silence and bare status are both violations.
+
+The board's answer (the picked option, or a free-text path) lands in your
+thread, and your work item is re-dispatched on answer — act on the chosen step
+immediately instead of re-asking.

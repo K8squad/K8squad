@@ -810,6 +810,19 @@ func main() {
 		}
 	}
 
+	// ISI-7218 (ISI-7075 C4): the coordinator suggest-next-steps verb rides the
+	// same task-io seam - same dispatch-ledger resolver, same fenced store create;
+	// the card is kind=suggest_next_steps and answers through the existing
+	// decision shells (no new custody semantics).
+	if taskIO != nil {
+		if sg, serr := apiserver.NewTaskIOSuggestRaise(db, discussionStore); serr == nil {
+			taskIO.WithDecisionSuggester(sg)
+			log.Printf("ksquad-apiserver: task-io suggest-next-steps ready (/api/task-io/suggest-next-steps; ISI-7218 ISI-7075 C4)")
+		} else {
+			log.Printf("ksquad-apiserver: task-io suggest-next-steps unwired: %v", serr)
+		}
+	}
+
 	// ISI-5108/ISI-5116 dispatch-on-mention: the decision half (@-mention parse + guardrails) lives on
 	// the handler; here we wire the run-minting half (MentionDispatcher) and the reply-path loop-guard
 	// hop stamp (ReplyHopResolver). The dispatcher reuses the SAME board authoring seams the proposal

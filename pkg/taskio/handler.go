@@ -147,6 +147,9 @@ type Handler struct {
 	// raise is the OPTIONAL decision-raise seam (ISI-7224, WS-6.2): nil => the
 	// /request-decision verb answers 501 (unwired), never a silent no-op.
 	raise DecisionRaiser
+	// suggester is the OPTIONAL suggest-next-steps seam (ISI-7218, ISI-7075 C4):
+	// nil => the /suggest-next-steps verb answers 501 (unwired), never a silent no-op.
+	suggester DecisionSuggester
 }
 
 // NewHandler binds a verifier and a store. Both are required.
@@ -169,6 +172,9 @@ func (h *Handler) Mux() http.Handler {
 	mux.HandleFunc("/checkout", h.auth(h.instrument("checkout", h.checkout)))
 	// ISI-7224 (WS-6.2): every runtime raises board decisions through this verb.
 	mux.HandleFunc("/request-decision", h.auth(h.instrument("request_decision", h.requestDecision)))
+	// ISI-7218 (ISI-7075 C4): coordinators report blocked WITH proposed next steps
+	// through this verb (same seam discipline as the decision raise).
+	mux.HandleFunc("/suggest-next-steps", h.auth(h.instrument("suggest_next_steps", h.suggestNextSteps)))
 	return mux
 }
 

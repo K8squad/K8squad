@@ -115,6 +115,7 @@ Rules specific to this kind:
 | Prompts | cross-runtime contract: "raise a decision request with 2–5 labeled options, never a bare yes/no" | ISI-7225 (WS-6.3) |
 | Frontend | DecisionCard rendering + E2E multi-option cards | ISI-7226 (WS-6.4) |
 | This doc | the taxonomy itself, shared by both kinds | ISI-7227 (WS-6.5) |
+| Suggest-next-steps kind: store gate + runtime helper + task-io verb + coordinator prompt (§5) | internal/discussion/suggest.go · internal/decisionraise · pkg/taskio/suggestraise.go · pkg/roleprompt/coordinator_prompt.md | ISI-7218 (ISI-7075 C4) |
 
 The >=2 floor holds even if prompts drift, because the helper and server
 enforce it (defense in depth: prompt → helper → server).

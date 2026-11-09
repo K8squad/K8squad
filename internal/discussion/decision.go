@@ -196,16 +196,26 @@ var (
 // (same invariant as proposals). The idempotencyKey makes create idempotent: a retry re-posting the
 // same key returns the EXISTING card (no second row, no second question), per ADR-0026 §4.2.
 func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth AuthorContext, body string, payload DecisionRequestPayload, target *DecisionTarget, workItemID, idempotencyKey string, parentID *uuid.UUID) (*Message, error) {
+	if payload.Version == 0 {
+		payload.Version = 1
+	}
+	return s.postDecisionCard(ctx, projectID, teamID, threadID, auth, body, payload, target, workItemID, idempotencyKey, parentID, KindDecisionRequest, payload.Validate)
+}
+
+// postDecisionCard is the shared create core BOTH card kinds ride (decision_request,
+// ISI-5536/0031; suggest_next_steps, ISI-7218/0042 — taxonomy §5: one option grammar,
+// two kinds): validate through the kind's gate, append the inert kind-stamped message
+// + phase='open' lifecycle row in one transaction, idempotent on (team_id,
+// idempotency_key). The kind stamp is the only discriminator — lifecycle, answer/reject
+// CAS, continuation and reads are kind-agnostic by design.
+func (s *Store) postDecisionCard(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth AuthorContext, body string, payload DecisionRequestPayload, target *DecisionTarget, workItemID, idempotencyKey string, parentID *uuid.UUID, kind string, validate func() error) (*Message, error) {
 	if body == "" {
 		return nil, ErrEmptyBody
 	}
 	if idempotencyKey == "" {
 		return nil, fmt.Errorf("%w: idempotencyKey is required", ErrInvalidDecisionPayload)
 	}
-	if payload.Version == 0 {
-		payload.Version = 1
-	}
-	if err := payload.Validate(); err != nil {
+	if err := validate(); err != nil {
 		return nil, err
 	}
 	if err := s.assertThreadInScope(ctx, projectID, teamID, threadID); err != nil {
@@ -254,7 +264,7 @@ func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamI
 		AuthorRunID:     auth.RunID,
 		Body:            body,
 		Audience:        "party", // decision cards are room-visible: the party decides
-		Kind:            KindDecisionRequest,
+		Kind:            kind,
 		Payload:         &payloadJSON,
 	}
 	err = tx.QueryRowContext(ctx, `
