@@ -26,6 +26,9 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for the discussion projection source
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/internal/discussionindex"
 	"github.com/K8squad/K8squad/internal/handoffmirror"
@@ -34,6 +37,7 @@ import (
 	"github.com/K8squad/K8squad/internal/workitemindex"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
+	"github.com/K8squad/K8squad/pkg/recallhealth"
 	"github.com/K8squad/K8squad/pkg/search"
 )
 
@@ -96,10 +100,19 @@ func main() {
 	// deterministic local default. Shared by the read tools (embed the query), the write tool (embed the
 	// body), and the indexer/mirror (embed projected bodies) — one vector space for the whole substrate.
 	embedder := memory.NewEmbedder(cfg)
+	// ISI-7228 GAP-5 (ISI-7233): recall degradation is fail-open by design —
+	// degraded is not an error — but it must never be SILENT. The health
+	// server below serves the bounded ksquad_recall_degraded instruments at
+	// /metrics so the hashing fallback and each projection seam that fails
+	// to start are operator-visible states (observability only; no behavior
+	// change to recall itself).
+	promReg := prometheus.NewRegistry()
+	recallhealth.Register(promReg)
 	if cfg.EmbedderEndpoint != "" {
 		log.Printf("ksquad-memory: semantic embedder wired (endpoint=%s, model=%s)", cfg.EmbedderEndpoint, cfg.EmbedderModel)
 	} else {
 		log.Printf("ksquad-memory: using deterministic local embedder (no EmbedderEndpoint configured)")
+		recallhealth.Boot(recallhealth.ReasonEmbedderFallback)
 	}
 
 	// Untrusted read tools (§7.3.2): memory_search + the scoped discussion_search(project). The
@@ -240,6 +253,12 @@ func main() {
 	mux := http.NewServeMux()
 	tools.Mount(mux)
 	mcpTools.Mount(mux)
+	// GAP-5: the recall-health instruments at /metrics on the existing
+	// health port — no new port, no behavior change; a scrape of the
+	// ksquad-memory http service now distinguishes a degraded recall
+	// substrate (hashing fallback, unreachable projection seams) from a
+	// healthy one.
+	mux.Handle("/metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -411,6 +430,7 @@ func startDiscussionIndexer(ctx context.Context, dsn string, store *memory.PgVec
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		log.Printf("ksquad-memory: discussion indexer disabled (open db: %v)", err)
+		recallhealth.Boot(recallhealth.ReasonIndexerDiscussionUnavailable)
 		return
 	}
 	// Attach the durable watermark (Story J-C AC1): the indexer resumes from its last committed position
@@ -453,6 +473,7 @@ func startHandoffMirror(ctx context.Context, dsn string, store *memory.PgVectorS
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		log.Printf("ksquad-memory: handoff mirror disabled (open db: %v)", err)
+		recallhealth.Boot(recallhealth.ReasonIndexerHandoffUnavailable)
 		return
 	}
 	m := handoffmirror.NewMirror(handoffmirror.NewSQLSource(db), store, embedder, store, 0)
@@ -481,6 +502,7 @@ func startWorkItemIndexer(ctx context.Context, dsn string, store *memory.PgVecto
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		log.Printf("ksquad-memory: work-item indexer disabled (open db: %v)", err)
+		recallhealth.Boot(recallhealth.ReasonIndexerWorkItemUnavailable)
 		return
 	}
 	ix := workitemindex.NewIndexer(workitemindex.NewSQLSource(db), store, embedder, store, 0).WithCursor(store)

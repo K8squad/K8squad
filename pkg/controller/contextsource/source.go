@@ -52,6 +52,7 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/memory"
 	"github.com/K8squad/K8squad/pkg/contextasm"
+	"github.com/K8squad/K8squad/pkg/recallhealth"
 )
 
 // MemoryRecaller is the slice of the §6.6 memory ReadService the context
@@ -407,8 +408,15 @@ func (s *Source) ProjectMeta(ctx context.Context, projectRef, revision string) (
 //     title/body-less work item must not fail the whole assembly).
 //
 // A nil memory service leaves the tier empty either way.
+//
+// ISI-7228 GAP-5 (ISI-7233): every path below that leaves the tier EMPTY now
+// emits a ksquad_recall_degraded_events_total observation (reason
+// recall_unwired / recall_no_query / recall_no_hits) so the silent-empty-tier
+// signature the recall audit flagged is operator-visible. Observability only:
+// every return value — and the fail-open posture itself — is unchanged.
 func (s *Source) MemoryRecall(ctx context.Context, teamID string, projectID string, queryText string, ids []string, topK int) ([]contextasm.RecallDoc, error) {
 	if s.memory == nil {
+		recallhealth.Event(recallhealth.ReasonRecallUnwired)
 		return nil, nil
 	}
 	var proj *string
@@ -421,12 +429,20 @@ func (s *Source) MemoryRecall(ctx context.Context, teamID string, projectID stri
 		hits, err = s.memory.ScopedRecallByIDs(ctx, teamID, proj, ids)
 	} else {
 		if queryText == "" {
+			recallhealth.Event(recallhealth.ReasonRecallNoQuery)
 			return nil, nil
 		}
 		hits, err = s.memory.ScopedRecall(ctx, teamID, proj, queryText, topK)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("scoped recall: %w", err)
+	}
+	if len(ids) == 0 && len(hits) == 0 {
+		// Fresh recall over a real query with zero hits: the tier is empty
+		// while memory exists — degraded-visible, never an error (GAP-5).
+		// The pinned arm is exempt: zero hits there is snapshot decay, a
+		// documented non-error.
+		recallhealth.Event(recallhealth.ReasonRecallNoHits)
 	}
 	out := make([]contextasm.RecallDoc, 0, len(hits))
 	for i := range hits {
