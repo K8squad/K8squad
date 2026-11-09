@@ -62,7 +62,12 @@ type WorkItemIndexable struct {
 // the SAME id (idempotent ON CONFLICT no-op); any edit or new comment advances ActivityAt (and/or the
 // count) and derives a NEW id, so the fresh revision is a distinct row the supersede path then promotes.
 func recordID(w WorkItemIndexable) string {
-	sig := fmt.Sprintf("%s@%s#%d", w.WorkItemID, w.ActivityAt.UTC().Format(time.RFC3339Nano), w.CommentCount)
+	// The "v2:" prefix (ISI-7228 GAP-2) versions the revision signature's CONTENT SHAPE: v2 excludes
+	// progress comments from the aggregation and bounds the comment tail, so every live item
+	// re-derives a NEW record id exactly once, re-projects the bounded content, and supersedes its v1
+	// (unbounded, run-log-poisoned) revision through the normal republish-retire path after the
+	// work_item projection cursor is reset — no manual index backfill.
+	sig := fmt.Sprintf("v2:%s@%s#%d", w.WorkItemID, w.ActivityAt.UTC().Format(time.RFC3339Nano), w.CommentCount)
 	return deriveUUID("work-item-record", sig)
 }
 
@@ -290,9 +295,17 @@ func (ix *Indexer) index(ctx context.Context, w WorkItemIndexable, rid string) e
 	return nil
 }
 
+// maxCommentTailChars bounds the comment thread's contribution to the indexed content (ISI-7228
+// GAP-2). One embedding per item truncates to the HEAD of the text, so an unbounded tail (live max
+// was 421,950 chars of raw run-log tool events) both diluted the item's own semantics and crowded
+// the topK budget with giant near-duplicates. The TAIL is kept — the most recent comments carry the
+// item's current state; older context stays reachable through the work item itself and the room.
+const maxCommentTailChars = 8000
+
 // indexedContent composes the searchable text for one work item: the title, then the body, then the
-// comment thread. One embedding per item (the item becomes ONE recallable record) — a ticket's title,
-// description, and discussion all contribute to whether it surfaces for a semantically related query.
+// (bounded) comment thread. One embedding per item (the item becomes ONE recallable record) — a
+// ticket's title, description, and discussion all contribute to whether it surfaces for a
+// semantically related query.
 func indexedContent(w WorkItemIndexable) string {
 	var b strings.Builder
 	b.WriteString(w.Title)
@@ -300,9 +313,18 @@ func indexedContent(w WorkItemIndexable) string {
 		b.WriteString("\n\n")
 		b.WriteString(w.Body)
 	}
-	if w.CommentBodies != "" {
+	if comments := w.CommentBodies; comments != "" {
+		if len(comments) > maxCommentTailChars {
+			// Rune-safe trim: cut on a comment boundary (one "principal: body" line per comment) so
+			// the kept tail starts at a line start, and mark the elision honestly.
+			cut := len(comments) - maxCommentTailChars
+			if i := strings.IndexByte(comments[cut:], '\n'); i >= 0 {
+				cut += i + 1
+			}
+			comments = "[earlier comments truncated]\n" + comments[cut:]
+		}
 		b.WriteString("\n\n[comments]\n")
-		b.WriteString(w.CommentBodies)
+		b.WriteString(comments)
 	}
 	return b.String()
 }
@@ -365,6 +387,9 @@ func (s *SQLSource) AllForMemoryIndex(ctx context.Context, since time.Time, limi
 		             string_agg(c.author_principal || ': ' || c.body, E'\n' ORDER BY c.created_at) AS bodies
 		        FROM coord.comment c
 		       WHERE c.work_item_id = w.id
+		         AND c.kind <> 'progress' -- ISI-7228 GAP-2: the [run …][tool:…] firehose (0042
+		                                 -- two-tier split, ISI-7094) is console Activity, not recall
+		                                 -- knowledge; 'human' + 'summary' (the one-per-run recap) stay.
 		  ) cc ON true
 		 WHERE w.source = 'board'
 		   AND GREATEST(w.updated_at, COALESCE(cc.last_at, w.updated_at)) >= $1

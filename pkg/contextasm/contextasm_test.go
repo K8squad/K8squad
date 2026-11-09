@@ -944,3 +944,95 @@ func TestRolePromptInjectedForDiscussionRun(t *testing.T) {
 	assert.Less(t, strings.Index(prompt, "Decompose and delegate"), strings.Index(prompt, "intake agent feels slow"),
 		"role directive renders before the untrusted discussion transcript")
 }
+
+// ============================================================================
+// ISI-7216 (parent ISI-7075, workstream C2) — run-context parity for
+// discussion runs.
+//
+// The audit (C2's first half): repo/conventions/goals already ride the SHARED
+// project-meta path for both run kinds, and roster + transcript already rode
+// the discussion envelope (ISI-5275) — what a discussion run still lacked vs
+// a ticket run was (1) project IDENTITY (the envelope never named the
+// project; a discussion run's static instruction references only an opaque
+// project uuid) and (2) the thread's own SUBJECT — the analogue of a ticket's
+// title. The parity fix: BOTH run kinds get the project name; a discussion
+// run also gets the thread title+id as a server-derived project-meta fact.
+// ============================================================================
+
+// C2: project identity rides the shared best-effort project-meta class for a
+// TICKET run and a DISCUSSION run alike — either kind can name its project.
+func TestProjectIdentityInjectedForBothRunKinds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wi   WorkItemFacts
+	}{
+		{"ticket run", fixtureSources().wi},
+		{"discussion run", discussionWI()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := fixtureSources()
+			src.meta.Name = "widget"
+			src.wi = tc.wi
+			a := NewAssembler(src, 8)
+			res, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+			require.NoError(t, err)
+
+			var proj *Element
+			for i := range res.Envelope.Elements {
+				if res.Envelope.Elements[i].Kind == "project" {
+					proj = &res.Envelope.Elements[i]
+				}
+			}
+			require.NotNil(t, proj, "project identity element present")
+			assert.Equal(t, TierAuthoritative, proj.Tier)
+			assert.Equal(t, "projectMeta", proj.Provenance.Source)
+			assert.Equal(t, "widget", proj.Content)
+			assert.False(t, isMustInclude(*proj), "project identity is best-effort, not must-include")
+
+			// Renders inside the authoritative block of the injected prompt.
+			assert.Contains(t, res.Injection.SystemPrompt(), "(authoritative/project) widget")
+		})
+	}
+}
+
+// C2: the thread's immutable title + id ride the discussion envelope as a
+// server-derived project-meta fact — the subject the room exists to discuss —
+// while the ISI-5275 tiering (roster best-effort, transcript untrusted) is
+// unchanged. No title => no element (older Sources degrade cleanly).
+func TestDiscussionThreadTitleInjectedAsProjectMeta(t *testing.T) {
+	src := fixtureSources()
+	src.meta.Name = "widget"
+	src.wi = discussionWI()
+	src.wi.Discussion.ThreadTitle = "Intake latency after the MoE swap"
+	a := NewAssembler(src, 8)
+	res, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+	require.NoError(t, err)
+
+	var thread *Element
+	for i := range res.Envelope.Elements {
+		if res.Envelope.Elements[i].Kind == "discussionThread" {
+			thread = &res.Envelope.Elements[i]
+		}
+	}
+	require.NotNil(t, thread, "discussionThread element present")
+	assert.Equal(t, TierAuthoritative, thread.Tier)
+	assert.Equal(t, "discussion", thread.Provenance.Source)
+	assert.Contains(t, thread.Content, "Intake latency after the MoE swap")
+	assert.Contains(t, thread.Content, "thread 9f3")
+	assert.False(t, isMustInclude(*thread), "thread fact is best-effort, not must-include")
+
+	// The subject renders in the authoritative block, BEFORE the untrusted
+	// transcript — the agent meets the topic before the message tail.
+	prompt := res.Injection.SystemPrompt()
+	assert.Less(t, strings.Index(prompt, "discussionThread"), strings.Index(prompt, "discussionMessage"),
+		"thread subject renders before the untrusted transcript")
+
+	// Backward compatibility: no title => no element, assembly otherwise unchanged.
+	src2 := fixtureSources()
+	src2.wi = discussionWI()
+	res2, err := NewAssembler(src2, 8).Assemble(context.Background(), fixtureReq(src2, 200_000))
+	require.NoError(t, err)
+	for _, el := range res2.Envelope.Elements {
+		assert.NotEqual(t, "discussionThread", el.Kind, "no thread element without a title")
+	}
+}

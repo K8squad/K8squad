@@ -37,6 +37,32 @@ type CursorStore interface {
 	SaveProjectionCursor(ctx context.Context, name string, at time.Time, id string) error
 }
 
+// ProjectResolver (ISI-7228 GAP-1) maps a thread's project reference to the Project CR uid the
+// assembler narrows recall by (pkg/contextasm gathers with string(req.Project.UID)). Legacy
+// discussion.thread rows carry the "namespace/name" route slug (ISI-3982 domain drift), which the
+// SQL predicate project_id = $4::text never matches — ~79% of live discussion knowledge was invisible
+// to project-narrowed recall in BOTH run contexts. The seam normalizes BEFORE the write;
+// ok=false keeps the verbatim value (fail-open, best-effort — the record stays team-scoped
+// recallable, just not project-narrowed, exactly as before).
+type ProjectResolver interface {
+	ResolveProjectUID(ctx context.Context, projectRef string) (uid string, ok bool)
+}
+
+// ThreadRetractor (ISI-7228 GAP-3) soft-retracts a thread's projected records authored strictly
+// before a reset marker, so a cleared transcript (ADR-0030 reset-marker semantics) stops surfacing
+// in recall as duplicated knowledge. Satisfied by *memory.PgVectorStore; nil ⇒ reset retraction
+// disabled (unit tests) — markers are then skipped without retraction.
+type ThreadRetractor interface {
+	RetractDiscussionThreadRecords(ctx context.Context, squadID, threadID string, before time.Time) (int64, error)
+}
+
+// isUUID reports whether s is already a uuid-form project id (a Project CR uid) rather than a
+// "namespace/name" slug — uuid refs pass through normalization untouched.
+func isUUID(s string) bool {
+	_, err := uuid.Parse(s)
+	return err == nil
+}
+
 // cursorName is the projection_cursor key for the discussion→memory indexer.
 const cursorName = "discussion"
 
@@ -67,6 +93,9 @@ type Indexer struct {
 	cursor       CursorStore // nil ⇒ in-process watermark only (unit tests / sink without a cursor table)
 	cursorLoaded bool
 
+	projects ProjectResolver // nil ⇒ stamp the thread's project ref verbatim (GAP-1 fail-open)
+	retract  ThreadRetractor // nil ⇒ reset markers skip retraction (unit tests)
+
 	watermark   time.Time
 	watermarkID uuid.UUID // source id at the watermark — persisted as tie provenance
 	seen        map[uuid.UUID]struct{}
@@ -95,6 +124,19 @@ func (ix *Indexer) WithCursor(store CursorStore) *Indexer {
 	return ix
 }
 
+// WithProjectResolver attaches GAP-1 slug→uid normalization at the seam. nil (or a construction
+// failure in cmd wiring) is a no-op: refs stamp verbatim, as before.
+func (ix *Indexer) WithProjectResolver(r ProjectResolver) *Indexer {
+	ix.projects = r
+	return ix
+}
+
+// WithRetractor attaches GAP-3 reset retraction. nil is a no-op (markers skip, no retraction).
+func (ix *Indexer) WithRetractor(r ThreadRetractor) *Indexer {
+	ix.retract = r
+	return ix
+}
+
 // Sweep projects one batch of not-yet-indexed messages into the memory index and returns how many were
 // newly indexed. It is best-effort: a single message that fails to embed or write is logged and skipped
 // (it will be retried on the next sweep), never aborting the batch — the room is never blocked (AC5).
@@ -115,6 +157,29 @@ func (ix *Indexer) Sweep(ctx context.Context) (int, error) {
 	for _, m := range msgs {
 		if _, done := ix.seen[m.MessageID]; done {
 			// Already indexed (a watermark-boundary tie) — skip re-projecting; advance only if not frozen.
+			if !frozen {
+				ix.advance(m.CreatedAt, m.MessageID)
+			}
+			continue
+		}
+		if m.Kind == "reset" {
+			// GAP-3 (ISI-7228): a reset marker is a transcript boundary, not knowledge — never embed it
+			// (previously "— discussion cleared —" entered recall on every reset). Instead retract the
+			// thread's projected records authored strictly before the marker, so the hidden window stops
+			// surfacing as duplicate clusters. Failure freezes the watermark like any projection failure:
+			// the marker is re-fetched next sweep and the retract retried (best-effort, self-healing).
+			if ix.retract != nil {
+				n, rerr := ix.retract.RetractDiscussionThreadRecords(ctx, m.TeamID.String(), m.ThreadID.String(), m.CreatedAt)
+				if rerr != nil {
+					log.Printf("discussionindex: reset retract thread %s failed (best-effort, will retry): %v", m.ThreadID, rerr)
+					frozen = true
+					continue
+				}
+				if n > 0 {
+					log.Printf("discussionindex: reset retracted %d projected record(s) hidden by thread %s marker", n, m.ThreadID)
+				}
+			}
+			ix.seen[m.MessageID] = struct{}{}
 			if !frozen {
 				ix.advance(m.CreatedAt, m.MessageID)
 			}
@@ -204,6 +269,17 @@ func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) erro
 		m.AuthorAgentID, m.AuthorRunID, m.Audience, m.Kind, m.Payload, m.CreatedAt)
 
 	projectID := m.ProjectID
+	// GAP-1 (ISI-7228): stamp the Project CR UID the assembler narrows by. A slug-form ref
+	// ("namespace/name", the ISI-3982 legacy) resolves through the attached Project cache; a
+	// uuid-form ref passes through untouched; an unresolved slug keeps its verbatim value
+	// (fail-open) — the record never becomes LESS recallable than before.
+	if ix.projects != nil && !isUUID(m.ProjectID) {
+		if uid, ok := ix.projects.ResolveProjectUID(ctx, m.ProjectID); ok {
+			projectID = uid
+		} else {
+			log.Printf("discussionindex: project ref %q resolves to no Project CR; stamping verbatim (best-effort)", m.ProjectID)
+		}
+	}
 	// The record id is DERIVED deterministically from the message id (same UUIDv5 namespace as the
 	// substrate columns), so re-projecting a message on a crash-replay upserts the SAME row rather than
 	// duplicating it — the AC2 exactly-once-into-recall guarantee, paired with the store's ON CONFLICT.

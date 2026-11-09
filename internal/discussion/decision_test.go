@@ -8,25 +8,42 @@ package discussion
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
 
 func TestDecisionRequestPayloadValidate(t *testing.T) {
 	opt := DecisionOption{ID: "reqwest", Label: "reqwest"}
+	opt2 := DecisionOption{ID: "hyper", Label: "hyper"}
+
+	// 10 distinct options — one over the maxDecisionOptions cap.
+	var tenOpts []DecisionOption
+	for i := 0; i < 10; i++ {
+		tenOpts = append(tenOpts, DecisionOption{ID: fmt.Sprintf("o%d", i), Label: fmt.Sprintf("Option %d", i)})
+	}
+
 	cases := []struct {
 		name    string
 		payload DecisionRequestPayload
 		wantErr error // nil ⇒ must pass
 	}{
+		// approve / free_form are opt-outs of the >=2 rule — no options required.
 		{"approve ok", DecisionRequestPayload{Mode: DecisionModeApprove, Title: "ship it?"}, nil},
 		{"free_form ok", DecisionRequestPayload{Mode: DecisionModeFreeForm, Title: "describe the bug"}, nil},
-		{"choose_one ok", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "client?", Options: []DecisionOption{opt}}, nil},
-		{"choose_many ok", DecisionRequestPayload{Mode: DecisionModeChooseMany, Title: "pick some", Options: []DecisionOption{opt}}, nil},
+		// choose modes require >=2 options.
+		{"choose_one ok 2 options", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "client?", Options: []DecisionOption{opt, opt2}}, nil},
+		{"choose_many ok 2 options", DecisionRequestPayload{Mode: DecisionModeChooseMany, Title: "pick some", Options: []DecisionOption{opt, opt2}}, nil},
+		// 1-option payloads must be rejected.
+		{"choose_one 1 option rejected", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "client?", Options: []DecisionOption{opt}}, ErrInvalidDecisionPayload},
+		{"choose_many 1 option rejected", DecisionRequestPayload{Mode: DecisionModeChooseMany, Title: "pick", Options: []DecisionOption{opt}}, ErrInvalidDecisionPayload},
+		// Hard cap: 10 options must be rejected (FE number-key contract, keys 1–9 only).
+		{"choose_one over cap rejected", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "x", Options: tenOpts}, ErrInvalidDecisionPayload},
+		{"choose_many over cap rejected", DecisionRequestPayload{Mode: DecisionModeChooseMany, Title: "x", Options: tenOpts}, ErrInvalidDecisionPayload},
 		{"missing title", DecisionRequestPayload{Mode: DecisionModeApprove}, ErrInvalidDecisionPayload},
 		{"unknown mode", DecisionRequestPayload{Mode: "self_destruct", Title: "x"}, ErrInvalidDecisionPayload},
-		{"choose_one needs options", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "client?"}, ErrInvalidDecisionPayload},
-		{"choose_many needs options", DecisionRequestPayload{Mode: DecisionModeChooseMany, Title: "pick"}, ErrInvalidDecisionPayload},
-		{"option needs id+label", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "x", Options: []DecisionOption{{Label: "no id"}}}, ErrInvalidDecisionPayload},
+		{"choose_one no options", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "client?"}, ErrInvalidDecisionPayload},
+		{"choose_many no options", DecisionRequestPayload{Mode: DecisionModeChooseMany, Title: "pick"}, ErrInvalidDecisionPayload},
+		{"option needs id+label", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "x", Options: []DecisionOption{{Label: "no id"}, opt2}}, ErrInvalidDecisionPayload},
 		{"duplicate option id", DecisionRequestPayload{Mode: DecisionModeChooseOne, Title: "x", Options: []DecisionOption{opt, opt}}, ErrInvalidDecisionPayload},
 	}
 	for _, tc := range cases {

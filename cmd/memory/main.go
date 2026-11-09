@@ -417,7 +417,18 @@ func startDiscussionIndexer(ctx context.Context, dsn string, store *memory.PgVec
 	// across a restart instead of re-scanning from zero or skipping a window. The *memory.PgVectorStore
 	// backs the projection_cursor table; the projection is idempotent on the derived record id (AC2), so
 	// a crash between a batch write and the cursor save re-projects each message exactly once.
-	ix := discussionindex.NewIndexer(discussion.NewStore(db), store, embedder, 0).WithCursor(store)
+	// ISI-7228: attach the reset retractor (GAP-3) and the Project-ref normalizer (GAP-1). Both are
+	// fail-open attachments — the indexer keeps its previous behavior if either is absent.
+	ix := discussionindex.NewIndexer(discussion.NewStore(db), store, embedder, 0).
+		WithCursor(store).
+		WithRetractor(store)
+	if pr, err := memory.NewProjectRefResolver(ctx, 20*time.Second); err != nil {
+		// GAP-1 fail-open: slug-form refs keep stamping verbatim (team-scoped recallable, just not
+		// project-narrowed) exactly as before — never a gate on the room or the service (AC5).
+		log.Printf("ksquad-memory: discussion indexer project resolver disabled (fail-open: %v)", err)
+	} else {
+		ix.WithProjectResolver(pr)
+	}
 	interval := 15 * time.Second
 	if v := os.Getenv("DISCUSSION_INDEX_INTERVAL"); v != "" {
 		if d, perr := time.ParseDuration(v); perr == nil {

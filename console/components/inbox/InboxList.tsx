@@ -3,9 +3,10 @@
 // components/inbox/InboxList.tsx — ISI-5535 (E1) + ISI-5537 (E3) of ISI-5531: the "Needs Human
 // Decision" inbox. E1 shipped the read-only list (poll, chip, live marker, unread dot, click-through);
 // E3 adds the TRIAGE layer, mock ux/isi-5531-inbox/04-inbox-triage:
-//   • inline answer WITHOUT leaving the list — approve → Approve/Reject; choose_one → numbered
-//     option buttons (1–9) + "Something else"; choose_many/free_form → "Open to answer" (detail).
-//   • full keyboard driving — J/K move · Enter open · 1–9 pick option · A/R approve/reject · U
+//   • inline answer WITHOUT leaving the list — approve → Approve/Reject; choose_one → lettered
+//     option buttons (a/b/c... chips, number keys 1–5) + "Something else" (WS-6.4/ISI-7226);
+//     choose_many/free_form → "Open to answer" (detail).
+//   • full keyboard driving — J/K move · Enter open · 1–5 pick option · A/R approve/reject · U
 //     read/unread. (H snooze is E4/backlog, not bound here.)
 //   • read/unread toggle (U), on top of E1's mark-read-on-open.
 //   • filters — Mine (admin fleet→team), decision-type, project.
@@ -29,6 +30,10 @@ import {
   createDiscussionClient,
   type DiscussionClient,
 } from "@/lib/discussion/api";
+import {
+  DECISION_NUMBER_KEY_MAX,
+  optionLetter,
+} from "@/lib/inbox/options";
 import "./inbox.css";
 
 const POLL_MS = 5_000;
@@ -194,13 +199,29 @@ function InboxRow({
                 (o.recommended ? " inbox__opt--recommended" : "")
               }
               data-testid="inline-option"
+              aria-label={
+                `Option ${optionLetter(i)}: ${o.label}` +
+                (o.recommended ? " (recommended)" : "")
+              }
               disabled={busy}
               onClick={() => handlers.onChoose(item, o.id)}
             >
-              <span className="inbox__opt-key" aria-hidden="true">
-                {i + 1}
+              <span
+                className="inbox__opt-letter"
+                data-testid="inline-option-letter"
+                aria-hidden="true"
+              >
+                {optionLetter(i)}
               </span>
               {o.label}
+              {o.recommended ? (
+                <span
+                  className="inbox__opt-badge"
+                  data-testid="inline-option-recommended"
+                >
+                  Recommended
+                </span>
+              ) : null}
             </button>
           ))}
           <button
@@ -213,7 +234,7 @@ function InboxRow({
             Something else
           </button>
           <span className="inbox__inline-hint" aria-hidden="true">
-            <kbd>1–9</kbd>
+            <kbd>1–5</kbd>
           </span>
         </div>
       )}
@@ -493,7 +514,12 @@ export function InboxList({ client }: InboxListProps = {}) {
         item.decision
       ) {
         const n = Number(key);
-        const opt = (item.decision.options ?? [])[n - 1];
+        // WS-6.4 a11y contract: number keys reach the first 5 options; later options
+        // are picked with the pointer or from the full detail card.
+        const opt =
+          n <= DECISION_NUMBER_KEY_MAX
+            ? (item.decision.options ?? [])[n - 1]
+            : undefined;
         if (opt) {
           choose(item, opt.id);
           e.preventDefault();
