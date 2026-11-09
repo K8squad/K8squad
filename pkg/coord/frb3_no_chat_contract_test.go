@@ -455,15 +455,17 @@ var allowedSurface = map[string]string{
 	// content + claim/fence state; AppendComment is the SANCTIONED handoff half
 	// (a provenanced coord.comment, author server-supplied) — the same §6.1
 	// surface RecordComment already pins. Neither is an agent-to-agent channel.
-	"ReadTaskDetail":        "§6.1 shared richer read of one work item + its claim/fence state (S1 push / S2 pull)",
-	"AppendComment":         "§6.1 append a provenanced coord.comment (sanctioned handoff half, server-authored author)",
-	"AppendInitialFindings": "§6.1/§6.5 append a provenanced coord.comment + co-commit ONE 'initial_findings_authored' audit row (ADR-0029 Option B, ISI-5603) — sanctioned early-note half, author/run server-supplied; not an agent-to-agent channel",
-	"AppendProgress":        "§6.1 append a provenanced kind='progress' coord.comment (ISI-7094) — a run sub-step the ProgressMirror mirrors; stored but excluded from the default thread, author/run server-supplied; not an agent-to-agent channel",
-	"AppendSummary":         "§6.1 append a provenanced kind='summary' coord.comment (ISI-7094) — the run's single end-of-run recap settle counts toward the exactly-one-summary invariant, author/run server-supplied; not an agent-to-agent channel",
-	"ReadRunActivity":       "§6.1 read the kind='progress' rows (run sub-steps) the default thread excludes (ISI-7094) — the console per-run Activity feed backing query, read-only",
-	"TaskDetail":            "§6.1 the richer work-item read projection (title/body/state/comments/fence, read-only)",
-	"TaskComment":           "§6.1 one append-only provenanced note on a work item (read projection)",
-	"CommentRef":            "§6.1 a structured ticket LINK carried on a comment (ISI-5214) — the `#`-picker's work-item reference (UUID + title), read projection / durable link metadata, never a dispatch or agent-to-agent channel",
+	"ReadTaskDetail":                        "§6.1 shared richer read of one work item + its claim/fence state (S1 push / S2 pull)",
+	"AppendComment":                         "§6.1 append a provenanced coord.comment (sanctioned handoff half, server-authored author)",
+	"AppendInitialFindings":                 "§6.1/§6.5 append a provenanced coord.comment + co-commit ONE 'initial_findings_authored' audit row (ADR-0029 Option B, ISI-5603) — sanctioned early-note half, author/run server-supplied; not an agent-to-agent channel",
+	"AppendProgress":                        "§6.1 append a provenanced kind='progress' coord.comment (ISI-7094) — a run sub-step the ProgressMirror mirrors; stored but excluded from the default thread, author/run server-supplied; not an agent-to-agent channel",
+	"AppendSummary":                         "§6.1 append a provenanced kind='summary' coord.comment (ISI-7094) — the run's single end-of-run recap settle counts toward the exactly-one-summary invariant, author/run server-supplied; not an agent-to-agent channel",
+	"ReadRunActivity":                       "§6.1 read the kind='progress' rows (run sub-steps) the default thread excludes (ISI-7094) — the console per-run Activity feed backing query, read-only",
+	"TaskDetail":                            "§6.1 the richer work-item read projection (title/body/state/comments/fence, read-only)",
+	"TaskComment":                           "§6.1 one append-only provenanced note on a work item (read projection)",
+	"CommentRef":                            "§6.1 a structured ticket LINK carried on a comment (ISI-5214) — the `#`-picker's work-item reference (UUID + title), read projection / durable link metadata, never a dispatch or agent-to-agent channel",
+	"AgentCommentInput":                     "§6.1/ADR-0024 agent-authored comment input (ISI-7220 B3): provenanced note + ticket links + agent mentions; mentions are durable roster-validated references — never a dispatch, never an agent-to-agent channel (FR-B3)",
+	"WorkItemWriteStore.AgentAppendComment": "§6.1/ADR-0024 §4 append one custody-scoped agent comment (refs resolved in-project, mentions persisted as metadata) + §6.5 audit, no lane nudge, no dispatch (ISI-7220 B3)",
 
 	// M1.5 agent change reporting + board read models (ISI-4131, epic ISI-4126):
 	// the run's change SUMMARY — commit SHAs / PR links — appended to its OWN card

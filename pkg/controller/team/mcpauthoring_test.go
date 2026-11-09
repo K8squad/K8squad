@@ -30,8 +30,10 @@ import (
 )
 
 // authoringWantTools is the tool surface the built-in server must expose — the
-// three ADR-0024a authoring verbs, in the compiled-in manifest order.
-var authoringWantTools = []string{"work_item_create", "work_item_update", "work_item_assign"}
+// three ADR-0024a authoring verbs plus the ISI-7220 B3 comment verb
+// (work_item_comment — cross-agent reference parity), in the compiled-in
+// manifest order.
+var authoringWantTools = []string{"work_item_create", "work_item_update", "work_item_assign", "work_item_comment"}
 
 // TestAuthoringMCPServerProvisioned (ISI-4867 AC1-AC3): reconciling a Team
 // provisions exactly one ksquad-memory-authoring MCPServer in its squad

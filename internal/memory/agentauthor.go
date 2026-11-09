@@ -64,6 +64,12 @@ type WorkItemAuthor interface {
 	// coordinator's own in-custody item, which the run context never surfaces to the
 	// agent as an argument (ISI-5244).
 	RunHeldWorkItem(ctx context.Context, runID string) (string, error)
+	// AgentAppendComment appends one agent-authored comment (with
+	// structured ticket references and agent mentions) to a work item in
+	// the agent's custody scope (ISI-7220 B3, epic ISI-7075 — cross-agent
+	// reference parity: the ticket-comment peer of discussion_post's
+	// reference primitives).
+	AgentAppendComment(ctx context.Context, in coord.AgentCommentInput) (coord.TaskComment, error)
 }
 
 // WorkItemDispatcher is the coord assign seam the PM→implementer handoff drives
@@ -173,9 +179,10 @@ func (r *TokenCapabilityResolver) HasWorkItemAuthor(_ context.Context, sess Agen
 // of hardcoding a second copy of the strings, so the advertised set and the seeded
 // set can never drift (ISI-4867). Changing a name here changes it everywhere.
 const (
-	WorkItemCreateToolName = "work_item_create"
-	WorkItemUpdateToolName = "work_item_update"
-	WorkItemAssignToolName = "work_item_assign"
+	WorkItemCreateToolName  = "work_item_create"
+	WorkItemUpdateToolName  = "work_item_update"
+	WorkItemAssignToolName  = "work_item_assign"
+	WorkItemCommentToolName = "work_item_comment"
 )
 
 // AuthoringToolNames is the compiled-in first-party authoring manifest — the exact
@@ -183,7 +190,7 @@ const (
 // seed the operator writes to status.observedTools with NO network self-probe
 // (the memory service would be probing itself); the live discovery probe
 // (pkg/controller/mcpserver/probe.go) stays for BYO servers only.
-var AuthoringToolNames = []string{WorkItemCreateToolName, WorkItemUpdateToolName, WorkItemAssignToolName}
+var AuthoringToolNames = []string{WorkItemCreateToolName, WorkItemUpdateToolName, WorkItemAssignToolName, WorkItemCommentToolName}
 
 // DiscussionSearchToolName / DiscussionPostToolName are the two discussion-reply
 // verbs the built-in ksquad-memory-discussion MCPServer exposes for source=discussion
@@ -232,6 +239,18 @@ var (
 		Description: "Assign a work item you hold in custody (or a descendant) to an implementer agent — the PM→implementer handoff. Drives the same board dispatch a human assign does; the target agent must belong to the item's team and the item must be an unclaimed backlog/todo. Requires the work_item.author capability; identity/team/run are server-authenticated. Returns the dispatch result.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to assign"},"assignee_agent_id":{"type":"string","description":"REQUIRED implementer agent (Team.Spec.Agents[].Name) to hand the item to"}},"required":["id","assignee_agent_id"]}`),
 	}
+	// workItemCommentTool is the ISI-7220 (epic ISI-7075, workstream B3)
+	// cross-agent reference verb on the ticket-run surface: the board peer
+	// of discussion_post's reference primitives. References are structured
+	// ticket links (the ISI-5214 wire shape, resolved against the commented
+	// ticket's own project); mentions are roster-validated durable agent
+	// references. BOTH are links — never a dispatch (FR-B3): the
+	// make-an-agent-act verb stays work_item_assign.
+	workItemCommentTool = mcpTool{
+		Name:        WorkItemCommentToolName,
+		Description: "Post a comment on a ticket's board thread — the ticket-run peer of discussion_post for cross-agent referencing. Comment on the ticket you hold in custody (or a descendant); link OTHER tickets with references (structured links resolved against the ticket's own project — the same wire shape discussion_post uses); reference teammate agents with mentions (durable @-references rendered on the thread, validated against the team roster). A mention or a reference is a LINK, never a dispatch: to make an agent ACT on a ticket use work_item_assign, and lane/status motion stays a human custody op. When you hand off or cross-reference work, do it by calling this tool — the comment with its links is the deliverable, not a narration. Identity, team and run are server-authenticated (never arguments). Returns the persisted comment.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to comment on — you must hold it, or one of its ancestors, in custody"},"body":{"type":"string","description":"the comment body; plain @name tokens in the body are text — pass structured mentions via the mentions argument"},"references":{"type":"array","items":{"type":"object","properties":{"workItemId":{"type":"string","description":"work-item id (uuid) to link"},"title":{"type":"string","description":"optional display title; the server canonicalizes it from the board"}},"required":["workItemId"]},"description":"optional structured ticket links (same wire shape as discussion_post references); unknown or out-of-project links are dropped"},"mentions":{"type":"array","items":{"type":"string"},"description":"optional teammate agent names to reference (@name tolerated); validated against the team roster and persisted as durable thread references — they never dispatch the agent"}},"required":["id","body"]}`),
+	}
 )
 
 // ---------------------------------------------------------------------------
@@ -259,6 +278,19 @@ type workItemUpdateArgs struct {
 type workItemAssignArgs struct {
 	ID              string `json:"id"`
 	AssigneeAgentID string `json:"assignee_agent_id"`
+}
+
+// workItemCommentArgs is the ISI-7220 B3 comment argument shape: the
+// scope + content only (identity/tenancy ride the session headers),
+// plus the two cross-agent reference primitives — References (ticket
+// links, the discussion_post/ISI-5214 wire shape) and Mentions (agent
+// names; validated against the Team roster at the edge, persisted as
+// durable metadata, never a dispatch).
+type workItemCommentArgs struct {
+	ID         string             `json:"id"`
+	Body       string             `json:"body"`
+	References []coord.CommentRef `json:"references,omitempty"`
+	Mentions   []string           `json:"mentions,omitempty"`
 }
 
 // workItemCreateResult is the tool result for a create, carrying the created record
@@ -483,4 +515,71 @@ func (m *ToolMCP) callWorkItemAssign(ctx context.Context, sess mcpSession, raw j
 		return toolError(err.Error())
 	}
 	return toolResult(disp)
+}
+
+// callWorkItemComment is the MCP edge of the work_item_comment tool (ISI-7220
+// B3, epic ISI-7075): the ticket-run peer of discussion_post's reference
+// primitives. The gate, identity and custody live exactly like the sibling
+// authoring verbs (requireAuthor + coord's ADR-0024 custody scope); the
+// reference primitives ride the arguments: references (ticket links) are
+// resolved in-txn by coord against the commented ticket's own project — the
+// SAME resolveCommentRefs pipeline the human console path rides — and mentions
+// (agent names) are validated HERE against the Team roster: a mention is
+// durable metadata (payload.mentions), NEVER a dispatch (FR-B3 — the board's
+// make-agent-act verb stays work_item_assign). A nil roster degrades to a
+// mention-free comment (the nil-ref-resolver degrade discussion_post shares),
+// never a refusal; a roster ERROR fails closed.
+func (m *ToolMCP) callWorkItemComment(ctx context.Context, sess mcpSession, raw json.RawMessage) (any, *jsonrpcError) {
+	id, deny := m.requireAuthor(ctx, sess)
+	if deny != nil {
+		return toolError(*deny)
+	}
+	var a workItemCommentArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return toolError("invalid arguments")
+		}
+	}
+	if a.ID == "" || a.Body == "" {
+		return toolError("id and body required")
+	}
+	// Mention hygiene: keep only names on the caller's Team roster (the same
+	// agent-∈-Team authority work_item_assign's dispatch guard uses). The
+	// scope rides the server-authenticated session team, never an argument.
+	mentions := a.Mentions
+	if len(mentions) > 0 {
+		if m.roster == nil {
+			mentions = nil // degrade: the comment is the durable deliverable
+		} else {
+			roster, err := m.roster.TeamAgents(ctx, id.teamID)
+			if err != nil {
+				return toolError("could not validate mentions against the team roster: " + err.Error()) // fail-closed
+			}
+			onTeam := make(map[string]bool, len(roster))
+			for _, name := range roster {
+				onTeam[name] = true
+			}
+			kept := make([]string, 0, len(mentions))
+			for _, name := range mentions {
+				if onTeam[name] {
+					kept = append(kept, name)
+				}
+			}
+			mentions = kept
+		}
+	}
+	tc, err := m.author.AgentAppendComment(ctx, coord.AgentCommentInput{
+		WorkItemID: a.ID,
+		Principal:  id.principal,
+		AgentName:  id.agentName,
+		RunID:      id.runID,
+		TeamID:     id.teamID,
+		Body:       a.Body,
+		References: a.References,
+		Mentions:   mentions,
+	})
+	if err != nil {
+		return toolError(err.Error())
+	}
+	return toolResult(tc)
 }
