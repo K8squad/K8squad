@@ -193,10 +193,18 @@ func main() {
 	}
 	if author, dispatcher := openAgentAuthor(cfg.DatabaseURL, teamResolver); author != nil {
 		mcpTools.WithWorkItemAuthor(author, dispatcher, memory.NewHeaderCapabilityResolver())
+		// ISI-7220 B3 (epic ISI-7075): the Team roster backs work_item_comment
+		// mention validation — the SAME resolver the dispatch store's
+		// agent-∈-Team guard rides, so durable agent references can only
+		// name Team members. No resolver ⇒ mentions degrade to mention-free
+		// comments (the comment itself still lands).
+		if teamResolver != nil {
+			mcpTools.WithTeamRoster(teamResolver)
+		}
 		if dispatcher != nil {
-			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update/assign)")
+			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update/assign/comment — work_item_comment carries refs+mentions parity, ISI-7220 B3)")
 		} else {
-			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update; assign honestly unavailable — no Team-agent resolver, ISI-4743)")
+			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update/comment; assign honestly unavailable — no Team-agent resolver, ISI-4743)")
 		}
 		// ISI-5282 propose-mode coordinator: a coordinator run carrying the
 		// coordinator.propose grant (Role.Spec.CoordinatorMode=propose, derived by the

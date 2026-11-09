@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/K8squad/K8squad/internal/discussion"
+
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/search"
 )
 
@@ -71,6 +73,14 @@ type ToolMCP struct {
 	// propose-gated call is refused honestly at the edge (never silently executed).
 	// See WithCoordinatorPropose and coordinatorpropose.go.
 	proposer *CoordinatorProposer
+	// roster is the optional TeamAgentResolver that validates
+	// work_item_comment mentions (ISI-7220 B3, epic ISI-7075): a mention
+	// is durable thread metadata, so only a name on the Team's roster may
+	// persist (anti-spoof references — the same agent-∈-Team authority the
+	// assign verb's dispatch guard rides). Nil ⇒ mentions are dropped and
+	// the comment degrades to mention-free (the nil-ref-resolver degrade
+	// discussion_post shares), never a refusal. See WithTeamRoster.
+	roster coord.TeamAgentResolver
 }
 
 // NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
@@ -94,6 +104,18 @@ func (m *ToolMCP) WithWorkItemAuthor(author WorkItemAuthor, dispatcher WorkItemD
 	m.author = author
 	m.dispatcher = dispatcher
 	m.caps = caps
+	return m
+}
+
+// WithTeamRoster wires the Team-agent roster that validates
+// work_item_comment mentions (ISI-7220 B3): one resolver, shared with
+// the dispatch store's agent-∈-Team guard, so a durable agent
+// reference can never name an agent outside the Team. Nil (the
+// default, or a cluster-less deployment) degrades mention-bearing
+// comments to mention-free — the comment still lands. Returns the
+// receiver for chaining at construction.
+func (m *ToolMCP) WithTeamRoster(roster coord.TeamAgentResolver) *ToolMCP {
+	m.roster = roster
 	return m
 }
 
@@ -413,7 +435,7 @@ func (m *ToolMCP) toolsList() any {
 	// even when the dispatch backend is absent; it then returns an honest
 	// assign-unavailable error rather than vanishing from the catalog.
 	if m.author != nil {
-		tools = append(tools, workItemCreateTool, workItemUpdateTool, workItemAssignTool)
+		tools = append(tools, workItemCreateTool, workItemUpdateTool, workItemAssignTool, workItemCommentTool)
 	}
 	return map[string]any{"tools": tools}
 }
@@ -560,6 +582,11 @@ func (m *ToolMCP) toolsCall(ctx context.Context, sess mcpSession, params json.Ra
 			return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
 		}
 		return m.callWorkItemAssign(ctx, sess, p.Arguments)
+	case workItemCommentTool.Name:
+		if m.author == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // authoring unmounted
+		}
+		return m.callWorkItemComment(ctx, sess, p.Arguments)
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
 	}

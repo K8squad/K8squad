@@ -50,6 +50,12 @@ type fakeAuthor struct {
 	heldItem   string
 	heldErr    error
 	heldForRun string
+	// commentIn / commentCalled / commentRec / commentErr back the
+	// ISI-7220 B3 work_item_comment path.
+	commentIn     coord.AgentCommentInput
+	commentCalled bool
+	commentRec    coord.TaskComment
+	commentErr    error
 }
 
 func (f *fakeAuthor) AgentCreateWorkItem(_ context.Context, in coord.AgentCreateWorkItemInput) (coord.WorkItemRecord, error) {
@@ -71,6 +77,14 @@ func (f *fakeAuthor) AgentUpdateWorkItem(_ context.Context, id string, in coord.
 		return coord.WorkItemRecord{}, f.updateErr
 	}
 	return f.rec, nil
+}
+
+func (f *fakeAuthor) AgentAppendComment(_ context.Context, in coord.AgentCommentInput) (coord.TaskComment, error) {
+	f.commentCalled, f.commentIn = true, in
+	if f.commentErr != nil {
+		return coord.TaskComment{}, f.commentErr
+	}
+	return f.commentRec, nil
 }
 
 type fakeDispatcher struct {

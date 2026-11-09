@@ -62,6 +62,13 @@ type TaskComment struct {
 	// omitted for a plain comment, so an older reader and a link-free comment are
 	// indistinguishable on the wire.
 	References []CommentRef `json:"references,omitempty"`
+	// Mentions are the structured agent references the comment carried
+	// (ISI-7220 B3, epic ISI-7075): agent names persisted under
+	// coord.comment.payload `mentions` by the agent-comment path, read
+	// straight off the row — never a render-time roster refetch. nil /
+	// omitted for a plain comment. A mention is durable metadata, never
+	// a dispatch (FR-B3).
+	Mentions []string `json:"mentions,omitempty"`
 }
 
 // TaskDetail is the canonical richer read of one work item and its coordination
@@ -208,6 +215,7 @@ func readComments(ctx context.Context, db *sql.DB, workItemID string) ([]TaskCom
 		}
 		c.RunID = runID.String
 		c.References = referencesFromPayload(payload)
+		c.Mentions = mentionsFromPayload(payload)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
@@ -272,6 +280,23 @@ func referencesFromPayload(payload []byte) []CommentRef {
 		return nil
 	}
 	return wrapper.References
+}
+
+// mentionsFromPayload reads the structured agent references off a
+// comment's jsonb payload under the `mentions` key (ISI-7220 B3). A
+// NULL/empty/malformed payload — every pre-B3 row and every plain
+// comment — yields nil, so a mention-free comment stays mention-free.
+func mentionsFromPayload(payload []byte) []string {
+	if len(payload) == 0 {
+		return nil
+	}
+	var wrapper struct {
+		Mentions []string `json:"mentions"`
+	}
+	if err := json.Unmarshal(payload, &wrapper); err != nil {
+		return nil
+	}
+	return wrapper.Mentions
 }
 
 // AppendComment appends one provenanced comment to a work item and returns it.
