@@ -186,9 +186,11 @@ func TestBuildTaskFreshAssembleWhenNoSnapshot(t *testing.T) {
 	}
 }
 
-// AC6: with the side-channel OFF (no ContextAssemblers), the bare title+body
-// dispatch is unchanged — SystemContext stays empty.
-func TestBuildTaskNoAssemblerLeavesSystemContextEmpty(t *testing.T) {
+// AC6 (amended by ISI-7100/WS-3): with the side-channel OFF (no
+// ContextAssemblers), the dispatch still carries the final-comment contract —
+// the only system context a bare dispatch gets. The work-item INPUT is
+// unchanged; nothing else is injected.
+func TestBuildTaskNoAssemblerCarriesOnlyCommentContract(t *testing.T) {
 	run, agent, project := ctxFixtures(nil)
 	d := newDispatch(t, run, agent, project, nil)
 
@@ -196,7 +198,10 @@ func TestBuildTaskNoAssemblerLeavesSystemContextEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTask: %v", err)
 	}
-	if task.Envelope.SystemContext != "" {
-		t.Errorf("SystemContext = %q, want empty (side-channel off)", task.Envelope.SystemContext)
+	if task.Envelope.Input != "make test/flake green" {
+		t.Errorf("Input = %q, want the work-item body", task.Envelope.Input)
+	}
+	if task.Envelope.SystemContext != strings.TrimSpace(finalCommentContract) {
+		t.Errorf("SystemContext = %q, want the bare final-comment contract (ISI-7100)", task.Envelope.SystemContext)
 	}
 }
