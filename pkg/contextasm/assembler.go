@@ -77,6 +77,13 @@ type DiscussionContext struct {
 	// ThreadID is the room thread the run must read + reply into (for legibility
 	// in the assembled context; the reply path is already in the instruction body).
 	ThreadID string
+	// ThreadTitle is the immutable title of the room thread
+	// (discussion.thread.title) — what the room is actually about (ISI-7216, C2
+	// run-context parity): the discussion-run analogue of a ticket run's own
+	// subject. It is a server-derived thread FACT (best-effort project-meta
+	// class), never participant content. Empty (untitled / thread row missing)
+	// emits no element.
+	ThreadTitle string
 	// TriggerMessage is the body of the @-mention that triggered the run — the
 	// single most topic-bearing line, weighted first in the recall query.
 	TriggerMessage string
@@ -105,15 +112,22 @@ type Comment struct {
 	WrittenAt string
 }
 
-// ProjectMeta is the project-metadata content class (§8.5): repo URL/ref,
-// arch-doc refs, conventions. Sourced from the Project CRD + config.
+// ProjectMeta is the project-metadata content class (§8.5): project identity,
+// repo URL/ref, arch-doc refs, conventions. Sourced from the Project CRD + config.
 type ProjectMeta struct {
 	ProjectRevision string // Project metadata.generation — the goal revision
-	RepoURL         string
-	RepoRef         string
-	ArchDocRefs     []string
-	Conventions     string
-	Goals           []string // Project CRD goals (§5.1)
+	// Name is the Project CRD's name — the project's identity on the board and
+	// in every human-facing surface (ISI-7216, C2 run-context parity). A
+	// discussion run's instruction body references the project only by an
+	// opaque uuid; this fact rides the best-effort project-meta class so BOTH
+	// run kinds know which project they are working. Empty (older Sources)
+	// emits no element.
+	Name        string
+	RepoURL     string
+	RepoRef     string
+	ArchDocRefs []string
+	Conventions string
+	Goals       []string // Project CRD goals (§5.1)
 }
 
 // RecallDoc is one scoped memory-recall result, already projected through
@@ -605,6 +619,14 @@ func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFact
 	}
 
 	// — Authoritative tier, best-effort class: project metadata (5.4) —
+	// Project identity (ISI-7216, C2): WHICH project this run works — the name
+	// every board/console surface uses. Placed first among the project-meta
+	// facts, before repo and conventions, so a discussion run (whose static
+	// instruction body carries only an opaque project id) still knows the
+	// project. Ticket runs get the same element — parity in both directions.
+	if meta.Name != "" {
+		b.addProjectMeta("project", meta.Name, Provenance{Source: "projectMeta"})
+	}
 	if meta.RepoURL != "" {
 		ref := meta.RepoRef
 		if ref == "" {
@@ -627,6 +649,17 @@ func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFact
 	//   conversation content and rides the UNTRUSTED-external tier so a room
 	//   participant cannot smuggle instructions into the authoritative framing. —
 	if d := wi.Discussion; d != nil {
+		// Thread subject (ISI-7216, C2): the immutable title + the thread id —
+		// the server-derived FACT of what this room is about, best-effort
+		// project-meta class. A ticket run's description element carries the
+		// issue's own subject; a discussion run now carries the thread's.
+		if d.ThreadTitle != "" {
+			fact := d.ThreadTitle
+			if d.ThreadID != "" {
+				fact += " (thread " + d.ThreadID + ")"
+			}
+			b.addProjectMeta("discussionThread", fact, Provenance{Source: "discussion"})
+		}
 		if roster := formatRoster(d.Roster); roster != "" {
 			b.addProjectMeta("roster", roster, Provenance{Source: "discussion"})
 		}
