@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/google/uuid"
 
@@ -229,6 +230,13 @@ func (f proposalFanout) execute(ctx context.Context, auth discussion.AuthorConte
 			"workItemId": rec.ID,
 			"state":      rec.State,
 			"teamRun":    p.Payload.Action == discussion.ProposalActionPartyRun,
+			// ISI-7221 (A2): the board deep link + title so the thread
+			// post-back and the console card can point straight at the
+			// created ticket. Built from the route project ref (slug or
+			// UID - exactly what the console resolves), never the internal
+			// resolved UID.
+			"title": p.Payload.Title,
+			"url":   workItemURL(projectRef, rec.ID),
 		})
 
 	case discussion.ProposalActionAssignAgent:
@@ -247,6 +255,7 @@ func (f proposalFanout) execute(ctx context.Context, auth discussion.AuthorConte
 			"fromState":      res.FromState,
 			"toState":        res.ToState,
 			"requestedAgent": res.RequestedAgent,
+			"url":            workItemURL(projectRef, res.WorkItemID), // ISI-7221 (A2)
 		})
 
 	default:
@@ -279,16 +288,44 @@ func proposalDismissHandler(f proposalFanout) http.HandlerFunc {
 func proposalResultLine(action string, result json.RawMessage) string {
 	var r struct {
 		WorkItemID     string `json:"workItemId"`
+		Title          string `json:"title"`
 		ToState        string `json:"toState"`
 		RequestedAgent string `json:"requestedAgent"`
+		URL            string `json:"url"`
 	}
 	_ = json.Unmarshal(result, &r)
 	switch action {
 	case discussion.ProposalActionAssignAgent:
-		return "assigned " + r.RequestedAgent + " to work item " + r.WorkItemID + " (" + r.ToState + ")"
+		return "assigned " + r.RequestedAgent + " to work item " + linkedText(r.WorkItemID, r.URL) + " (" + r.ToState + ")"
 	default:
-		return "created work item " + r.WorkItemID
+		text := r.Title
+		if text == "" {
+			text = r.WorkItemID
+		}
+		return "created work item " + linkedText(text, r.URL)
 	}
+}
+
+// linkedText renders text as a markdown link when a url is present (ISI-7221
+// A2), so the executed post-back under a proposal card carries a clickable
+// deep link to the board ticket instead of a bare UUID a human cannot find.
+// Plain text when the result carried no url (belt-and-suspenders for results
+// recorded before the field existed).
+func linkedText(text, url string) string {
+	if url == "" {
+		return text
+	}
+	return "[" + text + "](" + url + ")"
+}
+
+// workItemURL builds the console deep link to a work item: the SAME
+// /projects/{projectId}/issues/{workItemId} route the board renders (console
+// app router), as a RELATIVE path so it resolves against the origin the
+// reader is already on - the API needs no configured external origin.
+// projectRef is the route own project ref (namespace/name slug or UID),
+// path-escaped.
+func workItemURL(projectRef, workItemID string) string {
+	return "/projects/" + url.PathEscape(projectRef) + "/issues/" + url.PathEscape(workItemID)
 }
 
 // pathVarOr is pathVar without the ok-tuple, for call sites that re-parse the value themselves.

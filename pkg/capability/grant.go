@@ -203,6 +203,23 @@ func ResolveGrant(ctx context.Context, reader client.Reader, run *api.Run) (Gran
 		}
 	}
 
+	// ISI-7221 (A1): a source=discussion thread-run is ALWAYS propose-gated -
+	// independent of Role.Spec.CoordinatorMode. A room thread-run holds no board
+	// authoring custody to decompose against (its claim is the mention's drive
+	// item, not a ticket it was dispatched to decompose) and root items are
+	// human-only, so an author-capable agent in a discussion must never
+	// direct-execute: its work_item_create / work_item_assign calls raise
+	// human-confirmed proposals (CoordinatorProposer -> proposalconfirm.go) that
+	// mint a project-level root ticket on confirm. Derived exactly like the
+	// CoordinatorMode grant above - a server-side fact about the Run's source
+	// (label ksquad.io/work-item-source=discussion, stamped by intake D2),
+	// never a client-supplied field.
+	if isDiscussionRun(run) {
+		if _, ok := caps[CapabilityWorkItemAuthor]; ok {
+			caps[CapabilityCoordinatorPropose] = struct{}{}
+		}
+	}
+
 	if len(caps) == 0 {
 		return GrantSet{}, nil
 	}
