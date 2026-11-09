@@ -19,9 +19,11 @@ limitations under the License.
 // (ISI-7098) and WS-2 made that message the run's single durable
 // kind='summary' comment (ISI-7099) — but pass-through alone carries whatever
 // the model happened to say, so comment shape drifts per runtime and per
-// model. The board-approved default (plan decision #2) is pass-through with NO
-// extra model call: quality is shaped at the prompt, upstream of the run, not
-// by post-hoc summarization. The contract below rides EVERY dispatched
+// model. The board-approved default (plan decision #2, refined on ISI-7195
+// 2026-11-08) is pass-through with NO extra model call: quality is shaped at
+// the prompt as a natural-summary-plus-board-ask contract, upstream of the
+// run, not by post-hoc summarization or a stamped template. The contract
+// below rides EVERY dispatched
 // envelope's system context — one source of truth in the dispatcher,
 // delivered identically to every lane: stdin runtimes (goose/opencode via
 // EnvelopePrompt), env-channel runtimes (codex/hermes/openclaw via the
@@ -33,24 +35,22 @@ import "strings"
 
 // finalCommentContract is appended to every dispatched envelope's system
 // context. It tells the model, before any work begins, how its final message
-// is published and the shape the board expects — the five sections of the
-// approved template, so comments read consistently across agents and
-// runtimes. It is guidance, never a wrapper: the deliverable still passes
-// through VERBATIM as the comment body (WS-2's AppendSummary path); nothing
-// here rewrites, truncates, or summarizes the text. A dedicated summarization
-// step remains deliberately unbuilt (extra model call per run — gated on
-// pass-through-quality evidence and board re-confirmation per the plan).
+// is published and the shape the board expects — a clear, natural summary of
+// the work plus an explicit ask when a board decision is needed, Paperclip-
+// style. Henrik rejected a rigid per-response form (ISI-7195, 2026-11-08): no
+// stamped headings, no fixed section order. It is guidance, never a wrapper:
+// the deliverable still passes through VERBATIM as the comment body (WS-2's
+// AppendSummary path); nothing here rewrites, truncates, or summarizes the
+// text. A dedicated summarization step remains deliberately unbuilt (extra
+// model call per run — gated on output-contract-quality evidence and board
+// re-confirmation per the plan).
 const finalCommentContract = `How to report — final answer contract:
 
 Your FINAL message is published VERBATIM as the single durable comment on this work item; the board reads it as your report of the work. Intermediate reasoning and tool activity stream live while you work and are NOT repeated in the final message.
 
-Write the final message as plain prose under these five headings, in this order (skip a heading only when it genuinely does not apply):
+End with a short, natural summary in plain prose — a few sentences a teammate could read and understand without opening the diff: what you did and what it means. When a claim needs a name or id to be verifiable (a PR, a file, a live check, a test result), include it. Keep it concise. Do not impose fixed headings or a stamped template — write it the way you would explain the outcome to a colleague.
 
-**What was asked** — restate the task in one or two sentences.
-**What changed** — the concrete outcome: files, PRs, objects, behavior changes, with names/ids/links.
-**Decisions & why** — the choices you made and the reasoning, including alternatives you rejected.
-**Verification** — how you proved the result: tests run, checks green, live probes, with the evidence.
-**Follow-ups** — remaining work, blockers, or next actions, each with an owner where known.
+If you need a decision, approval, or unblock from the board, state that ask explicitly and specifically as the close of the message: what you need and from whom. If you need nothing, do not invent an ask.
 
 Do not paste tool logs, raw traces, or progress narration into the final message.`
 

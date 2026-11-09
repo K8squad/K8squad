@@ -24,27 +24,42 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
 
-// TestFinalCommentContractSections pins the contract's five section headings —
-// the board-approved comment template (ISI-7100 WS-3): the durable comment must
-// read as a human summary of work done + decisions made, consistently across
-// agents and runtimes.
-func TestFinalCommentContractSections(t *testing.T) {
+// TestFinalCommentContractShape pins the board-approved rev2 contract (ISI-7195,
+// Henrik direction 2026-11-08): the durable comment must read as a clear,
+// natural summary of the work plus an explicit ask when a board decision is
+// needed — Paperclip-style, NOT a rigid stamped template. These assertions
+// guard the two load-bearing properties (verbatim publication, no trace dumps)
+// and the natural-summary + board-ask shape.
+func TestFinalCommentContractShape(t *testing.T) {
 	for _, want := range []string{
-		"What was asked",
-		"What changed",
-		"Decisions & why",
-		"Verification",
-		"Follow-ups",
+		"VERBATIM",                     // the final message is published verbatim as the durable comment
+		"natural summary",              // the shape the board asked for
+		"decision",                     // the explicit board-ask clause
+		"Do not impose fixed headings", // the rejection of the stamped template
 	} {
 		if !strings.Contains(finalCommentContract, want) {
-			t.Errorf("finalCommentContract missing section %q", want)
+			t.Errorf("finalCommentContract missing required phrase %q", want)
 		}
-	}
-	if !strings.Contains(finalCommentContract, "VERBATIM") {
-		t.Error("finalCommentContract must tell the model its final message is published verbatim")
 	}
 	if !strings.Contains(finalCommentContract, "Do not paste tool logs") {
 		t.Error("finalCommentContract must forbid trace/log dumps in the final message")
+	}
+}
+
+// TestFinalCommentContractRejectsStampedTemplate is a regression guard: Henrik
+// explicitly rejected the rev1 five-section stamped template (ISI-7195
+// 2026-11-08). The contract must not reintroduce those fixed headings as a
+// required per-response form.
+func TestFinalCommentContractRejectsStampedTemplate(t *testing.T) {
+	for _, forbidden := range []string{
+		"under these five headings",
+		"**What was asked**",
+		"**Decisions & why**",
+		"**Follow-ups**",
+	} {
+		if strings.Contains(finalCommentContract, forbidden) {
+			t.Errorf("finalCommentContract reintroduced rejected stamped-template element %q", forbidden)
+		}
 	}
 }
 
