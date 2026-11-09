@@ -27,6 +27,9 @@ func TestProposalPayloadValidate(t *testing.T) {
 		{"assign_agent ok", ProposalPayload{Action: ProposalActionAssignAgent, TicketID: "wi-1", AssigneeAgentID: "a:kimi"}, nil},
 		{"assign_agent needs ticket", ProposalPayload{Action: ProposalActionAssignAgent, AssigneeAgentID: "a:kimi"}, ErrInvalidProposalPayload},
 		{"assign_agent needs agent", ProposalPayload{Action: ProposalActionAssignAgent, TicketID: "wi-1"}, ErrInvalidProposalPayload},
+		{"status_change ok", ProposalPayload{Action: ProposalActionStatusChange, TicketID: "wi-1", TargetState: "done"}, nil},
+		{"status_change needs ticket", ProposalPayload{Action: ProposalActionStatusChange, TargetState: "done"}, ErrInvalidProposalPayload},
+		{"status_change needs target", ProposalPayload{Action: ProposalActionStatusChange, TicketID: "wi-1"}, ErrInvalidProposalPayload},
 		{"unknown action", ProposalPayload{Action: "self_destruct"}, ErrInvalidProposalPayload},
 	}
 	for _, tc := range cases {

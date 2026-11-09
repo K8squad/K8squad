@@ -80,6 +80,7 @@ func TestBriefAuthoringRun(t *testing.T) {
 	for _, want := range []string{
 		"work_item_create", "create a sub-ticket",
 		"work_item_update", "work_item_assign", "delegation verb",
+		"work_item_status_change", "working lanes", // ADR-0025 (ISI-7219): the fourth verb, enumerated with its summary
 		"work_item_search",
 	} {
 		if !strings.Contains(got, want) {

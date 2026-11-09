@@ -34,6 +34,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/coord"
 )
 
 // CoordinatorProposeCapability is the grant slug the authoring edge reads to
@@ -230,5 +231,50 @@ func (p *CoordinatorProposer) ProposeAssign(ctx context.Context, id authorIdenti
 		ProposalID: msg.ID.String(),
 		ThreadID:   thread.ThreadID.String(),
 		Message:    "Raised an assign_agent proposal (" + a.AssigneeAgentID + " → " + a.ID + "); a human must confirm it before the dispatch happens.",
+	})
+}
+
+// ProposeStatus raises a status_change proposal for a work_item_status_change
+// call made by a propose-mode coordinator (ADR-0025, ISI-7219). Unlike the
+// direct path's constrained target set, a PROPOSAL may carry any board lane —
+// done, cancelled, backlog, the phase lanes — because the human confirms it and
+// the confirm fan-out executes through the HUMAN TransitionState seam. The
+// target is still validated HERE against coord's board-state set, so the human
+// confirms a real decision rather than a doomed one.
+func (p *CoordinatorProposer) ProposeStatus(ctx context.Context, id authorIdentity, a workItemStatusChangeArgs) (any, *jsonrpcError) {
+	if a.ID == "" || a.TargetState == "" {
+		return toolError("id and target_state required")
+	}
+	if !coord.IsValidHumanState(a.TargetState) {
+		return toolError("target_state " + a.TargetState + " is not a board lane")
+	}
+	thread, deny := p.resolveThread(ctx, id)
+	if deny != nil {
+		return toolError(*deny)
+	}
+	payload := discussion.ProposalPayload{
+		Action:      discussion.ProposalActionStatusChange,
+		TicketID:    a.ID,
+		TargetState: a.TargetState,
+		Reason:      a.Reason,
+	}
+	if err := payload.Validate(); err != nil {
+		return toolError(err.Error())
+	}
+	body := "Proposed status change: ticket " + a.ID + " → " + a.TargetState
+	if a.Reason != "" {
+		body += " — " + a.Reason
+	}
+	msg, err := p.poster.PostProposal(ctx, thread.ProjectID, thread.TeamID, thread.ThreadID,
+		authorContext(id, thread.TeamID), body, payload, nil)
+	if err != nil {
+		return toolError("propose mode: post status_change proposal: " + err.Error())
+	}
+	return toolResult(proposalToolResult{
+		Proposed:   true,
+		Action:     discussion.ProposalActionStatusChange,
+		ProposalID: msg.ID.String(),
+		ThreadID:   thread.ThreadID.String(),
+		Message:    "Raised a status_change proposal (" + a.ID + " → " + a.TargetState + "); a human must confirm it before the ticket moves.",
 	})
 }

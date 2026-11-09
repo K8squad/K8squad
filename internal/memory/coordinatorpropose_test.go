@@ -302,3 +302,72 @@ func TestProposeStillHonorsCapabilityGate(t *testing.T) {
 		t.Fatal("propose mode engaged despite a denied capability")
 	}
 }
+
+// --- status path (ADR-0025, ISI-7219) -----------------------------------------
+
+// TestProposeStatusRaisesProposal: a propose-mode work_item_status_change posts
+// a status_change proposal into the run's originating thread and NEVER calls
+// coord. A proposal may target lanes the direct path refuses (done here) — the
+// human confirms it, and the confirm fan-out executes through the HUMAN seam.
+func TestProposeStatusRaisesProposal(t *testing.T) {
+	author := &fakeAuthor{}
+	resolver := okResolver()
+	poster := &fakeProposalPoster{returnID: uuid.New()}
+	m := proposeMCP(author, nil, resolver, poster)
+
+	out, rpcErr := m.callWorkItemStatusChange(context.Background(), proposeSession(),
+		mustJSON(t, workItemStatusChangeArgs{ID: "wi-7", TargetState: "done", Reason: "verified live"}))
+	text, isErr := result(t, out, rpcErr)
+	if isErr {
+		t.Fatalf("propose status should succeed, got error: %q", text)
+	}
+	if author.createCalled {
+		t.Fatal("coord was called in propose mode")
+	}
+	if !poster.called {
+		t.Fatal("no proposal was posted")
+	}
+	if poster.payload.Action != discussion.ProposalActionStatusChange {
+		t.Errorf("want status_change action, got %q", poster.payload.Action)
+	}
+	if poster.payload.TicketID != "wi-7" || poster.payload.TargetState != "done" || poster.payload.Reason != "verified live" {
+		t.Errorf("proposal payload did not carry ticket/target/reason: %+v", poster.payload)
+	}
+	res := decodeProposal(t, text)
+	if !res.Proposed || res.Action != discussion.ProposalActionStatusChange || res.ProposalID != poster.returnID.String() {
+		t.Errorf("unexpected tool result: %+v", res)
+	}
+}
+
+// TestProposeStatusInvalidTargetRefused — a target that is not a board lane is
+// refused at PROPOSE time (a human must never see a confirmable doomed move).
+func TestProposeStatusInvalidTargetRefused(t *testing.T) {
+	resolver := okResolver()
+	poster := &fakeProposalPoster{returnID: uuid.New()}
+	m := proposeMCP(&fakeAuthor{}, nil, resolver, poster)
+	out, rpcErr := m.callWorkItemStatusChange(context.Background(), proposeSession(),
+		mustJSON(t, workItemStatusChangeArgs{ID: "wi-7", TargetState: "in-flight"}))
+	text, isErr := result(t, out, rpcErr)
+	if !isErr || !strings.Contains(text, "not a board lane") {
+		t.Fatalf("want invalid-target refusal, got isErr=%v text=%q", isErr, text)
+	}
+	if poster.called {
+		t.Fatal("an invalid target must not post a proposal")
+	}
+}
+
+// TestProposeStatusGatedButUnwiredRefused — a propose-gated coordinator with no
+// proposal channel is refused honestly (never executed in auto mode).
+func TestProposeStatusGatedButUnwiredRefused(t *testing.T) {
+	author := &fakeStatusAuthor{statusRes: coord.StateTransition{WorkItemID: "wi-7", ToState: "done"}}
+	m := newAuthoringMCP(author, nil, &fakeCaps{grant: true}) // no WithCoordinatorPropose
+	out, rpcErr := m.callWorkItemStatusChange(context.Background(), proposeSession(),
+		mustJSON(t, workItemStatusChangeArgs{ID: "wi-7", TargetState: "done"}))
+	text, isErr := result(t, out, rpcErr)
+	if !isErr || !strings.Contains(text, "no proposal channel is wired") {
+		t.Fatalf("want gated-but-unwired refusal, got isErr=%v text=%q", isErr, text)
+	}
+	if author.statusCalled {
+		t.Fatal("a propose-gated session must never reach the direct coord seam")
+	}
+}

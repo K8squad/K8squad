@@ -324,3 +324,12 @@ func (s *HumanStateStore) transition(ctx context.Context, workItemID, teamID, ta
 
 	return StateTransition{WorkItemID: workItemID, FromState: currentState, ToState: targetState}, nil
 }
+
+// IsValidHumanState reports whether s is one of the §8.6 board states a lane move
+// may TARGET (the full humanStates set: the 10-phase lifecycle plus the two
+// transitional engine lanes). Exported for the agent status-change lane (ADR-0025,
+// ISI-7219 / ISI-7075 B1): the MCP authoring edge validates proposal targets
+// against this set at PROPOSE time, so an inert status_change proposal can never
+// carry a lane the confirm fan-out would refuse — the human confirms a real
+// decision, not a doomed one.
+func IsValidHumanState(s string) bool { return humanStates[s] }

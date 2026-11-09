@@ -543,14 +543,14 @@ func TestAgentAuthorToolsAdvertisedWhenWired(t *testing.T) {
 	}
 
 	wired := names(newAuthoringMCP(&fakeAuthor{}, nil, &fakeCaps{grant: true}))
-	for _, n := range []string{"work_item_create", "work_item_update", "work_item_assign"} {
+	for _, n := range []string{"work_item_create", "work_item_update", "work_item_assign", "work_item_status_change"} {
 		if !wired[n] {
 			t.Fatalf("tool %q not advertised when author wired", n)
 		}
 	}
 
 	bare := names(NewToolMCP(nil, nil, nil))
-	for _, n := range []string{"work_item_create", "work_item_update", "work_item_assign"} {
+	for _, n := range []string{"work_item_create", "work_item_update", "work_item_assign", "work_item_status_change"} {
 		if bare[n] {
 			t.Fatalf("tool %q advertised without an author store", n)
 		}
@@ -607,5 +607,107 @@ func TestHeaderCapabilityResolver(t *testing.T) {
 	ok, _ = r.HasWorkItemAuthor(context.Background(), AgentSession{})
 	if ok {
 		t.Fatal("empty capability set must deny (deny-by-default)")
+	}
+}
+
+// --- ADR-0025 (ISI-7219): the work_item_status_change edge --------------------
+
+// fakeStatusAuthor is a fakeAuthor that ALSO implements the optional status
+// seam (WorkItemStatusChanger) the way *coord.WorkItemWriteStore does in
+// production — WithWorkItemAuthor's type assertion wires it.
+type fakeStatusAuthor struct {
+	fakeAuthor
+	statusID     string
+	statusIn     coord.AgentChangeWorkItemStatusInput
+	statusCalled bool
+	statusErr    error
+	statusRes    coord.StateTransition
+}
+
+func (f *fakeStatusAuthor) AgentChangeWorkItemStatus(_ context.Context, id string, in coord.AgentChangeWorkItemStatusInput) (coord.StateTransition, error) {
+	f.statusCalled, f.statusID, f.statusIn = true, id, in
+	if f.statusErr != nil {
+		return coord.StateTransition{}, f.statusErr
+	}
+	return f.statusRes, nil
+}
+
+// mustJSON marshals tool args for a direct handler call (the transport layer is
+// exercised by the tools/call suites). Shared by the authoring and propose tests.
+func mustJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	return b
+}
+
+// TestWorkItemStatusChangeDirect — a granted, non-propose session fans into the
+// coord status seam with the server-authenticated identity, and the transition
+// is returned to the agent.
+func TestWorkItemStatusChangeDirect(t *testing.T) {
+	author := &fakeStatusAuthor{statusRes: coord.StateTransition{WorkItemID: "wi-1", FromState: "todo", ToState: "in_progress"}}
+	m := newAuthoringMCP(author, nil, &fakeCaps{grant: true})
+	out, rpcErr := m.callWorkItemStatusChange(context.Background(), grantedSession(),
+		mustJSON(t, workItemStatusChangeArgs{ID: "wi-1", TargetState: "in_progress", FromState: "todo", Reason: "starting"}))
+	text, isErr := result(t, out, rpcErr)
+	if isErr {
+		t.Fatalf("direct status change should succeed, got error: %q", text)
+	}
+	if !author.statusCalled || author.statusID != "wi-1" {
+		t.Fatalf("coord seam not driven: called=%v id=%q", author.statusCalled, author.statusID)
+	}
+	if author.statusIn.Principal != "agent:john" || author.statusIn.AgentName != "john" || author.statusIn.RunID != "run-1" {
+		t.Fatalf("identity not server-marshaled: %+v", author.statusIn)
+	}
+	if author.statusIn.TargetState != "in_progress" || author.statusIn.FromState != "todo" || author.statusIn.Reason != "starting" {
+		t.Fatalf("args not carried: %+v", author.statusIn)
+	}
+	if !strings.Contains(text, "in_progress") {
+		t.Fatalf("result should carry the transition: %q", text)
+	}
+}
+
+// TestWorkItemStatusChangeConstrainedTargetSurfaced — a coord refusal (the
+// constrained-set sentinel) surfaces as an honest MCP tool error, never a
+// silent success.
+func TestWorkItemStatusChangeConstrainedTargetSurfaced(t *testing.T) {
+	author := &fakeStatusAuthor{statusErr: coord.ErrAgentStatusTargetNotAllowed}
+	m := newAuthoringMCP(author, nil, &fakeCaps{grant: true})
+	out, rpcErr := m.callWorkItemStatusChange(context.Background(), grantedSession(),
+		mustJSON(t, workItemStatusChangeArgs{ID: "wi-1", TargetState: "done"}))
+	text, isErr := result(t, out, rpcErr)
+	if !isErr || !strings.Contains(text, "human-owned") {
+		t.Fatalf("want constrained-target refusal, got isErr=%v text=%q", isErr, text)
+	}
+}
+
+// TestWorkItemStatusChangeCapabilityDenied — the status verb rides the same
+// requireAuthor gate: an ungranted session is refused before coord.
+func TestWorkItemStatusChangeCapabilityDenied(t *testing.T) {
+	author := &fakeStatusAuthor{}
+	m := newAuthoringMCP(author, nil, &fakeCaps{grant: false})
+	out, rpcErr := m.callWorkItemStatusChange(context.Background(), grantedSession(),
+		mustJSON(t, workItemStatusChangeArgs{ID: "wi-1", TargetState: "todo"}))
+	text, isErr := result(t, out, rpcErr)
+	if !isErr || !strings.Contains(text, "capability denied") {
+		t.Fatalf("want capability denial, got isErr=%v text=%q", isErr, text)
+	}
+	if author.statusCalled {
+		t.Fatal("coord status seam reached despite a denied capability")
+	}
+}
+
+// TestWorkItemStatusChangeSeamUnavailable — an author WITHOUT the status seam
+// (a plain fakeAuthor, or a deployment store predating ADR-0025) keeps the
+// tool advertised but honestly refused, mirroring ErrAssignUnavailable.
+func TestWorkItemStatusChangeSeamUnavailable(t *testing.T) {
+	m := newAuthoringMCP(&fakeAuthor{}, nil, &fakeCaps{grant: true})
+	out, rpcErr := m.callWorkItemStatusChange(context.Background(), grantedSession(),
+		mustJSON(t, workItemStatusChangeArgs{ID: "wi-1", TargetState: "todo"}))
+	text, isErr := result(t, out, rpcErr)
+	if !isErr || !strings.Contains(text, "unavailable") {
+		t.Fatalf("want honest seam-unavailable refusal, got isErr=%v text=%q", isErr, text)
 	}
 }

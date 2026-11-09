@@ -37,6 +37,7 @@ const (
 	ProposalActionCreateTicket = "create_ticket" // → POST /api/projects/{pid}/work-items
 	ProposalActionAssignAgent  = "assign_agent"  // → POST /api/work-items/{id}/dispatch
 	ProposalActionPartyRun     = "party_run"     // → team-targeted work-item mint (no requested_agent)
+	ProposalActionStatusChange = "status_change" // → PATCH /api/work-items/{id}/state (ADR-0025, ISI-7219)
 
 	// Proposal phases (the decision state machine). Deliberately NOT called "state" — no custody
 	// token from the fence's forbidden list enters the discussion schema (see 0025).
@@ -48,11 +49,13 @@ const (
 
 // ProposalPayload is the structured payload of a kind='proposal' message (plan §6 data contract).
 type ProposalPayload struct {
-	Action          string `json:"action"`                    // create_ticket | assign_agent | party_run
+	Action          string `json:"action"`                    // create_ticket | assign_agent | party_run | status_change
 	Title           string `json:"title,omitempty"`           // create_ticket / party_run
 	Body            string `json:"body,omitempty"`            // create_ticket / party_run (ticket body)
 	AssigneeAgentID string `json:"assigneeAgentId,omitempty"` // assign_agent: Team.Spec.Agents[].Name
-	TicketID        string `json:"ticketId,omitempty"`        // assign_agent: existing work-item id
+	TicketID        string `json:"ticketId,omitempty"`        // assign_agent / status_change: existing work-item id
+	TargetState     string `json:"targetState,omitempty"`     // status_change: the lane to move to (any board lane)
+	Reason          string `json:"reason,omitempty"`          // status_change: optional one-line why
 }
 
 // Validate enforces the per-action minimum contract before anything is persisted.
@@ -68,6 +71,13 @@ func (p ProposalPayload) Validate() error {
 		}
 		if p.AssigneeAgentID == "" {
 			return fmt.Errorf("%w: action assign_agent requires assigneeAgentId", ErrInvalidProposalPayload)
+		}
+	case ProposalActionStatusChange:
+		if p.TicketID == "" {
+			return fmt.Errorf("%w: action status_change requires ticketId", ErrInvalidProposalPayload)
+		}
+		if p.TargetState == "" {
+			return fmt.Errorf("%w: action status_change requires targetState", ErrInvalidProposalPayload)
 		}
 	default:
 		return fmt.Errorf("%w: unknown proposal action %q", ErrInvalidProposalPayload, p.Action)
@@ -281,7 +291,7 @@ type OpenProposalSummary struct {
 	ProjectUID  string    `json:"-"` // internal: resolved to ns/name by the inbox handler
 	AuthorAgent string    `json:"-"` // agent name that posted the proposal; "" ⇒ unknown
 	Body        string    `json:"body"`
-	Title       string    `json:"title,omitempty"`  // payload.title when present (create_ticket/party_run)
+	Title       string    `json:"title,omitempty"`    // payload.title when present (create_ticket/party_run)
 	TicketID    string    `json:"ticketId,omitempty"` // payload.ticketId when action=assign_agent
 	CreatedAt   time.Time `json:"createdAt"`
 }

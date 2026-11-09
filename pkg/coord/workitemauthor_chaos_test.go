@@ -501,3 +501,117 @@ func assertChildCount(t *testing.T, db *sql.DB, parent string, want int) {
 		t.Fatalf("child count = %d, want %d", n, want)
 	}
 }
+
+// --- ADR-0025 (ISI-7219): the agent status-change lane -----------------------
+
+// resetStatusAuthorSchema re-applies the authoring schema PLUS the 10-phase
+// state CHECK (0019): the status-change lane moves items among — and refuses
+// moves out of / into — the full phase vocabulary, so a 'done'-seeded row must
+// be insertable and every target validated against the shipped constraint set.
+func resetStatusAuthorSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	resetAuthorSchema(t, db)                                             // 0001 + 0018 + 0020
+	mustExec(t, db, migrationFile(t, "0019_work_item_phase_states.sql")) // 10-phase CHECK
+}
+
+func statusInput(target string) coord.AgentChangeWorkItemStatusInput {
+	return coord.AgentChangeWorkItemStatusInput{
+		TargetState: target, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}
+}
+
+// TestSpineAgentStatusChange_WithCustody_MovesAndAudits — happy path: an agent
+// holding the item's claim moves backlog→todo→in_review, with the
+// agent-provenance audit row (state_transition, run_id set, initiated_by NULL).
+func TestSpineAgentStatusChange_WithCustody_MovesAndAudits(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetStatusAuthorSchema(t, db)
+	item := authorSeedItem(t, db, "", "task")
+	grantCustody(t, db, item)
+	s := newAuthorStore(t, db)
+
+	tr, err := s.AgentChangeWorkItemStatus(context.Background(), item, statusInput("todo"))
+	if err != nil {
+		t.Fatalf("backlog→todo: %v", err)
+	}
+	if tr.FromState != "backlog" || tr.ToState != "todo" {
+		t.Fatalf("transition = %+v, want backlog→todo", tr)
+	}
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), item, statusInput("in_review")); err != nil {
+		t.Fatalf("todo→in_review: %v", err)
+	}
+
+	var principal string
+	var runID sql.NullString
+	var initiatedBy sql.NullString
+	var fromState, toState string
+	if err := db.QueryRow(`
+		SELECT principal, run_id::text, initiated_by_user_id::text, from_state, to_state
+		  FROM coord.audit_log
+		 WHERE work_item_id = $1::uuid AND event_type = 'state_transition'
+		 ORDER BY created_at DESC LIMIT 1`, item,
+	).Scan(&principal, &runID, &initiatedBy, &fromState, &toState); err != nil {
+		t.Fatalf("read audit row: %v", err)
+	}
+	if principal != authorPrinc || !runID.Valid || runID.String != authorRun {
+		t.Fatalf("audit provenance = principal %q run %v (want agent %q / %s)", principal, runID, authorPrinc, authorRun)
+	}
+	if initiatedBy.Valid {
+		t.Fatalf("audit initiated_by_user_id = %q, want NULL", initiatedBy.String)
+	}
+	if fromState != "todo" || toState != "in_review" {
+		t.Fatalf("audit states = %s→%s, want todo→in_review", fromState, toState)
+	}
+}
+
+// TestSpineAgentStatusChange_NoCustody_Denied — no claim ⇒ refused, and a
+// missing item is refused identically (existence-hiding).
+func TestSpineAgentStatusChange_NoCustody_Denied(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetStatusAuthorSchema(t, db)
+	item := authorSeedItem(t, db, "", "task") // no grantCustody
+	s := newAuthorStore(t, db)
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), item, statusInput("todo")); !errors.Is(err, coord.ErrAgentAuthorNotInCustody) {
+		t.Fatalf("unheld item: got %v, want ErrAgentAuthorNotInCustody", err)
+	}
+	missing := "99999999-9999-9999-9999-999999999999"
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), missing, statusInput("todo")); !errors.Is(err, coord.ErrAgentAuthorNotInCustody) {
+		t.Fatalf("missing item: got %v, want ErrAgentAuthorNotInCustody", err)
+	}
+}
+
+// TestSpineAgentStatusChange_ConstrainedRefusals — the constrained agent graph:
+// terminal/triage/phase targets are refused even under custody; the fromState
+// CAS conflicts on a stale lane; an already-in-target move is a conflict; a
+// done item never moves by agent hand (reopen is human).
+func TestSpineAgentStatusChange_ConstrainedRefusals(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetStatusAuthorSchema(t, db)
+	item := authorSeedItem(t, db, "", "task")
+	grantCustody(t, db, item)
+	s := newAuthorStore(t, db)
+
+	for _, target := range []string{"done", "cancelled", "backlog", "design"} {
+		if _, err := s.AgentChangeWorkItemStatus(context.Background(), item, statusInput(target)); !errors.Is(err, coord.ErrAgentStatusTargetNotAllowed) {
+			t.Fatalf("target %q: got %v, want ErrAgentStatusTargetNotAllowed", target, err)
+		}
+	}
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), item, statusInput("todo")); err != nil {
+		t.Fatalf("backlog→todo should pass: %v", err)
+	}
+	stale := statusInput("in_progress")
+	stale.FromState = "backlog" // the item is in todo now
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), item, stale); !errors.Is(err, coord.ErrStateConflict) {
+		t.Fatalf("stale fromState: got %v, want ErrStateConflict", err)
+	}
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), item, statusInput("todo")); !errors.Is(err, coord.ErrStateConflict) {
+		t.Fatalf("already-in-target: got %v, want ErrStateConflict", err)
+	}
+
+	done := authorSeedItem(t, db, "", "finished")
+	mustExec(t, db, `UPDATE coord.work_item SET state = 'done' WHERE id = $1::uuid`, done)
+	grantCustody(t, db, done)
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), done, statusInput("todo")); !errors.Is(err, coord.ErrAgentStatusTerminalSource) {
+		t.Fatalf("terminal source: got %v, want ErrAgentStatusTerminalSource", err)
+	}
+}
