@@ -203,3 +203,70 @@ describe("<DecisionCard> — decided state is read-only", () => {
     expect(screen.queryByTestId("decision-form")).toBeNull();
   });
 });
+
+describe("<DecisionCard> — multi-option polish (WS-6.4 / ISI-7226)", () => {
+  // Six options exercises the letter chips past the a11y number-key cap of 5.
+  const six: DecisionRequestPayload = {
+    version: 1,
+    mode: "choose_one",
+    title: "Pick a retry policy",
+    options: [
+      { id: "o1", label: "Fixed 3x", recommended: true },
+      { id: "o2", label: "Exponential 5x" },
+      { id: "o3", label: "Circuit break" },
+      { id: "o4", label: "Fail fast" },
+      { id: "o5", label: "Queue and drain" },
+      { id: "o6", label: "Manual page" },
+    ],
+  };
+
+  it("renders a letter chip a/b/c… on every option (labeled-options contract)", () => {
+    render(<DecisionCard decision={decision(six)} />);
+    const letters = screen
+      .getAllByTestId("decision-option-letter")
+      .map((el) => el.textContent);
+    expect(letters).toEqual(["a", "b", "c", "d", "e", "f"]);
+  });
+
+  it("number keys pick options 1–5 and are a no-op beyond (a11y contract)", () => {
+    let got: DecisionAnswerInput | null = null;
+    render(
+      <DecisionCard
+        decision={decision(six)}
+        onAnswer={(_, a) => (got = a)}
+      />,
+    );
+    const group = screen.getByTestId("decision-options");
+    fireEvent.keyDown(group, { key: "5" });
+    screen.getByTestId("decision-submit").click();
+    expect(got).toEqual({ selectedOptionIds: ["o5"] });
+    // 6 is outside the 1–5 contract — the selection must not move.
+    got = null;
+    fireEvent.keyDown(group, { key: "6" });
+    screen.getByTestId("decision-submit").click();
+    expect(got).toEqual({ selectedOptionIds: ["o5"] });
+  });
+
+  it("shows the number-key hint only on the first five options", () => {
+    render(<DecisionCard decision={decision(six)} />);
+    const rows = screen.getAllByTestId("decision-option");
+    const hints = rows.filter((row) =>
+      row.querySelector(".ksq-decision__option-key"),
+    );
+    expect(rows).toHaveLength(6);
+    expect(hints).toHaveLength(5);
+  });
+
+  it("keeps the recommended badge + pre-select alongside the letter chips", () => {
+    let got: DecisionAnswerInput | null = null;
+    render(
+      <DecisionCard
+        decision={decision(six)}
+        onAnswer={(_, a) => (got = a)}
+      />,
+    );
+    expect(screen.getByTestId("decision-recommended")).toBeTruthy();
+    screen.getByTestId("decision-submit").click();
+    expect(got).toEqual({ selectedOptionIds: ["o1"] });
+  });
+});

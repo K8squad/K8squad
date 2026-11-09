@@ -9,8 +9,9 @@
 // the container, which POSTs the answer|reject shell. Once the card leaves `open`
 // it renders its decided state read-only (the audit trail lives in the thread).
 //
-// a11y (mock card contract): the choose_* options are a radiogroup / checkbox group;
-// number keys 1–9 pick an option; Enter submits.
+// a11y (mock card contract, WS-6.4): the choose_* options are a radiogroup / checkbox
+// group; every option carries its Paperclip-style letter chip (a/b/c..., derived from
+// index); number keys 1–5 pick an option (one-handed contract); Enter submits.
 
 import { useCallback, useMemo, useState } from "react";
 import type {
@@ -18,6 +19,10 @@ import type {
   DecisionRequest,
   DecisionRequestPayload,
 } from "@/lib/discussion/types";
+import {
+  DECISION_NUMBER_KEY_MAX,
+  optionLetter,
+} from "@/lib/inbox/options";
 
 /** The answer a human submits — the exact body the answer shell accepts (mode is server-derived). */
 export interface DecisionAnswerInput {
@@ -108,7 +113,7 @@ export function DecisionCard({
   const onOptionsKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
       const n = Number(e.key);
-      if (n >= 1 && n <= 9 && n <= options.length) {
+      if (n >= 1 && n <= DECISION_NUMBER_KEY_MAX && n <= options.length) {
         const id = options[n - 1].id;
         mode === "choose_many" ? toggleMany(id) : toggleOne(id);
         e.preventDefault();
@@ -275,6 +280,13 @@ export function DecisionCard({
                           : toggleOne(o.id)
                       }
                     />
+                    <span
+                      className="ksq-decision__option-letter"
+                      data-testid="decision-option-letter"
+                      aria-hidden="true"
+                    >
+                      {optionLetter(i)}
+                    </span>
                     <span className="ksq-decision__option-label">
                       {o.label}
                     </span>
@@ -291,12 +303,14 @@ export function DecisionCard({
                         {o.description}
                       </span>
                     ) : null}
-                    <span
-                      className="ksq-decision__option-key"
-                      aria-hidden="true"
-                    >
-                      {i + 1}
-                    </span>
+                    {i < DECISION_NUMBER_KEY_MAX ? (
+                      <span
+                        className="ksq-decision__option-key"
+                        aria-hidden="true"
+                      >
+                        {i + 1}
+                      </span>
+                    ) : null}
                   </label>
                 );
               })}
