@@ -95,7 +95,8 @@ func TestBriefDeterministic(t *testing.T) {
 		capability.Endpoint{Name: "ksquad-memory-discussion", AllowTools: append([]string(nil), memory.DiscussionToolNames...)},
 		capability.Endpoint{Name: "ksquad-memory-search", AllowTools: append([]string(nil), memory.SearchToolNames...)},
 	)
-	if Brief(run) != Brief(run) {
+	first, second := Brief(run), Brief(run)
+	if first != second {
 		t.Fatal("Brief is not deterministic for an identical manifest")
 	}
 }
