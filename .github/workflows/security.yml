@@ -364,12 +364,12 @@ jobs:
         if: steps.guard.outputs.present == 'true' && matrix.language == 'javascript-typescript'
         with:
           node-version: 24
-      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: steps.guard.outputs.present == 'true'
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.language == 'go' && 'autobuild' || 'none' }}
-      - uses: github/codeql-action/autobuild@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - uses: github/codeql-action/autobuild@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: steps.guard.outputs.present == 'true' && matrix.language == 'go'
       # upload:false — SARIF upload to code scanning requires GitHub Advanced
       # Security, which is not enabled on this private repo (and cannot be
@@ -378,7 +378,7 @@ jobs:
       # runs; results are attached as workflow artifacts. To restore native
       # code-scanning alerts: enable Advanced Security under repo Settings →
       # Code security, then remove `upload: false` and the artifact step.
-      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: steps.guard.outputs.present == 'true'
         with:
           upload: false
