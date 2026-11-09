@@ -57,6 +57,10 @@ var ErrNoRaisingThread = errors.New("decisionraise: this run was not dispatched 
 type Raiser struct {
 	resolver ThreadResolver
 	poster   DecisionPoster
+	// suggest is the OPTIONAL suggest-next-steps emission seam (ISI-7218,
+	// ISI-7075 C4): nil => SuggestNextSteps refuses with ErrSuggestionsUnwired
+	// (the surface reports unwired, never a silent no-op).
+	suggest SuggestionPoster
 }
 
 // New bundles the resolver + poster. It returns an error when either seam is
@@ -115,4 +119,77 @@ func raiseIdempotencyKey(runID string, payload discussion.DecisionRequestPayload
 	}
 	sum := sha256.Sum256([]byte(payload.Mode + "\x00" + payload.Title + "\x00" + strings.Join(labels, "\x00")))
 	return fmt.Sprintf("decision-raise:%s:%s", runID, hex.EncodeToString(sum[:8]))
+}
+
+// ============================================================================
+// Suggest-next-steps emission (ISI-7218, ISI-7075 C4 — taxonomy §5)
+// ============================================================================
+
+// SuggestionPoster is the fenced create the suggest raise rides — *discussion.Store
+// satisfies it via PostSuggestNextSteps, the same store the decision poster uses,
+// so tenancy scoping and the idempotent create live in the store, not here.
+type SuggestionPoster interface {
+	PostSuggestNextSteps(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, payload discussion.DecisionRequestPayload, workItemID, idempotencyKey string, parentID *uuid.UUID) (*discussion.Message, error)
+}
+
+// ErrSuggestionsUnwired is the honest refusal when the suggest seam was not armed.
+var ErrSuggestionsUnwired = errors.New("decisionraise: suggest-next-steps emission is not wired on this deployment")
+
+// WithSuggestions arms the suggest-next-steps emission. Optional by design: a
+// host wiring only the decision verb keeps New's two-seam contract; an unarmed
+// Raiser refuses SuggestNextSteps loudly.
+func (r *Raiser) WithSuggestions(poster SuggestionPoster) *Raiser {
+	r.suggest = poster
+	return r
+}
+
+// SuggestNextSteps raises one kind='suggest_next_steps' card from a blocked run
+// (ISI-7218): the same resolve→validate→idempotent-post chain as
+// RequestDecision, stamped with the suggest kind and its kind-specific gate
+// (BuildSuggestPayload). The board answers through the EXISTING decision
+// answer/reject shells; the resume_agent_on_answer continuation re-dispatches
+// this run's work item — nothing here adds custody semantics.
+func (r *Raiser) SuggestNextSteps(ctx context.Context, runID, principal, workItemID string, ask discussion.SuggestNextStepsRaise) (*discussion.Message, error) {
+	if r.suggest == nil {
+		return nil, ErrSuggestionsUnwired
+	}
+	payload, err := ask.BuildSuggestPayload()
+	if err != nil {
+		return nil, err
+	}
+	projectID, teamID, threadID, ok, err := r.resolver.ThreadForDispatchedRun(ctx, runID)
+	if err != nil {
+		return nil, fmt.Errorf("decisionraise: resolve raising thread for run %s: %w", runID, err)
+	}
+	if !ok {
+		return nil, ErrNoRaisingThread
+	}
+	agent, run := principal, runID
+	auth := discussion.AuthorContext{
+		Principal: principal,
+		TeamID:    teamID,
+		AgentID:   &agent,
+		RunID:     &run,
+	}
+	body := payload.Title
+	if payload.DetailsMarkdown != "" {
+		body += "\n\n" + payload.DetailsMarkdown
+	}
+	msg, err := r.suggest.PostSuggestNextSteps(ctx, projectID, teamID, threadID, auth, body, payload, workItemID, suggestIdempotencyKey(runID, payload), nil)
+	if err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+// suggestIdempotencyKey derives the deterministic create key for a suggest raise
+// (distinct prefix from decision raises so the two kinds never collide): same run
+// + same ask ⇒ same key ⇒ the store's idempotent create returns the existing card.
+func suggestIdempotencyKey(runID string, payload discussion.DecisionRequestPayload) string {
+	labels := make([]string, len(payload.Options))
+	for i, o := range payload.Options {
+		labels[i] = o.ID + ":" + o.Description
+	}
+	sum := sha256.Sum256([]byte(payload.Mode + "\x00" + payload.Title + "\x00" + strings.Join(labels, "\x00")))
+	return fmt.Sprintf("suggest-raise:%s:%s", runID, hex.EncodeToString(sum[:8]))
 }
