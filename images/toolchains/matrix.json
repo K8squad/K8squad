@@ -1,5 +1,5 @@
 {
-  "$comment": "Build detail for the K8squad toolchain image factory (ISI-3413). The canonical tool LIST (name + catalog tag) lives in .github/workflows/component-matrix.yml (`toolchains` family); this file carries per-tool build detail (Dockerfile/context + pinned upstream patch buildArgs). The build-images.yml plan leg joins the two and FAILS on drift in either direction. `version` is the CATALOG TAG referenced by config/helm/values.yaml tools.defaultCatalog.entries \u2014 it tracks an upstream minor line; `buildArgs` pin the exact upstream patch/release used at build time. Adding a tool = one component-matrix row + one row here + Dockerfile.toolchain-<tool>.",
+  "$comment": "Build detail for the K8squad toolchain image factory (ISI-3413). The canonical tool LIST (name + catalog tag) lives in .github/workflows/component-matrix.yml (`toolchains` family); this file carries per-tool build detail (Dockerfile/context + pinned upstream patch buildArgs). The build-images.yml plan leg joins the two and FAILS on drift in either direction. `version` is the CATALOG TAG referenced by config/helm/values.yaml tools.defaultCatalog.entries \u2014 it tracks an upstream minor line; `buildArgs` pin the exact upstream patch/release used at build time. Adding a tool = one component-matrix row + one row here + Dockerfile.toolchain-<tool>. ISI-7284: bluebox-cli is PARKED (upstream dynatrace-oss/bluebox deleted; repo + release assets 404, no wayback snapshot) - its row was removed from both lists pending the board decision (drop / vendor v1.0.0 / re-point at a new home); git history keeps the exact row.",
   "tools": [
     {
       "tool": "kubectl",
@@ -163,15 +163,7 @@
       },
       "note": "ISI-5768 skill-catalog expansion (§3.1 Ops/IaC, ansible skill). pip-installed on python:3.12-alpine (same base as the python toolchain) via musllinux wheels. Catalog tag 2.17 tracks the ansible-core 2.17 line (2.17.6 at authoring). Long-tail image — NOT in the default catalog."
     },
-    {      "tool": "bluebox-cli",
-      "version": "1",
-      "dockerfile": "Dockerfile.toolchain-bluebox-cli",
-      "context": ".",
-      "buildArgs": {
-        "BLUEBOX_VERSION": "v1.0.0"
-      },
-      "note": "ISI-5768 skill-catalog expansion (§3.5 Bluebox skill). Dynatrace AI reliability CLI (dynatrace-oss/bluebox); static Go binary staged from the GitHub release. Catalog tag 1 tracks the 1.x line (v1.0.0 at authoring). Long-tail image — NOT in the default catalog."
-    },
+
     {
       "tool": "semgrep",
       "version": "1",
