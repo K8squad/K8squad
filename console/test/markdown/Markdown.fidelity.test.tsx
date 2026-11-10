@@ -31,7 +31,7 @@ const KNOWN_GOOD = [
   "",
   FENCE + "go",
   "func main() {",
-  "        fmt.Println(\"kept\")",
+  '        fmt.Println("kept")',
   "}",
   FENCE,
   "",
@@ -118,8 +118,8 @@ describe("ISI-7197 — inline code & fence structure (renderer regression)", () 
     const md = [FENCE, "plain text", FENCE].join("\n");
     const { container } = render(<Markdown>{md}</Markdown>);
     expect(container.querySelectorAll("pre").length).toBe(1);
-    expect(
-      container.querySelector("pre > code")!.textContent,
-    ).toContain("plain text");
+    expect(container.querySelector("pre > code")!.textContent).toContain(
+      "plain text",
+    );
   });
 });

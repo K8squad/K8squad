@@ -108,19 +108,20 @@ describe("fetchRunActivity", () => {
   it("normalizes the lowercase wire array into ThreadComment with kind + runId", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () =>
-        new Response(
-          JSON.stringify([
-            {
-              author: "run/abcd1234",
-              body: "[tool:read/result(ok)] done",
-              createdAt: "2026-11-05T10:00:00Z",
-              kind: "progress",
-              runId: "abcd1234-0000-0000-0000-000000000000",
-            },
-          ]),
-          { status: 200 },
-        ),
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify([
+              {
+                author: "run/abcd1234",
+                body: "[tool:read/result(ok)] done",
+                createdAt: "2026-11-05T10:00:00Z",
+                kind: "progress",
+                runId: "abcd1234-0000-0000-0000-000000000000",
+              },
+            ]),
+            { status: 200 },
+          ),
       ),
     );
     const got = await fetchRunActivity("wi-1");

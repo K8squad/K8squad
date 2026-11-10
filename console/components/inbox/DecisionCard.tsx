@@ -19,10 +19,7 @@ import type {
   DecisionRequest,
   DecisionRequestPayload,
 } from "@/lib/discussion/types";
-import {
-  DECISION_NUMBER_KEY_MAX,
-  optionLetter,
-} from "@/lib/inbox/options";
+import { DECISION_NUMBER_KEY_MAX, optionLetter } from "@/lib/inbox/options";
 
 /** The answer a human submits — the exact body the answer shell accepts (mode is server-derived). */
 export interface DecisionAnswerInput {

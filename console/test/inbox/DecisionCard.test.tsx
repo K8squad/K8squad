@@ -231,10 +231,7 @@ describe("<DecisionCard> — multi-option polish (WS-6.4 / ISI-7226)", () => {
   it("number keys pick options 1–5 and are a no-op beyond (a11y contract)", () => {
     let got: DecisionAnswerInput | null = null;
     render(
-      <DecisionCard
-        decision={decision(six)}
-        onAnswer={(_, a) => (got = a)}
-      />,
+      <DecisionCard decision={decision(six)} onAnswer={(_, a) => (got = a)} />,
     );
     const group = screen.getByTestId("decision-options");
     fireEvent.keyDown(group, { key: "5" });
@@ -260,10 +257,7 @@ describe("<DecisionCard> — multi-option polish (WS-6.4 / ISI-7226)", () => {
   it("keeps the recommended badge + pre-select alongside the letter chips", () => {
     let got: DecisionAnswerInput | null = null;
     render(
-      <DecisionCard
-        decision={decision(six)}
-        onAnswer={(_, a) => (got = a)}
-      />,
+      <DecisionCard decision={decision(six)} onAnswer={(_, a) => (got = a)} />,
     );
     expect(screen.getByTestId("decision-recommended")).toBeTruthy();
     screen.getByTestId("decision-submit").click();
