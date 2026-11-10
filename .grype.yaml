@@ -1,0 +1,91 @@
+# .grype.yaml — the ONLY CVE escape hatch for the Grype cross-check lane (ISI-7285).
+#
+# Mirrors the .trivyignore discipline: every suppression below carries, on the comment
+# line directly above the rule, an `expires:YYYY-MM-DD` date plus a one-line
+# justification. The security.yml `trivyignore (expiry lint)` job lints this file's
+# expiry markers exactly like .trivyignore — an expired entry is itself a gate
+# failure. Grype (unlike Trivy) has no native expiry support, so the dates live in
+# comments and the lint is the enforcement. Remove or re-justify before expiry;
+# never blind-renew.
+#
+# Scope: ALL entries below are ksquad-console RUNTIME BASE contents
+# (gcr.io/distroless/nodejs24-debian12:nonroot — libssl3 3.0.18-1~deb12u2,
+# node v24.14.0, libc6 2.36-9+deb12u13; base-only: node ships FROM the distroless
+# base, the console build stages copy only JS/standalone output). Live-verified
+# 2026-11-10 (ISI-7285): the :nonroot tag still ships exactly these versions
+# (index sha256:14d42e2511532589a7c7e01a753667a74fcc96266e137e8125006b87b0c32d0a,
+# amd64 manifest sha256:6c75c6e4771c2ea5f02aaf991abdc77391acd3a580accd9d7b68651f12c60dc0;
+# dpkg status.d inspected from the registry blobs). Fixes exist in Debian bookworm
+# security / nodejs upstream and ride the next distroless tag rebuild; distroless
+# has no package manager, so the image cannot be patched in-repo. Durable action:
+# when the rebuilt base ships libssl3 >= 3.0.22 / node >= 24.22.1 /
+# libc6 >= 2.36-9+deb12u14, bump the runtime base in Dockerfile.console and DELETE
+# these entries. Trivy's parallel openssl batch lives in .trivyignore (Trivy-only).
+ignore:
+  # --- node binary (v24.14.0, distroless nodejs24 base; fixes in 24.14.1..24.22.1) ---
+  # CVE-2026-111497  expires:2026-11-24  justification:CRITICAL node (KEV, EPSS 82.6%); fix v24.22.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-111497
+  # CVE-2026-56848  expires:2026-11-24  justification:HIGH node; fix v24.18.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-56848
+  # CVE-2026-48937  expires:2026-11-24  justification:HIGH node; fix v24.17.0; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-48937
+  # CVE-2026-56846  expires:2026-11-24  justification:HIGH node; fix v24.18.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-56846
+  # CVE-2026-105482  expires:2026-11-24  justification:HIGH node; fix v24.22.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-105482
+  # CVE-2026-106069  expires:2026-11-24  justification:HIGH node; fix v24.22.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-106069
+  # CVE-2026-105483  expires:2026-11-24  justification:HIGH node; fix v24.22.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-105483
+  # CVE-2026-48617  expires:2026-11-24  justification:HIGH node; fix v24.17.0; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-48617
+  # CVE-2026-58043  expires:2026-11-24  justification:HIGH node; fix v24.18.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-58043
+  # CVE-2026-21710  expires:2026-11-24  justification:HIGH node; fix v24.14.1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-21710
+  # --- libssl3 3.0.18-1~deb12u2 (distroless nodejs24 base; fixes in 3.0.19..3.0.22) ---
+  # CVE-2026-34182  expires:2026-11-24  justification:CRITICAL openssl; fix 3.0.20-1~deb12u2; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-34182
+  # CVE-2026-75803  expires:2026-11-24  justification:CRITICAL openssl; fix 3.0.22-1~deb12u1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-75803
+  # CVE-2026-31789  expires:2026-11-24  justification:CRITICAL openssl heap overflow (32-bit X.509); fix 3.0.19-1~deb12u2; runtime-base-only, patch pending distroless rebuild (mirrors .trivyignore)
+  - vulnerability: CVE-2026-31789
+  # CVE-2026-45447  expires:2026-11-24  justification:HIGH openssl PKCS7_verify use-after-free; fix 3.0.20-1~deb12u2; runtime-base-only, patch pending distroless rebuild (mirrors .trivyignore)
+  - vulnerability: CVE-2026-45447
+  # CVE-2026-63076  expires:2026-11-24  justification:HIGH openssl; fix 3.0.22-1~deb12u1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-63076
+  # CVE-2026-31790  expires:2026-11-24  justification:HIGH openssl; fix 3.0.19-1~deb12u2; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-31790
+  # CVE-2026-34180  expires:2026-11-24  justification:HIGH openssl; fix 3.0.20-1~deb12u2; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-34180
+  # CVE-2026-28388  expires:2026-11-24  justification:HIGH openssl delta-CMS NULL deref DoS; fix 3.0.19-1~deb12u2; runtime-base-only, patch pending distroless rebuild (mirrors .trivyignore)
+  - vulnerability: CVE-2026-28388
+  # CVE-2026-63072  expires:2026-11-24  justification:HIGH openssl; fix 3.0.22-1~deb12u1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-63072
+  # CVE-2026-84782  expires:2026-11-24  justification:HIGH openssl DTLS info disclosure; fix 3.0.22-1~deb12u2; runtime-base-only, patch pending distroless rebuild (mirrors .trivyignore)
+  - vulnerability: CVE-2026-84782
+  # CVE-2026-7383  expires:2026-11-24  justification:HIGH openssl; fix 3.0.20-1~deb12u2; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-7383
+  # CVE-2026-28389  expires:2026-11-24  justification:HIGH openssl CMS processing DoS; fix 3.0.19-1~deb12u2; runtime-base-only, patch pending distroless rebuild (mirrors .trivyignore)
+  - vulnerability: CVE-2026-28389
+  # CVE-2026-28390  expires:2026-11-24  justification:HIGH openssl CMS NULL deref DoS; fix 3.0.20-1~deb12u2; runtime-base-only, patch pending distroless rebuild (mirrors .trivyignore)
+  - vulnerability: CVE-2026-28390
+  # CVE-2026-28387  expires:2026-11-24  justification:HIGH openssl DANE TLSA use-after-free; fix 3.0.19-1~deb12u2; runtime-base-only, patch pending distroless rebuild (mirrors .trivyignore)
+  - vulnerability: CVE-2026-28387
+  # CVE-2026-9076  expires:2026-11-24  justification:HIGH openssl; fix 3.0.20-1~deb12u2; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-9076
+  # CVE-2026-45445  expires:2026-11-24  justification:HIGH openssl; fix 3.0.20-1~deb12u2; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-45445
+  # CVE-2026-54874  expires:2026-11-24  justification:HIGH openssl; fix 3.0.22-1~deb12u1; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-54874
+  # --- libc6 2.36-9+deb12u13 (distroless nodejs24 base; fix 2.36-9+deb12u14) ---
+  # CVE-2026-0915  expires:2026-11-24  justification:HIGH glibc; fix 2.36-9+deb12u14; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-0915
+  # CVE-2025-15281  expires:2026-11-24  justification:HIGH glibc; fix 2.36-9+deb12u14; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2025-15281
+  # CVE-2026-0861  expires:2026-11-24  justification:HIGH glibc; fix 2.36-9+deb12u14; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-0861
+  # CVE-2026-4046  expires:2026-11-24  justification:HIGH glibc; fix 2.36-9+deb12u14; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-4046
+  # CVE-2026-4437  expires:2026-11-24  justification:HIGH glibc; fix 2.36-9+deb12u14; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+  - vulnerability: CVE-2026-4437

@@ -426,6 +426,12 @@ jobs:
           only-fixed: true
           fail-build: true
           output-format: table
+          # ISI-7285: the curated, expiry-dated grype escape hatch (.grype.yaml, linted by
+          # security.yml alongside .trivyignore). Passing config explicitly also disables
+          # grype's implicit auto-detection - a runner-local ~/.grype.yaml must never
+          # silently mute a release gate (the v0.3.0 console leg had 50 matches swallowed
+          # that way before this pin).
+          config: .grype.yaml
 
       - name: cosign install
         if: steps.guard.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
