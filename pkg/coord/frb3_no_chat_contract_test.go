@@ -387,17 +387,22 @@ var allowedSurface = map[string]string{
 	// `work_item.author` capability. NOT an agent-to-agent channel: authoring a
 	// sub-ticket + assigning it via RequestDispatch is handoff = create/state change
 	// on work_item (§6.1, §8.4), never a worker-to-worker message.
-	"AgentAuthorMaxDepth":                    "ADR-0024 §4.3 fan-out depth cap (epic→story→task→subtask)",
-	"AgentAuthorRunBudget":                   "ADR-0024 §4.3 per-run create budget",
-	"ErrAgentAuthorRootDenied":               "ADR-0024 §4.1 guard: agent create with no parent — root items stay human-only (→400)",
-	"ErrAgentAuthorNotInCustody":             "ADR-0024 §4.1 guard: target not held by the agent (existence-hiding, →404/403)",
-	"ErrAgentAuthorDepthExceeded":            "ADR-0024 §4.3 guard: child depth over the cap (→400)",
-	"ErrAgentAuthorRunBudgetExceeded":        "ADR-0024 §4.3 guard: run over its create budget (→400)",
-	"AgentCreateWorkItemInput":               "ADR-0024 §5 agent sub-ticket create input (parent/title/body/attrs + server-stamped agent identity)",
-	"AgentUpdateWorkItemInput":               "ADR-0024 §5 agent field-edit input (title/body/parent pointers + optimistic guard + agent identity)",
-	"WorkItemWriteStore.AgentCreateWorkItem": "ADR-0024 §4/§5 custody-scoped agent sub-ticket create + honest agent audit, depth/run-budget bounded",
-	"WorkItemWriteStore.AgentUpdateWorkItem": "ADR-0024 §4/§5 custody-scoped (item+descendants) agent field CAS + honest agent audit",
-	"WorkItemWriteStore.RunHeldWorkItem":     "ADR-0024 §4/ISI-5244 read-only custody lookup — returns the work item a Run holds in live custody (holder set + lease live); server-side source of the coordinator's own in-custody UUID used to DEFAULT work_item_create parent_id when a decomposing agent omits it. Read-only, no-fence, not an agent-to-agent channel; ('' ,nil) keeps root-human-only when the run holds nothing",
+	"AgentAuthorMaxDepth":                          "ADR-0024 §4.3 fan-out depth cap (epic→story→task→subtask)",
+	"AgentAuthorRunBudget":                         "ADR-0024 §4.3 per-run create budget",
+	"ErrAgentAuthorRootDenied":                     "ADR-0024 §4.1 guard: agent create with no parent — root items stay human-only (→400)",
+	"ErrAgentAuthorNotInCustody":                   "ADR-0024 §4.1 guard: target not held by the agent (existence-hiding, →404/403)",
+	"ErrAgentAuthorDepthExceeded":                  "ADR-0024 §4.3 guard: child depth over the cap (→400)",
+	"ErrAgentAuthorRunBudgetExceeded":              "ADR-0024 §4.3 guard: run over its create budget (→400)",
+	"AgentCreateWorkItemInput":                     "ADR-0024 §5 agent sub-ticket create input (parent/title/body/attrs + server-stamped agent identity)",
+	"AgentUpdateWorkItemInput":                     "ADR-0024 §5 agent field-edit input (title/body/parent pointers + optimistic guard + agent identity)",
+	"WorkItemWriteStore.AgentCreateWorkItem":       "ADR-0024 §4/§5 custody-scoped agent sub-ticket create + honest agent audit, depth/run-budget bounded",
+	"WorkItemWriteStore.AgentUpdateWorkItem":       "ADR-0024 §4/§5 custody-scoped (item+descendants) agent field CAS + honest agent audit",
+	"WorkItemWriteStore.RunHeldWorkItem":           "ADR-0024 §4/ISI-5244 read-only custody lookup — returns the work item a Run holds in live custody (holder set + lease live); server-side source of the coordinator's own in-custody UUID used to DEFAULT work_item_create parent_id when a decomposing agent omits it. Read-only, no-fence, not an agent-to-agent channel; ('' ,nil) keeps root-human-only when the run holds nothing",
+	"AgentChangeWorkItemStatusInput":               "ADR-0025 §1 agent lane-move input (constrained target + from-state CAS + server-stamped agent identity)",
+	"ErrAgentStatusTargetNotAllowed":               "ADR-0025 §3 guard: target outside the constrained agent set — done/cancelled/backlog/phase lanes are human-owned (→400)",
+	"ErrAgentStatusTerminalSource":                 "ADR-0025 §3 guard: a terminal item never moves by agent hand; reopening is human (→400)",
+	"IsValidHumanState":                            "§8.6 board-state membership read (ADR-0025): propose-time target validation so a status_change proposal is never confirmable-but-doomed",
+	"WorkItemWriteStore.AgentChangeWorkItemStatus": "ADR-0025 §1/§3 custody-scoped (item+ancestors) agent lane CAS constrained to todo|in_progress|in_review, honest agent audit; state change on work_item only — not an agent-to-agent channel (§6.1/§8.4)",
 
 	// ISI-4750 E4 (ISI-4776): the SYSTEM-authored, dedup-idempotent PR-review
 	// create used by the review-automation dispatch adapter. A THIRD writer,

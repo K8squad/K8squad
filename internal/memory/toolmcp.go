@@ -81,6 +81,13 @@ type ToolMCP struct {
 	// the comment degrades to mention-free (the nil-ref-resolver degrade
 	// discussion_post shares), never a refusal. See WithTeamRoster.
 	roster coord.TeamAgentResolver
+	// statusChanger backs the fourth authoring verb work_item_status_change
+	// (ADR-0025, ISI-7219): the coord status seam (*coord.WorkItemWriteStore
+	// implements it structurally), wired by WithWorkItemAuthor's type assertion.
+	// An author without the seam leaves the tool advertised but honestly refused
+	// (ErrStatusChangeUnavailable) — never silently dropped, mirroring the nil
+	// dispatcher's ErrAssignUnavailable.
+	statusChanger WorkItemStatusChanger
 }
 
 // NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
@@ -104,6 +111,12 @@ func (m *ToolMCP) WithWorkItemAuthor(author WorkItemAuthor, dispatcher WorkItemD
 	m.author = author
 	m.dispatcher = dispatcher
 	m.caps = caps
+	// ADR-0025 (ISI-7219): the same production store also implements the status
+	// seam; wire it via a type assertion so existing authors/fakes keep compiling,
+	// and a store without the seam leaves the tool honestly refused at call time.
+	if sc, ok := author.(WorkItemStatusChanger); ok {
+		m.statusChanger = sc
+	}
 	return m
 }
 
@@ -435,7 +448,7 @@ func (m *ToolMCP) toolsList() any {
 	// even when the dispatch backend is absent; it then returns an honest
 	// assign-unavailable error rather than vanishing from the catalog.
 	if m.author != nil {
-		tools = append(tools, workItemCreateTool, workItemUpdateTool, workItemAssignTool, workItemCommentTool)
+		tools = append(tools, workItemCreateTool, workItemUpdateTool, workItemAssignTool, workItemCommentTool, workItemStatusChangeTool)
 	}
 	return map[string]any{"tools": tools}
 }
@@ -587,6 +600,11 @@ func (m *ToolMCP) toolsCall(ctx context.Context, sess mcpSession, params json.Ra
 			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // authoring unmounted
 		}
 		return m.callWorkItemComment(ctx, sess, p.Arguments)
+	case workItemStatusChangeTool.Name:
+		if m.author == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // authoring unmounted
+		}
+		return m.callWorkItemStatusChange(ctx, sess, p.Arguments)
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
 	}

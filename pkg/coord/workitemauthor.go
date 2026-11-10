@@ -473,6 +473,221 @@ func (s *WorkItemWriteStore) AgentUpdateWorkItem(ctx context.Context, workItemID
 	return rec, nil
 }
 
+// ---------------------------------------------------------------------------
+// ADR-0025 (ISI-7219, parent ISI-7075 B1): the agent status-change lane.
+// ---------------------------------------------------------------------------
+
+// agentStatusTargets is the CONSTRAINED target set an agent may move an item to
+// DIRECTLY: the working/reporting lanes only — todo (picked up), in_progress
+// (work started; also the dispatch engine's claim projection), in_review
+// (submitted for review; the run's own reporting lane, workitemcomment.go).
+// Deliberately EXCLUDED (ADR-0025 §3):
+//   - done / cancelled — terminal. An agent never self-declares completion;
+//     a human confirms it (directly, or by confirming a status_change proposal).
+//   - backlog — triage is a human act about WHERE work enters the flow.
+//   - the 10-phase human vocabulary (design/planning/implementation/code_review/
+//     testing/documentation) — phase management is a human board act; agents
+//     report in the transitional engine lanes the console folds for display.
+//   - blocked — not a lane at all (§8.6): blocked is an orthogonal condition.
+//
+// Wider moves exist only through the human-gated proposal path (ADR-0025 §4):
+// a coordinator in propose mode raises an inert status_change proposal the human
+// confirms, which executes through the HUMAN TransitionState seam.
+var agentStatusTargets = map[string]bool{
+	"todo":        true,
+	"in_progress": true,
+	"in_review":   true,
+}
+
+var (
+	// ErrAgentStatusTargetNotAllowed — the target lane is valid for a human but
+	// outside the constrained agent direct set (done/cancelled/backlog and the
+	// phase lanes are human-owned): propose it or ask a human (400).
+	ErrAgentStatusTargetNotAllowed = errors.New("coord: agents may not move a ticket to that lane directly (done/cancelled, backlog and the phase lanes are human-owned; raise a proposal or ask)")
+	// ErrAgentStatusTerminalSource — the item sits in a terminal state; only a
+	// human may reopen it into a working lane (400).
+	ErrAgentStatusTerminalSource = errors.New("coord: item is in a terminal state; reopening is a human move")
+)
+
+// AgentChangeWorkItemStatusInput is one agent-initiated lane move. Identity
+// (Principal / AgentName / RunID) is the caller's SERVER-STAMPED session scope,
+// never a tool argument — the MCP edge fills it from the session headers/token
+// claims, exactly like AgentCreateWorkItemInput. TargetState is the constrained
+// agent set (agentStatusTargets); FromState the optional optimistic-concurrency
+// precondition; Reason an optional one-line justification recorded in the audit
+// payload so the board history explains WHY the lane moved.
+type AgentChangeWorkItemStatusInput struct {
+	TargetState string
+	FromState   string // optional precondition: the lane the caller last saw
+	Reason      string // optional one-line why, carried into the §6.5 audit payload
+	Principal   string
+	AgentName   string
+	RunID       string
+}
+
+// AgentChangeWorkItemStatus moves one work item to targetState on behalf of an
+// agent, atomically, with §6.5 audit provenance (event_type='state_transition',
+// initiator="agent", agent principal + RunID stamped, InitiatedByUserID NULL)
+// and NO fence (ADR-037 — a lane move holds no custody, mirroring
+// HumanStateStore.transition). It is the custody-checked counterpart of the
+// task-io AgentTransitionState (ISI-3601): an MCP authoring session is NOT a
+// run-scoped task-io token binding, so custody is enforced HERE, inside the
+// write transaction, under the same row locks as the move — the in-custody item
+// or any of its ancestors (ADR-0024 O-3 scope, like AgentUpdateWorkItem).
+//
+// The move is CONSTRAINED (ADR-0025 §3): target ∈ agentStatusTargets and source
+// ∉ terminalStates. done/cancelled/backlog and the phase lanes are reachable
+// only through the human-gated status_change proposal (proposalconfirm.go fans
+// into the HUMAN TransitionState) or a human's own PATCH.
+//
+// Semantics:
+//   - (transition, nil): the item moved; audit row carries from/to states, the
+//     AGENT principal, the authoring RunID, initiator="agent".
+//   - (zero, ErrInvalidWorkItem): missing identity, empty target, or a fromState
+//     that is not a board lane (400).
+//   - (zero, ErrAgentStatusTargetNotAllowed): target outside the constrained
+//     agent set — done/cancelled/backlog/phase lanes are human-owned (400).
+//   - (zero, ErrAgentStatusTerminalSource): the item is done/cancelled; only a
+//     human reopens (400).
+//   - (zero, ErrAgentAuthorNotInCustody): neither the item nor any ancestor is
+//     held by the agent — or the item does not exist (existence-hiding).
+//   - (zero, ErrStateConflict): fromState guard missed, the item is already in
+//     the target lane, or a concurrent lane change won the CAS (409).
+//   - (zero, err): infrastructure failure; nothing was written.
+func (s *WorkItemWriteStore) AgentChangeWorkItemStatus(ctx context.Context, workItemID string, in AgentChangeWorkItemStatusInput) (StateTransition, error) {
+	if workItemID == "" || in.Principal == "" || in.AgentName == "" || in.RunID == "" {
+		return StateTransition{}, fmt.Errorf("%w: workItemID, principal, agentName and runID are required", ErrInvalidWorkItem)
+	}
+	if in.TargetState == "" {
+		return StateTransition{}, fmt.Errorf("%w: targetState is required", ErrInvalidWorkItem)
+	}
+	if !agentStatusTargets[in.TargetState] {
+		return StateTransition{}, fmt.Errorf("%w: %q", ErrAgentStatusTargetNotAllowed, in.TargetState)
+	}
+	if in.FromState != "" && !humanStates[in.FromState] {
+		return StateTransition{}, fmt.Errorf("%w: fromState %q", ErrInvalidState, in.FromState)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return StateTransition{}, fmt.Errorf("coord.AgentChangeWorkItemStatus: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	// (1) Lock the row and read its current lane. FOR UPDATE serialises a
+	// concurrent human move / engine lane write against us (same discipline as
+	// HumanStateStore.transition), so the guards below and the UPDATE act on one
+	// consistent lane.
+	var currentState string
+	err = tx.QueryRowContext(ctx, `
+		SELECT state FROM coord.work_item WHERE id = $1::uuid FOR UPDATE`,
+		workItemID).Scan(&currentState)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return StateTransition{}, ErrAgentAuthorNotInCustody // existence-hiding: no probe for unheld work
+	case err != nil:
+		return StateTransition{}, fmt.Errorf("coord.AgentChangeWorkItemStatus: read current: %w", err)
+	}
+
+	// (2) Custody scope: the item, or any ancestor of it, must be held by the
+	// agent (ADR-0024 O-3 — the same walk AgentUpdateWorkItem uses; lane motion of
+	// existing rows follows the subtree, per §4.1's asymmetry note).
+	held, err := agentHoldsCustodyScope(ctx, tx, workItemID, in.Principal, in.AgentName)
+	if err != nil {
+		return StateTransition{}, err
+	}
+	if !held {
+		return StateTransition{}, ErrAgentAuthorNotInCustody
+	}
+
+	// (3) Constrained agent graph (ADR-0025 §3): a terminal item never moves by
+	// agent hand (reopen is human), then the optimistic-concurrency guards — the
+	// explicit fromState precondition and the always-on already-in-target check.
+	if terminalStates[currentState] {
+		return StateTransition{}, fmt.Errorf("%w: item is %q", ErrAgentStatusTerminalSource, currentState)
+	}
+	if in.FromState != "" && currentState != in.FromState {
+		return StateTransition{}, fmt.Errorf("%w: current lane %q, expected %q", ErrStateConflict, currentState, in.FromState)
+	}
+	if currentState == in.TargetState {
+		return StateTransition{}, fmt.Errorf("%w: item already in %q", ErrStateConflict, in.TargetState)
+	}
+
+	// (4) Conditional UPDATE. The WHERE re-asserts the lane we locked so the
+	// write is a strict compare-and-set even under the row lock.
+	res, err := tx.ExecContext(ctx, `
+		UPDATE coord.work_item
+		   SET state = $2, updated_at = now()
+		 WHERE id = $1::uuid AND state = $3`,
+		workItemID, in.TargetState, currentState)
+	if err != nil {
+		return StateTransition{}, fmt.Errorf("coord.AgentChangeWorkItemStatus: update: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return StateTransition{}, fmt.Errorf("coord.AgentChangeWorkItemStatus: rows: %w", err)
+	} else if n == 0 {
+		return StateTransition{}, fmt.Errorf("%w: concurrent lane change", ErrStateConflict)
+	}
+
+	// (4b) Time-in-phase for the NFR-5 observability emission — the same
+	// best-effort read HumanStateStore.transition performs (ISI-4490), in the same
+	// txn (row still locked), never able to fail the committed move.
+	var timeInPhase time.Duration
+	var enteredAt, dbNow time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+		  COALESCE(
+		    (SELECT max(created_at) FROM coord.audit_log
+		      WHERE work_item_id = $1::uuid
+		        AND event_type = 'state_transition'
+		        AND to_state = $2),
+		    (SELECT created_at FROM coord.work_item WHERE id = $1::uuid)),
+		  now()`,
+		workItemID, currentState).Scan(&enteredAt, &dbNow); err == nil && !enteredAt.IsZero() {
+		timeInPhase = dbNow.Sub(enteredAt)
+	}
+
+	// (5) §6.5 audit provenance: the SAME row shape HumanStateStore.transition
+	// writes (from_state/to_state columns, initiator in the payload) PLUS the
+	// authoring RunID — honest agent provenance (the per-run lane-move count is
+	// auditable) with InitiatedByUserID NULL, never a spoofed human.
+	payload, err := json.Marshal(map[string]any{
+		"initiator":   "agent",
+		"agent":       in.AgentName,
+		"run_id":      in.RunID,
+		"agent_write": true,
+		"from_state":  currentState,
+		"to_state":    in.TargetState,
+		"reason":      in.Reason,
+	})
+	if err != nil {
+		return StateTransition{}, fmt.Errorf("coord.AgentChangeWorkItemStatus: audit payload: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, initiated_by_user_id, from_state, to_state, payload)
+		VALUES ($1::uuid, $2::uuid, 'state_transition', $3, NULL, $4, $5, $6::jsonb)`,
+		workItemID, in.RunID, in.Principal, currentState, in.TargetState, string(payload)); err != nil {
+		return StateTransition{}, fmt.Errorf("coord.AgentChangeWorkItemStatus: audit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return StateTransition{}, fmt.Errorf("coord.AgentChangeWorkItemStatus: commit: %w", err)
+	}
+
+	// NFR-5 (ISI-4490): same per-phase span emission as the human move, initiator
+	// "agent" — best-effort after commit, never able to fail the moved item.
+	EmitPhaseTransition(ctx, PhaseTransitionEvent{
+		WorkItemRef: workItemID,
+		From:        currentState,
+		To:          in.TargetState,
+		Initiator:   "agent",
+		TimeInPhase: timeInPhase,
+	})
+
+	return StateTransition{WorkItemID: workItemID, FromState: currentState, ToState: in.TargetState}, nil
+}
+
 // agentHoldsClaim reports whether the agent holds the item's coord.claim: either as
 // the current lease holder (holder_principal == principal AND the lease is live) or
 // as the attributed assignee (assignee_agent == agentName). Either is "in custody"

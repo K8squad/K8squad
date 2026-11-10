@@ -18,9 +18,10 @@ package team
 
 // mcpauthoring.go — the ADR-0024a S1 built-in MCPServer provisioner (ISI-4867).
 //
-// A dispatched agent authors sub-tickets through the memory service's MCP edge
-// (internal/memory/agentauthor.go: work_item_create / work_item_update /
-// work_item_assign). For a Run to be WIRED to that edge, an MCPServer CR naming
+// A dispatched agent authors sub-tickets and reports lane motion through the
+// memory service's MCP edge (internal/memory/agentauthor.go: work_item_create /
+// work_item_update / work_item_assign / work_item_status_change, the last per
+// ADR-0025 ISI-7219). For a Run to be WIRED to that edge, an MCPServer CR naming
 // it must exist in the namespace the Run executes in — the squad namespace this
 // reconciler already owns. So the built-in server is provisioned here, as one
 // more piece of the per-namespace scaffold: exactly one singleton
@@ -90,7 +91,8 @@ func memoryEndpoint(controlPlaneNS, endpointPath string) string {
 
 // authoringMCPServer renders the desired built-in server for a squad namespace:
 // streamable-http at the memory Service /mcp, tool envelope narrowed to exactly
-// the three first-party authoring verbs, and discovery pinned to Manual so the
+// the compiled-in first-party authoring verbs (four since ADR-0025), and
+// discovery pinned to Manual so the
 // mcpserver controller never probes our own service.
 func authoringMCPServer(ns string, teamObj *api.Team, controlPlaneNS string) *api.MCPServer {
 	interval := int32(0) // Manual already disables probing; 0 makes the intent explicit.

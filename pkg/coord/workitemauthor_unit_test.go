@@ -88,3 +88,58 @@ func TestAgentUpdateRejectsBadInput(t *testing.T) {
 		})
 	}
 }
+
+// --- ADR-0025 (ISI-7219): the agent status-change lane's fail-closed guards ---
+
+// TestAgentStatusChangeRejectsBadInput — the required-identity and empty-target
+// guards fail closed with ErrInvalidWorkItem before the (offline) DB.
+func TestAgentStatusChangeRejectsBadInput(t *testing.T) {
+	s := newOfflineWriteStore(t)
+	cases := []struct {
+		name string
+		id   string
+		in   AgentChangeWorkItemStatusInput
+	}{
+		{"no id", "", AgentChangeWorkItemStatusInput{TargetState: "todo", Principal: "agent:john", AgentName: "john", RunID: "r"}},
+		{"no principal", "wi", AgentChangeWorkItemStatusInput{TargetState: "todo", AgentName: "john", RunID: "r"}},
+		{"no agent", "wi", AgentChangeWorkItemStatusInput{TargetState: "todo", Principal: "agent:john", RunID: "r"}},
+		{"no run", "wi", AgentChangeWorkItemStatusInput{TargetState: "todo", Principal: "agent:john", AgentName: "john"}},
+		{"no target", "wi", AgentChangeWorkItemStatusInput{Principal: "agent:john", AgentName: "john", RunID: "r"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := s.AgentChangeWorkItemStatus(context.Background(), tc.id, tc.in); !errors.Is(err, ErrInvalidWorkItem) {
+				t.Fatalf("got %v, want ErrInvalidWorkItem", err)
+			}
+		})
+	}
+}
+
+// TestAgentStatusChangeTargetNotAllowed — the constrained direct-move set bites
+// before the DB: terminal, triage, phase lanes and garbage are all refused with
+// ErrAgentStatusTargetNotAllowed; the three working lanes pass the offline guards.
+func TestAgentStatusChangeTargetNotAllowed(t *testing.T) {
+	s := newOfflineWriteStore(t)
+	for _, target := range []string{"done", "cancelled", "backlog", "design", "implementation", "blocked", "garbage"} {
+		in := AgentChangeWorkItemStatusInput{TargetState: target, Principal: "agent:john", AgentName: "john", RunID: "r"}
+		if _, err := s.AgentChangeWorkItemStatus(context.Background(), "wi", in); !errors.Is(err, ErrAgentStatusTargetNotAllowed) {
+			t.Fatalf("target %q: got %v, want ErrAgentStatusTargetNotAllowed", target, err)
+		}
+	}
+	for _, target := range []string{"todo", "in_progress", "in_review"} {
+		in := AgentChangeWorkItemStatusInput{TargetState: target, Principal: "agent:john", AgentName: "john", RunID: "r"}
+		if _, err := s.AgentChangeWorkItemStatus(context.Background(), "wi", in); errors.Is(err, ErrAgentStatusTargetNotAllowed) || errors.Is(err, ErrInvalidWorkItem) {
+			t.Fatalf("working target %q must pass the offline guards: %v", target, err)
+		}
+	}
+}
+
+// TestAgentStatusChangeBadFromState — a fromState that is not a board lane is
+// ErrInvalidState before the DB.
+func TestAgentStatusChangeBadFromState(t *testing.T) {
+	s := newOfflineWriteStore(t)
+	in := AgentChangeWorkItemStatusInput{TargetState: "todo", FromState: "in-flight", Principal: "agent:john", AgentName: "john", RunID: "r"}
+	if _, err := s.AgentChangeWorkItemStatus(context.Background(), "wi", in); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("got %v, want ErrInvalidState", err)
+	}
+}

@@ -10,8 +10,9 @@ import (
 )
 
 // agentauthor.go — the MCP edge of the ADR-0024 agent work-item authoring lane
-// (ISI-4741 / origin ISI-4711). It adds three write tools — work_item_create,
-// work_item_update, work_item_assign — over the coord authoring foundation
+// (ISI-4741 / origin ISI-4711). It adds four write tools — work_item_create,
+// work_item_update, work_item_assign and (ADR-0025, ISI-7219) the constrained
+// work_item_status_change — over the coord authoring foundation
 // (pkg/coord/workitemauthor.go, ISI-4735: WorkItemWriteStore.AgentCreateWorkItem /
 // AgentUpdateWorkItem) plus the agent-facing dispatch entry
 // (WorkItemDispatchStore.AgentRequestDispatch). This edge is deliberately THIN: it
@@ -34,6 +35,13 @@ import (
 // to enforce target-∈-Team, ISI-4743). Create + update still serve; assign is
 // refused explicitly rather than dropped, and the tool stays advertised.
 var ErrAssignUnavailable = errors.New("work_item_assign is unavailable in this deployment (no dispatch backend / TeamAgentResolver)")
+
+// ErrStatusChangeUnavailable is the honest refusal work_item_status_change returns
+// when the wired author store does not also expose the status seam (ADR-0025,
+// ISI-7219). Production wires *coord.WorkItemWriteStore, which implements both
+// seams structurally; an author without the seam keeps the tool advertised and
+// refused explicitly rather than dropped, mirroring ErrAssignUnavailable.
+var ErrStatusChangeUnavailable = errors.New("work_item_status_change is unavailable in this deployment (the authoring store does not expose the status seam)")
 
 // parseCapabilities splits the control-plane-stamped X-Agent-Capabilities header
 // into a grant set. Comma- or whitespace-separated, empties dropped; an empty
@@ -79,6 +87,19 @@ type WorkItemAuthor interface {
 // honestly, rather than dropping the verb.
 type WorkItemDispatcher interface {
 	AgentRequestDispatch(ctx context.Context, in coord.AgentRequestDispatchInput) (coord.WorkItemDispatchResult, error)
+}
+
+// WorkItemStatusChanger is the coord status-change seam the fourth authoring
+// verb drives (ADR-0025, ISI-7219). It is a SEPARATE optional interface, not a
+// member of WorkItemAuthor, so existing authors and test fakes keep compiling:
+// *coord.WorkItemWriteStore satisfies it structurally and is wired by
+// WithWorkItemAuthor's type assertion; an author without the seam leaves the
+// tool advertised but honestly refused (ErrStatusChangeUnavailable), exactly the
+// ErrAssignUnavailable pattern. The seam enforces custody + the constrained
+// agent move set (todo|in_progress|in_review, never terminal/backlog/phase
+// lanes) inside the write transaction — this edge never re-derives them.
+type WorkItemStatusChanger interface {
+	AgentChangeWorkItemStatus(ctx context.Context, workItemID string, in coord.AgentChangeWorkItemStatusInput) (coord.StateTransition, error)
 }
 
 // CapabilityResolver answers the O-1 gate: does the server-authenticated session
@@ -179,10 +200,11 @@ func (r *TokenCapabilityResolver) HasWorkItemAuthor(_ context.Context, sess Agen
 // of hardcoding a second copy of the strings, so the advertised set and the seeded
 // set can never drift (ISI-4867). Changing a name here changes it everywhere.
 const (
-	WorkItemCreateToolName  = "work_item_create"
-	WorkItemUpdateToolName  = "work_item_update"
-	WorkItemAssignToolName  = "work_item_assign"
-	WorkItemCommentToolName = "work_item_comment"
+	WorkItemCreateToolName       = "work_item_create"
+	WorkItemUpdateToolName       = "work_item_update"
+	WorkItemAssignToolName       = "work_item_assign"
+	WorkItemCommentToolName      = "work_item_comment"
+	WorkItemStatusChangeToolName = "work_item_status_change" // ADR-0025 (ISI-7219): the constrained lane-move verb
 )
 
 // AuthoringToolNames is the compiled-in first-party authoring manifest — the exact
@@ -190,7 +212,7 @@ const (
 // seed the operator writes to status.observedTools with NO network self-probe
 // (the memory service would be probing itself); the live discovery probe
 // (pkg/controller/mcpserver/probe.go) stays for BYO servers only.
-var AuthoringToolNames = []string{WorkItemCreateToolName, WorkItemUpdateToolName, WorkItemAssignToolName, WorkItemCommentToolName}
+var AuthoringToolNames = []string{WorkItemCreateToolName, WorkItemUpdateToolName, WorkItemAssignToolName, WorkItemCommentToolName, WorkItemStatusChangeToolName}
 
 // DiscussionSearchToolName / DiscussionPostToolName are the two discussion-reply
 // verbs the built-in ksquad-memory-discussion MCPServer exposes for source=discussion
@@ -251,6 +273,20 @@ var (
 		Description: "Post a comment on a ticket's board thread — the ticket-run peer of discussion_post for cross-agent referencing. Comment on the ticket you hold in custody (or a descendant); link OTHER tickets with references (structured links resolved against the ticket's own project — the same wire shape discussion_post uses); reference teammate agents with mentions (durable @-references rendered on the thread, validated against the team roster). A mention or a reference is a LINK, never a dispatch: to make an agent ACT on a ticket use work_item_assign, and lane/status motion stays a human custody op. When you hand off or cross-reference work, do it by calling this tool — the comment with its links is the deliverable, not a narration. Identity, team and run are server-authenticated (never arguments). Returns the persisted comment.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to comment on — you must hold it, or one of its ancestors, in custody"},"body":{"type":"string","description":"the comment body; plain @name tokens in the body are text — pass structured mentions via the mentions argument"},"references":{"type":"array","items":{"type":"object","properties":{"workItemId":{"type":"string","description":"work-item id (uuid) to link"},"title":{"type":"string","description":"optional display title; the server canonicalizes it from the board"}},"required":["workItemId"]},"description":"optional structured ticket links (same wire shape as discussion_post references); unknown or out-of-project links are dropped"},"mentions":{"type":"array","items":{"type":"string"},"description":"optional teammate agent names to reference (@name tolerated); validated against the team roster and persisted as durable thread references — they never dispatch the agent"}},"required":["id","body"]}`),
 	}
+
+	// workItemStatusChangeTool is the fourth authoring verb (ADR-0025, ISI-7219):
+	// a CONSTRAINED, custody-scoped lane move. Direct targets are the working
+	// lanes only; terminal/triage/phase lanes stay human-owned and are reachable
+	// solely through the human-gated status_change proposal a propose-mode
+	// coordinator raises instead. The name carries the pkg/capbrief
+	// statusToolMarker prefix ("work_item_status"), so capability briefs
+	// enumerate it and retire the honest "status change is NOT an agent
+	// capability" gap line for every run wired to this surface.
+	workItemStatusChangeTool = mcpTool{
+		Name:        WorkItemStatusChangeToolName,
+		Description: "Move a work item you hold in custody (the item itself or an ancestor you hold) across its WORKING lanes: target_state one of todo (picking it up), in_progress (work started), in_review (submitting for review — your own reporting lane). This is how you report ticket progress on the board: when the lane motion is the deliverable, CALL this tool instead of narrating it. CONSTRAINED: done, cancelled, backlog, the human phase lanes (design/planning/implementation/code_review/testing/documentation) and reopening a terminal item are HUMAN moves — never declare one done yourself; say so in your reply or raise a proposal when you are in propose mode. from_state is an optional optimistic-concurrency guard; reason is a one-line why for the audit trail. Requires the work_item.author capability; identity/team/run are server-authenticated (never arguments). Returns the transition {workItemId, fromState, toState}.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to move — one you hold in custody (the item itself, or an ancestor you hold)"},"target_state":{"type":"string","description":"the lane to move to: todo | in_progress | in_review (direct agent moves). Other board lanes (done, cancelled, backlog, phase lanes) are human-only — reachable solely via a human-gated proposal"},"from_state":{"type":"string","description":"optional precondition: the lane you last saw the item in; a racing lane change is rejected"},"reason":{"type":"string","description":"optional one-line why — recorded in the ticket audit trail"}},"required":["id","target_state"]}`),
+	}
 )
 
 // ---------------------------------------------------------------------------
@@ -291,6 +327,13 @@ type workItemCommentArgs struct {
 	Body       string             `json:"body"`
 	References []coord.CommentRef `json:"references,omitempty"`
 	Mentions   []string           `json:"mentions,omitempty"`
+}
+
+type workItemStatusChangeArgs struct {
+	ID          string `json:"id"`
+	TargetState string `json:"target_state"`
+	FromState   string `json:"from_state,omitempty"`
+	Reason      string `json:"reason,omitempty"`
 }
 
 // workItemCreateResult is the tool result for a create, carrying the created record
@@ -582,4 +625,49 @@ func (m *ToolMCP) callWorkItemComment(ctx context.Context, sess mcpSession, raw 
 		return toolError(err.Error())
 	}
 	return toolResult(tc)
+}
+
+// callWorkItemStatusChange is the MCP edge of the work_item_status_change tool
+// (ADR-0025, ISI-7219). The seam split mirrors the other authoring verbs:
+// capability here (requireAuthor), custody + the constrained move set inside
+// coord's write txn. Propose mode bites FIRST — a propose-gated coordinator
+// never moves a lane directly, it raises an inert status_change proposal the
+// human confirms (the confirm fan-out executes through the HUMAN TransitionState
+// seam, which is what makes terminal/phase lanes reachable at all for agents).
+// Unwired-but-gated is refused honestly, never executed in auto mode.
+func (m *ToolMCP) callWorkItemStatusChange(ctx context.Context, sess mcpSession, raw json.RawMessage) (any, *jsonrpcError) {
+	id, deny := m.requireAuthor(ctx, sess)
+	if deny != nil {
+		return toolError(*deny)
+	}
+	var a workItemStatusChangeArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return toolError("invalid arguments")
+		}
+	}
+	if sessionIsProposeCoordinator(sess) {
+		if m.proposer == nil {
+			return toolError("propose mode is enabled for this coordinator, but no proposal channel is wired in this deployment; cannot author directly under a propose gate")
+		}
+		return m.proposer.ProposeStatus(ctx, id, a)
+	}
+	if a.ID == "" || a.TargetState == "" {
+		return toolError("id and target_state required")
+	}
+	if m.statusChanger == nil {
+		return toolError(ErrStatusChangeUnavailable.Error())
+	}
+	res, err := m.statusChanger.AgentChangeWorkItemStatus(ctx, a.ID, coord.AgentChangeWorkItemStatusInput{
+		TargetState: a.TargetState,
+		FromState:   a.FromState,
+		Reason:      a.Reason,
+		Principal:   id.principal,
+		AgentName:   id.agentName,
+		RunID:       id.runID,
+	})
+	if err != nil {
+		return toolError(err.Error())
+	}
+	return toolResult(res)
 }

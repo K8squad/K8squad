@@ -47,19 +47,21 @@ import (
 // renamed tool cannot leave a stale briefing line behind. Tools from BYO MCP
 // servers are listed by name only; their own tools/list describes them.
 var toolSummaries = map[string]string{
-	memory.WorkItemCreateToolName:   "create a sub-ticket under an item you hold in custody (optionally assign it in the same call)",
-	memory.WorkItemUpdateToolName:   "edit the title/body/parent of an item you hold in custody",
-	memory.WorkItemAssignToolName:   "hand an item you hold in custody to a teammate agent (the delegation verb)",
-	memory.WorkItemSearchToolName:   "search this team's tickets by topic — find related/prior work before duplicating it",
-	memory.DiscussionSearchToolName: "search this project's indexed discussion messages",
-	memory.DiscussionPostToolName:   "open a thread or reply in this project's discussion room (your speaking verb here)",
+	memory.WorkItemCreateToolName:       "create a sub-ticket under an item you hold in custody (optionally assign it in the same call)",
+	memory.WorkItemUpdateToolName:       "edit the title/body/parent of an item you hold in custody",
+	memory.WorkItemAssignToolName:       "hand an item you hold in custody to a teammate agent (the delegation verb)",
+	memory.WorkItemStatusChangeToolName: "move a ticket you hold in custody across its working lanes (todo, in_progress, in_review) — done/cancelled, backlog, phase lanes and reopening stay human moves (propose or ask)",
+	memory.WorkItemSearchToolName:       "search this team's tickets by topic — find related/prior work before duplicating it",
+	memory.DiscussionSearchToolName:     "search this project's indexed discussion messages",
+	memory.DiscussionPostToolName:       "open a thread or reply in this project's discussion room (your speaking verb here)",
 }
 
-// statusToolMarker is the name prefix a status-change tool (ISI-7219 B1, the
-// acknowledged capability gap) would carry. While no wired tool matches it,
-// the briefing states the gap honestly — lane changes stay a human/custody
-// operation — so an agent asked to move a ticket says so in its reply instead
-// of silently pretending it did. When B1 lands, the line retires itself.
+// statusToolMarker is the name prefix the status-change tool (ISI-7219 B1,
+// landed as ADR-0025's work_item_status_change) carries. A run whose manifest
+// wires a tool with this prefix enumerates it and the honest gap line below
+// retires itself for THAT run; a run without the tool (e.g. a discussion run)
+// still gets the gap line — correctly, because lane changes genuinely are not
+// its capability. Per-run self-retiring, never global.
 const statusToolMarker = "work_item_status"
 
 // Brief renders the capability briefing for run from its recorded

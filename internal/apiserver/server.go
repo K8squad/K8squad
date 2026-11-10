@@ -1462,6 +1462,7 @@ func (s *Server) routes(opts Options) {
 				lifecycle: opts.DiscussionProposals,
 				create:    opts.WorkItemWrites,
 				dispatch:  opts.WorkItemDispatch,
+				state:     opts.WorkItemState, // status_change confirm seam (ADR-0025, ISI-7219); nil ⇒ honest refusal
 				refs:      opts.ProjectRefs,
 			}
 			for _, verb := range []struct {

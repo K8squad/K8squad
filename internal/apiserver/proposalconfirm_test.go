@@ -116,7 +116,7 @@ const (
 	viewedUUID = "22222222-2222-2222-2222-222222222222"
 )
 
-func testProposalServer(t *testing.T, teamID uuid.UUID, lifecycle ProposalLifecycle, writer WorkItemWriter, dispatcher WorkItemDispatcher) http.Handler {
+func testProposalServer(t *testing.T, teamID uuid.UUID, lifecycle ProposalLifecycle, writer WorkItemWriter, dispatcher WorkItemDispatcher, state ...WorkItemStateTransitioner) http.Handler {
 	t.Helper()
 	agentID := "agent:builder"
 	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
@@ -127,12 +127,17 @@ func testProposalServer(t *testing.T, teamID uuid.UUID, lifecycle ProposalLifecy
 		"user:alice":    {projUUID: "contributor", viewedUUID: "viewer"},
 		"agent:builder": {projUUID: "contributor"},
 	}}
+	var st WorkItemStateTransitioner // optional status_change confirm seam (ADR-0025)
+	if len(state) > 0 {
+		st = state[0]
+	}
 	srv := NewServer(Options{
 		Authenticator:       NewCookieAuthenticator(resolver),
 		Discussion:          discussion.NewHandler(nil),
 		DiscussionProposals: lifecycle,
 		WorkItemWrites:      writer,
 		WorkItemDispatch:    dispatcher,
+		WorkItemState:       st,
 		ProjectRoles:        roles,
 	})
 	return srv.Handler()
@@ -488,6 +493,71 @@ func TestProposalDismissAgentForbidden(t *testing.T) {
 	}
 	if life.dismissCalled {
 		t.Fatal("agent dismiss must not reach the lifecycle")
+	}
+}
+
+// fakeStateTransitioner backs the status_change confirm fan-out test — it
+// implements WorkItemStateTransitioner, the same seam the PATCH
+// /api/work-items/{id}/state route rides (ADR-0025, ISI-7219).
+type fakeStateTransitioner struct {
+	called       bool
+	gotItem      string
+	gotTeam      string
+	gotTarget    string
+	gotFrom      string
+	gotPrincipal string
+	res          coord.StateTransition
+	err          error
+}
+
+func (f *fakeStateTransitioner) TransitionState(_ context.Context, workItemID, teamID, targetState, fromState, principal, initiatedByUserID string) (coord.StateTransition, error) {
+	f.called, f.gotItem, f.gotTeam, f.gotTarget, f.gotFrom, f.gotPrincipal = true, workItemID, teamID, targetState, fromState, principal
+	if f.err != nil {
+		return coord.StateTransition{}, f.err
+	}
+	return f.res, nil
+}
+
+// TestProposalConfirmStatusChange — status_change fans into the HUMAN state seam
+// with the payload's ticket + target lane; it executes as the confirming human
+// (server-derived principal + room team), and the create seam stays untouched.
+func TestProposalConfirmStatusChange(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	life := &fakeProposalLifecycle{}
+	life.payload = discussion.ProposalPayload{Action: discussion.ProposalActionStatusChange, TicketID: "wi-9", TargetState: "done", Reason: "verified live"}
+	state := &fakeStateTransitioner{res: coord.StateTransition{WorkItemID: "wi-9", FromState: "in_review", ToState: "done"}}
+	writer := &fakeWorkItemWriter{}
+	h := testProposalServer(t, teamID, life, writer, &fakeDispatcher{}, state)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postProposalVerb(projUUID, uuid.NewString(), "confirm", devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !state.called {
+		t.Fatal("confirm did not fan into the state seam")
+	}
+	if state.gotItem != "wi-9" || state.gotTarget != "done" || state.gotFrom != "" {
+		t.Fatalf("transition input: item=%q target=%q from=%q (from must be empty — the human acts on current truth)", state.gotItem, state.gotTarget, state.gotFrom)
+	}
+	if state.gotTeam != teamID.String() || state.gotPrincipal != "user:alice" {
+		t.Fatalf("identity/tenancy not server-derived: team=%q principal=%q", state.gotTeam, state.gotPrincipal)
+	}
+	if writer.createCalled {
+		t.Fatal("create seam must stay untouched by a status_change confirm")
+	}
+	if !life.completeCalled {
+		t.Fatal("executed result was not posted back through the lifecycle")
+	}
+	var res map[string]any
+	if err := json.Unmarshal(life.completeResult, &res); err != nil {
+		t.Fatalf("result json: %v", err)
+	}
+	if res["workItemId"] != "wi-9" || res["toState"] != "done" || res["action"] != discussion.ProposalActionStatusChange {
+		t.Fatalf("result payload: %+v", res)
+	}
+	if !strings.Contains(life.completeBody, "wi-9") || !strings.Contains(life.completeBody, "done") {
+		t.Fatalf("post-back body should name the move: %q", life.completeBody)
 	}
 }
 

@@ -25,6 +25,10 @@ import (
 //	assign_agent  → WorkItemDispatcher.RequestDispatch  (the POST /api/work-items/{id}/dispatch op)
 //	party_run     → WorkItemWriter.CreateWorkItem, team set, NO requested_agent (plan §3 T2: the
 //	                mint is the story; the intake fan-out that turns it into N Runs is story 3)
+//	status_change → HumanStateStore.TransitionState (the PATCH /api/work-items/{id}/state op,
+//	                ADR-0025 / ISI-7219): executes as the confirming HUMAN, which is what makes
+//	                terminal/phase lanes reachable from an agent at all — the agent proposed, the
+//	                human authorized.
 //
 // — exactly as if the human had clicked the board verbs themselves. Zero new custody semantics:
 // custody still moves only in the fenced coord claim tables, and the decision lifecycle (proposed →
@@ -52,7 +56,13 @@ type proposalFanout struct {
 	lifecycle ProposalLifecycle
 	create    WorkItemWriter
 	dispatch  WorkItemDispatcher
-	refs      ProjectRefResolver
+	// state is the HUMAN lane-move seam a confirmed status_change proposal fans
+	// into (ADR-0025, ISI-7219) — the same WorkItemStateTransitioner the PATCH
+	// /api/work-items/{id}/state route rides. Nil in a deployment without the
+	// state route: existing actions are unaffected, and a status_change confirm
+	// then fails honestly instead of nil-dereferencing.
+	state WorkItemStateTransitioner
+	refs  ProjectRefResolver
 }
 
 // mapProposalErr maps the lifecycle sentinels onto the HTTP contract (404-not-403 tenancy hiding,
@@ -258,6 +268,25 @@ func (f proposalFanout) execute(ctx context.Context, auth discussion.AuthorConte
 			"url":            workItemURL(projectRef, res.WorkItemID), // ISI-7221 (A2)
 		})
 
+	case discussion.ProposalActionStatusChange:
+		// ADR-0025 (ISI-7219): execute through the HUMAN lane-move seam as the
+		// confirming human — initiator="human" in the audit, any board lane the
+		// human graph allows (phaseTransitionAllowed refuses only terminal→terminal).
+		// No fromState precondition: the human acts on current truth at confirm time.
+		if f.state == nil {
+			return nil, errors.New("status_change proposal confirmed, but the state-transition seam is not wired in this deployment")
+		}
+		res, err := f.state.TransitionState(ctx, p.Payload.TicketID, teamUID, p.Payload.TargetState, "", auth.Principal, "")
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(map[string]any{
+			"action":     p.Payload.Action,
+			"workItemId": res.WorkItemID,
+			"fromState":  res.FromState,
+			"toState":    res.ToState,
+		})
+
 	default:
 		// Validate() refuses unknown actions at post time; this is the belt-and-suspenders branch.
 		return nil, discussion.ErrInvalidProposalPayload
@@ -289,6 +318,7 @@ func proposalResultLine(action string, result json.RawMessage) string {
 	var r struct {
 		WorkItemID     string `json:"workItemId"`
 		Title          string `json:"title"`
+		FromState      string `json:"fromState"`
 		ToState        string `json:"toState"`
 		RequestedAgent string `json:"requestedAgent"`
 		URL            string `json:"url"`
@@ -297,6 +327,8 @@ func proposalResultLine(action string, result json.RawMessage) string {
 	switch action {
 	case discussion.ProposalActionAssignAgent:
 		return "assigned " + r.RequestedAgent + " to work item " + linkedText(r.WorkItemID, r.URL) + " (" + r.ToState + ")"
+	case discussion.ProposalActionStatusChange:
+		return "moved work item " + r.WorkItemID + " to " + r.ToState + " (from " + r.FromState + ")"
 	default:
 		text := r.Title
 		if text == "" {
