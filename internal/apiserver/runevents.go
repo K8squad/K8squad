@@ -42,14 +42,19 @@ const defaultProjectorPoll = 1 * time.Second
 type ProjectSlugResolver func(ctx context.Context, projectUID string) (slug string, ok bool)
 
 // projectBridgeEventTypes is the allowlist of run-event types the projector ALSO
-// fans onto the per-project bus. Only `thinking` (ISI-5193) is bridged today —
-// the discussion Room (ISI-5208) renders an active run's live thinking deltas
-// inline, correlated to its working watch by author. Per-run lifecycle/step
-// events stay on the per-run hub (the ticket surface, ISI-5206) and are not
-// re-fanned project-wide, keeping the project bus scoped to what a project
-// surface consumes.
-var projectBridgeEventTypes = map[string]struct{}{
-	"thinking": {},
+// fans onto the per-project bus, mapped to the per-project SSE event NAME each
+// type bridges onto. `thinking` (ISI-5193) reuses its own name — the discussion
+// Room (ISI-5208) renders an active run's live thinking deltas inline,
+// correlated to its working watch by author; `discussion_message` (ISI-7272,
+// parent ISI-7262 WS-1) remaps onto the room's `discussion` event so an agent's
+// run-authored post — captured on the outbox by the discussion store,
+// cross-process from cmd/memory — live-appends exactly like the handler's
+// synchronous human echo. Per-run lifecycle/step events stay on the per-run hub
+// (the ticket surface, ISI-5206) and are not re-fanned project-wide, keeping the
+// project bus scoped to what a project surface consumes.
+var projectBridgeEventTypes = map[string]string{
+	"thinking":           "thinking",
+	"discussion_message": projectStreamEventName,
 }
 
 // RunEventSource tails coord.outbox for run-entity events and fans each to the
@@ -203,13 +208,16 @@ func runEventToSSE(row events.RunEvent) Event {
 // (the discussion Room, ISI-5208) live-tails an active run's thinking without
 // knowing the run id. A no-op when the bridge is unarmed, the event type is not
 // bridged, or the row carries no project_id / resolves to no live Project. The
-// SSE event is reused as-is (same id/type/data as the per-run frame) so a project
-// subscriber parses it exactly like the per-run stream.
+// bridged frame keeps the row's id and data but rides the allowlisted per-project
+// event NAME (equal to the row type for `thinking`; the Room's `discussion` event
+// for `discussion_message`, ISI-7272) so a project subscriber parses the body
+// exactly like the producer's own synchronous frame.
 func (s *RunEventSource) bridgeToProject(ctx context.Context, row events.RunEvent, sse Event) {
 	if s.projectHub == nil || s.resolve == nil {
 		return
 	}
-	if _, ok := projectBridgeEventTypes[row.EventType]; !ok {
+	streamName, ok := projectBridgeEventTypes[row.EventType]
+	if !ok {
 		return
 	}
 	if row.ProjectID == "" {
@@ -219,7 +227,7 @@ func (s *RunEventSource) bridgeToProject(ctx context.Context, row events.RunEven
 	if !ok {
 		return
 	}
-	s.projectHub.Publish(slug, sse)
+	s.projectHub.Publish(slug, Event{ID: sse.ID, Type: streamName, Data: sse.Data})
 }
 
 // projectSlug resolves a Project CR UID to its "namespace/name" slug, memoizing

@@ -417,7 +417,13 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	// open Room live-appends it — a co-viewer sees the human's post, and an agent
 	// reply both appends AND resolves the poster's "{agent} is working…" watch to
 	// "replied" — without a reload. Best-effort (the row is already durable).
-	if h.roomStream != nil {
+	// ISI-7272 (ISI-7262 WS-1): the synchronous echo covers HUMAN posts only. A
+	// run-authored post captured a `discussion_message` outbox event in the store
+	// (outbox.go), which the apiserver run-event projector bridges onto this SAME
+	// `discussion` named event — echoing here too would double-frame the room. The
+	// console dedupes by message id regardless (liveFeed.upsertMessage), but the
+	// server keeps the invariant: exactly one echo per committed message.
+	if h.roomStream != nil && auth.RunID == nil {
 		h.roomStream.PublishMessageCreated(projectID, msg)
 	}
 	writeJSON(w, http.StatusCreated, msg)

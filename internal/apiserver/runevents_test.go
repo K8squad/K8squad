@@ -303,3 +303,50 @@ func TestRunReplayAdapter_ConvertsAndForwards(t *testing.T) {
 		t.Fatal("want replay error propagated")
 	}
 }
+
+// ISI-7272 (ISI-7262 WS-1): a `discussion_message` run event — captured on
+// coord.outbox by the discussion store when an agent posts from the SEPARATE
+// cmd/memory process — is bridged onto the project bus REMAPPED onto the
+// room's `discussion` named event, payload verbatim (the same frame the
+// handler's synchronous human echo emits), while the per-run hub keeps the
+// raw event type.
+func TestRunEventSource_BridgesDiscussionMessageToRoomEvent(t *testing.T) {
+	reader := &fakeRunReader{errLatest: errors.New("seed-at-0")}
+	hub := NewHub()
+	projectHub := NewProjectHub()
+	runSub := hub.Subscribe("run-a")
+	projSub := projectHub.Subscribe("ns/proj")
+
+	resolve := func(_ context.Context, uid string) (string, bool) {
+		if uid == "uid-1" {
+			return "ns/proj", true
+		}
+		return "", false
+	}
+	src := NewRunEventSource(reader, hub, WithProjectorPoll(5*time.Millisecond),
+		WithProjectBridge(projectHub, resolve))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = src.Run(ctx) }()
+
+	payload := []byte(`{"type":"message.created","message":{"id":"m-1","threadId":"t-1","body":"final"}}`)
+	reader.add(
+		events.RunEvent{ID: 7, RunID: "run-a", ProjectID: "uid-1", EventType: "discussion_message", Payload: payload},
+	)
+
+	// Per-run hub: the raw event type, as-is.
+	if ev := recvWithin(t, runSub, time.Second); ev.ID != "7" || ev.Type != "discussion_message" {
+		t.Fatalf("run hub: want id 7 discussion_message, got id %q type %q", ev.ID, ev.Type)
+	}
+	// Project bus: the room's `discussion` named event, payload verbatim, id kept.
+	ev, ok := nrecvWithin(projSub, time.Second)
+	if !ok {
+		t.Fatal("project bus: expected the bridged discussion message event, got none")
+	}
+	if ev.Type != "discussion" || ev.ID != "7" || string(ev.Data) != string(payload) {
+		t.Fatalf("project bus: want discussion/7 with verbatim payload, got %q/%q %s", ev.Type, ev.ID, ev.Data)
+	}
+	if _, extra := nrecvWithin(projSub, 50*time.Millisecond); extra {
+		t.Fatal("project bus: received an extra event")
+	}
+}
