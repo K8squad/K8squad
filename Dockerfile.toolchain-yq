@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 # yq toolchain image (ISI-3413). Static upstream mikefarah/yq release binary.
 FROM alpine:3.21 AS fetch
-ARG YQ_VERSION=v4.53.6
+# ISI-7282: v4.54.3 vendors golang.org/x/net v0.62.0 - clears CVE-2026-78661 (fix floor
+# 0.62.0; upstream go.mod verified 2026-11-10).
+ARG YQ_VERSION=v4.54.3
 ARG TARGETARCH
 RUN apk add --no-cache curl \
  && curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${TARGETARCH}" \

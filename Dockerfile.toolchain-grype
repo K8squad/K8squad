@@ -5,7 +5,8 @@
 # lane itself runs a grype cross-check on every publish). Multi-arch: linux/amd64 +
 # linux/arm64 via TARGETARCH (buildx).
 FROM alpine:3.21 AS fetch
-ARG GRYPE_VERSION=0.87.0
+# ISI-7282: 0.104.1 is the CVE-2025-65965 fix floor (14 findings at 0.87.0).
+ARG GRYPE_VERSION=0.104.1
 ARG TARGETARCH
 RUN apk add --no-cache curl \
  && curl -fsSL "https://raw.githubusercontent.com/anchore/grype/main/install.sh" \
