@@ -28,11 +28,23 @@ projects `OPENAI_BASE_URL` into the run.
 ## Step 1: Install KSquad Operator
 
 ```bash
-# Add Helm repository and install the operator
+# Add the Helm repository
 helm repo add ksquad https://charts.k8squad.io
 helm repo update
+
+# Install the CRDs first (ADR-0002 Option B: CRDs ship in the standalone k8squad-crds chart)
+helm install ksquad-crds ksquad/k8squad-crds --namespace k8squad-crds --create-namespace
+
+# Create the database DSN secret (Postgres with the pgvector extension)
+kubectl --namespace k8squad-system create secret generic k8squad-db \
+  --from-literal=dsn='postgres://USER:PASSWORD@YOUR-POSTGRES:5432/k8squad?sslmode=disable'
+
+# Install the control plane
 helm install ksquad ksquad/k8squad \
   --namespace k8squad-system --create-namespace \
+  --set controlPlane.enabled=true \
+  --set controlPlane.database.existingSecret=k8squad-db \
+  --set controlPlane.nats.persistence.storageClassName=STORAGE-CLASS \
   --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 ```
 
