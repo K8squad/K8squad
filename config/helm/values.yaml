@@ -458,8 +458,8 @@ tools:
           provides: [uv, uvx]
       jq:
         versions:
-        - version: "1.7"
-          image: ghcr.io/k8squad/toolchains/jq:1.7
+        - version: "1.8"
+          image: ghcr.io/k8squad/toolchains/jq:1.8
           provides: [jq]
       yq:
         versions:

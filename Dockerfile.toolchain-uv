@@ -4,7 +4,7 @@
 ARG UV_VERSION=0.5.31
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
-FROM alpine:3.21
+FROM alpine:3.24
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.title="k8squad toolchain: uv"
 RUN apk add --no-cache ca-certificates

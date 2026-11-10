@@ -4,7 +4,7 @@
 ARG GO_IMAGE=golang:1.26-alpine
 FROM ${GO_IMAGE} AS src
 
-FROM alpine:3.21
+FROM alpine:3.24
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.title="k8squad toolchain: go"
 RUN apk add --no-cache git ca-certificates
