@@ -1,0 +1,64 @@
+name: getting-started-smoke-public
+
+# Public fresh-install acceptance lane (ISI-7279, ISI-7278 follow-up).
+#
+# The sibling getting-started-smoke lane exercises the catalog quickstart; this
+# lane installs the FULL control plane on a throwaway kind cluster using only
+# the chart's PUBLIC defaults (ghcr.io/k8squad, tag = appVersion) — exactly
+# what a brand-new adopter gets. Nothing is built or loaded into the cluster,
+# so tag/chart/image skew (ISI-7277: public apiserver image predating the
+# --migrate-only hook flag) fails here, at review time, instead of at an
+# adopter's first helm install.
+#
+# Runs on PRs that touch the install surface (chart/CRDs/migrations — every
+# appVersion bump gets fresh-public-install tested), nightly, and on manual
+# dispatch (optionally pinning a tag to smoke-test a published image).
+
+on:
+  pull_request:
+    paths:
+      - 'config/helm/**'
+      - 'config/helm-crds/**'
+      - 'db/migrations/**'
+      - 'hack/getting-started-smoke-public.sh'
+      - '.github/workflows/getting-started-smoke-public.yml'
+  schedule:
+    - cron: '30 5 * * *'   # nightly, offset from getting-started-smoke's 05:00
+  workflow_dispatch:
+    inputs:
+      appTag:
+        description: 'Public tag to test (defaults to the chart appVersion)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: getting-started-smoke-public-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-install-public:
+    name: fresh install, PUBLIC default images (fresh kind cluster)
+    # GitHub-hosted ON PURPOSE: the runner has no access to any internal
+    # registry, so this lane structurally cannot pass via internal mirrors —
+    # it reproduces the adopter's world (unlike the self-hosted lanes, which
+    # can see the internal registry and would mask public-registry skew).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Create fresh kind cluster
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          wait: 120s
+
+      - name: Fresh install with PUBLIC default images + assert migrate gate
+        run: ./hack/getting-started-smoke-public.sh
+        env:
+          APP_TAG: ${{ inputs.appTag || '' }}
