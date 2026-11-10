@@ -188,9 +188,9 @@
       "dockerfile": "Dockerfile.toolchain-gitleaks",
       "context": ".",
       "buildArgs": {
-        "GITLEAKS_VERSION": "8.24.0"
+        "GITLEAKS_VERSION": "8.30.1"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, secret-scan skill). gitleaks already runs in the main-repo CI L4 gate. Catalog tag 8 tracks the gitleaks 8.x line (8.24.0 at authoring). Long-tail image — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, secret-scan skill). gitleaks already runs in the main-repo CI L4 gate. Catalog tag 8 tracks the gitleaks 8.x line. ISI-7284: 8.24.0 linux tarballs are gone upstream (404; asset arch suffix renamed x86_64 to x64); bumped to 8.30.1, verified for linux_x64 + linux_arm64. Long-tail image — NOT in the default catalog."
     },
     {
       "tool": "trivy",
@@ -219,10 +219,10 @@
       "context": ".",
       "buildArgs": {
         "PYTHON_IMAGE": "python:3.12-alpine",
-        "CHECKOV_VERSION": "3.2.319",
+        "CHECKOV_VERSION": "3.4.3",
         "KUBE_BENCH_VERSION": "0.9.4"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, iac-scan skill). Provides checkov (pip on python:3.12-alpine) + kube-bench (static binary from aquasecurity/kube-bench) on one image — they pair for terraform/k8s misconfig scanning. Catalog tag 3 tracks the checkov 3.x line (3.2.319 at authoring). Long-tail — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, iac-scan skill). Provides checkov (pip on python:3.12-alpine) + kube-bench (static binary from aquasecurity/kube-bench) on one image — they pair for terraform/k8s misconfig scanning. Catalog tag 3 tracks the checkov 3.x line. ISI-7284: 3.2.319 pinned rustworkx<0.14 and 0.13.2 ships no musllinux aarch64 cp312 wheel (arm64 leg: sdist, Rust compiler missing); bumped to 3.4.3 and pinned rustworkx 0.17.1 (cp39-abi3 musllinux_1_2 wheels, both arches). Long-tail — NOT in the default catalog."
     },
     {
       "tool": "ffmpeg",
