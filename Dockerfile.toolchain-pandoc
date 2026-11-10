@@ -4,10 +4,16 @@
 # (typesetting / PDF generation) on a single image for the `doc-convert` skill.
 # Multi-stage: pandoc binary staged from the official release image; weasyprint and
 # typst added on top of python:3.12-alpine. Multi-arch (linux/amd64 + linux/arm64).
-FROM pandoc/core:3.6.3 AS pandoc-src
-
+# Global build args - declared BEFORE the first FROM so every FROM line can use
+# them (ISI-7284). Declared after the first FROM they are stage-scoped: the third
+# stage FROM ${PYTHON_IMAGE} resolved empty even though buildx passed
+# --build-arg PYTHON_IMAGE=python:3.12-alpine (buildkit lints UndefinedArgInFrom /
+# InvalidDefaultArgInFrom -> base name should not be blank).
 ARG PYTHON_IMAGE=python:3.12-alpine
 ARG TYPST_VERSION=0.13.1
+
+FROM pandoc/core:3.6.3 AS pandoc-src
+
 FROM alpine:3.21 AS typst-fetch
 ARG TYPST_VERSION
 ARG TARGETARCH
