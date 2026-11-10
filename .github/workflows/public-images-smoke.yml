@@ -1,0 +1,54 @@
+name: public-images-smoke
+
+# Public-adopter install lane (ISI-7277). Installs the PUBLISHED control-plane
+# chart from charts.k8squad.io with NO image overrides — every component
+# resolves to ghcr.io/k8squad/ksquad-<component>:<chart appVersion> — and
+# asserts the fresh install completes, pre-install ksquad-migrate hook Job
+# included. This is the exact surface a brand-new public adopter pulls; every
+# other lane either leaves controlPlane.enabled=false or pins
+# built-from-source/internal images, which is how v0.2.0 shipped a migrate
+# hook whose --migrate-only flag the public apiserver image predates
+# (ISI-7277, surfaced by ISI-7264 WS-1).
+#
+# Nightly + dispatch: it tests the PUBLISHED repo, so it belongs to the
+# release cadence, not the PR cadence — a red here means the published
+# chart/images are broken for adopters RIGHT NOW. On PRs it runs only when
+# the lane itself changes (script/workflow), same convention as
+# getting-started-smoke. All logic lives in hack/public-images-smoke.sh so it
+# stays runnable locally against any kube-context.
+
+on:
+  pull_request:
+    paths:
+      - 'hack/public-images-smoke.sh'
+      - '.github/workflows/public-images-smoke.yml'
+  schedule:
+    - cron: '30 5 * * *'   # nightly, offset after getting-started-smoke (05:00) and e2e (04:00)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-images-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-images-smoke:
+    name: public-default-images install (fresh kind cluster)
+    runs-on: [self-hosted, linux, x64]   # needs docker/kind — the QA-gate agent workspace has neither (ISI-3476)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - name: Create fresh kind cluster
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          wait: 120s
+
+      - name: Install published chart with public default images + assert
+        run: ./hack/public-images-smoke.sh
