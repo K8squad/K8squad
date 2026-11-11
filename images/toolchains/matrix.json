@@ -7,7 +7,7 @@
       "dockerfile": "Dockerfile.toolchain-kubectl",
       "context": ".",
       "buildArgs": {
-        "KUBECTL_VERSION": "v1.36.4"
+        "KUBECTL_VERSION": "v1.36.6"
       },
       "note": "ISI-3444: 1.31 line is built with Go < 1.24.13 (stdlib CVE-2025-68121, fixable → gate). v1.36.4 is built on the Go 1.26 line and drops moby/spdystream v0.4.0 for v0.5.1 (CVE-2026-35469)."
     },
@@ -25,7 +25,7 @@
       "dockerfile": "Dockerfile.toolchain-gh",
       "context": ".",
       "buildArgs": {
-        "GH_VERSION": "v2.98.0"
+        "GH_VERSION": "v2.103.3"
       },
       "note": "ISI-3444: v2.62.0 gated on CVE-2026-48501 (fixed 2.93.0) + grpc CVE-2026-33186 + stdlib CVE-2025-68121. v2.98.0 is built on Go 1.26 with grpc v1.83.0."
     },
@@ -46,7 +46,7 @@
       "context": ".",
       "buildArgs": {
         "NODE_IMAGE": "node:22-alpine",
-        "NPM_VERSION": "12.0.2"
+        "NPM_VERSION": "12.2.1"
       },
       "note": "ISI-3444: the npm bundled in node:22-alpine ships tar 7.5.11 / brace-expansion 2.0.2 (CRITICAL CVE-2026-59873 / HIGH CVE-2026-13149). The Dockerfile upgrades the bundled npm to NPM_VERSION (12.0.2 declares tar ^7.5.19)."
     },
@@ -56,7 +56,7 @@
       "dockerfile": "Dockerfile.toolchain-dtctl",
       "context": ".",
       "buildArgs": {
-        "DTCTL_VERSION": "v0.38.0"
+        "DTCTL_VERSION": "v0.45.0"
       },
       "note": "Catalog tag 1.0 tracks the upstream dynatrace-oss/dtctl 0.x line \u2014 upstream has not cut a 1.0 release (v0.38.0 latest at authoring). Revisit the catalog tag when upstream ships 1.0."
     },
@@ -66,7 +66,7 @@
       "dockerfile": "Dockerfile.toolchain-helm",
       "context": ".",
       "buildArgs": {
-        "HELM_VERSION": "v3.21.4"
+        "HELM_VERSION": "v3.22.1"
       },
       "note": "ISI-3444: v3.16.4 gated on stdlib CVE-2025-68121 (Go 1.22.7), grpc CVE-2026-33186, containerd CVE-2024-25621. v3.21.4 is built on Go 1.26 with grpc v1.82.1 and no containerd dep. Stays on the helm 3.x line (helm 4 is a separate major bump decision)."
     },
@@ -113,7 +113,7 @@
       "dockerfile": "Dockerfile.toolchain-yq",
       "context": ".",
       "buildArgs": {
-        "YQ_VERSION": "v4.53.6"
+        "YQ_VERSION": "v4.54.3"
       }
     },
     {
@@ -186,23 +186,23 @@
     },
     {
       "tool": "trivy",
-      "version": "0.58",
+      "version": "0.71",
       "dockerfile": "Dockerfile.toolchain-trivy",
       "context": ".",
       "buildArgs": {
-        "TRIVY_IMAGE": "aquasec/trivy:0.58.2"
+        "TRIVY_IMAGE": "aquasec/trivy:0.71.0"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill). Rebases the official aquasec/trivy image for K8squad-owned SBOM+sign. Catalog tag 0.58 tracks the trivy 0.58.x patch line (0.58.2 at authoring). Long-tail image — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill). Rebases the official aquasec/trivy image for K8squad-owned SBOM+sign. Catalog tag 0.71 tracks the trivy 0.71.x line (ISI-7282: 0.58.2 to 0.71.0, CVE-2026-54448 fix). Long-tail image — NOT in the default catalog."
     },
     {
       "tool": "grype",
-      "version": "0.87",
+      "version": "0.104",
       "dockerfile": "Dockerfile.toolchain-grype",
       "context": ".",
       "buildArgs": {
-        "GRYPE_VERSION": "0.87.0"
+        "GRYPE_VERSION": "0.104.1"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill, trivy cross-check). grype (Anchore); static Go binary installed via official install.sh. Catalog tag 0.87 tracks the grype 0.87.x line (0.87.0 at authoring). Long-tail image — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill, trivy cross-check). grype (Anchore); static Go binary installed via official install.sh. Catalog tag 0.104 tracks the grype 0.104.x line (ISI-7282: 0.87.0 to 0.104.1, CVE-2025-65965 fix). Long-tail image — NOT in the default catalog."
     },
     {
       "tool": "checkov",

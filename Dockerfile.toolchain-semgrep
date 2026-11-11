@@ -9,4 +9,13 @@ ARG SEMGREP_IMAGE=semgrep/semgrep:1.95.0
 FROM ${SEMGREP_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.title="k8squad toolchain: semgrep"
+# ISI-7282: the 1.95.0 base ships alpine packages (git 2.45.2-r0 CVE-2024-52006, openssh
+# 9.7_p1-r4 CVE-2026-123158 CRITICAL, sqlite-libs 3.45.3-r1 CVE-2025-29087) and python deps
+# (certifi 2024.8.30 GHSA-6q48-6c7w-9gw2 CRITICAL, protobuf 4.25.5 CVE-2025-4565) that the
+# 2026-11-10 wave gates - pull current fixes at build time instead of waiting on the
+# rolling base ref (same pattern as Dockerfile.toolchain-python). protobuf stays <5
+# (patch floor only) to respect semgrep own dependency pin.
+USER root
+RUN apk upgrade --no-cache git openssh sqlite-libs \
+ && pip install --no-cache-dir --upgrade "certifi>=2026.10.18" "protobuf>=4.25.8,<5"
 ENTRYPOINT ["/usr/local/bin/semgrep"]
