@@ -64,64 +64,86 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Lint .trivyignore (expiry + justification on every entry)
+      - name: Lint .trivyignore + .grype.yaml (expiry + justification on every entry)
         run: |
           python3 - <<'PY'
           import datetime as dt
           import re
           import sys
 
-          path = ".trivyignore"
-          try:
-              lines = open(path, encoding="utf-8").read().splitlines()
-          except FileNotFoundError:
-              print(f"::error::{path} is missing — the curated CVE escape hatch must exist "
-                    "(seeded empty is fine; absent is not).")
-              sys.exit(1)
+          # Every curated CVE escape hatch, with the line shape that identifies a live
+          # suppression entry in that file (ISI-7285: .grype.yaml is the Grype
+          # cross-check lane's parallel to .trivyignore — same expiry discipline).
+          # .trivyignore keeps its stricter "any stray non-comment line is an entry"
+          # reading; .grype.yaml entries are the "- vulnerability:" ignore rules, so
+          # YAML keys (ignore:, future config) are structurally skipped.
+          files = [
+              (".trivyignore", None),
+              (".grype.yaml", re.compile(r"^[-:]\s*(vulnerability|vulnerabilities):")),
+          ]
 
           today = dt.date.today()
           # Fail-soft lead-time: warn (never fail) when an entry is within this many days
           # of expiry, so the weekly Monday cron announces the deadline instead of the gate
           # flipping red cold on a PR days later (ISI-4695). Tune here.
           WARN_WINDOW = dt.timedelta(days=7)
-          errors = []
-          warnings = []
           expires_re = re.compile(r"expires:(\d{4}-\d{2}-\d{2})")
           date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-          prev_comment = None
-          for i, raw in enumerate(lines, 1):
-              line = raw.strip()
-              if line.startswith("#"):
-                  prev_comment = line
-                  # Even a comment-only expiry marker must not be stale — an expired
-                  # suppression is a gate failure no matter how it is formatted.
-                  for m in expires_re.finditer(line):
-                      d = m.group(1)
-                      if not date_re.match(d):
-                          errors.append(f"line {i}: malformed expiry date '{d}'")
-                      elif dt.date.fromisoformat(d) < today:
-                          errors.append(f"line {i}: entry expired on {d} — remove, renew, or re-justify")
-                      elif dt.date.fromisoformat(d) < today + WARN_WINDOW:
-                          warnings.append(f"line {i}: entry expires on {d} (within 7 days) — renew before it gates the fleet")
-                  continue
-              if not line:
-                  continue
-              # A live suppression entry (CVE/misconf id). It is only valid when the
-              # comment line directly above it carries BOTH an expiry date and a
-              # written justification (reviewed-like-code discipline, §6.2).
-              if prev_comment is None or "justification:" not in prev_comment:
-                  errors.append(f"line {i}: '{line}' lacks a preceding justification: comment")
-              if prev_comment is None or not expires_re.search(prev_comment):
-                  errors.append(f"line {i}: '{line}' lacks a preceding expires:YYYY-MM-DD date")
+          errors = []
+          warnings = []
+
+          def lint(path, entry_re):
+              try:
+                  lines = open(path, encoding="utf-8").read().splitlines()
+              except FileNotFoundError:
+                  print(f"::error::{path} is missing — the curated CVE escape hatch must exist "
+                        "(seeded empty is fine; absent is not).")
+                  return [f"{path}: missing"], []
+
+              file_errors = []
+              file_warnings = []
+              prev_comment = None
+              for i, raw in enumerate(lines, 1):
+                  line = raw.strip()
+                  if line.startswith("#"):
+                      prev_comment = line
+                      # Even a comment-only expiry marker must not be stale — an expired
+                      # suppression is a gate failure no matter how it is formatted.
+                      for m in expires_re.finditer(line):
+                          d = m.group(1)
+                          if not date_re.match(d):
+                              file_errors.append(f"{path} line {i}: malformed expiry date '{d}'")
+                          elif dt.date.fromisoformat(d) < today:
+                              file_errors.append(f"{path} line {i}: entry expired on {d} — remove, renew, or re-justify")
+                          elif dt.date.fromisoformat(d) < today + WARN_WINDOW:
+                              file_warnings.append(f"{path} line {i}: entry expires on {d} (within 7 days) — renew before it gates the fleet")
+                      continue
+                  if not line:
+                      continue
+                  if entry_re is not None and not entry_re.match(line):
+                      continue
+                  # A live suppression entry (CVE/misconf id). It is only valid when the
+                  # comment line directly above it carries BOTH an expiry date and a
+                  # written justification (reviewed-like-code discipline, §6.2).
+                  if prev_comment is None or "justification:" not in prev_comment:
+                      file_errors.append(f"{path} line {i}: '{line}' lacks a preceding justification: comment")
+                  if prev_comment is None or not expires_re.search(prev_comment):
+                      file_errors.append(f"{path} line {i}: '{line}' lacks a preceding expires:YYYY-MM-DD date")
+              return file_errors, file_warnings
+
+          for path, entry_re in files:
+              fe, fw = lint(path, entry_re)
+              errors.extend(fe)
+              warnings.extend(fw)
 
           for w in warnings:
-              print(f"::warning::trivyignore: {w}")
+              print(f"::warning::cve-ignore-lint: {w}")
           if errors:
               for e in errors:
-                  print(f"::error::trivyignore: {e}")
+                  print(f"::error::cve-ignore-lint: {e}")
               sys.exit(1)
-          msg = "trivyignore lint: no entries past expiry, every entry justified and dated."
+          msg = "cve-ignore lint: no entries past expiry, every entry justified and dated."
           if warnings:
               msg += f" ({len(warnings)} entr{'y' if len(warnings)==1 else 'ies'} expiring within 7 days — renew soon.)"
           print(msg)
