@@ -343,7 +343,7 @@ func TestRunEventSource_BridgesDiscussionMessageToRoomEvent(t *testing.T) {
 	if !ok {
 		t.Fatal("project bus: expected the bridged discussion message event, got none")
 	}
-	if ev.Type != "discussion" || ev.ID != "7" || string(ev.Data) != string(payload) {
+	if ev.Type != "discussion" || ev.ID != "7" || ev.Data != string(payload) {
 		t.Fatalf("project bus: want discussion/7 with verbatim payload, got %q/%q %s", ev.Type, ev.ID, ev.Data)
 	}
 	if _, extra := nrecvWithin(projSub, 50*time.Millisecond); extra {
