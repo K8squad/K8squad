@@ -1,5 +1,5 @@
 {
-  "$comment": "Build detail for the K8squad toolchain image factory (ISI-3413). The canonical tool LIST (name + catalog tag) lives in .github/workflows/component-matrix.yml (`toolchains` family); this file carries per-tool build detail (Dockerfile/context + pinned upstream patch buildArgs). The build-images.yml plan leg joins the two and FAILS on drift in either direction. `version` is the CATALOG TAG referenced by config/helm/values.yaml tools.defaultCatalog.entries \u2014 it tracks an upstream minor line; `buildArgs` pin the exact upstream patch/release used at build time. Adding a tool = one component-matrix row + one row here + Dockerfile.toolchain-<tool>.",
+  "$comment": "Build detail for the K8squad toolchain image factory (ISI-3413). The canonical tool LIST (name + catalog tag) lives in .github/workflows/component-matrix.yml (`toolchains` family); this file carries per-tool build detail (Dockerfile/context + pinned upstream patch buildArgs). The build-images.yml plan leg joins the two and FAILS on drift in either direction. `version` is the CATALOG TAG referenced by config/helm/values.yaml tools.defaultCatalog.entries \u2014 it tracks an upstream minor line; `buildArgs` pin the exact upstream patch/release used at build time. Adding a tool = one component-matrix row + one row here + Dockerfile.toolchain-<tool>. ISI-7284: bluebox-cli is PARKED (upstream dynatrace-oss/bluebox deleted; repo + release assets 404, no wayback snapshot) - its row was removed from both lists pending the board decision (drop / vendor v1.0.0 / re-point at a new home); git history keeps the exact row.",
   "tools": [
     {
       "tool": "kubectl",
@@ -7,7 +7,7 @@
       "dockerfile": "Dockerfile.toolchain-kubectl",
       "context": ".",
       "buildArgs": {
-        "KUBECTL_VERSION": "v1.36.4"
+        "KUBECTL_VERSION": "v1.36.6"
       },
       "note": "ISI-3444: 1.31 line is built with Go < 1.24.13 (stdlib CVE-2025-68121, fixable → gate). v1.36.4 is built on the Go 1.26 line and drops moby/spdystream v0.4.0 for v0.5.1 (CVE-2026-35469)."
     },
@@ -25,7 +25,7 @@
       "dockerfile": "Dockerfile.toolchain-gh",
       "context": ".",
       "buildArgs": {
-        "GH_VERSION": "v2.98.0"
+        "GH_VERSION": "v2.103.3"
       },
       "note": "ISI-3444: v2.62.0 gated on CVE-2026-48501 (fixed 2.93.0) + grpc CVE-2026-33186 + stdlib CVE-2025-68121. v2.98.0 is built on Go 1.26 with grpc v1.83.0."
     },
@@ -46,7 +46,7 @@
       "context": ".",
       "buildArgs": {
         "NODE_IMAGE": "node:22-alpine",
-        "NPM_VERSION": "12.0.2"
+        "NPM_VERSION": "12.2.1"
       },
       "note": "ISI-3444: the npm bundled in node:22-alpine ships tar 7.5.11 / brace-expansion 2.0.2 (CRITICAL CVE-2026-59873 / HIGH CVE-2026-13149). The Dockerfile upgrades the bundled npm to NPM_VERSION (12.0.2 declares tar ^7.5.19)."
     },
@@ -56,7 +56,7 @@
       "dockerfile": "Dockerfile.toolchain-dtctl",
       "context": ".",
       "buildArgs": {
-        "DTCTL_VERSION": "v0.38.0"
+        "DTCTL_VERSION": "v0.45.0"
       },
       "note": "Catalog tag 1.0 tracks the upstream dynatrace-oss/dtctl 0.x line \u2014 upstream has not cut a 1.0 release (v0.38.0 latest at authoring). Revisit the catalog tag when upstream ships 1.0."
     },
@@ -66,7 +66,7 @@
       "dockerfile": "Dockerfile.toolchain-helm",
       "context": ".",
       "buildArgs": {
-        "HELM_VERSION": "v3.21.4"
+        "HELM_VERSION": "v3.22.1"
       },
       "note": "ISI-3444: v3.16.4 gated on stdlib CVE-2025-68121 (Go 1.22.7), grpc CVE-2026-33186, containerd CVE-2024-25621. v3.21.4 is built on Go 1.26 with grpc v1.82.1 and no containerd dep. Stays on the helm 3.x line (helm 4 is a separate major bump decision)."
     },
@@ -113,7 +113,7 @@
       "dockerfile": "Dockerfile.toolchain-yq",
       "context": ".",
       "buildArgs": {
-        "YQ_VERSION": "v4.53.6"
+        "YQ_VERSION": "v4.54.3"
       }
     },
     {
@@ -163,15 +163,7 @@
       },
       "note": "ISI-5768 skill-catalog expansion (§3.1 Ops/IaC, ansible skill). pip-installed on python:3.12-alpine (same base as the python toolchain) via musllinux wheels. Catalog tag 2.17 tracks the ansible-core 2.17 line (2.17.6 at authoring). Long-tail image — NOT in the default catalog."
     },
-    {      "tool": "bluebox-cli",
-      "version": "1",
-      "dockerfile": "Dockerfile.toolchain-bluebox-cli",
-      "context": ".",
-      "buildArgs": {
-        "BLUEBOX_VERSION": "v1.0.0"
-      },
-      "note": "ISI-5768 skill-catalog expansion (§3.5 Bluebox skill). Dynatrace AI reliability CLI (dynatrace-oss/bluebox); static Go binary staged from the GitHub release. Catalog tag 1 tracks the 1.x line (v1.0.0 at authoring). Long-tail image — NOT in the default catalog."
-    },
+
     {
       "tool": "semgrep",
       "version": "1",
@@ -188,29 +180,29 @@
       "dockerfile": "Dockerfile.toolchain-gitleaks",
       "context": ".",
       "buildArgs": {
-        "GITLEAKS_VERSION": "8.24.0"
+        "GITLEAKS_VERSION": "8.30.1"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, secret-scan skill). gitleaks already runs in the main-repo CI L4 gate. Catalog tag 8 tracks the gitleaks 8.x line (8.24.0 at authoring). Long-tail image — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, secret-scan skill). gitleaks already runs in the main-repo CI L4 gate. Catalog tag 8 tracks the gitleaks 8.x line. ISI-7284: 8.24.0 linux tarballs are gone upstream (404; asset arch suffix renamed x86_64 to x64); bumped to 8.30.1, verified for linux_x64 + linux_arm64. Long-tail image — NOT in the default catalog."
     },
     {
       "tool": "trivy",
-      "version": "0.58",
+      "version": "0.71",
       "dockerfile": "Dockerfile.toolchain-trivy",
       "context": ".",
       "buildArgs": {
-        "TRIVY_IMAGE": "aquasec/trivy:0.58.2"
+        "TRIVY_IMAGE": "aquasec/trivy:0.71.0"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill). Rebases the official aquasec/trivy image for K8squad-owned SBOM+sign. Catalog tag 0.58 tracks the trivy 0.58.x patch line (0.58.2 at authoring). Long-tail image — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill). Rebases the official aquasec/trivy image for K8squad-owned SBOM+sign. Catalog tag 0.71 tracks the trivy 0.71.x line (ISI-7282: 0.58.2 to 0.71.0, CVE-2026-54448 fix). Long-tail image — NOT in the default catalog."
     },
     {
       "tool": "grype",
-      "version": "0.87",
+      "version": "0.104",
       "dockerfile": "Dockerfile.toolchain-grype",
       "context": ".",
       "buildArgs": {
-        "GRYPE_VERSION": "0.87.0"
+        "GRYPE_VERSION": "0.104.1"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill, trivy cross-check). grype (Anchore); static Go binary installed via official install.sh. Catalog tag 0.87 tracks the grype 0.87.x line (0.87.0 at authoring). Long-tail image — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, vuln-scan skill, trivy cross-check). grype (Anchore); static Go binary installed via official install.sh. Catalog tag 0.104 tracks the grype 0.104.x line (ISI-7282: 0.87.0 to 0.104.1, CVE-2025-65965 fix). Long-tail image — NOT in the default catalog."
     },
     {
       "tool": "checkov",
@@ -219,10 +211,10 @@
       "context": ".",
       "buildArgs": {
         "PYTHON_IMAGE": "python:3.12-alpine",
-        "CHECKOV_VERSION": "3.2.319",
+        "CHECKOV_VERSION": "3.4.3",
         "KUBE_BENCH_VERSION": "0.9.4"
       },
-      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, iac-scan skill). Provides checkov (pip on python:3.12-alpine) + kube-bench (static binary from aquasecurity/kube-bench) on one image — they pair for terraform/k8s misconfig scanning. Catalog tag 3 tracks the checkov 3.x line (3.2.319 at authoring). Long-tail — NOT in the default catalog."
+      "note": "ISI-5768 skill-catalog expansion (§3.6 Security, iac-scan skill). Provides checkov (pip on python:3.12-alpine) + kube-bench (static binary from aquasecurity/kube-bench) on one image — they pair for terraform/k8s misconfig scanning. Catalog tag 3 tracks the checkov 3.x line. ISI-7284: 3.2.319 pinned rustworkx<0.14 and 0.13.2 ships no musllinux aarch64 cp312 wheel (arm64 leg: sdist, Rust compiler missing); bumped to 3.4.3 and pinned rustworkx 0.17.1 (cp39-abi3 musllinux_1_2 wheels, both arches). Long-tail — NOT in the default catalog."
     },
     {
       "tool": "ffmpeg",

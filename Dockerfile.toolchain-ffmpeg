@@ -9,4 +9,11 @@ ARG FFMPEG_IMAGE=linuxserver/ffmpeg:7.1.1
 FROM ${FFMPEG_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.title="k8squad toolchain: ffmpeg"
+# ISI-7282: the ubuntu base ships apt 2.8.3; CVE-2026-109518 (HIGH, fix 2.8.4ubuntu0.1)
+# gates the leg - upgrade apt at build time instead of waiting on the rolling base ref
+# (same pattern as Dockerfile.toolchain-python).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends --only-upgrade apt \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 ENTRYPOINT ["/usr/local/bin/ffmpeg"]

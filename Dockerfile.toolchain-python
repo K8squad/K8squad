@@ -11,5 +11,8 @@ LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
 # ISI-3923: also upgrade util-linux (libuuid) for the 2026-09 mount/nsenter batch
 # (CVE-2026-53612/53613/53614/76642/78408/78409/78410, fixed in util-linux 2.42.3);
 # no-op until the alpine repo carries 2.42.3, backstopped by .trivyignore until then.
-RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux
+# ISI-7282: krb5-libs floor >= 1.22.3-r0 - the rolling alpine 3.24.x base ships 1.22.2-r1
+# which the 2026-11-10 advisory wave gates (16 HIGH CVEs incl. CVE-2026-107364, all
+# fixed in 1.22.3-r0).
+RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux krb5-libs
 ENTRYPOINT ["/usr/local/bin/python3"]

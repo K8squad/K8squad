@@ -219,3 +219,37 @@ CVE-2026-32280
 CVE-2026-32281
 # CVE-2026-32283   expires:2026-11-19   justification:HIGH stdlib (fix Go 1.26.2); clusterctl v1.9.6 compiled with go1.22.12 (re-verified 2026-10-29), fix rides CAPI line upgrade
 CVE-2026-32283
+
+# --- ISI-7282 renewal 2026-11-10 (scanner-DB advisory wave, Build Images run 42873456007) ---
+# Per-leg findings archived at /tmp/isi7281-logs/leg-*.log on claude-dev (DB 2026-11-10);
+# upstream fix-carrier checks (go.mod / go.sum / package-lock via api.github.com + npmjs,
+# 2026-11-10). Cleared by pin bumps in the same PR - no entry needed: yq v4.53.6->v4.54.3
+# (vendors x/net 0.62.0, clears CVE-2026-78661 for the yq leg), grype 0.87.0->0.104.1
+# (CVE-2025-65965, 14 findings), trivy 0.58.2->0.71.0 (CVE-2026-54448) + git >=2.45.3-r0 apk
+# floor (CVE-2024-52006, also semgrep leg), dtctl matrix sync v0.38.0->v0.45.0
+# (klauspost/compress 1.18.7, CVE-2026-63209), gh matrix sync v2.98.0->v2.103.3 (x/mod 0.41.0,
+# CVE-2026-56864), npm matrix sync 12.0.2->12.2.1 (brace-expansion 5.0.12, CVE-2026-102276),
+# krb5-libs apk floor >=1.22.3-r0 on python+ansible-core (16 HIGH incl. CVE-2026-107364),
+# ffmpeg apt build-time upgrade (CVE-2026-109518), semgrep apk+pip floors (git/openssh/
+# sqlite-libs, certifi, protobuf).
+#
+# x/net CVE-2026-78661 (HIGH, fix 0.62.0) - vendored in static upstream binaries whose pinned
+# lines have no 0.62.0-carrying release yet (verified 2026-11-10): kubectl v1.36.6 (x/net
+# 0.56.0), helm v3.22.1 (0.60.0, newest 3.x - helm 4 is a separate major decision), docker:29-cli
+# buildx/compose plugins (0.59.0), clusterctl v1.9.5 (0.33.0 - CAPI 1.9 EOL, line upgrade is its
+# own tracked decision, see the ISI-5768/6822 section above).
+# CVE-2026-78661   expires:2026-11-26   justification:HIGH x/net (fix 0.62.0) vendored in kubectl v1.36.6 (0.56.0), helm v3.22.1 (0.60.0, newest 3.x), docker:29-cli plugins (0.59.0), clusterctl v1.9.5 (0.33.0); no pinned-line upstream release vendors 0.62.0 yet (verified 2026-11-10), fix rides upstream line upgrades
+CVE-2026-78661
+#
+# terraform 1.9.8 (last 1.9.x patch) vendors golang-jwt/jwt/v4 v4.4.2 (CVE-2025-30204, fix
+# 4.5.2); go.sum verified 2026-11-10: v1.10.5 still ships 4.5.1, the first 4.5.2 carrier is
+# terraform v1.13.0 - clearing this requires leaving the catalog 1.9 line, a deliberate line
+# upgrade decision (own issue), not a .trivyignore-sized renewal.
+# CVE-2025-30204   expires:2026-11-26   justification:HIGH golang-jwt/jwt/v4 v4.4.2 vendored in terraform 1.9.8 static binary (last 1.9.x); fix 4.5.2 first ships in terraform v1.13 (go.sum verified 2026-11-10), catalog tag 1.9 tracks the 1.9 line, fix rides deliberate terraform line upgrade decision
+CVE-2025-30204
+#
+# marp-cli's own dependency spec resolves basic-ftp ^5.0.2 -> 5.3.1 (CVE-2026-102990, fix 6.2.1
+# is a major-version jump); marp-cli 4.5.1 (latest) still declares ^5.0.2 and locks 5.3.1
+# (package-lock verified 2026-11-10) - no fixed upstream release exists to bump to.
+# CVE-2026-102990   expires:2026-11-26   justification:HIGH basic-ftp 5.3.1 resolved by marp-cli dep spec ^5.0.2 (fix 6.2.1 = major bump); marp-cli 4.5.1 latest still resolves 5.3.1 (lockfile verified 2026-11-10), fix rides upstream marp-cli dependency refresh
+CVE-2026-102990
