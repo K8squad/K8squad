@@ -10,18 +10,19 @@ name: public-images-smoke
 # hook whose --migrate-only flag the public apiserver image predates
 # (ISI-7277, surfaced by ISI-7264 WS-1).
 #
-# Nightly + dispatch: it tests the PUBLISHED repo, so it belongs to the
-# release cadence, not the PR cadence — a red here means the published
-# chart/images are broken for adopters RIGHT NOW. On PRs it runs only when
-# the lane itself changes (script/workflow), same convention as
-# getting-started-smoke. All logic lives in hack/public-images-smoke.sh so it
-# stays runnable locally against any kube-context.
+# Nightly + dispatch only: this lane tests the PUBLISHED chart repo, so it
+# belongs to the release cadence, not the PR cadence. A red here means the
+# published chart/images are broken for adopters RIGHT NOW. PRs that change
+# this file or hack/public-images-smoke.sh are verified by helm lint (the
+# helm / k8squad check) and bash -n, not by an actual published-chart install
+# (which would always find the previous release during the PR window —
+# chicken-and-egg). The first real run fires the night after the chart
+# publishes; dispatch it manually sooner if needed.
+#
+# All logic lives in hack/public-images-smoke.sh so it stays runnable locally
+# against any kube-context.
 
 on:
-  pull_request:
-    paths:
-      - 'hack/public-images-smoke.sh'
-      - '.github/workflows/public-images-smoke.yml'
   schedule:
     - cron: '30 5 * * *'   # nightly, offset after getting-started-smoke (05:00) and e2e (04:00)
   workflow_dispatch:
