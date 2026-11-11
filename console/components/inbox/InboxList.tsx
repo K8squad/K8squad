@@ -30,10 +30,7 @@ import {
   createDiscussionClient,
   type DiscussionClient,
 } from "@/lib/discussion/api";
-import {
-  DECISION_NUMBER_KEY_MAX,
-  optionLetter,
-} from "@/lib/inbox/options";
+import { DECISION_NUMBER_KEY_MAX, optionLetter } from "@/lib/inbox/options";
 import "./inbox.css";
 
 const POLL_MS = 5_000;

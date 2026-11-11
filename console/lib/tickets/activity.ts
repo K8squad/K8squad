@@ -92,7 +92,9 @@ export function groupActivityByRun(
 }
 
 /** Total progress events across all runs — the "(N events)" count. */
-export function activityEventCount(groups: readonly RunActivityGroup[]): number {
+export function activityEventCount(
+  groups: readonly RunActivityGroup[],
+): number {
   return groups.reduce((n, g) => n + g.events.length, 0);
 }
 
