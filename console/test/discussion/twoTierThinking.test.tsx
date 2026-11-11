@@ -66,7 +66,9 @@ describe("parseThinkingRow — the ISI-7098 wire tier (ISI-7101)", () => {
   });
 
   it("decodes an unknown tier value as legacy thinking, never throws", () => {
-    expect(parseThinkingRow(envelope({ kind: "musing" }))?.kind).toBeUndefined();
+    expect(
+      parseThinkingRow(envelope({ kind: "musing" }))?.kind,
+    ).toBeUndefined();
   });
 });
 
@@ -78,7 +80,11 @@ describe("mergeLiveThinking — live rows carry the two-tier flags (ISI-7101)", 
     state: "todo",
     blockedReason: "",
     comments: [
-      { author: "user:u", body: "please look", createdAt: "2026-11-06T11:00:00Z" },
+      {
+        author: "user:u",
+        body: "please look",
+        createdAt: "2026-11-06T11:00:00Z",
+      },
     ],
     changeRefs: [],
     statusHistory: [],
@@ -90,7 +96,11 @@ describe("mergeLiveThinking — live rows carry the two-tier flags (ISI-7101)", 
 
   it("marks a live row live with the thinking tier by default", () => {
     const merged = mergeLiveThinking(base, [
-      { author: "agent:sam", body: "thinking out loud", at: "2026-11-06T12:00:00Z" },
+      {
+        author: "agent:sam",
+        body: "thinking out loud",
+        at: "2026-11-06T12:00:00Z",
+      },
     ]);
     const live = merged.find((i) => i.live);
     expect(live?.live).toBe(true);
@@ -144,7 +154,10 @@ describe("<ThinkingStream> — live italic tier vs clean deliverable (ISI-7101)"
   it("renders a deliverable row UPRIGHT in its own final list, out of the thinking list", () => {
     render(
       <ThinkingStream
-        rows={[row(), row({ seq: 4, body: "done: the fix landed", kind: "deliverable" })]}
+        rows={[
+          row(),
+          row({ seq: 4, body: "done: the fix landed", kind: "deliverable" }),
+        ]}
         active={true}
       />,
     );

@@ -646,7 +646,12 @@ function ActivityRow({
   // entry. A live row the ISI-7098 wire stamps 'deliverable' is the run's final
   // answer arriving live — it skips this branch and renders upright, because it
   // IS the clean comment, not thinking.
-  if (item.kind === "comment" && item.comment && item.live && item.liveTier !== "deliverable") {
+  if (
+    item.kind === "comment" &&
+    item.comment &&
+    item.live &&
+    item.liveTier !== "deliverable"
+  ) {
     return (
       <li
         className="ksq-activity ksq-activity--live"
@@ -899,8 +904,7 @@ function RunActivityLog({ workItemId }: { workItemId: string }) {
                   )}
                 </span>
                 <span className="muted ksq-activity-log__run-count">
-                  {g.events.length}{" "}
-                  {g.events.length === 1 ? "event" : "events"}
+                  {g.events.length} {g.events.length === 1 ? "event" : "events"}
                 </span>
               </h4>
               <ol className="ksq-activity-log__events">
