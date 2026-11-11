@@ -45,6 +45,7 @@ import { PartySessionCard } from "./PartySessionCard";
 import { Composer } from "./Composer";
 import { ResetConfirmDialog } from "./ResetConfirmDialog";
 import { Roster, type RosterAgent } from "./Roster";
+import { RunEndedWatch } from "./RunEndedWatch";
 import type { AgentRunPresence } from "@/lib/overview/liveRuns";
 import "./discussion.css";
 
@@ -61,6 +62,12 @@ const WORKING_SWEEP_MS = 15_000;
 // round + budget meter is refreshed by re-GETting `/party-sessions/active` while
 // a party_start opener is in the thread. Only runs when a debate is present.
 const PARTY_POLL_MS = 20_000;
+
+// ISI-7273 (WS-3 of parent ISI-7262): grace between the first run-ended signal
+// and the thread re-fetch it triggers. A fan-out (broadcast / multi-mention)
+// ends its runs near-simultaneously — this window collapses that burst into
+// ONE re-fetch.
+const RUN_ENDED_REFETCH_DELAY_MS = 300;
 
 // Human-readable timestamp for the post-reset "reset by <who> · <time>" header
 // (ISI-5674 WS-D). Degrades to the raw ISO on an unparseable value so the header
@@ -167,6 +174,13 @@ export function DiscussionRoom({
       const flat = await client.getThread(projectId, threadId);
       setMessages(flat);
       setState("ready");
+      // ISI-7273 backstop: a run-ended re-fetch can materialize the agent's
+      // durable reply with NO live frame having arrived — resolve the working
+      // watches the refreshed transcript already answers, so the "is working…"
+      // indicator stops with the message instead of spinning to the failure
+      // timeout. Same name-based resolver the live frames use (applyReply is a
+      // no-op for human-authored rows); a no-op on first load (no watches yet).
+      setWorking((cur) => flat.reduce((acc, m) => applyReply(acc, m), cur));
       // Reset metadata (ISI-5674 WS-D, ADR-0030 §(c)): read the thread record so a
       // thread that was reset shows its post-reset empty state after a reload —
       // the floored get-thread returns no bubbles, and `resetAt`/`resetBy` carry
@@ -258,6 +272,36 @@ export function DiscussionRoom({
     void load();
   }, [load]);
 
+  // Run-ended re-fetch fallback (ISI-7273, WS-3 of parent ISI-7262): run ids
+  // whose terminal ended milestone this room watches for, learned from the
+  // thinking envelopes those runs stream (the only FE-side run-id source —
+  // postMessage never returns one). One RunEndedWatch per id mounts below; the
+  // id is dropped — closing that run's stream — once ended fires. RoomClient
+  // keys the room by thread id, so a thread switch remounts the room and these
+  // watches with it.
+  const [runWatches, setRunWatches] = useState<string[]>([]);
+  // Coalesced re-fetch: the first terminal milestone schedules ONE load();
+  // endings landing inside the window collapse into it. Mirrors the ticket
+  // view's ended -> reload-key bump, extended for the room's multi-run fan-out.
+  const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onRunEnded = useCallback(
+    (runId: string) => {
+      setRunWatches((cur) => cur.filter((x) => x !== runId));
+      if (refetchTimer.current) return;
+      refetchTimer.current = setTimeout(() => {
+        refetchTimer.current = null;
+        void load();
+      }, RUN_ENDED_REFETCH_DELAY_MS);
+    },
+    [load],
+  );
+  useEffect(
+    () => () => {
+      if (refetchTimer.current) clearTimeout(refetchTimer.current);
+    },
+    [],
+  );
+
   // Live append over the single 8.2 SSE channel (idempotent by id). An agent's
   // reply arriving here also resolves any working watch it answers (ISI-5174):
   // the affordance rides the same bus, not a parallel status stream (AC4).
@@ -265,6 +309,14 @@ export function DiscussionRoom({
     if (!subscribe) return;
     const unsub = subscribe((se) => {
       if (se.kind === "thinking") {
+        // ISI-7273: capture the streaming run's id — the only FE-side source
+        // for tailing the run's terminal ended milestone. The envelope is
+        // still rendered (or dropped) exactly as before; only the id is new.
+        if (se.row.runId) {
+          setRunWatches((cur) =>
+            cur.includes(se.row.runId) ? cur : [...cur, se.row.runId],
+          );
+        }
         // Live run thinking: correlate to the working watch it belongs under and
         // append it inline (dropped if it matches no active dispatch in this thread).
         setLiveThinking((cur) =>
@@ -685,6 +737,14 @@ export function DiscussionRoom({
         </button>
       </div>
       <Roster agents={rosterAgents} liveRuns={liveRuns} />
+
+      {/* ISI-7273 (WS-3 of ISI-7262) — invisible per-run ended watches: on a
+          dispatched run's terminal ended milestone, coalesce-re-fetch the
+          thread so the durable final message materializes even when its live
+          message.created frame was missed. Renders nothing. */}
+      {runWatches.map((runId) => (
+        <RunEndedWatch key={runId} runId={runId} onEnded={onRunEnded} />
+      ))}
 
       {/* ISI-5674 WS-D — `/reset` confirm dialog (ADR-0030, mocks §3 ④). Focus-
           trapped, Cancel-default; on confirm it runs the WS-B endpoint and clears
