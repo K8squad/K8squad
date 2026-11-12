@@ -5,18 +5,29 @@ Welcome to the KSquad getting started documentation. Choose your path based on y
 ## Quick Start Options
 
 ### 🚀 **For New Users**
-- **[Quickstart Squad](../hack/quickstart/squad.yaml)** - The fastest way to get started with one agent
+- **[Quickstart Squad](../../hack/quickstart/squad.yaml)** - The fastest way to get started with one agent
 - **[BMAD Squad](../getting-started-bmad.md)** - Comprehensive 13-role team with predefined workflows
+- **[Console-first onboarding](#console-first-onboarding)** - Wire LLM settings and credentials in the UI before touching YAML
 
 ### 🔑 **For BYO Credentials**
 - **[BYO Credentials (ChatGPT/OpenAI)](getting-started-byo-cred.md)** - Use your own API keys with Codex runtime
 
 ### 🧪 **For Different Runtimes**
+- **[Supported Agent Runtimes](../supported-agents.md)** - All eight conformant runtimes: claude-code, codex, opencode, openclaw, hermes, **vibe** (Mistral), **goose** (preview), **crewai** (alpha)
 - **[Codex Example](../../examples/codex/README.md)** - OpenAI's official Rust coding agent
-- **[Supported Agent Runtimes](../supported-agents.md)** - Complete list of available runtimes
 
 ### 🏗️ **For Team Composition**
 - **[Compose an Agent](../compose-an-agent.md)** - Learn how to build custom agents
+
+## Console-First Onboarding
+
+The current console covers the whole first-run flow — you can be productive without writing YAML:
+
+1. **LLM settings** — open *Settings → LLM*: per-runtime **adapter tabs** (Claude Code API-key onboarding end-to-end, Vibe full tab, Goose preview) plus provider rows including **Mistral**. The default model tier you set at install time is the last resort of resolution; every runtime can point at its own endpoint.
+2. **Credentials Vault** — store BYO credentials once (save / **test** / rotate / delete). Every write, rotation, and delete emits audit spans, so credential lifecycle is observable.
+3. **Board** — the work-item Kanban/list views (with sub-tickets and live run markers) are where squads coordinate; agents claim items, post progress, and raise **decision requests** that land in your inbox as DecisionCards.
+4. **Runs** — dispatch work and follow the live run stream; each finished run leaves one clean summary comment ([how agents work the board](../board-working-agents.md)).
+5. **Files** — the **File Explorer** browses project workspace PVCs, and Project Detail shows fleet-wide project health.
 
 ## Path Recommendations
 
@@ -55,14 +66,17 @@ graph LR
 - **Role**: Defines responsibilities, behavior, and skills
 
 ### 2. Runtimes & Models
-- **Runtime**: The AI model CLI (Claude Code, Codex, etc.)
-- **Model**: Specific model version (GPT-4, Claude 3.5, etc.)
-- **Credentials**: Authentication for AI services
+- **Runtime**: The coding-agent flavor (claude-code, codex, opencode, openclaw, hermes, vibe, goose, crewai) served through the [AgentMesh](../agent-mesh.md)
+- **Model**: Specific model version, resolved through tiers with optional [mid-run fallback](../mid-run-model-fallback.md)
+- **Credentials**: Authentication for AI services, held in the Credentials Vault
 
 ### 3. Skills & Capabilities
 - **Skill**: Extends agent capabilities with tools
 - **Toolchain**: CLI tools available to agents
 - **Permissions**: RBAC for secure access
+
+### 4. Standing Capacity
+- **RolePool**: Warm standing agents per Role × runtime, scheduled by [policy](../scheduling-policy.md)
 
 ## Step-by-Step Paths
 
@@ -178,7 +192,7 @@ spec:
 
 ### Daily Use
 - [Creating runs](../../README.md#-quickstart)
-- [Monitoring progress](../bmad/ux/)
+- [Monitoring progress](../observability/distributed-tracing.md)
 - [Managing credentials](../runbooks/credential-rotation.md)
 
 ### Maintenance
@@ -188,7 +202,7 @@ spec:
 
 ### Troubleshooting
 - [Agent not starting?](../compose-an-agent.md#troubleshooting)
-- [Network issues?](../../docs/getting-started-byo-cred.md#troubleshooting)
+- [Network issues?](getting-started-byo-cred.md#troubleshooting)
 - [Credential problems?](../runbooks/credential-rotation.md)
 
 ## Advanced Topics
@@ -196,9 +210,12 @@ spec:
 Once you're comfortable with the basics, explore:
 
 - [Mixed runtime squads](../supported-agents.md#mixed-runtime-squads)
+- [How agents work the board](../board-working-agents.md)
+- [AgentMesh architecture](../agent-mesh.md)
+- [Distributed tracing](../observability/distributed-tracing.md)
 - [Skill development](../../CONTRIBUTING.md)
-- [Console customization](../bmad/ux/)
-- [API integration](../../plugin-sdk-guide.md)
+- [Console overview](../../README.md)
+- [API integration](../plugin-sdk-guide.md)
 
 ## Support
 
@@ -211,7 +228,8 @@ Once you're comfortable with the basics, explore:
 
 | Concept | Related Guide | Level |
 |---------|---------------|-------|
-| **Installation** | [Quickstart](../hack/quickstart/squad.yaml) | Beginner |
+| **Installation** | [Quickstart](../../hack/quickstart/squad.yaml) | Beginner |
+| **Console onboarding** | [Console-first onboarding](#console-first-onboarding) | Beginner |
 | **BYO Credentials** | [Getting Started BYO](getting-started-byo-cred.md) | Intermediate |
 | **Team Building** | [BMAD Squad](../getting-started-bmad.md) | Intermediate |
 | **Agent Composition** | [Compose an Agent](../compose-an-agent.md) | Advanced |
