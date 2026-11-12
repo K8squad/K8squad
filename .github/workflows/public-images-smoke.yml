@@ -1,0 +1,45 @@
+name: public-images-smoke
+
+# Public-adopter install lane (ISI-7277). Installs the PUBLISHED control-plane
+# chart from charts.k8squad.io with NO image overrides and asserts the fresh
+# install completes including the pre-install ksquad-migrate hook Job.
+#
+# Nightly + dispatch only: this lane tests the PUBLISHED chart repo, so it
+# belongs to the release cadence, not the PR cadence. Running it on PRs would
+# always find the previous released version (chicken-and-egg). The first run
+# fires the night after the chart publishes; dispatch manually to verify sooner.
+#
+# All logic lives in hack/public-images-smoke.sh so it stays runnable locally
+# against any kube-context.
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-images-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  public-images-smoke:
+    name: public-default-images install (fresh kind cluster)
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - name: Create fresh kind cluster
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          wait: 120s
+
+      - name: Install published chart with public default images + assert
+        run: ./hack/public-images-smoke.sh
