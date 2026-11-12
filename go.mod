@@ -2,7 +2,8 @@ module github.com/K8squad/K8squad
 
 go 1.26.0
 
-toolchain go1.26.10
+// go1.26.11 fixes GO-2026-6859 (net/http MaxBytesReader header race).
+toolchain go1.26.11
 
 // K8s library versions are pinned here (OQ12, story 1.1). Bump these together —
 // api/apimachinery/client-go share a release train; controller-runtime v0.19.x
