@@ -413,7 +413,16 @@ func (s *Store) PostMessage(ctx context.Context, projectID string, teamID, threa
 			return nil, fmt.Errorf("discussion: parent %s belongs to a different thread", *parentID)
 		}
 	}
-	return insertMessage(ctx, s.db, threadID, parentID, auth, body, a, k, payload)
+	msg, err := insertMessage(ctx, s.db, threadID, parentID, auth, body, a, k, payload)
+	if err != nil {
+		return nil, err
+	}
+	// ISI-7272 (ISI-7262 WS-1): a run-authored post ALSO captures a `discussion_message`
+	// outbox event (outbox.go) so the apiserver run-event projector bridges it onto the
+	// room's live `discussion` SSE event cross-process — best-effort, after the row is
+	// durable, never failing the write.
+	s.captureMessageCreated(ctx, auth, msg)
+	return msg, nil
 }
 
 // normalizeAudience applies the 'party' default and enforces the wire contract: audience is either
