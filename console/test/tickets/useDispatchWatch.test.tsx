@@ -533,4 +533,50 @@ describe("useDispatchWatch — hook wiring", () => {
     unmount();
     expect(es!.closed).toBe(true);
   });
+
+  // ISI-7274 (parent ISI-7262 WS-2): the ladder's run is the one the ambient
+  // useTicketRunStream skips, so the self-dispatch surface must observe its own
+  // durable `ticket_comment` frames — the final comment can commit after the
+  // ladder froze terminal, when the once-per-dispatch onRunSettled reload has
+  // already fired. The comments array is that signal.
+  it("returns the live `ticket_comment` echoes as comments for the caller to observe", async () => {
+    const instances = stubEventSource();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([{ id: "run-x", workItemRef: "wi-1", phase: "Running" }]),
+      ) as unknown as typeof fetch,
+    );
+
+    const { result } = renderHook(() => useDispatchWatch("wi-1", "alice"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const es = instances.find((i) => i.url.includes("run-x"));
+    expect(es).toBeTruthy();
+
+    act(() => {
+      es!.emit("started", { event: "started", run_id: "run-x" });
+    });
+    expect(result.current?.comments).toEqual([]);
+
+    act(() => {
+      es!.emit("ticket_comment", {
+        workItemId: "wi-1",
+        runId: "run-x",
+        author: "agent:alice",
+        body: "What I did: shipped it",
+        kind: "summary",
+        at: "2026-11-12T10:00:00.000Z",
+      });
+    });
+    expect(result.current?.comments).toHaveLength(1);
+    expect(result.current?.comments?.[0]).toMatchObject({
+      id: "evt-1",
+      kind: "COMMENT",
+      actor: "agent:alice",
+      summary: "What I did: shipped it",
+    });
+  });
 });

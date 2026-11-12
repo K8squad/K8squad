@@ -45,13 +45,38 @@ func (c *CoordStore) GetTask(ctx context.Context, workItemID string) (TaskDetail
 }
 
 // PostComment appends a provenanced comment via the sanctioned append-only path.
-// The author is the token's principal — never client-supplied.
-func (c *CoordStore) PostComment(ctx context.Context, workItemID, principal, body string) (Comment, error) {
+// The author is the token's principal — never client-supplied. Once the durable
+// row commits, a run-bound comment emits the ISI-7274 `ticket_comment` liveness
+// echo onto the per-run SSE stream (coord.CaptureLiveCommentEcho, parent
+// ISI-7262 WS-2) so the ticket page materializes it live; the echo is
+// best-effort and never fails the write.
+func (c *CoordStore) PostComment(ctx context.Context, workItemID, principal, runID, body string) (Comment, error) {
 	tc, err := coord.AppendComment(ctx, c.db, workItemID, principal, body)
 	if err != nil {
 		return Comment{}, mapCoordErr(err)
 	}
+	captureCommentEcho(ctx, c.db, workItemID, runID, tc)
 	return Comment{Author: tc.Author, Body: tc.Body, CreatedAt: tc.CreatedAt}, nil
+}
+
+// captureCommentEcho mirrors the appended comment onto the per-run SSE stream,
+// best-effort (ISI-7274, parent ISI-7262 WS-2): the durable coord.comment row is
+// the record; the run-entity `ticket_comment` outbox event is the transient
+// liveness signal the apiserver projector fans to the ticket page. An empty
+// runID skips — nothing keys a per-run fan without it. It never fails the verb:
+// a lost echo costs liveness, never correctness.
+func captureCommentEcho(ctx context.Context, db *sql.DB, workItemID, runID string, tc coord.TaskComment) {
+	if runID == "" {
+		return
+	}
+	coord.CaptureLiveCommentEcho(ctx, db, coord.LiveCommentEcho{
+		WorkItemID: workItemID,
+		RunID:      runID,
+		Author:     tc.Author,
+		Body:       tc.Body,
+		Kind:       tc.Kind,
+		At:         tc.CreatedAt,
+	})
 }
 
 // PostInitialFindings appends the run's single early initial-findings note via the
@@ -71,11 +96,16 @@ func (c *CoordStore) PostInitialFindings(ctx context.Context, workItemID, princi
 // (ISI-7094). Settle counts this toward the exactly-one-summary invariant, so a
 // run that posts one here will NOT get a platform-synthesized duplicate.
 // Attribution/provenance are the token's principal/run — never client-supplied.
+// Once the durable row commits it emits the ISI-7274 `ticket_comment` liveness
+// echo onto the per-run SSE stream (coord.CaptureLiveCommentEcho, parent
+// ISI-7262 WS-2) so the ticket page materializes the run's final recap live
+// without waiting for the ended-keyed re-fetch to race it.
 func (c *CoordStore) PostSummary(ctx context.Context, workItemID, principal, runID, body string) (Comment, error) {
 	tc, err := coord.AppendSummary(ctx, c.db, workItemID, principal, runID, body)
 	if err != nil {
 		return Comment{}, mapCoordErr(err)
 	}
+	captureCommentEcho(ctx, c.db, workItemID, runID, tc)
 	return Comment{Author: tc.Author, Body: tc.Body, CreatedAt: tc.CreatedAt}, nil
 }
 

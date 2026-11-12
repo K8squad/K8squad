@@ -1918,6 +1918,25 @@ function TicketBody({
     settledFor.current = at;
     onRunSettled();
   }, [dispatchWatch?.state, dispatch?.at, onRunSettled]);
+  // ISI-7274 (parent ISI-7262 WS-2): the self-dispatch ladder's once-per-dispatch
+  // reload above fires the moment the ladder freezes terminal — BEFORE the run's
+  // final task-io comment (or the settle's terminal rows, which commit after the
+  // `ended` milestone) necessarily lands, so that reload alone races them the
+  // same way the ambient ended-keyed fetch does. The same run stream now carries
+  // a `ticket_comment` frame per durable comment (useDispatchWatch.comments); a
+  // new frame id re-fetches the thread (the echo commits with/after its durable
+  // row, so the re-fetch always materializes it — no manual refresh needed).
+  const settledCommentFor = useRef<string>("");
+  useEffect(() => {
+    const frames = dispatchWatch?.comments ?? [];
+    let last = "";
+    for (const frame of frames) {
+      if (frame.id) last = frame.id;
+    }
+    if (!last || settledCommentFor.current === last) return;
+    settledCommentFor.current = last;
+    onRunSettled();
+  }, [dispatchWatch?.comments, onRunSettled]);
   // Single pending-inclusive projection drives both the chronological Activity
   // timeline and the S3 run-meta map, so an optimistically-posted comment and its
   // run bubble stay consistent (buildRunComments still owns the attribution rules).

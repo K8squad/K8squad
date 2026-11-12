@@ -14,25 +14,26 @@ import (
 // can be asserted: whatever run a token is bound to, the store must only ever be
 // called with THAT run's work item.
 type fakeStore struct {
-	detail          TaskDetail
-	lastCommentWI   string
-	lastAuthor      string
-	lastInitialWI   string
-	lastInitialRun  string
-	lastInitialBody string
-	lastSummaryWI   string
-	lastSummaryRun  string
-	lastSummaryBody string
-	lastChangeWI    string
-	lastChange      ChangeRef
-	lastStatusWI    string
-	lastStatus      string
-	fromState       string
-	lastCheckoutWI  string
-	fence           int64
-	transitionErr   error
-	fenceErr        error
-	notFound        bool
+	detail           TaskDetail
+	lastCommentWI    string
+	lastCommentRunID string
+	lastAuthor       string
+	lastInitialWI    string
+	lastInitialRun   string
+	lastInitialBody  string
+	lastSummaryWI    string
+	lastSummaryRun   string
+	lastSummaryBody  string
+	lastChangeWI     string
+	lastChange       ChangeRef
+	lastStatusWI     string
+	lastStatus       string
+	fromState        string
+	lastCheckoutWI   string
+	fence            int64
+	transitionErr    error
+	fenceErr         error
+	notFound         bool
 }
 
 func (f *fakeStore) GetTask(_ context.Context, wi string) (TaskDetail, error) {
@@ -44,9 +45,10 @@ func (f *fakeStore) GetTask(_ context.Context, wi string) (TaskDetail, error) {
 	return d, nil
 }
 
-func (f *fakeStore) PostComment(_ context.Context, wi, principal, body string) (Comment, error) {
+func (f *fakeStore) PostComment(_ context.Context, wi, principal, runID, body string) (Comment, error) {
 	f.lastCommentWI = wi
 	f.lastAuthor = principal
+	f.lastCommentRunID = runID
 	return Comment{Author: principal, Body: body, CreatedAt: time.Unix(0, 0)}, nil
 }
 
