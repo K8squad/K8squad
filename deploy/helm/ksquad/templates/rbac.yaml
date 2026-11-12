@@ -40,6 +40,18 @@ rules:
   - apiGroups: ["ksquad.io"]
     resources: ["mcpservers"]
     verbs: ["create", "update", "patch"]
+  # ADR-0033 D1 (ISI-7365): the team reconciler server-side-applies the preset
+  # role.ksquad.io CRs (role-boss/implementer/manager/architect) into each
+  # Team's home namespace so the starter squad's roleRefs resolve without the
+  # manual `kubectl apply -k config/roles/` step. Scoped to roles only so the
+  # read-only watch surface above is not widened; matches the generated
+  # config/rbac/role.yaml and the +kubebuilder:rbac marker on
+  # pkg/controller/team/controller.go. (The role-manager-prompt ConfigMap the
+  # seed also asserts is covered by the configmaps rule below — it already
+  # carries create/update/patch for the OTelConfig egress overlay.)
+  - apiGroups: ["ksquad.io"]
+    resources: ["roles"]
+    verbs: ["create", "update", "patch"]
   # Status subresources the reconcilers write (otelgate stamps OTelConfig
   # status, the credential controller stamps credential status, ...).
   - apiGroups: ["ksquad.io"]

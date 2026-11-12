@@ -27,7 +27,10 @@ import (
 //
 //	① team    — the Team CR exists (the caller's AuthorContext.TeamID resolves)
 //	② agents  — the three preset Roles (role-boss / role-implementer / role-manager, AD-3 /
-//	            E2-S1 seeds) are each covered by ≥1 Agent in the namespace
+//	            E2-S1 seeds) are each covered by ≥1 Agent in the namespace AND the preset
+//	            Role CRs actually EXIST there (ADR-0033 D2, ISI-7365: name coverage alone
+//	            reported "done" while the squad could not run — the starter squad's
+//	            roleRefs pointed at Role CRs nothing seeded)
 //	③ models  — every Agent CARRIES a credentialSecretRef (non-empty name). Secret-object
 //	            existence is deliberately NOT checked here: the apiserver SA has no Secret
 //	            read RBAC by design (ISI-3546) and admission-time resolution ("an Agent must
@@ -191,6 +194,15 @@ func (r *ClientOnboardingReader) Progress(ctx context.Context, teamUID string, a
 	if err := r.reader.List(ctx, &agents, client.InNamespace(team.homeNS)); err != nil {
 		return OnboardingProgress{}, err
 	}
+	// ADR-0033 D2 (ISI-7365): milestone ② verifies the preset Role CRs EXIST
+	// in the team namespace, not just that Agents carry their names —
+	// onboarding must never report "done" for a squad that cannot run. Rides
+	// the same informer cache the fleet Roles read model already lists
+	// roles.ksquad.io through, so this adds no new watch and no new RBAC.
+	var roles ksquadv1.RoleList
+	if err := r.reader.List(ctx, &roles, client.InNamespace(team.homeNS)); err != nil {
+		return OnboardingProgress{}, err
+	}
 	var projects ksquadv1.ProjectList
 	if err := r.reader.List(ctx, &projects, client.InNamespace(team.homeNS)); err != nil {
 		return OnboardingProgress{}, err
@@ -203,7 +215,7 @@ func (r *ClientOnboardingReader) Progress(ctx context.Context, teamUID string, a
 	}
 	complete := [OnboardingTotalMilestones]bool{
 		true, // ① team — resolved above
-		agentsMilestoneComplete(agents.Items),
+		agentsMilestoneComplete(agents.Items, roles.Items),
 		modelsMilestoneComplete(agents.Items, &teamCR),
 		projectMilestoneComplete(projects.Items),
 	}
@@ -232,14 +244,21 @@ func foldProgress(complete [OnboardingTotalMilestones]bool, dismissed bool) Onbo
 }
 
 // agentsMilestoneComplete (②) requires each of the three seeded preset Roles (AD-3) to be
-// covered by ≥1 Agent — which also implies the "≥3 Agents" floor.
-func agentsMilestoneComplete(agents []ksquadv1.Agent) bool {
+// covered by ≥1 Agent — which also implies the "≥3 Agents" floor — AND the preset Role CRs
+// to actually exist in the team namespace (ADR-0033 D2, ISI-7365: before this check the
+// milestone reported "done" for a starter squad whose roleRefs pointed at Role CRs nothing
+// seeded, so the squad silently could not run — ISI-7353).
+func agentsMilestoneComplete(agents []ksquadv1.Agent, roles []ksquadv1.Role) bool {
 	covered := map[string]bool{}
 	for i := range agents {
 		covered[agents[i].Spec.RoleRef.Name] = true
 	}
+	exists := map[string]bool{}
+	for i := range roles {
+		exists[roles[i].Name] = true
+	}
 	for _, preset := range onboardingPresetRoles {
-		if !covered[preset] {
+		if !covered[preset] || !exists[preset] {
 			return false
 		}
 	}
