@@ -229,3 +229,66 @@ func TestEffectiveModelScoping(t *testing.T) {
 		t.Errorf("dangling tenant: want ErrTeamNotFound, got %v", err)
 	}
 }
+
+// TestEffectiveModelCustomReleaseNamespace is the ISI-7354 regression: on an
+// install whose release namespace is NOT the resolver default, the org-default
+// tier must resolve from THIS install's chart-seeded singleton — never from
+// k8squad-system, which on a shared cluster belongs to ANOTHER install — and
+// the singleton Get must ride the DIRECT model-config reader (the informer
+// cache can never serve it: no list/watch grant means the informer never
+// syncs, which is the inherit-tier hang WS-4 observed live).
+func TestEffectiveModelCustomReleaseNamespace(t *testing.T) {
+	const releaseNS = "k8squad-onboarding"
+	ctx := context.Background()
+	objs := []client.Object{
+		teamWithMembers("squad-a", "alpha", fleetUIDA, []string{"inherit"}, nil),
+		agentObj("squad-a", "inherit", "ag-ih", "claude-code", "empty-role", ""),
+		roleWithModel("squad-a", "empty-role", "r-empty", ""),
+	}
+
+	t.Run("org default resolves from the release namespace, not k8squad-system", func(t *testing.T) {
+		// The cache carries BOTH installs' singletons — the decoy in
+		// k8squad-system is what the pre-7354 unwired resolver read.
+		cacheReader := fake.NewClientBuilder().WithScheme(overviewScheme(t)).
+			WithObjects(objs...).
+			WithObjects(modelConfigSingleton("shared-install-default")).
+			WithObjects(&ksquadv1.ModelConfig{
+				ObjectMeta: metav1.ObjectMeta{Namespace: releaseNS, Name: modelendpoint.DefaultModelConfigName},
+				Spec:       ksquadv1.ModelConfigSpec{Model: "own-release-default"},
+			}).
+			Build()
+		r := NewClientFleetListReader(cacheReader, nil).WithModelConfigSource(nil, releaseNS)
+		view, err := r.EffectiveModel(ctx, fleetUIDA, "inherit", "", false)
+		if err != nil {
+			t.Fatalf("EffectiveModel: %v", err)
+		}
+		if view.Unresolved {
+			t.Fatalf("unexpected unresolved verdict: %+v", view)
+		}
+		if view.Model != "own-release-default" || view.Tier != "default" {
+			t.Fatalf("want the RELEASE-ns org default own-release-default, got {Model:%q Tier:%q}", view.Model, view.Tier)
+		}
+	})
+
+	t.Run("singleton Get rides the direct reader, not the cache", func(t *testing.T) {
+		// The cache here carries NO ModelConfig at all — like the production
+		// informer cache, which can never sync one. Only the direct reader
+		// serves the singleton, so a resolution proves the seam routed the Get
+		// around the cache (the inherit-tier hang fix).
+		bareCache := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(objs...).Build()
+		direct := fake.NewClientBuilder().WithScheme(overviewScheme(t)).
+			WithObjects(&ksquadv1.ModelConfig{
+				ObjectMeta: metav1.ObjectMeta{Namespace: releaseNS, Name: modelendpoint.DefaultModelConfigName},
+				Spec:       ksquadv1.ModelConfigSpec{Model: "direct-reader-default"},
+			}).
+			Build()
+		r := NewClientFleetListReader(bareCache, nil).WithModelConfigSource(direct, releaseNS)
+		view, err := r.EffectiveModel(ctx, fleetUIDA, "inherit", "", false)
+		if err != nil {
+			t.Fatalf("EffectiveModel: %v", err)
+		}
+		if view.Unresolved || view.Model != "direct-reader-default" {
+			t.Fatalf("want the direct-reader singleton to serve the org-default tier, got %+v", view)
+		}
+	})
+}
