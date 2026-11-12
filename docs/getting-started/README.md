@@ -82,48 +82,78 @@ graph LR
 
 ### Path 1: Quick Setup (5 minutes)
 ```bash
-# 1. Install operator
+# 1. Install the CRDs first (ADR-0002 Option B: CRDs ship in the standalone k8squad-crds chart)
+helm install ksquad-crds ksquad/k8squad-crds --namespace k8squad-crds --create-namespace
+
+# 2. Create the database DSN secret (Postgres with the pgvector extension)
+kubectl --namespace k8squad-system create secret generic k8squad-db \
+  --from-literal=dsn='postgres://USER:PASSWORD@YOUR-POSTGRES:5432/k8squad?sslmode=disable'
+
+# 3. Install the control plane
 helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set controlPlane.enabled=true \
+  --set controlPlane.database.existingSecret=k8squad-db \
+  --set controlPlane.nats.persistence.storageClassName=STORAGE-CLASS \
   --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
-# 2. Apply quickstart
+# 4. Apply quickstart
 kubectl apply -f https://charts.k8squad.io/quickstart.yaml
 
-# 3. Open console
+# 5. Open console
 kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
 
-# 4. Create your first run!
+# 6. Create your first run!
 ```
 
 ### Path 2: BYO OpenAI (15 minutes)
 ```bash
-# 1. Install operator
+# 1. Install the CRDs first (ADR-0002 Option B: CRDs ship in the standalone k8squad-crds chart)
+helm install ksquad-crds ksquad/k8squad-crds --namespace k8squad-crds --create-namespace
+
+# 2. Create the database DSN secret (Postgres with the pgvector extension)
+kubectl --namespace k8squad-system create secret generic k8squad-db \
+  --from-literal=dsn='postgres://USER:PASSWORD@YOUR-POSTGRES:5432/k8squad?sslmode=disable'
+
+# 3. Install the control plane
 helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set controlPlane.enabled=true \
+  --set controlPlane.database.existingSecret=k8squad-db \
+  --set controlPlane.nats.persistence.storageClassName=STORAGE-CLASS \
   --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
-# 2. Follow BYO credentials guide
+# 4. Follow BYO credentials guide
 # (Complete setup with your API key)
 
-# 3. Create Codex agent
+# 5. Create Codex agent
 # (Custom agent with your credentials)
 
-# 4. Start using your OpenAI account
+# 6. Start using your OpenAI account
 ```
 
 ### Path 3: BMAD Team (30 minutes)
 ```bash
-# 1. Install operator with tools
+# 1. Install the CRDs first (ADR-0002 Option B: CRDs ship in the standalone k8squad-crds chart)
+helm install ksquad-crds ksquad/k8squad-crds --namespace k8squad-crds --create-namespace
+
+# 2. Create the database DSN secret (Postgres with the pgvector extension)
+kubectl --namespace k8squad-system create secret generic k8squad-db \
+  --from-literal=dsn='postgres://USER:PASSWORD@YOUR-POSTGRES:5432/k8squad?sslmode=disable'
+
+# 3. Install the control plane
 helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set controlPlane.enabled=true \
+  --set controlPlane.database.existingSecret=k8squad-db \
+  --set controlPlane.nats.persistence.storageClassName=STORAGE-CLASS \
   --set tools.defaultCatalog.enabled=true \
   --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
-# 2. Apply BMAD squad
+# 4. Apply BMAD squad
 kubectl apply -f examples/bmad-team/squad.yaml
 
-# 3. Set credentials
+# 5. Set credentials
 kubectl -n bmad-squad edit secret model-credentials
 
-# 4. Explore team structure
+# 6. Explore team structure
 # (13 specialized agents working together)
 ```
 

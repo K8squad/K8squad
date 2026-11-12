@@ -17,7 +17,7 @@
       "dockerfile": "Dockerfile.toolchain-git",
       "context": ".",
       "buildArgs": {},
-      "note": "apk git on alpine 3.21 (2.47 at authoring) \u2014 tracks >= 2.45."
+      "note": "apk git on alpine 3.24 (2.54.0 at rebase, ISI-7283) \u2014 tracks >= 2.45."
     },
     {
       "tool": "gh",
@@ -101,11 +101,11 @@
     },
     {
       "tool": "jq",
-      "version": "1.7",
+      "version": "1.8",
       "dockerfile": "Dockerfile.toolchain-jq",
       "context": ".",
       "buildArgs": {},
-      "note": "apk jq on alpine 3.21 (1.7.1 at authoring)."
+      "note": "apk jq on alpine 3.24 (1.8.2 at rebase, ISI-7283); catalog tag tracks the upstream minor line."
     },
     {
       "tool": "yq",
@@ -122,7 +122,7 @@
       "dockerfile": "Dockerfile.toolchain-curl",
       "context": ".",
       "buildArgs": {},
-      "note": "apk curl on alpine 3.21 (8.x at authoring)."
+      "note": "apk curl on alpine 3.24 (8.23.0 at rebase, ISI-7283)."
     },
     {
       "tool": "make",
@@ -130,7 +130,7 @@
       "dockerfile": "Dockerfile.toolchain-make",
       "context": ".",
       "buildArgs": {},
-      "note": "apk make on alpine 3.21 (4.4.x at authoring)."
+      "note": "apk make on alpine 3.24 (4.4.1 at rebase, ISI-7283)."
     },
     {
       "tool": "clusterctl",
