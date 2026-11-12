@@ -134,6 +134,13 @@ const (
 	// condNamespaceTerminating reports a namespace stuck/progressing through
 	// Terminating during Team deletion (AC6) — the finalizer is not cleared
 	// while this is active.
+	// condTeamReady aggregates overall Team readiness (ISI-7269): True when
+	// the tenancy baseline is provisioned AND every MCPServer the Team owns
+	// in its squad namespace reports Ready=True (ADR-042). This is the
+	// condition the getting-started smoke asserts (kubectl wait
+	// --for=condition=Ready team/...) once real credentials and a published
+	// operator image are wired on the cluster.
+	condTeamReady            = "Ready"
 	condNamespaceTerminating = "NamespaceTerminating"
 )
 
@@ -286,6 +293,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// NamespaceReady=True (PR #89 follow-up F3).
 	changed := r.setCondition(&teamObj, condNamespaceReady, metav1.ConditionTrue,
 		"TenancyProvisioned", fmt.Sprintf("namespace %s provisioned with SA/RBAC/quota/LimitRange/NetworkPolicy baseline", nsName))
+	// ISI-7269: aggregate overall readiness. Tenancy is provisioned at this
+	// point; the Team is Ready when every MCPServer it owns in the squad
+	// namespace also aggregates Ready=True. The MCPServer watch maps server
+	// events back to the owning Team, so no polling requeue is needed.
+	ready, total, pending, err := r.ownedMCPServerReadiness(ctx, &teamObj, nsName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if total > 0 && ready == total {
+		if r.setCondition(&teamObj, condTeamReady, metav1.ConditionTrue, "TeamReady",
+			fmt.Sprintf("namespace %s provisioned and %d/%d owned MCPServers Ready", nsName, ready, total)) {
+			changed = true
+		}
+	} else {
+		msg := fmt.Sprintf("namespace %s provisioned; %d/%d owned MCPServers Ready", nsName, ready, total)
+		if len(pending) > 0 {
+			msg += " (waiting on " + strings.Join(pending, ", ") + ")"
+		} else {
+			msg += " (no owned MCPServers discovered yet)"
+		}
+		if r.setCondition(&teamObj, condTeamReady, metav1.ConditionFalse, "MCPServersNotReady", msg) {
+			changed = true
+		}
+	}
 	if clearConditions(&teamObj, condNamespaceReserved, condNamespaceConflict, condNamespaceTerminating) {
 		changed = true
 	}
@@ -1431,6 +1462,31 @@ func mergePayload(existing, desired client.Object) bool {
 		}
 	}
 	return drifted
+}
+
+// ownedMCPServerReadiness lists the MCPServers this Team owns in its squad
+// namespace (via the routing labels every scaffold object carries) and
+// reports how many aggregate to Ready=True (ADR-042), plus the names of the
+// ones still pending. The MCPServer watch in SetupWithManager maps server
+// events back to the owning Team, so the aggregated condition stays current
+// without a polling requeue.
+func (r *Reconciler) ownedMCPServerReadiness(ctx context.Context, teamObj *api.Team, nsName string) (ready, total int, pending []string, err error) {
+	var servers api.MCPServerList
+	if err := r.List(ctx, &servers,
+		client.InNamespace(nsName),
+		client.MatchingLabels{LabelTeam: teamObj.Name, LabelTeamNamespace: teamObj.Namespace}); err != nil {
+		return 0, 0, nil, fmt.Errorf("list owned MCPServers: %w", err)
+	}
+	for i := range servers.Items {
+		srv := &servers.Items[i]
+		total++
+		if c := meta.FindStatusCondition(srv.Status.Conditions, api.MCPServerConditionReady); c != nil && c.Status == metav1.ConditionTrue {
+			ready++
+			continue
+		}
+		pending = append(pending, srv.Name)
+	}
+	return ready, total, pending, nil
 }
 
 // setCondition records a condition transition, stamping LastTransitionTime
