@@ -170,6 +170,7 @@ helm upgrade --install "$CRDS_RELEASE" "$CRDS_CHART" \
 helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$CP_NS" --create-namespace \
   --set controlPlane.enabled=true \
+  --set "controlPlane.nats.persistence.storageClassName=$STORAGE_CLASS" \
   --set-string "controlPlane.database.dsn=$DSN" \
   --set tools.defaultCatalog.enabled=true \
   --set "modelConfig.default.model=$DEFAULT_MODEL" \
@@ -196,6 +197,7 @@ kubectl -n "$CP_NS" create secret generic ksquad-bootstrap-admin \
 helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$CP_NS" \
   --set controlPlane.enabled=true \
+  --set "controlPlane.nats.persistence.storageClassName=$STORAGE_CLASS" \
   --set "controlPlane.database.dsn=$DSN" \
   --set tools.defaultCatalog.enabled=true \
   --set "modelConfig.default.model=$DEFAULT_MODEL" \
