@@ -157,6 +157,41 @@ kubectl -n bmad-squad edit secret model-credentials
 # (13 specialized agents working together)
 ```
 
+## ⚠️ Seed preset Roles after composing a starter squad (temporary workaround)
+
+> **Temporary workaround — remove once operator auto-seed ships.** Tracked by
+> ADR-0033 / ISI-7353 ("Seed preset Role CRs on squad namespace provisioning").
+> Once the operator seeds preset Role CRs automatically during squad namespace
+> provisioning, this manual step is no longer required and should be deleted from
+> this guide.
+
+When you compose a **starter squad** (for example the `minimal-trio` template
+from the onboarding UI / template gallery), KSquad creates Agents whose
+`spec.roleRef` points at the preset Roles `role-boss`, `role-implementer`, and
+`role-manager`. On current builds **nothing seeds those `role.ksquad.io` CRs
+into your team namespace** — so even though onboarding reports "done", the squad
+cannot run yet: Role prompt/skill resolution fails later when an Agent starts.
+
+**Fix:** after squad creation, apply the preset Roles into your team's home
+namespace:
+
+```bash
+# Replace <team-namespace> with your team's namespace (the squad's namespace)
+kubectl apply -k config/roles/ -n <team-namespace>
+```
+
+This materializes `role-boss`, `role-implementer`, `role-manager`, and
+`role-architect`, plus the `role-manager-prompt` ConfigMap that the manager
+Role's `promptRef` resolves against, so every starter-squad `roleRef` now
+resolves and the squad can run.
+
+**Verify** the Roles landed:
+
+```bash
+kubectl get roles.ksquad.io -n <team-namespace>
+# Expect: role-architect, role-boss, role-implementer, role-manager
+```
+
 ## Configuration Templates
 
 ### Basic Agent Template
