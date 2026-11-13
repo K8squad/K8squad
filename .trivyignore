@@ -29,6 +29,9 @@
 #     56857, GHSA-hrxh-6v49-42gf.
 #   STAGGER: expiry dates are now split per carrier group (11-12 runtime bases / 11-19
 #     clusterctl / 11-26 kubectl+docker-cli) so the fleet can never expire as one batch again.
+#     2026-11-13 (PR #1019): the 11-12 runtime-bases group expired and was re-verified +
+#     renewed to 12-03 (see the per-entry notes below) — the 11-19 clusterctl group and the
+#     11-26 group are unchanged and will need their own re-verification sweeps at expiry.
 #
 # --- active suppressions ---
 # openssl CVE batch in the ksquad-console RUNTIME base (gcr.io/distroless/nodejs24-debian12:nonroot,
@@ -41,17 +44,22 @@
 # image scan — the base STILL ships libssl3 3.0.18-1~deb12u2 (fixes 3.0.19/3.0.20-1~deb12u2),
 # so the distroless rebuild STILL has not landed and every CVE below remains present and
 # unpatchable-in-repo. Renewed (not blind).
-# CVE-2026-31789   expires:2026-11-12   justification:CRITICAL openssl heap overflow (32-bit X.509); runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
+# Re-verified + renewed 2026-11-13 (cadence step, on PR #1019 after the 2026-11-12 expiry
+# gated CI): crane-exported the LIVE tag (digest sha256:14d42e2511532589a7c7e01a753667a74fcc
+# 96266e137e8125006b87b0c32d0a) and read var/lib/dpkg/status.d/libssl3 — the base STILL ships
+# libssl3 3.0.18-1~deb12u2, so the distroless rebuild has still not landed and every CVE below
+# remains present and unpatchable-in-repo. Staggered renewal to 2026-12-03. Renewed (not blind).
+# CVE-2026-31789   expires:2026-12-03   justification:CRITICAL openssl heap overflow (32-bit X.509); runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-11-13: base still libssl3 3.0.18-1~deb12u2, digest sha256:14d42e25)
 CVE-2026-31789
-# CVE-2026-28387   expires:2026-11-12   justification:HIGH openssl DANE TLSA use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
+# CVE-2026-28387   expires:2026-12-03   justification:HIGH openssl DANE TLSA use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-11-13: base still libssl3 3.0.18-1~deb12u2, digest sha256:14d42e25)
 CVE-2026-28387
-# CVE-2026-28388   expires:2026-11-12   justification:HIGH openssl delta-CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
+# CVE-2026-28388   expires:2026-12-03   justification:HIGH openssl delta-CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-11-13: base still libssl3 3.0.18-1~deb12u2, digest sha256:14d42e25)
 CVE-2026-28388
-# CVE-2026-28389   expires:2026-11-12   justification:HIGH openssl CMS processing DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
+# CVE-2026-28389   expires:2026-12-03   justification:HIGH openssl CMS processing DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-11-13: base still libssl3 3.0.18-1~deb12u2, digest sha256:14d42e25)
 CVE-2026-28389
-# CVE-2026-28390   expires:2026-11-12   justification:HIGH openssl CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
+# CVE-2026-28390   expires:2026-12-03   justification:HIGH openssl CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-11-13: base still libssl3 3.0.18-1~deb12u2, digest sha256:14d42e25)
 CVE-2026-28390
-# CVE-2026-45447   expires:2026-11-12   justification:HIGH openssl PKCS7_verify use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-10-29: base still libssl3 3.0.18)
+# CVE-2026-45447   expires:2026-12-03   justification:HIGH openssl PKCS7_verify use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12 (re-verified 2026-11-13: base still libssl3 3.0.18-1~deb12u2, digest sha256:14d42e25)
 CVE-2026-45447
 
 # openssl DTLS info disclosure — originally fleet-wide alpine libcrypto3/libssl3 3.3.7-r1.
@@ -60,14 +68,17 @@ CVE-2026-45447
 # Sole remaining carrier: the distroless nodejs24 runtime base (debian libssl3 3.0.18-1~deb12u2,
 # fix 3.0.22-1~deb12u2 per trivy 2026-10-29) — patch rides the same distroless rebuild as the
 # batch above.
-# CVE-2026-84782   expires:2026-11-12   justification:HIGH openssl DTLS info disclosure; alpine fleet cleared via rebuilt alpine:3.21 base (3.3.7-r2, verified 2026-10-29); remaining carrier distroless nodejs24 runtime base (libssl3 3.0.18, fix 3.0.22 pending distroless rebuild)
+# CVE-2026-84782   expires:2026-12-03   justification:HIGH openssl DTLS info disclosure; alpine fleet cleared via rebuilt alpine:3.21 base (3.3.7-r2, verified 2026-10-29); remaining carrier distroless nodejs24 runtime base (re-verified 2026-11-13: dpkg status still libssl3 3.0.18-1~deb12u2, digest sha256:14d42e25; fix 3.0.22 pending distroless rebuild)
 CVE-2026-84782
 
 # ansible-core 2.17.6 — argument injection in ansible-galaxy.
 # Re-verified 2026-10-29 (ISI-6822): 2.17 line moved to 2.17.9 but its changelog still carries no
 # CVE-2026-11332 fix (fix shipped on other lines; ansible-core latest is 2.21.5). A 2.17→2.21 pin
 # bump is a compat decision for the ansible toolchain owner, not a hotfix — tracked separately.
-# CVE-2026-11332   expires:2026-11-12   justification:HIGH ansible-core argument injection in ansible-galaxy (v2.17.6); re-verified 2026-10-29: 2.17.9 still carries no fix on the 2.17 line, suppress pending upstream 2.17.x GA fix or deliberate pin bump
+# Re-verified + renewed 2026-11-13 (on PR #1019 after the 2026-11-12 expiry gated CI): PyPI
+# still lists 2.17.9 as the latest 2.17.x — no fixed release on the line; repo pin (2.17.6,
+# Dockerfile.toolchain-ansible-core) unchanged. Staggered renewal to 2026-12-03.
+# CVE-2026-11332   expires:2026-12-03   justification:HIGH ansible-core argument injection in ansible-galaxy (v2.17.6); re-verified 2026-11-13: 2.17.9 is still the latest 2.17.x on PyPI, no fix on the line, suppress pending upstream 2.17.x GA fix or deliberate pin bump
 CVE-2026-11332
 
 # --- ISI-3923/6822: upstream-binary CVE batch — sole remaining carriers after the 2026-10-29 pin bumps ---
