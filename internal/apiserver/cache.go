@@ -78,6 +78,37 @@ func NewCacheReader(ctx context.Context, syncTimeout time.Duration) (reader clie
 	return c, cancel, nil
 }
 
+// NewOnboardingDirectReader builds the DIRECT (uncached) client the E1 onboarding-progress read
+// model (ISI-3673) reads through (ISI-7352). The onboarding journey is write-then-immediately-
+// read: a fresh adopter creates their Team and materializes the squad, and the Launchpad +
+// "Finish setup" chip must reflect it on the very next GET /api/onboarding/progress. Riding the
+// shared informer cache made that read a staleness hazard of exactly the kind this file's write
+// surfaces reject: on fresh installs the informer's watch loop can fail and retry for ~a minute
+// ("Failed to watch" + watchlist-fallback cycles), and the cache keeps serving the pre-write
+// zero snapshot — parking a tenant with Team + Agents at a false "step 1 of 4" (ISI-7352). A
+// direct read costs three namespace-scoped requests (Agent list, Project list, Team get) plus
+// the once-per-process cluster-wide Team list behind UID→identity resolution — well within a
+// first-run endpoint's budget — and is correct by construction: milestone flips are visible the
+// instant the CRs are. The scheme carries ksquadv1 only (Team/Agent/Project are the whole
+// surface). It resolves rest.Config the standard way (in-cluster ServiceAccount, then
+// KUBECONFIG / --kubeconfig) and fails rather than degrading silently; the caller decides
+// whether a build failure leaves the documented 501.
+func NewOnboardingDirectReader() (client.Reader, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register ksquad scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build onboarding reader: %w", err)
+	}
+	return c, nil
+}
+
 // NewCRDApplier builds the DIRECT (uncached) controller-runtime client the 8.5
 // CRD-apply write surface (ISI-3198) uses. Writes — and the reads that back an
 // edit (Get the current revision, List Teams for namespace scope) — must hit the

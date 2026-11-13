@@ -105,7 +105,8 @@ type OnboardingProgress struct {
 
 // OnboardingReader projects onboarding progress for a single Team (identified by its K8s object
 // UID, the value AuthorContext.TeamID carries). Mirrors OrgReader (org.go): Team-scoped,
-// read-only, cache-backed in prod, fake client in tests.
+// read-only, direct (uncached) client in prod (ISI-7352 — informer lag must never mask a
+// milestone flip), fake client in tests.
 type OnboardingReader interface {
 	// Progress derives the 4-milestone projection for teamUID. A teamUID that resolves to no
 	// Team CR returns the zero-progress projection (milestone ① incomplete), NOT an error.
@@ -114,8 +115,8 @@ type OnboardingReader interface {
 	Progress(ctx context.Context, teamUID string, admin bool) (OnboardingProgress, error)
 }
 
-// ClientOnboardingReader is the production OnboardingReader over any client.Reader (the informer
-// cache in the host; a fake client in tests). Team UID→(name, namespace) is memoized on the same
+// ClientOnboardingReader is the production OnboardingReader over any client.Reader (a DIRECT
+// uncached client in prod — ISI-7352; a fake client in tests). Team UID→(name, namespace) is memoized on the same
 // immutability discipline as ClientOrgReader.
 type ClientOnboardingReader struct {
 	reader client.Reader
@@ -124,7 +125,7 @@ type ClientOnboardingReader struct {
 }
 
 // NewClientOnboardingReader builds the onboarding read model over a client.Reader whose scheme
-// has api/v1alpha1 registered (the informer cache in prod; a fake client in tests).
+// has api/v1alpha1 registered (a direct uncached client in prod, ISI-7352; a fake client in tests).
 func NewClientOnboardingReader(r client.Reader) *ClientOnboardingReader {
 	return &ClientOnboardingReader{reader: r, teams: map[string]teamIdentity{}}
 }
