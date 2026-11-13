@@ -24,7 +24,7 @@ import (
 	"sort"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -66,11 +66,11 @@ var RolePresetNames = []string{"role-architect", "role-boss", "role-implementer"
 // editable override of pkg/roleprompt's built-in default).
 var RolePresetConfigMapNames = []string{"role-manager-prompt"}
 
-// rolePresetObjects parses the embedded manifests into typed objects stamped
-// for teamObj. Namespace: the Team's OWN namespace — where Agents live and
-// roleRefs resolve (ObjectRefs are namespace-local; the repro-verified manual
-// fix applied config/roles there too), NOT the derived ksquad-team-*
-// execution namespace provision() scaffolds. Labels: managedLabels merged
+// rolePresetObjects parses the embedded manifests into unstructured objects
+// stamped for teamObj. Namespace: the Team's OWN namespace — where Agents
+// live and roleRefs resolve (ObjectRefs are namespace-local; the
+// repro-verified manual fix applied config/roles there too), NOT the derived
+// ksquad-team-* execution namespace provision() scaffolds. Labels: managedLabels merged
 // over the manifest's own preset labels — the ksquad.io/team +
 // ksquad.io/team-namespace back-reference the self-healing Watches key on.
 // OwnerReferences: deliberately NONE. A namespace can host several Teams and
@@ -78,7 +78,7 @@ var RolePresetConfigMapNames = []string{"role-manager-prompt"}
 // would garbage-collect the presets from under the other Teams on its delete
 // (ADR-0033 constraint — same discipline as the scaffold's label
 // back-reference, one level shallower).
-func rolePresetObjects(teamObj *api.Team) ([]client.Object, error) {
+func rolePresetObjects(teamObj *api.Team) ([]*unstructured.Unstructured, error) {
 	entries, err := fs.ReadDir(rolePresetFS, "rolepresets")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded role presets: %w", err)
@@ -90,7 +90,7 @@ func rolePresetObjects(teamObj *api.Team) ([]client.Object, error) {
 		}
 	}
 	sort.Strings(names)
-	objs := make([]client.Object, 0, len(names))
+	objs := make([]*unstructured.Unstructured, 0, len(names))
 	for _, name := range names {
 		raw, err := rolePresetFS.ReadFile("rolepresets/" + name)
 		if err != nil {
@@ -106,32 +106,28 @@ func rolePresetObjects(teamObj *api.Team) ([]client.Object, error) {
 	return objs, nil
 }
 
-// decodeRolePreset unmarshals one embedded manifest into its typed object.
+// decodeRolePreset unmarshals one embedded manifest into unstructured form.
 // The manifests are single-document YAML (a leading comment block, then the
 // object under a --- separator), so sigs.k8s.io/yaml handles them directly.
-func decodeRolePreset(raw []byte) (client.Object, error) {
-	var probe struct {
-		Kind string `json:"kind"`
-	}
-	if err := yaml.Unmarshal(raw, &probe); err != nil {
+// MANIFEST→unstructured (never manifest→typed→unstructured) is deliberate:
+// controller-runtime ≥0.25 deprecates Patch(ctx,obj,client.Apply,...) in
+// favor of Client.Apply(runtime.ApplyConfiguration,...), and ksquad.io has
+// no generated typed apply-builders — decoding straight to unstructured
+// hands the SSA field manager exactly the bytes the manifest states
+// (explicit zero values included), whereas a typed round trip would blur
+// what the seed owns by re-serializing Go zero values. Schema validation
+// then happens server-side against the Role CRD on apply.
+func decodeRolePreset(raw []byte) (*unstructured.Unstructured, error) {
+	u := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(raw, u); err != nil {
 		return nil, err
 	}
-	switch probe.Kind {
-	case "Role":
-		var role api.Role
-		if err := yaml.Unmarshal(raw, &role); err != nil {
-			return nil, err
-		}
-		return &role, nil
-	case "ConfigMap":
-		var cm corev1.ConfigMap
-		if err := yaml.Unmarshal(raw, &cm); err != nil {
-			return nil, err
-		}
-		return &cm, nil
+	switch u.GetKind() {
+	case "Role", "ConfigMap":
 	default:
-		return nil, fmt.Errorf("unsupported preset kind %q (want Role or ConfigMap)", probe.Kind)
+		return nil, fmt.Errorf("unsupported preset kind %q (want Role or ConfigMap)", u.GetKind())
 	}
+	return u, nil
 }
 
 // stampRolePreset targets obj at the Team's home namespace and merges the
@@ -166,8 +162,8 @@ func (r *Reconciler) ensureRolePresets(ctx context.Context, teamObj *api.Team) (
 		return false, err
 	}
 	for _, obj := range objs {
-		if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner(RolePresetFieldManager)); err != nil {
-			return false, fmt.Errorf("apply preset %T %s/%s: %w", obj, obj.GetNamespace(), obj.GetName(), err)
+		if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(obj), client.ForceOwnership, client.FieldOwner(RolePresetFieldManager)); err != nil {
+			return false, fmt.Errorf("apply preset %s %s/%s: %w", obj.GetKind(), obj.GetNamespace(), obj.GetName(), err)
 		}
 	}
 	return true, nil

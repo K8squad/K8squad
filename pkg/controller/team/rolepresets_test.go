@@ -26,7 +26,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
@@ -199,7 +198,9 @@ func TestRolePresetsSkippedInReservedNamespace(t *testing.T) {
 
 // TestRolePresetObjectsStampLabels exercises the pure manifest→object path:
 // namespace targeting, label merge (preset label preserved, managed labels
-// added), and the preset-set completeness (4 Roles + 1 ConfigMap).
+// added), and the preset-set completeness (4 Roles + 1 ConfigMap). The
+// objects are unstructured (decodeRolePreset feeds the Client.Apply SSA
+// path, which takes runtime.ApplyConfiguration — see rolepresets.go).
 func TestRolePresetObjectsStampLabels(t *testing.T) {
 	objs, err := rolePresetObjects(presetTeam("starter", "uid-starter", "k8squad-onboarding"))
 	if err != nil {
@@ -209,28 +210,29 @@ func TestRolePresetObjectsStampLabels(t *testing.T) {
 		t.Fatalf("got %d preset objects, want %d", len(objs), len(RolePresetNames)+len(RolePresetConfigMapNames))
 	}
 	roles, cms := 0, 0
-	for _, obj := range objs {
-		switch o := obj.(type) {
-		case *api.Role:
+	for _, o := range objs {
+		switch o.GetKind() {
+		case "Role":
 			roles++
-			if o.Namespace != "k8squad-onboarding" {
-				t.Errorf("Role %s namespace = %s", o.Name, o.Namespace)
+			if o.GetNamespace() != "k8squad-onboarding" {
+				t.Errorf("Role %s namespace = %s", o.GetName(), o.GetNamespace())
 			}
-			if o.Labels["ksquad.io/role-preset"] == "" {
-				t.Errorf("Role %s lost its ksquad.io/role-preset label", o.Name)
+			if o.GetLabels()["ksquad.io/role-preset"] == "" {
+				t.Errorf("Role %s lost its ksquad.io/role-preset label", o.GetName())
 			}
-			if o.Labels[LabelTeam] != "starter" {
-				t.Errorf("Role %s missing managed label %s", o.Name, LabelTeam)
+			if o.GetLabels()[LabelTeam] != "starter" {
+				t.Errorf("Role %s missing managed label %s", o.GetName(), LabelTeam)
 			}
-		case *corev1.ConfigMap:
+		case "ConfigMap":
 			cms++
-			if o.Namespace != "k8squad-onboarding" {
-				t.Errorf("ConfigMap %s namespace = %s", o.Name, o.Namespace)
+			if o.GetNamespace() != "k8squad-onboarding" {
+				t.Errorf("ConfigMap %s namespace = %s", o.GetName(), o.GetNamespace())
 			}
+		default:
+			t.Errorf("preset object %s has unexpected kind %s", o.GetName(), o.GetKind())
 		}
 	}
 	if roles != len(RolePresetNames) || cms != len(RolePresetConfigMapNames) {
 		t.Fatalf("got %d Roles + %d ConfigMaps, want %d + %d", roles, cms, len(RolePresetNames), len(RolePresetConfigMapNames))
 	}
-	_ = client.Object(nil) // keep the client import honest for future asserts
 }
