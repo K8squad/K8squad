@@ -187,6 +187,33 @@ func NewModelEndpointSecretReader() (client.Reader, error) {
 	return c, nil
 }
 
+// NewDirectKSquadReader builds the DIRECT (uncached) ksquad-CRD reader the
+// effective-model resolver uses for the org-default ModelConfig singleton Get
+// (ISI-7354). The shared informer cache (NewCacheReader) can never serve that
+// Get: the apiserver holds no list/watch grant for modelconfigs (a fixed
+// singleton needs none), so the ModelConfig informer never syncs and a cache
+// Get blocks — the inherit-tier effective-model hang observed live during
+// WS-4. Same discipline as NewModelEndpointSecretReader: the scheme carries
+// only api/v1alpha1, the client hits the API server live, and the read needs
+// only get modelconfigs in the release namespace (granted by the chart's
+// namespaced apiserver-modelconfig Role). The caller decides whether a build
+// failure is fatal or falls back to the cache reader.
+func NewDirectKSquadReader() (client.Reader, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register ksquad scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build model-config reader: %w", err)
+	}
+	return c, nil
+}
+
 // NewReaderPodClient builds the DIRECT (uncached) client the S4a reader-pod
 // launcher + reaper use (ISI-4079). The launcher creates/deletes reader pods and
 // their paired ClusterIP Services, and the reaper's orphan sweep lists pods — a

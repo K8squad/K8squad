@@ -131,10 +131,14 @@ type ComposeService struct {
 	rebinder AdminTenancyRebinder
 }
 
-// defaultSystemNamespace is the control-plane namespace Team CRs are applied into
-// when $POD_NAMESPACE is unset (dev / test), matching the operator's own default
-// (cmd/operator/main.go) and the Team reconciler's SystemNamespace.
-const defaultSystemNamespace = "ksquad-system"
+// defaultSystemNamespace is the control-plane namespace Team CRs — and the
+// org-default ModelConfig singleton (ISI-7354) — are applied into when
+// $POD_NAMESPACE is unset (dev / test). It ALIASES the resolver's single source
+// of truth (pkg/modelendpoint.DefaultSystemNamespace) so compose write targets,
+// read surfaces, and the operator can never drift apart again; the old local
+// literal ("ksquad-system", no "8") had drifted from the chart's namespace
+// exactly like cmd/operator's copy once did (ISI-4102/ISI-4146).
+const defaultSystemNamespace = modelendpoint.DefaultSystemNamespace
 
 // NewComposeService builds the compose write model. applier MUST have
 // api/v1alpha1 registered on its scheme. roles is the 15.4 membership resolver
@@ -403,7 +407,7 @@ type skillRequest struct {
 // (ISI-4890, epic ISI-4822 Flow A). It is the floor of the Model-Per-Role
 // resolution ladder (agent → role → this default, ISI-4430). Unlike every other
 // compose kind it carries NO `name` or `project`: it is a fixed singleton
-// (k8squad-system/default, admin-only) — planModelConfig pins the identity so the
+// (<release-ns>/default, admin-only) — planModelConfig pins the identity so the
 // wire never picks the target. The three fields map 1:1 onto ModelConfigSpec and
 // reuse the Agent model triple's wire types (secretRefWire / fallbackModelWire),
 // so the console's ModelSelector output serializes here unchanged.
@@ -714,9 +718,11 @@ type applyPlan struct {
 	// fixedNamespace pins a kind to a well-known namespace, bypassing BOTH the
 	// systemNS (Team) and the caller-team-namespace resolution in apply(). It
 	// exists for singleton kinds whose identity is not team-scoped: ModelConfig
-	// (ISI-4890) is a fixed k8squad-system/default object the resolver reads
-	// (pkg/modelendpoint DefaultSystemNamespace) — the write MUST land exactly
-	// where the read looks, so the target can never be a caller-derived namespace.
+	// (ISI-4890, ISI-7354) is the org-default <release-ns>/default object the
+	// resolver reads (pkg/modelendpoint SystemNamespace, wired from the same
+	// POD_NAMESPACE) — the write MUST land exactly where the read looks, so the
+	// target can never be a caller-derived namespace nor another install's
+	// singleton on a shared cluster.
 	// Empty ⇒ the normal Team/team-namespace resolution applies.
 	fixedNamespace string
 	desired        client.Object // spec/name filled; namespace set by run()
@@ -1164,8 +1170,9 @@ func (s *ComposeService) planSkill(req skillRequest) applyPlan {
 // planModelConfig maps the org-default model request onto a fixed-identity
 // ModelConfig apply. It is the ONE compose kind that is NOT team-scoped: the
 // target is pinned to the well-known singleton the resolver reads —
-// modelendpoint.DefaultSystemNamespace / DefaultModelConfigName (k8squad-system/
-// default) — via applyPlan.fixedNamespace, so the team-namespace resolver is
+// s.systemNS / DefaultModelConfigName (<release-ns>/default, from POD_NAMESPACE:
+// the SAME namespace the chart seeds and the resolver's SystemNamespace use,
+// ISI-7354) — via applyPlan.fixedNamespace, so the team-namespace resolver is
 // deliberately NOT run (any {name} path var is ignored by handleModelConfig too).
 // It is admin-only (writeScope.adminOnly → authorizeWrite 403/401/fail-closed,
 // the same gate Teams use — no new RBAC). `required("model")` is the fail-closed
@@ -1189,7 +1196,7 @@ func (s *ComposeService) planModelConfig(req modelConfigRequest) applyPlan {
 	return applyPlan{
 		kind:           "ModelConfig",
 		scope:          writeScope{adminOnly: true},
-		fixedNamespace: modelendpoint.DefaultSystemNamespace,
+		fixedNamespace: s.systemNS,
 		errs:           errs, desired: mc, existing: &ksquadv1.ModelConfig{},
 	}
 }
@@ -1335,7 +1342,7 @@ func (s *ComposeService) handleSkill(create bool) http.HandlerFunc {
 // deliberately does NOT call applyEdit — the identity is fixed in planModelConfig
 // and must never be retargeted by a {name} path var, so any path name is ignored.
 // Bound to BOTH the POST (collection) and PUT ({name}) compose routes; both are
-// the same upsert against k8squad-system/default.
+// the same upsert against the <release-ns>/default singleton (ISI-7354).
 func (s *ComposeService) handleModelConfig() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req modelConfigRequest
@@ -1365,7 +1372,7 @@ func (s *ComposeService) handleModelConfigGet() http.HandlerFunc {
 		}
 		var mc ksquadv1.ModelConfig
 		key := client.ObjectKey{
-			Namespace: modelendpoint.DefaultSystemNamespace,
+			Namespace: s.systemNS, // ISI-7354: the SAME release ns the write targets
 			Name:      modelendpoint.DefaultModelConfigName,
 		}
 		if err := s.applier.Get(r.Context(), key, &mc); err != nil {
