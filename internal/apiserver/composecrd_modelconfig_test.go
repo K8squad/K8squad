@@ -177,3 +177,71 @@ func TestModelConfig_GetHydration(t *testing.T) {
 		t.Fatalf("want 404 for absent default, got %d", miss.Code)
 	}
 }
+
+// TestModelConfig_CustomReleaseNamespace (ISI-7354 regression): on an install
+// whose release namespace is NOT the resolver default, the Settings Save must
+// land on THIS install's chart-seeded singleton (<release-ns>/default) and must
+// never touch k8squad-system — on a shared cluster that namespace belongs to
+// ANOTHER install, and the pre-7354 hardcoded write target mutated it (the
+// live WS-4 incident: the onboarding lane's save bumped the shared install's
+// k8squad-system/default revision). GET hydrates from the same singleton.
+func TestModelConfig_CustomReleaseNamespace(t *testing.T) {
+	const releaseNS = "k8squad-onboarding"
+	t.Setenv("POD_NAMESPACE", releaseNS)
+
+	// The chart-seeded singleton of THIS install (config/helm/templates/modelconfig.yaml).
+	seed := &ksquadv1.ModelConfig{Spec: ksquadv1.ModelConfigSpec{Model: "claude-sonnet-4"}}
+	seed.SetName(modelendpoint.DefaultModelConfigName)
+	seed.SetNamespace(releaseNS)
+	seed.SetAnnotations(map[string]string{RevisionAnnotation: "3"})
+	// The OTHER install's singleton on the same cluster — must stay untouched.
+	decoy := &ksquadv1.ModelConfig{Spec: ksquadv1.ModelConfigSpec{Model: "claude-sonnet-4"}}
+	decoy.SetName(modelendpoint.DefaultModelConfigName)
+	decoy.SetNamespace(modelendpoint.DefaultSystemNamespace)
+
+	svc, _ := newComposeFixture(t, nil, seed, decoy)
+	admin := caller("root", teamUID, true)
+
+	w := do(svc.handleModelConfig(), http.MethodPost, "/api/modelconfig", admin,
+		modelConfigRequest{Model: "qwen3.5:122B"}, nil)
+	if w.Code != http.StatusOK { // the seed exists, so the save UPDATES it
+		t.Fatalf("save want 200 (updated — the chart seeds the singleton), got %d: %s", w.Code, w.Body.String())
+	}
+	var res composeResult
+	mustJSON(t, w, &res)
+	if res.Namespace != releaseNS || res.Name != modelendpoint.DefaultModelConfigName {
+		t.Fatalf("want the RELEASE-ns singleton %s/%s, got %s/%s",
+			releaseNS, modelendpoint.DefaultModelConfigName, res.Namespace, res.Name)
+	}
+	if res.Operation != "updated" || res.Revision != 4 {
+		t.Fatalf("want the seeded singleton revised (rev 3 to 4, like the live incident), got %+v", res)
+	}
+
+	var own ksquadv1.ModelConfig
+	if err := svc.applier.Get(context.Background(),
+		client.ObjectKey{Namespace: releaseNS, Name: modelendpoint.DefaultModelConfigName}, &own); err != nil {
+		t.Fatalf("release-ns singleton missing after save: %v", err)
+	}
+	if own.Spec.Model != "qwen3.5:122B" {
+		t.Fatalf("release-ns singleton not revised: %q", own.Spec.Model)
+	}
+
+	var other ksquadv1.ModelConfig
+	if err := svc.applier.Get(context.Background(), mcKey(), &other); err != nil {
+		t.Fatalf("k8squad-system singleton missing: %v", err)
+	}
+	if other.Spec.Model != "claude-sonnet-4" {
+		t.Fatalf("CROSS-INSTALL MUTATION: k8squad-system/default was changed to %q", other.Spec.Model)
+	}
+
+	// GET hydrates from the release-ns singleton, not the default namespace.
+	hw := do(svc.handleModelConfigGet(), http.MethodGet, "/api/modelconfig", admin, nil, nil)
+	if hw.Code != http.StatusOK {
+		t.Fatalf("GET want 200, got %d: %s", hw.Code, hw.Body.String())
+	}
+	var wire modelConfigRequest
+	mustJSON(t, hw, &wire)
+	if wire.Model != "qwen3.5:122B" {
+		t.Fatalf("GET must hydrate from the release-ns singleton, got %q", wire.Model)
+	}
+}

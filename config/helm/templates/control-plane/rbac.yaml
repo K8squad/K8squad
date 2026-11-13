@@ -230,16 +230,12 @@ rules:
 - apiGroups: [ksquad.io]
   resources: [roles]
   verbs: [get, list, create, update]
-# modelconfigs (ISI-4890): the org-default model tier is written through the SAME
-# compose path (POST/PUT /api/modelconfig → handleModelConfig upsert of the fixed
-# k8squad-system/default singleton) and hydrated by GET /api/modelconfig. get =
-# hydration + the upsert's Get-then-Create-or-Update; create+update = the upsert.
-# No list (it is a fixed singleton, no fleet list), no watch/patch/delete. The
-# operator only READS this CR (the resolver, pkg/modelendpoint) — its write lives
-# here, on the apiserver's compose SA.
-- apiGroups: [ksquad.io]
-  resources: [modelconfigs]
-  verbs: [get, create, update]
+# modelconfigs (ISI-4890, ISI-7354): REMOVED from this ClusterRole. The
+# org-default singleton write/read is a NAMESPACED Role in {{ $ns }} below
+# ({{ include "k8squad.fullname" . }}-apiserver-modelconfig): the singleton lives
+# in the RELEASE namespace, and the cluster-scoped write grant plus the old
+# hardcoded "k8squad-system" target is what let one install's apiserver MUTATE
+# another install's org default on a shared cluster (live WS-4 incident).
 # agentruntimes + runs are READ-ONLY, informer-cache-backed (ISI-3932): the
 # Agents org read model (org.go load()/AgentRuns/AgentStatuses) and the squad
 # overview read model (overview.go), both wired over NewCacheReader, List these
@@ -369,6 +365,50 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ include "k8squad.fullname" . }}-apiserver-model-endpoint
+subjects:
+- kind: ServiceAccount
+  name: ksquad-apiserver
+  namespace: {{ $ns }}
+---
+# apiserver org-default ModelConfig write (ISI-4890 write half; ISI-7354
+# containment). POST/PUT /api/modelconfig upserts the org-default singleton
+# ModelConfig <release-ns>/default and GET /api/modelconfig hydrates it; the
+# effective-model resolver Gets the same singleton over its DIRECT reader
+# (fleetlist WithModelConfigSource). Until ISI-7354 this rode the CLUSTER-scoped
+# apiserver ClusterRole while the write target was hardcoded to "k8squad-system":
+# on a cluster hosting several installs, a fresh lane's apiserver MUTATED the
+# shared install's org default (observed live, rev 3→4, restored within ~6 min).
+# The code now targets the release namespace ($POD_NAMESPACE — the SAME ns this
+# chart seeds the singleton in via templates/modelconfig.yaml), so the
+# least-privilege grant is a NAMESPACED Role in {{ $ns }}, same discipline as the
+# model-endpoint Secret Role above: get = hydration + the upsert's
+# Get-then-Create-or-Update + the resolver's direct singleton Get;
+# create+update = the upsert. No list/watch (fixed singleton, direct client, no
+# informers), no patch/delete. Kept in lockstep by
+# TestApiserverModelConfigRoleLeastPrivilege in rbac_lockstep_test.go.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver-modelconfig
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+rules:
+- apiGroups: [ksquad.io]
+  resources: [modelconfigs]
+  verbs: [get, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver-modelconfig
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "k8squad.fullname" . }}-apiserver-modelconfig
 subjects:
 - kind: ServiceAccount
   name: ksquad-apiserver
