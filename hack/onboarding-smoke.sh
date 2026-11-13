@@ -13,7 +13,12 @@
 #      are available, so /api/* regressions fail the PR — otherwise a
 #      documented skip-with-reason and the published image is asserted.
 #   2. Boot a disposable in-cluster Postgres (dev DSN path) and helm install
-#      the LOCAL charts with controlPlane.enabled=true.
+#      the LOCAL charts with controlPlane.enabled=true in the documented
+#      apiserver-only topology (values.yaml: secondary/read-surface installs
+#      set the non-apiserver components to replicas: 0) - the journey is
+#      asserted at the API layer, so console/operator/memory/event-relay/
+#      scm-webhook stay off: nothing pulls published component images; the
+#      lane depends only on the kind-loaded PR-source apiserver + NATS.
 #   3. Bootstrap the admin exactly as values.yaml documents it
 #      (controlPlane.apiserver.bootstrapAdmin + existing Secret), then log in.
 #   4. Run the adopter journey at the API layer (headlessly checkable):
@@ -171,6 +176,11 @@ helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$CP_NS" --create-namespace \
   --set controlPlane.enabled=true \
   --set "controlPlane.nats.persistence.storageClassName=$STORAGE_CLASS" \
+  --set controlPlane.operator.replicas=0 \
+  --set controlPlane.console.replicas=0 \
+  --set controlPlane.memory.replicas=0 \
+  --set controlPlane.scmWebhook.replicas=0 \
+  --set controlPlane.eventRelay.replicas=0 \
   --set-string "controlPlane.database.dsn=$DSN" \
   --set tools.defaultCatalog.enabled=true \
   --set "modelConfig.default.model=$DEFAULT_MODEL" \
@@ -198,6 +208,11 @@ helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$CP_NS" \
   --set controlPlane.enabled=true \
   --set "controlPlane.nats.persistence.storageClassName=$STORAGE_CLASS" \
+  --set controlPlane.operator.replicas=0 \
+  --set controlPlane.console.replicas=0 \
+  --set controlPlane.memory.replicas=0 \
+  --set controlPlane.scmWebhook.replicas=0 \
+  --set controlPlane.eventRelay.replicas=0 \
   --set "controlPlane.database.dsn=$DSN" \
   --set tools.defaultCatalog.enabled=true \
   --set "modelConfig.default.model=$DEFAULT_MODEL" \
