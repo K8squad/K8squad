@@ -293,10 +293,11 @@ func TestDiscussionPostUnmountedWhenNil(t *testing.T) {
 	}
 }
 
-// TestDiscussionPostMethodNotAllowed asserts non-POST is rejected.
+// TestDiscussionPostMethodNotAllowed asserts non-POST/non-GET is rejected (GET
+// self-describes the tool since ISI-7367 — see discusspost_parity_test.go).
 func TestDiscussionPostMethodNotAllowed(t *testing.T) {
 	srv := newDiscussionToolServer(t, &fakeDiscussionWriter{})
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/mcp/tools/discussion_post", nil)
+	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/mcp/tools/discussion_post", nil)
 	req.Header.Set("X-Team-Id", testTeamID)
 	req.Header.Set("X-Principal-Id", "p")
 	res, err := http.DefaultClient.Do(req)

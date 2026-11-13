@@ -310,6 +310,14 @@ type discussionPostRequest struct {
 // open-vs-reply. Returns the server-stamped Thread/Message so the agent can cite what it just wrote
 // (AC6).
 func (h *ToolHTTP) discussionPost(w http.ResponseWriter, r *http.Request) {
+	// ISI-7367 (WS-7a): GET self-describes the tool with the SAME name,
+	// description and body-arg guidance the MCP catalog advertises via
+	// tools/list (discusspost.go) — the parity surface that keeps the two
+	// transports from drifting. POST behavior below is unchanged.
+	if r.Method == http.MethodGet {
+		writeJSON(w, discussionPostManifest())
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

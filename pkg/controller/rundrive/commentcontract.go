@@ -66,3 +66,56 @@ func appendFinalCommentContract(sysCtx string) string {
 	}
 	return sysCtx + "\n\n" + contract
 }
+
+// workItemSourceDiscussion is the coord.work_item.source origin marker
+// stamped at mint time by BOTH room dispatch seams — markSourceDiscussion
+// (internal/mentiondispatch, @-mention runs) and the party-advance
+// facilitator mint (cmd/operator/party_advancer_adapter.go). buildTask reads
+// it to select the discussion-shaped contract variant (ISI-7367).
+const workItemSourceDiscussion = "discussion"
+
+// discussionReplyContract (ISI-7367, WS-7a of the ISI-7074 comment-quality
+// plan) is the discussion-room variant of the same contract family: a run
+// whose work item was minted from the room (source='discussion') publishes
+// its board-facing output DURING the run, as the discussion_post reply the
+// board reads in the room. The final-comment contract still rides those
+// envelopes verbatim, but the in-room reply had NO shaping until now — the
+// gap the ISI-7263 spike grounded on live thread 7b0436cf (devon: 6201
+// chars / 72 inline-code spans of commands and dependency dumps in one
+// durable message). Same board-approved posture: prompt-side guidance only —
+// nothing rewrites, truncates, or summarizes the posted body, no extra model
+// call, and no rigid stamped form (Henrik's ISI-7195 rejection applies
+// identically).
+const discussionReplyContract = `How to post in the discussion room — reply contract:
+
+Your discussion_post replies are read by the board directly in the room, while you are still working. Write each one for that reader, not for your own log.
+
+Lead with a natural summary of where things stand and what it means; when you need a decision, help, or an unblock, state that ask explicitly — what you need and from whom. Inline code is only for an exact command, path, or identifier the reader must run or copy, never for emphasis and never interleaved with prose. Do not paste tool output or narrate commands step by step; park that detail in work items or linked issues and reference them instead. Keep each message short enough to read at a glance — about 1200 characters is a soft target, not a limit. Do not impose fixed headings or a stamped template; write it the way you would brief a colleague in chat.`
+
+// appendDiscussionReplyContract joins the discussion-room reply contract on
+// LAST (after the final-comment contract — see appendDispatchContracts): the
+// same join discipline as appendFinalCommentContract — the contract is the
+// closing instruction the model reads.
+func appendDiscussionReplyContract(sysCtx string) string {
+	sysCtx = strings.TrimSpace(sysCtx)
+	contract := strings.TrimSpace(discussionReplyContract)
+	if sysCtx == "" {
+		return contract
+	}
+	return sysCtx + "\n\n" + contract
+}
+
+// appendDispatchContracts is the origin-aware buildTask seam (ISI-7367,
+// WS-7a): every dispatched envelope still closes with the final-comment
+// contract; envelopes minted from the discussion room (source='discussion')
+// additionally close with the discussion-room reply contract, because the
+// in-run discussion_post reply — not the final coord comment — is the durable
+// message the board reads there. Pass-through is preserved end to end:
+// neither contract rewrites anything, and no extra model call exists.
+func appendDispatchContracts(sysCtx string, fromDiscussion bool) string {
+	sysCtx = appendFinalCommentContract(sysCtx)
+	if fromDiscussion {
+		sysCtx = appendDiscussionReplyContract(sysCtx)
+	}
+	return sysCtx
+}
