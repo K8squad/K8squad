@@ -360,8 +360,7 @@ fi
   || fail "POST /api/compose/squad failed (HTTP $HTTP_CODE): $(cat "$BODY_FILE")"
 AGENTS_JSON="$(kubectl get agents -n "$CP_NS" -o json)"
 for a in boss implementer manager; do
-  row="$(jq -r --arg n "$a" '.items[] | select(.metadata.name==$n) \
-    | [(.spec.roleRef.name // "MISSING"), (.spec.credentialSecretRef.name // "MISSING")] | @tsv' <<<"$AGENTS_JSON")"
+  row="$(jq -r --arg n "$a" '.items[] | select(.metadata.name==$n) | [(.spec.roleRef.name // "MISSING"), (.spec.credentialSecretRef.name // "MISSING")] | @tsv' <<<"$AGENTS_JSON")"
   [ -n "$row" ] || fail "Agent $a missing after compose/squad"
   role="$(cut -f1 <<<"$row")"; cred="$(cut -f2 <<<"$row")"
   [ "$role" = "role-$a" ] || fail "Agent $a roleRef drift: expected role-$a, got $role"
