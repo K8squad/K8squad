@@ -28,7 +28,10 @@ LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
 # aarch64 cp312 wheel, so the arm64 alpine leg fell back to the sdist and died on
 # can't find Rust compiler. 3.4.x allows rustworkx 0.17.x whose cp39-abi3 musllinux_1_2
 # wheels cover amd64+aarch64; rustworkx pinned exact for deterministic rebuilds.
-RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux \
+# ISI-7282 follow-up: krb5-libs floor >= 1.22.3-r0 — the rolling alpine base ships
+# 1.22.2-r1 which the 2026-11-10 advisory wave gates (16 HIGH CVEs, all fixed in
+# 1.22.3-r0); mirrors Dockerfile.toolchain-python / -ansible-core.
+RUN apk upgrade --no-cache libcrypto3 libssl3 util-linux krb5-libs \
  && pip install --no-cache-dir --upgrade "pip" "setuptools>=78.1.1" \
  && pip install --no-cache-dir "checkov==${CHECKOV_VERSION}" "rustworkx==0.17.1"
 COPY --from=bench-fetch /usr/local/bin/kube-bench /usr/local/bin/kube-bench
