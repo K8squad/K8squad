@@ -60,7 +60,24 @@ DEFAULT_MODEL="${DEFAULT_MODEL:-claude-sonnet-4}"
 STORAGE_CLASS="${STORAGE_CLASS:-standard}"        # kind default StorageClass
 CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
 INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-10m}"
-API_PORT="${API_PORT:-18080}"                    # local port-forward port for ksquad-apiserver
+# The port-forward port defaults to a FREE ephemeral loopback port, never a fixed
+# one: on the shared self-hosted runner a stale `kubectl port-forward` from a
+# cancelled run can keep squatting a fixed port, and the journey would then be
+# served by that foreign listener (observed in lane run 5: /api/* answered with the
+# cookie but /admin/users 401ed). The script verifies OUR port-forward bound before
+# trusting the port.
+pick_free_port() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null && return 0
+  fi
+  local p
+  for _ in $(seq 1 50); do
+    p=$(( (RANDOM % 20000) + 21000 ))
+    if ! (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then echo "$p"; return 0; fi
+  done
+  echo 18080
+}
+API_PORT="${API_PORT:-$(pick_free_port)}"         # local port-forward port for ksquad-apiserver
 API_URL="${API_URL:-http://127.0.0.1:${API_PORT}}"
 KIND_CLUSTER="${KIND_CLUSTER:-chart-testing}"
 API_IMAGE_TAG="${API_IMAGE_TAG:-onboarding-ci}"
@@ -94,16 +111,46 @@ kubectl cluster-info >/dev/null 2>&1 || fail "no reachable cluster on the curren
 BODY_FILE="$(mktemp /tmp/onboarding-smoke-body.XXXXXX)"
 RUNTIME_DIR="$(mktemp -d /tmp/onboarding-smoke.XXXXXX)"
 ACTIVE_JAR=""
-trap 'kill "${PF_PID:-0}" 2>/dev/null || true; rm -f "$BODY_FILE"' EXIT
+SESSION_TOKEN=""   # explicit ksquad_session value extracted from the active jar
+trap 'kill "${PF_PID:-0}" 2>/dev/null || true; rm -f "$BODY_FILE"; rm -rf "$RUNTIME_DIR"' EXIT
 HTTP_CODE=""
 
-# api METHOD PATH [JSON] → HTTP_CODE set, body on stdout via $BODY_FILE
+# diag_auth LABEL - on an unexpected 401/403, dump everything needed to see what
+# the apiserver actually received: the jar, a verbose /auth/me probe with the
+# explicit cookie, the apiserver pods, the port-forward log, and the pod log tail.
+diag_auth() {
+  echo "::group::auth diagnostics ($*)"
+  echo "--- active jar ($ACTIVE_JAR):"; cat "$ACTIVE_JAR" 2>/dev/null || echo "(none)"
+  echo "--- GET /auth/me with the explicit cookie (verbose):"
+  curl -sS --noproxy '*' -v -o "$BODY_FILE" --max-time 10 \
+    -H "Cookie: ksquad_session=$SESSION_TOKEN" "$API_URL/auth/me" 2>&1 | tail -25 || true
+  echo "--- auth/me body: $(cat "$BODY_FILE" 2>/dev/null)"
+  echo "--- apiserver pods:"; kubectl -n "$CP_NS" get pods -o wide 2>/dev/null || true
+  echo "--- port-forward log:"; tail -5 "${PF_LOG:-/dev/null}" 2>/dev/null || true
+  echo "--- apiserver logs (tail):"; kubectl -n "$CP_NS" logs deploy/ksquad-apiserver --tail=40 2>/dev/null | tail -40 || true
+  echo "::endgroup::"
+}
+
+# api METHOD PATH [JSON] → HTTP_CODE set, body on stdout via $BODY_FILE.
+# --noproxy '*' keeps the loopback call off any runner-wide HTTP proxy; the session
+# rides an explicit Cookie header (deterministic - no jar/secure-flag parsing quirks).
 api() {
   local method="$1" path="$2" data="${3:-}"
-  local args=(-sS -X "$method" "$API_URL$path" -o "$BODY_FILE" -w '%{http_code}' --max-time 30)
-  [ -n "$ACTIVE_JAR" ] && args+=(-b "$ACTIVE_JAR")
+  local args=(-sS --noproxy '*' -X "$method" "$API_URL$path" -o "$BODY_FILE" -w '%{http_code}' --max-time 30)
+  if [ -n "$SESSION_TOKEN" ]; then
+    args+=(-H "Cookie: ksquad_session=$SESSION_TOKEN")
+  elif [ -n "$ACTIVE_JAR" ]; then
+    args+=(-b "$ACTIVE_JAR")
+  fi
   [ -n "$data" ]  && args+=(-H 'Content-Type: application/json' --data "$data")
   HTTP_CODE="$(curl "${args[@]}")"
+  # Unexpected auth failure (the /auth/login wrong-password guard 401s on purpose) -
+  # dump diagnostics once per path so the job log shows what the server saw.
+  if { [ "$HTTP_CODE" = 401 ] || [ "$HTTP_CODE" = 403 ]; } && [ "$path" != "/auth/login" ]; then
+    case " ${DIAG_DONE:-} " in *" $path "*) ;; *)
+      DIAG_DONE="${DIAG_DONE:-} $path"; diag_auth "$method $path -> $HTTP_CODE" ;;
+    esac
+  fi
 }
 
 # login USERNAME PASSWORD -> per-user ksquad_session cookie jar (ACTIVE_JAR).
@@ -113,11 +160,12 @@ api() {
 login() {
   local u="$1"
   ACTIVE_JAR="$RUNTIME_DIR/cookies-$u.txt"
-  HTTP_CODE="$(curl -sS -X POST "$API_URL/auth/login" -H "Content-Type: application/json" \
+  HTTP_CODE="$(curl -sS --noproxy '*' -X POST "$API_URL/auth/login" -H "Content-Type: application/json" \
     -d "$(jq -nc --arg u "$u" --arg p "$2" "{username:\$u, password:\$p}")" \
     -c "$ACTIVE_JAR" -o "$BODY_FILE" -w "%{http_code}" --max-time 30)"
   [ "$HTTP_CODE" = 200 ] || fail "login as $u failed (HTTP $HTTP_CODE): $(cat "$BODY_FILE")"
-  grep -q ksquad_session "$ACTIVE_JAR" 2>/dev/null \
+  SESSION_TOKEN="$(awk '$6=="ksquad_session"{print $7}' "$ACTIVE_JAR" 2>/dev/null || true)"
+  [ -n "$SESSION_TOKEN" ] \
     || fail "login as $u succeeded but set no ksquad_session cookie in $ACTIVE_JAR"
 }
 # poll_progress DONE STEP NEXT LABEL — GET /api/onboarding/progress until
@@ -126,8 +174,9 @@ poll_progress() {
   local want_done="$1" want_step="$2" want_next="$3" label="$4"
   local deadline=$((SECONDS + PROGRESS_TIMEOUT)) got=""
   while [ $SECONDS -lt $deadline ]; do
-    HTTP_CODE="$(curl -sS -o "$BODY_FILE" -w '%{http_code}' --max-time 30 \
-      -b "$ACTIVE_JAR" "$API_URL/api/onboarding/progress")"
+    local pargs=(-sS --noproxy '*' -o "$BODY_FILE" -w '%{http_code}' --max-time 30)
+    if [ -n "$SESSION_TOKEN" ]; then pargs+=(-H "Cookie: ksquad_session=$SESSION_TOKEN"); else pargs+=(-b "$ACTIVE_JAR"); fi
+    HTTP_CODE="$(curl "${pargs[@]}" "$API_URL/api/onboarding/progress")"
     [ "$HTTP_CODE" = 200 ] || fail "$label: progress read failed (HTTP $HTTP_CODE): $(cat "$BODY_FILE")"
     got="$(cat "$BODY_FILE")"
     if [ "$(jq -r .done <<<"$got")" = "$want_done" ] \
@@ -232,12 +281,27 @@ kubectl rollout restart deploy/ksquad-apiserver -n "$CP_NS" >/dev/null 2>&1 || t
 kubectl rollout status deploy/ksquad-apiserver -n "$CP_NS" --timeout="$INSTALL_TIMEOUT" >/dev/null \
   || fail "apiserver did not roll after bootstrap upgrade"
 
-kubectl port-forward -n "$CP_NS" svc/ksquad-apiserver "${API_PORT}:8080" >/tmp/onboarding-smoke-pf.log 2>&1 &
+PF_LOG="$RUNTIME_DIR/port-forward.log"
+kubectl port-forward -n "$CP_NS" svc/ksquad-apiserver "${API_PORT}:8080" >"$PF_LOG" 2>&1 &
 PF_PID=$!
+# Fail fast if OUR port-forward could not bind: a stale listener on the port would
+# otherwise silently serve the journey from a foreign server.
+for i in $(seq 1 30); do
+  grep -q "Forwarding from" "$PF_LOG" && break
+  if ! kill -0 "$PF_PID" 2>/dev/null; then
+    fail "port-forward exited before binding ${API_PORT}: $(cat "$PF_LOG")"
+  fi
+  sleep 1
+done
+grep -q "Forwarding from" "$PF_LOG" \
+  || fail "port-forward did not report 'Forwarding from' on ${API_PORT} - stale listener on the port? log: $(cat "$PF_LOG")"
 for i in $(seq 1 60); do
-  [ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 2 "$API_URL/auth/me" 2>/dev/null || true)" != "000" ] && break
+  code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 2 "$API_URL/healthz" 2>/dev/null || true)"
+  [ "$code" = "200" ] && break
   sleep 2
 done
+[ "${code:-}" = "200" ] \
+  || fail "apiserver not reachable on $API_URL/healthz (code=${code:-none}); port-forward log: $(cat "$PF_LOG")"
 
 login "$ADMIN_USER" "$ADMIN_PASSWORD"
 echo "bootstrap admin logged in: $(jq -c . "$BODY_FILE")"
