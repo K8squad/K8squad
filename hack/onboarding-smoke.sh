@@ -92,36 +92,42 @@ kubectl cluster-info >/dev/null 2>&1 || fail "no reachable cluster on the curren
 [ -f Dockerfile.apiserver ] || fail "Dockerfile.apiserver not found (run from repo root)"
 
 BODY_FILE="$(mktemp /tmp/onboarding-smoke-body.XXXXXX)"
+RUNTIME_DIR="$(mktemp -d /tmp/onboarding-smoke.XXXXXX)"
+ACTIVE_JAR=""
 trap 'kill "${PF_PID:-0}" 2>/dev/null || true; rm -f "$BODY_FILE"' EXIT
 HTTP_CODE=""
-TOKEN=""
 
 # api METHOD PATH [JSON] → HTTP_CODE set, body on stdout via $BODY_FILE
 api() {
   local method="$1" path="$2" data="${3:-}"
   local args=(-sS -X "$method" "$API_URL$path" -o "$BODY_FILE" -w '%{http_code}' --max-time 30)
-  [ -n "$TOKEN" ] && args+=(-H "Authorization: Bearer $TOKEN")
+  [ -n "$ACTIVE_JAR" ] && args+=(-b "$ACTIVE_JAR")
   [ -n "$data" ]  && args+=(-H 'Content-Type: application/json' --data "$data")
   HTTP_CODE="$(curl "${args[@]}")"
 }
 
-# login USERNAME PASSWORD → TOKEN + login body in $BODY_FILE
+# login USERNAME PASSWORD -> per-user ksquad_session cookie jar (ACTIVE_JAR).
+# The apiserver authenticates ONLY the forwarded ksquad_session cookie (server.go:
+# the router trusts nothing but that cookie) - a Bearer-only call 401s, so every
+# journey call rides the jar. Re-login switches the active jar per user.
 login() {
-  TOKEN=""
-  api POST /auth/login "$(jq -nc --arg u "$1" --arg p "$2" '{username:$u, password:$p}')"
-  [ "$HTTP_CODE" = 200 ] || fail "login as $1 failed (HTTP $HTTP_CODE): $(cat "$BODY_FILE")"
-  TOKEN="$(jq -r '.accessToken // ""' "$BODY_FILE")"
-  [ -n "$TOKEN" ] || fail "login as $1 returned no accessToken: $(cat "$BODY_FILE")"
+  local u="$1"
+  ACTIVE_JAR="$RUNTIME_DIR/cookies-$u.txt"
+  HTTP_CODE="$(curl -sS -X POST "$API_URL/auth/login" -H "Content-Type: application/json" \
+    -d "$(jq -nc --arg u "$u" --arg p "$2" "{username:\$u, password:\$p}")" \
+    -c "$ACTIVE_JAR" -o "$BODY_FILE" -w "%{http_code}" --max-time 30)"
+  [ "$HTTP_CODE" = 200 ] || fail "login as $u failed (HTTP $HTTP_CODE): $(cat "$BODY_FILE")"
+  grep -q ksquad_session "$ACTIVE_JAR" 2>/dev/null \
+    || fail "login as $u succeeded but set no ksquad_session cookie in $ACTIVE_JAR"
 }
-
-# poll_progress TOKEN DONE STEP NEXT LABEL — GET /api/onboarding/progress until
+# poll_progress DONE STEP NEXT LABEL — GET /api/onboarding/progress until
 # the projection matches, honoring the ISI-7352 informer-cache settle window.
 poll_progress() {
-  local token="$1" want_done="$2" want_step="$3" want_next="$4" label="$5"
+  local want_done="$1" want_step="$2" want_next="$3" label="$4"
   local deadline=$((SECONDS + PROGRESS_TIMEOUT)) got=""
   while [ $SECONDS -lt $deadline ]; do
     HTTP_CODE="$(curl -sS -o "$BODY_FILE" -w '%{http_code}' --max-time 30 \
-      -H "Authorization: Bearer $token" "$API_URL/api/onboarding/progress")"
+      -b "$ACTIVE_JAR" "$API_URL/api/onboarding/progress")"
     [ "$HTTP_CODE" = 200 ] || fail "$label: progress read failed (HTTP $HTTP_CODE): $(cat "$BODY_FILE")"
     got="$(cat "$BODY_FILE")"
     if [ "$(jq -r .done <<<"$got")" = "$want_done" ] \
@@ -234,7 +240,7 @@ for i in $(seq 1 60); do
 done
 
 login "$ADMIN_USER" "$ADMIN_PASSWORD"
-echo "bootstrap admin logged in: $(jq -c '{user:.user.username, globalRole, teamId}' "$BODY_FILE")"
+echo "bootstrap admin logged in: $(jq -c . "$BODY_FILE")"
 # Negative guard: the login wall must reject a wrong password (WS-2 verified).
 api POST /auth/login "$(jq -nc --arg u "$ADMIN_USER" --arg p "definitely-wrong" '{username:$u, password:$p}')"
 [ "$HTTP_CODE" = 401 ] || fail "wrong-password login must 401, got HTTP $HTTP_CODE: $(cat "$BODY_FILE")"
@@ -257,12 +263,11 @@ api POST /admin/users "$(jq -nc --arg u "$MEMBER_USER" --arg p "$MEMBER_PASSWORD
 echo "  ok   member $MEMBER_USER created in team $TEAM_UID"
 
 login "$MEMBER_USER" "$MEMBER_PASSWORD"
-MEMBER_TOKEN="$TOKEN"
-poll_progress "$MEMBER_TOKEN" 1 2 agents "milestone ① team (member view)"
+poll_progress 1 2 agents "milestone ① team (member view)"
 
 # ISI-3932 guard: the bootstrap ADMIN's onboarding is N/A — reported 4/4 complete.
 login "$ADMIN_USER" "$ADMIN_PASSWORD"
-poll_progress "$TOKEN" 4 4 "" "milestone ②—④ admin N/A-complete guard (ISI-3932)"
+poll_progress 4 4 "" "milestone ②—④ admin N/A-complete guard (ISI-3932)"
 endgroup
 
 # ============================================================ STEP 6 — journey ②③: minimal-trio squad
@@ -293,7 +298,7 @@ for a in boss implementer manager; do
   echo "  ok   Agent $a (roleRef=role-$a, credentialSecretRef=model-credentials)"
 done
 login "$MEMBER_USER" "$MEMBER_PASSWORD"
-poll_progress "$TOKEN" 3 4 project "milestones ②+③ agents+models (member view)"
+poll_progress 3 4 project "milestones ②+③ agents+models (member view)"
 note "credential-gated legs skipped-with-reason: LIVE LLM key test-connection (GREEN on a real provider / RED un-completing milestone ③) and primary+fallback round-trip — verified manually in WS-4 (ISI-7267); needs a real key + egress through the EgressPolicy allowlist. The non-gated half (shared credentialSecretRef wiring + milestone ③ flip) IS asserted above."
 endgroup
 
@@ -335,7 +340,7 @@ WIRED="$(kubectl get project "$PROJECT_NAME" -n "$CP_NS" -o jsonpath='{.spec.rep
 echo "  ok   Project $PROJECT_NAME carries spec.repo.auth.credentialSecretRef=$CRED_SECRET (milestone ④ input)"
 
 login "$MEMBER_USER" "$MEMBER_PASSWORD"
-poll_progress "$TOKEN" 4 4 "" "milestone ④ project — journey complete 4/4 (member view)"
+poll_progress 4 4 "" "milestone ④ project — journey complete 4/4 (member view)"
 note "credential-gated leg skipped-with-reason: LIVE repo-auth test (POST /api/projects/repo-auth/test + Team CR ksquad.io/onboarding-test-connection-repo=passed) needs a real GitHub PAT — verified manually in WS-5 (ISI-7268). The non-gated half (credentialSecretRef wiring, the exact input milestone ④ reads) IS asserted above."
 note "image-gated leg skipped-with-reason: operator reconcile-to-Ready of the running agents — same skip-with-reason as getting-started-smoke.sh STEP 5."
 endgroup
