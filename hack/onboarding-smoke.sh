@@ -122,9 +122,10 @@ diag_auth() {
   echo "::group::auth diagnostics ($*)"
   echo "--- active jar ($ACTIVE_JAR):"; cat "$ACTIVE_JAR" 2>/dev/null || echo "(none)"
   echo "--- GET /auth/me with the explicit cookie (verbose):"
-  curl -sS --noproxy '*' -v -o "$BODY_FILE" --max-time 10 \
+  local diagbody; diagbody="$(mktemp /tmp/onboarding-smoke-diag.XXXXXX)"
+  curl -sS --noproxy '*' -v -o "$diagbody" --max-time 10 \
     -H "Cookie: ksquad_session=$SESSION_TOKEN" "$API_URL/auth/me" 2>&1 | tail -25 || true
-  echo "--- auth/me body: $(cat "$BODY_FILE" 2>/dev/null)"
+  echo "--- auth/me body: $(cat "$diagbody" 2>/dev/null)"; rm -f "$diagbody"
   echo "--- apiserver pods:"; kubectl -n "$CP_NS" get pods -o wide 2>/dev/null || true
   echo "--- port-forward log:"; tail -5 "${PF_LOG:-/dev/null}" 2>/dev/null || true
   echo "--- apiserver logs (tail):"; kubectl -n "$CP_NS" logs deploy/ksquad-apiserver --tail=40 2>/dev/null | tail -40 || true
@@ -321,6 +322,12 @@ TEAM_UID="$(kubectl get team "$TEAM_NAME" -n "$CP_NS" -o jsonpath='{.metadata.ui
 [ -n "$TEAM_UID" ] || fail "Team CR $TEAM_NAME not found in $CP_NS after POST /api/teams"
 echo "  ok   Team $TEAM_NAME created (uid $TEAM_UID, home ns $CP_NS)"
 
+# ISI-3924: creating the FIRST Team rebinds the bootstrap admin's dangling tenancy
+# root to the new Team and REVOKES all of the admin's live sessions
+# (composecrd.go rebindAdminTenancy -> RebindTeamID -> RevokeAllForUser; the apiserver
+# logs "sessions invalidated, re-login required"). Re-login now so the member-create
+# call below rides a live session minted against the rebound tenancy.
+login "$ADMIN_USER" "$ADMIN_PASSWORD"
 api POST /admin/users "$(jq -nc --arg u "$MEMBER_USER" --arg p "$MEMBER_PASSWORD" --arg t "$TEAM_UID" \
   '{username:$u, password:$p, globalRole:"user", teamId:$t}')"
 [ "$HTTP_CODE" = 201 ] || fail "POST /admin/users failed (HTTP $HTTP_CODE): $(cat "$BODY_FILE")"
