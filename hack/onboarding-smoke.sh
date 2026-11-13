@@ -186,8 +186,27 @@ poll_progress() {
       echo "  ok   $label → $got"
       return 0
     fi
+    echo "  …    $label poll t=$((SECONDS))s: $got"
     sleep "$POLL_INTERVAL"
   done
+  echo "::group::poll timeout diagnostics ($label)"
+  echo "--- active session /auth/me (principal, teamId, isAdmin):"
+  local diagbody; diagbody="$(mktemp /tmp/onboarding-smoke-diag.XXXXXX)"
+  curl -sS --noproxy '*' -o "$diagbody" --max-time 10 -H "Cookie: ksquad_session=$SESSION_TOKEN" "$API_URL/auth/me" || true
+  cat "$diagbody" 2>/dev/null; echo; rm -f "$diagbody"
+  echo "--- apiserver pods:"
+  kubectl -n "$CP_NS" get pods -o wide 2>/dev/null || true
+  echo "--- teams (all namespaces):"
+  kubectl get teams -A -o json 2>/dev/null | jq -r '.items[] | [.metadata.namespace, .metadata.name, .metadata.uid] | @tsv' || true
+  echo "--- agents (all namespaces):"
+  kubectl get agents -A -o json 2>/dev/null | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.roleRef.name, .spec.credentialSecretRef.name] | @tsv' || true
+  echo "--- projects (all namespaces):"
+  kubectl get projects -A -o json 2>/dev/null | jq -r '.items[] | [.metadata.namespace, .metadata.name, (.spec.repo.auth.credentialSecretRef.name // "-")] | @tsv' || true
+  echo "--- roles in $CP_NS:"
+  kubectl get roles -n "$CP_NS" -o json 2>/dev/null | jq -r '.items[].metadata.name' || true
+  echo "--- apiserver log tail (onboarding/agent/watch/error lines):"
+  kubectl -n "$CP_NS" logs deploy/ksquad-apiserver --tail=200 2>/dev/null | grep -aiE "onboarding|agent|watch|error|rebind" | tail -30 || true
+  echo "::endgroup::"
   fail "$label never reached done=$want_done step=$want_step next='${want_next}' within ${PROGRESS_TIMEOUT}s (ISI-7352 informer-lag window exceeded?) — last observation: $got"
 }
 
