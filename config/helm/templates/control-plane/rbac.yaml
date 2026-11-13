@@ -11,26 +11,23 @@ metadata:
     {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
 rules:
 - apiGroups: [""]
-  # configmaps rule (ISI-3614 / mcpserver): per-sandbox config payloads.
-  # ISI-4165: otelegress is removed, so configmaps lost the patch verb and
-  # split back out of the namespaces/persistentvolumeclaims group below.
-  resources: [configmaps]
-  verbs: [create, delete, get, list, update, watch]
+  # configmaps (ISI-3614 / mcpserver: per-sandbox config payloads; ADR-0033
+  # D1/ISI-7365: patch joins — the team reconciler server-side-applies the
+  # seeded role-manager-prompt ConfigMap into each Team's home namespace),
+  # namespaces (team reconciler) and persistentvolumeclaims (ISI-4127, the
+  # project-pvc reconciler: create/delete from the workspace manager,
+  # update/patch for in-place size expansion — the only mutable PVC field)
+  # share one verb set, and controller-gen groups resources with identical
+  # verbs into one rule; the lockstep test compares grouping, so the chart
+  # mirrors it.
+  resources: [configmaps, namespaces, persistentvolumeclaims]
+  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
   # secrets create: ISI-3614 / ADR-0007 — the warm-pool Bind path writes a
   # per-sandbox task-io Secret (pod-owned, auto-GC) to deliver the run-scoped
   # credential.
   resources: [limitranges, resourcequotas, secrets, serviceaccounts]
   verbs: [create, get, list, patch, update, watch]
-- apiGroups: [""]
-  # namespaces (team reconciler) + persistentvolumeclaims (ISI-4127, the
-  # project-pvc reconciler: create/delete from the workspace manager,
-  # update/patch for in-place size expansion — the only mutable PVC field)
-  # share one verb set, and controller-gen groups resources with identical
-  # verbs into one rule; the lockstep test compares grouping, so the chart
-  # mirrors it.
-  resources: [namespaces, persistentvolumeclaims]
-  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
   # ISI-3614 / ADR-0007: the warm-pool Bind path reads the booted sandbox pod
   # (by its unique label) to place the pod-owned task-io Secret in the pod's
@@ -59,7 +56,11 @@ rules:
   resources: [jobs]
   verbs: [create, delete, get, list, watch]
 - apiGroups: [ksquad.io]
-  resources: [agentruntimes, agents, egresspolicies, modelconfigs, otelconfigs, roles, skills, toolchains]
+  # roles left the read-only pack for the write rule below (ADR-0033 D1 /
+  # ISI-7365: the team reconciler seeds the preset Role CRs per Team home
+  # namespace; controller-gen consolidated the identical verb set with
+  # mcpservers — the lockstep test compares grouping, so the chart mirrors).
+  resources: [agentruntimes, agents, egresspolicies, modelconfigs, otelconfigs, skills, toolchains]
   verbs: [get, list, watch]
 - apiGroups: [ksquad.io]
   # runs split out of the read-only pack (ISI-4132): the M1.3 intake sweep
@@ -70,10 +71,13 @@ rules:
 - apiGroups: [ksquad.io]
   # mcpservers split out of the read-only pack (ISI-4867): the team reconciler
   # provisions the built-in ksquad-memory-authoring MCPServer per squad
-  # namespace (pkg/controller/team/mcpauthoring.go). controller-gen consolidates
-  # all mcpservers verbs into ONE rule, so this mirrors config/rbac/role.yaml
+  # namespace (pkg/controller/team/mcpauthoring.go). roles join the rule
+  # (ADR-0033 D1 / ISI-7365): the same reconciler server-side-applies the
+  # preset role.ksquad.io CRs (role-boss/implementer/manager/architect) into
+  # each Team's home namespace. controller-gen consolidates resources with
+  # identical verbs into ONE rule, so this mirrors config/rbac/role.yaml
   # exactly (the rbac lockstep guard test compares the two rule sets).
-  resources: [mcpservers]
+  resources: [mcpservers, roles]
   verbs: [create, get, list, patch, update, watch]
 - apiGroups: [ksquad.io]
   resources: [mcpservers/status, otelconfigs/status, projects/status, runs/status, teams/status]
