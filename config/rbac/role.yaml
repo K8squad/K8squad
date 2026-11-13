@@ -8,11 +8,14 @@ rules:
   - ""
   resources:
   - configmaps
+  - namespaces
+  - persistentvolumeclaims
   verbs:
   - create
   - delete
   - get
   - list
+  - patch
   - update
   - watch
 - apiGroups:
@@ -31,19 +34,6 @@ rules:
   - serviceaccounts
   verbs:
   - create
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - namespaces
-  - persistentvolumeclaims
-  verbs:
-  - create
-  - delete
   - get
   - list
   - patch
@@ -86,7 +76,6 @@ rules:
   - egresspolicies
   - modelconfigs
   - otelconfigs
-  - roles
   - skills
   - toolchains
   verbs:
@@ -97,6 +86,7 @@ rules:
   - ksquad.io
   resources:
   - mcpservers
+  - roles
   verbs:
   - create
   - get

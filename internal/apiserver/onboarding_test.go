@@ -41,14 +41,27 @@ func onboardingProject(ns, name string) *ksquadv1.Project {
 	}
 }
 
+// presetRoleCR builds one of the AD-3 preset Role CRs — the objects the operator seed /
+// config/roles materialize into the team namespace (ADR-0033 D1).
+func presetRoleCR(ns, name string) *ksquadv1.Role {
+	return &ksquadv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+	}
+}
+
 // fullSquad returns the objects of a tenant at 3/4: Team + the three preset Agents (each with a
-// credential ref set). Add an onboardingProject to reach 4/4.
+// credential ref set) + the preset Role CRs the Agents' roleRefs resolve against (ADR-0033:
+// the operator seeds these; milestone ② verifies they exist). Add an onboardingProject to
+// reach 4/4.
 func fullSquad(ns, teamUID string) []client.Object {
 	return []client.Object{
 		team(ns, "squad-a", teamUID),
 		presetAgent(ns, "boss", "role-boss"),
 		presetAgent(ns, "impl", "role-implementer"),
 		presetAgent(ns, "mgr", "role-manager"),
+		presetRoleCR(ns, "role-boss"),
+		presetRoleCR(ns, "role-implementer"),
+		presetRoleCR(ns, "role-manager"),
 	}
 }
 
@@ -121,6 +134,40 @@ func TestOnboardingAgentsNeedsAllPresets(t *testing.T) {
 	}
 }
 
+// TestOnboardingAgentsNeedRoleCRs (ADR-0033 D2, ISI-7365): name coverage alone is NOT
+// milestone ② — the preset Role CRs must exist in the team namespace. Before D2 the
+// milestone reported "done" for a starter squad whose roleRefs pointed at Role CRs nothing
+// seeded (ISI-7353): onboarding said the squad was set up while it could not run.
+func TestOnboardingAgentsNeedRoleCRs(t *testing.T) {
+	const teamUID = "33333333-3333-3333-3333-333333333333"
+	nameCovered := []client.Object{
+		team("squad-a", "alpha", teamUID),
+		presetAgent("squad-a", "boss", "role-boss"),
+		presetAgent("squad-a", "impl", "role-implementer"),
+		presetAgent("squad-a", "mgr", "role-manager"),
+	}
+	// Zero preset Role CRs: honest state parks the journey on milestone ②.
+	// (Done is not asserted exactly: milestones are independent — these
+	// Agents carry credential refs, so ③ completes on its own.)
+	r := newOnboardingReader(t, nameCovered...)
+	p, err := r.Progress(context.Background(), teamUID, false)
+	if err != nil {
+		t.Fatalf("Progress: %v", err)
+	}
+	if p.Step != 2 || p.NextMilestone != OnboardingMilestoneAgents {
+		t.Fatalf("progress without preset Role CRs: %+v (milestone ② must stay incomplete — the squad cannot run)", p)
+	}
+	// One of three preset Role CRs exists: still incomplete.
+	r2 := newOnboardingReader(t, append(nameCovered, presetRoleCR("squad-a", "role-boss"))...)
+	p2, err := r2.Progress(context.Background(), teamUID, false)
+	if err != nil {
+		t.Fatalf("Progress: %v", err)
+	}
+	if p2.Step != 2 || p2.NextMilestone != OnboardingMilestoneAgents {
+		t.Fatalf("progress with 1/3 preset Role CRs: %+v (all three must exist)", p2)
+	}
+}
+
 // TestOnboardingModelsNeedsCredentialRef — preset squad where one Agent carries no credential
 // ref: ② completes but ③ does not. (Secret-object existence is the admission webhook's job —
 // the apiserver SA has no Secret RBAC by design, ISI-3546.)
@@ -133,6 +180,9 @@ func TestOnboardingModelsNeedsCredentialRef(t *testing.T) {
 		presetAgent("squad-a", "boss", "role-boss"),
 		presetAgent("squad-a", "impl", "role-implementer"),
 		mgr,
+		presetRoleCR("squad-a", "role-boss"),
+		presetRoleCR("squad-a", "role-implementer"),
+		presetRoleCR("squad-a", "role-manager"),
 	}
 	r := newOnboardingReader(t, objs...)
 	p, err := r.Progress(context.Background(), teamUID, false)

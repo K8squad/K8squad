@@ -286,12 +286,37 @@ func main() {
 		} else {
 			endpointSecretReader = sr
 		}
-		fleetList = apiserver.NewClientFleetListReader(cacheReader, endpointSecretReader)
-		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
+		// ISI-7354: the effective-model resolver reads the org-default
+		// ModelConfig singleton from the RELEASE namespace (POD_NAMESPACE — the
+		// same namespace the chart seeds and the compose write targets) over a
+		// DIRECT reader: the informer cache can never serve that Get (no
+		// list/watch grant for a fixed singleton), which is what hung
+		// inherit-tier effective-model reads on fresh installs.
+		var modelConfigReader client.Reader
+		if mcr, mcrErr := apiserver.NewDirectKSquadReader(); mcrErr != nil {
+			log.Printf("ksquad-apiserver: model-config direct reader unavailable — effective-model org-default reads keep the cache path (may block): %v", mcrErr)
+		} else {
+			modelConfigReader = mcr
+		}
+		fleetList = apiserver.NewClientFleetListReader(cacheReader, endpointSecretReader).
+			WithModelConfigSource(modelConfigReader, os.Getenv("POD_NAMESPACE"))
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
 		projectRefs = apiserver.NewClientProjectRefResolver(cacheReader)
 		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
+	}
+
+	// ISI-7352: the onboarding-progress read model deliberately does NOT ride the informer cache
+	// above. The journey is write-then-immediately-read (create Team / materialize squad → the
+	// Launchpad must flip on the next poll), and on fresh installs the cache's watch loop can
+	// fail and retry long enough to keep serving the pre-write zero snapshot for ~a minute —
+	// so this read gets a DIRECT uncached reader, the same no-stale-cache discipline as the
+	// CRD-apply write surface (NewCRDApplier). Nil ⇒ the route keeps the documented 501.
+	if onboardingReader, oerr := apiserver.NewOnboardingDirectReader(); oerr != nil {
+		log.Printf("ksquad-apiserver: onboarding direct reader unavailable — GET /api/onboarding/progress keeps the documented 501: %v", oerr)
+	} else {
+		onboarding = apiserver.NewClientOnboardingReader(onboardingReader)
+		log.Printf("ksquad-apiserver: onboarding progress read model ready (direct uncached reader — no informer staleness, ISI-7352)")
 	}
 
 	// S4a-wire host-flip (ISI-4079, ADR-0012 §D): the project file-explorer WorkspaceReader backed

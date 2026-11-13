@@ -77,6 +77,9 @@ type fakeDispatchSource struct {
 	fence string
 	// ticketKey is the resolved human ticket key (ISI-6061); "" ⇒ no key.
 	ticketKey string
+	// source is the coord.work_item.source origin marker (ISI-7367);
+	// "discussion" arms the discussion-shaped reply contract in buildTask.
+	source string
 }
 
 func (f fakeDispatchSource) WorkItem(context.Context, string) (string, string, error) {
@@ -85,6 +88,10 @@ func (f fakeDispatchSource) WorkItem(context.Context, string) (string, string, e
 
 func (f fakeDispatchSource) TicketKey(context.Context, string) (string, error) {
 	return f.ticketKey, nil
+}
+
+func (f fakeDispatchSource) WorkItemSource(context.Context, string) (string, error) {
+	return f.source, nil
 }
 
 func (f fakeDispatchSource) FenceToken(context.Context, string) (string, error) {

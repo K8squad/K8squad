@@ -1397,3 +1397,120 @@ func TestProxyTargetFromSpec(t *testing.T) {
 		}
 	})
 }
+
+// ISI-7269: the aggregated Ready condition. A Team is Ready only when every
+// MCPServer it owns in its squad namespace aggregates Ready=True (ADR-042);
+// until then Ready=False names the servers it is waiting on, and a steady
+// state re-reconcile leaves the status byte-identical.
+func TestTeamReadyConditionAggregatesMCPServers(t *testing.T) {
+	r, c := newReconciler(t, newTeam("ready-squad", "uid-ready"))
+	if err := reconcileTeam(t, r, "ready-squad"); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	readTeam := func() api.Team {
+		t.Helper()
+		var team api.Team
+		if err := c.Get(context.Background(), types.NamespacedName{Name: "ready-squad", Namespace: "default"}, &team); err != nil {
+			t.Fatalf("get team: %v", err)
+		}
+		return team
+	}
+	findCond := func(team api.Team, condType string) *metav1.Condition {
+		for i := range team.Status.Conditions {
+			if team.Status.Conditions[i].Type == condType {
+				return &team.Status.Conditions[i]
+			}
+		}
+		return nil
+	}
+
+	// Built-in MCPServers exist but carry no Ready condition yet: the Team
+	// must report NamespaceReady=True with Ready=False, reason
+	// MCPServersNotReady, and name the pending servers.
+	team := readTeam()
+	if !hasConditionTrue(team.Status.Conditions, condNamespaceReady) {
+		t.Fatalf("NamespaceReady not True after provision")
+	}
+	ready := findCond(team, condTeamReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %+v, want False while owned MCPServers are not Ready", ready)
+	}
+	if ready.Reason != "MCPServersNotReady" {
+		t.Fatalf("Ready reason = %q, want MCPServersNotReady", ready.Reason)
+	}
+	if !strings.Contains(ready.Message, "0/3 owned MCPServers Ready") {
+		t.Fatalf("Ready message = %q, want the 0/3 aggregate count", ready.Message)
+	}
+	if !strings.Contains(ready.Message, "ksquad-memory-authoring") {
+		t.Fatalf("Ready message = %q, want the pending server names", ready.Message)
+	}
+
+	// Flip one owned MCPServer to Ready: the aggregate must stay False.
+	var servers api.MCPServerList
+	if err := c.List(context.Background(), &servers, client.InNamespace(team.Status.Namespace)); err != nil {
+		t.Fatalf("list MCPServers: %v", err)
+	}
+	if len(servers.Items) != 3 {
+		t.Fatalf("owned MCPServers = %d, want the 3 built-ins", len(servers.Items))
+	}
+	flip := func(upto int) {
+		t.Helper()
+		for i := range servers.Items {
+			status := metav1.ConditionFalse
+			if i < upto {
+				status = metav1.ConditionTrue
+			}
+			servers.Items[i].Status.Conditions = []metav1.Condition{{
+				Type:               api.MCPServerConditionReady,
+				Status:             status,
+				Reason:             "Ready",
+				Message:            "test",
+				LastTransitionTime: fixedClock(),
+			}}
+			if err := c.Status().Update(context.Background(), &servers.Items[i]); err != nil {
+				t.Fatalf("update MCPServer status: %v", err)
+			}
+		}
+	}
+	flip(2)
+	if err := reconcileTeam(t, r, "ready-squad"); err != nil {
+		t.Fatalf("reconcile after partial flip: %v", err)
+	}
+	team = readTeam()
+	if ready := findCond(team, condTeamReady); ready == nil || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %+v, want False while 2/3 MCPServers Ready", ready)
+	}
+
+	// All owned MCPServers Ready: the aggregate flips to True.
+	flip(3)
+	if err := reconcileTeam(t, r, "ready-squad"); err != nil {
+		t.Fatalf("reconcile after full flip: %v", err)
+	}
+	team = readTeam()
+	ready = findCond(team, condTeamReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %+v, want True once all owned MCPServers are Ready", ready)
+	}
+	if ready.Reason != "TeamReady" {
+		t.Fatalf("Ready reason = %q, want TeamReady", ready.Reason)
+	}
+	if !strings.Contains(ready.Message, "3/3 owned MCPServers Ready") {
+		t.Fatalf("Ready message = %q, want the 3/3 aggregate count", ready.Message)
+	}
+
+	// Steady state: a no-op reconcile leaves the conditions byte-identical.
+	snapshot := team.Status.Conditions
+	if err := reconcileTeam(t, r, "ready-squad"); err != nil {
+		t.Fatalf("steady-state reconcile: %v", err)
+	}
+	again := readTeam()
+	if len(again.Status.Conditions) != len(snapshot) {
+		t.Fatalf("condition count changed on no-op reconcile: %d -> %d", len(snapshot), len(again.Status.Conditions))
+	}
+	for i := range snapshot {
+		if snapshot[i] != again.Status.Conditions[i] {
+			t.Fatalf("condition %d changed on no-op reconcile: %+v -> %+v", i, snapshot[i], again.Status.Conditions[i])
+		}
+	}
+}

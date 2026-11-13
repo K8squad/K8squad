@@ -19,8 +19,9 @@ limitations under the License.
 // controller provisions — create-or-update, idempotently — the namespace and
 // its least-privilege scaffold (ServiceAccount, namespaced Role/RoleBinding,
 // ResourceQuota, LimitRange, and the default-deny + allow-DNS +
-// allow-control-plane NetworkPolicy baseline), and tears the namespace down
-// finalizer-driven on Team deletion.
+// allow-control-plane NetworkPolicy baseline), seeds the preset role.ksquad.io
+// Role CRs + manager-prompt ConfigMap into the Team's own namespace (ADR-0033
+// D1), and tears the namespace down finalizer-driven on Team deletion.
 package team
 
 import (
@@ -134,7 +135,20 @@ const (
 	// condNamespaceTerminating reports a namespace stuck/progressing through
 	// Terminating during Team deletion (AC6) — the finalizer is not cleared
 	// while this is active.
+	// condTeamReady aggregates overall Team readiness (ISI-7269): True when
+	// the tenancy baseline is provisioned AND every MCPServer the Team owns
+	// in its squad namespace reports Ready=True (ADR-042). This is the
+	// condition the getting-started smoke asserts (kubectl wait
+	// --for=condition=Ready team/...) once real credentials and a published
+	// operator image are wired on the cluster.
+	condTeamReady            = "Ready"
 	condNamespaceTerminating = "NamespaceTerminating"
+	// condRolePresetsReady reports the preset Role CRs + manager-prompt
+	// ConfigMap asserted into the Team's OWN namespace (ADR-0033 D1,
+	// ISI-7365/ISI-7353) — the seeded set the starter squad's roleRefs
+	// resolve against. Sits alongside NamespaceReady: the scaffold namespace
+	// and the preset seed are separate targets with separate failure modes.
+	condRolePresetsReady = "RolePresetsReady"
 )
 
 // Clock returns the timestamp stamped onto condition transitions. It is a
@@ -230,6 +244,8 @@ func TelemetryTargetFromEndpoint(endpoint string) *TelemetryTarget {
 //+kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups=ksquad.io,resources=roles,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups="",resources=resourcequotas;limitranges,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=ksquad.io,resources=mcpservers,verbs=get;list;watch;create;update;patch
@@ -286,7 +302,56 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// NamespaceReady=True (PR #89 follow-up F3).
 	changed := r.setCondition(&teamObj, condNamespaceReady, metav1.ConditionTrue,
 		"TenancyProvisioned", fmt.Sprintf("namespace %s provisioned with SA/RBAC/quota/LimitRange/NetworkPolicy baseline", nsName))
+	// ISI-7269: aggregate overall readiness. Tenancy is provisioned at this
+	// point; the Team is Ready when every MCPServer it owns in the squad
+	// namespace also aggregates Ready=True. The MCPServer watch maps server
+	// events back to the owning Team, so no polling requeue is needed.
+	ready, total, pending, err := r.ownedMCPServerReadiness(ctx, &teamObj, nsName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if total > 0 && ready == total {
+		if r.setCondition(&teamObj, condTeamReady, metav1.ConditionTrue, "TeamReady",
+			fmt.Sprintf("namespace %s provisioned and %d/%d owned MCPServers Ready", nsName, ready, total)) {
+			changed = true
+		}
+	} else {
+		msg := fmt.Sprintf("namespace %s provisioned; %d/%d owned MCPServers Ready", nsName, ready, total)
+		if len(pending) > 0 {
+			msg += " (waiting on " + strings.Join(pending, ", ") + ")"
+		} else {
+			msg += " (no owned MCPServers discovered yet)"
+		}
+		if r.setCondition(&teamObj, condTeamReady, metav1.ConditionFalse, "MCPServersNotReady", msg) {
+			changed = true
+		}
+	}
 	if clearConditions(&teamObj, condNamespaceReserved, condNamespaceConflict, condNamespaceTerminating) {
+		changed = true
+	}
+
+	// ADR-0033 D1 (ISI-7365, closing ISI-7353): seed the preset Role CRs +
+	// the manager-prompt ConfigMap into the Team's OWN namespace — where
+	// Agents live and roleRefs resolve (provision() above targets the
+	// derived ksquad-team-* execution namespace instead). Runs AFTER the
+	// scaffold conditions so a seed failure leaves the honest split state
+	// NamespaceReady=True + RolePresetsReady=False while the returned error
+	// requeues.
+	presetReason := "RolePresetsSeeded"
+	presetMsg := fmt.Sprintf("preset Role CRs + role-manager-prompt ConfigMap asserted into team namespace %s (SSA field owner %s)", teamObj.Namespace, RolePresetFieldManager)
+	seeded, err := r.ensureRolePresets(ctx, &teamObj)
+	if err != nil {
+		r.setCondition(&teamObj, condRolePresetsReady, metav1.ConditionFalse, "RolePresetsSeedFailed", err.Error())
+		if uerr := r.Status().Update(ctx, &teamObj); uerr != nil {
+			log.Error(uerr, "record RolePresetsReady=False", "condition", condRolePresetsReady)
+		}
+		return ctrl.Result{}, fmt.Errorf("seed role presets: %w", err)
+	}
+	if !seeded {
+		presetReason = "RolePresetsSkipped"
+		presetMsg = fmt.Sprintf("team namespace %s is reserved; preset seed skipped by policy", teamObj.Namespace)
+	}
+	if r.setCondition(&teamObj, condRolePresetsReady, metav1.ConditionTrue, presetReason, presetMsg) {
 		changed = true
 	}
 	if changed || teamObj.Status.ObservedGeneration != teamObj.Generation {
@@ -556,6 +621,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.LimitRange{}, scaffoldEvents).
 		Watches(&networkingv1.NetworkPolicy{}, scaffoldEvents).
 		Watches(&api.MCPServer{}, scaffoldEvents).
+		// ADR-0033 D1: the seeded preset Role CRs + manager-prompt ConfigMap
+		// live in the Team's own namespace, label back-referenced (NOT
+		// owner-referenced — a namespace can host several Teams and the
+		// presets are shared per-namespace state; an ownerRef would GC them
+		// from under sibling Teams). Watching them keeps the seed
+		// self-healing exactly like the scaffold kinds above.
+		Watches(&api.Role{}, scaffoldEvents).
+		Watches(&corev1.ConfigMap{}, scaffoldEvents).
 		Named("team").
 		Complete(r)
 }
@@ -1431,6 +1504,31 @@ func mergePayload(existing, desired client.Object) bool {
 		}
 	}
 	return drifted
+}
+
+// ownedMCPServerReadiness lists the MCPServers this Team owns in its squad
+// namespace (via the routing labels every scaffold object carries) and
+// reports how many aggregate to Ready=True (ADR-042), plus the names of the
+// ones still pending. The MCPServer watch in SetupWithManager maps server
+// events back to the owning Team, so the aggregated condition stays current
+// without a polling requeue.
+func (r *Reconciler) ownedMCPServerReadiness(ctx context.Context, teamObj *api.Team, nsName string) (ready, total int, pending []string, err error) {
+	var servers api.MCPServerList
+	if err := r.List(ctx, &servers,
+		client.InNamespace(nsName),
+		client.MatchingLabels{LabelTeam: teamObj.Name, LabelTeamNamespace: teamObj.Namespace}); err != nil {
+		return 0, 0, nil, fmt.Errorf("list owned MCPServers: %w", err)
+	}
+	for i := range servers.Items {
+		srv := &servers.Items[i]
+		total++
+		if c := meta.FindStatusCondition(srv.Status.Conditions, api.MCPServerConditionReady); c != nil && c.Status == metav1.ConditionTrue {
+			ready++
+			continue
+		}
+		pending = append(pending, srv.Name)
+	}
+	return ready, total, pending, nil
 }
 
 // setCondition records a condition transition, stamping LastTransitionTime
