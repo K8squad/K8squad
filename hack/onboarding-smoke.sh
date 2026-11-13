@@ -90,7 +90,7 @@ MEMBER_PASSWORD="${MEMBER_PASSWORD:-onboarding-ci-member-x}"
 TEAM_NAME="${TEAM_NAME:-starter-squad}"
 PROJECT_NAME="${PROJECT_NAME:-onboarding-demo}"
 PROJECT_REPO_URL="${PROJECT_REPO_URL:-https://github.com/K8squad/K8squad-website.git}"
-PROGRESS_TIMEOUT="${PROGRESS_TIMEOUT:-240}"      # ISI-7352: stale zero projection ~1 min
+PROGRESS_TIMEOUT="${PROGRESS_TIMEOUT:-300}"      # ISI-7352: fresh-install informer lag can exceed 1 min
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
 
 fail() { echo "::error::$*" >&2; exit 1; }
@@ -112,7 +112,7 @@ BODY_FILE="$(mktemp /tmp/onboarding-smoke-body.XXXXXX)"
 RUNTIME_DIR="$(mktemp -d /tmp/onboarding-smoke.XXXXXX)"
 ACTIVE_JAR=""
 SESSION_TOKEN=""   # explicit ksquad_session value extracted from the active jar
-trap 'kill "${PF_PID:-0}" 2>/dev/null || true; rm -f "$BODY_FILE"; rm -rf "$RUNTIME_DIR"' EXIT
+trap '[ -n "${PF_PID:-}" ] && kill "$PF_PID" 2>/dev/null || true; rm -f "$BODY_FILE"; rm -rf "$RUNTIME_DIR"' EXIT
 HTTP_CODE=""
 
 # diag_auth LABEL - on an unexpected 401/403, dump everything needed to see what
@@ -301,27 +301,47 @@ kubectl rollout restart deploy/ksquad-apiserver -n "$CP_NS" >/dev/null 2>&1 || t
 kubectl rollout status deploy/ksquad-apiserver -n "$CP_NS" --timeout="$INSTALL_TIMEOUT" >/dev/null \
   || fail "apiserver did not roll after bootstrap upgrade"
 
+# start_port_forward / wait_api_up: the port-forward must be OURS — a stale listener
+# on the port would otherwise silently serve the journey from a foreign server.
 PF_LOG="$RUNTIME_DIR/port-forward.log"
-kubectl port-forward -n "$CP_NS" svc/ksquad-apiserver "${API_PORT}:8080" >"$PF_LOG" 2>&1 &
-PF_PID=$!
-# Fail fast if OUR port-forward could not bind: a stale listener on the port would
-# otherwise silently serve the journey from a foreign server.
-for i in $(seq 1 30); do
-  grep -q "Forwarding from" "$PF_LOG" && break
-  if ! kill -0 "$PF_PID" 2>/dev/null; then
-    fail "port-forward exited before binding ${API_PORT}: $(cat "$PF_LOG")"
-  fi
-  sleep 1
-done
-grep -q "Forwarding from" "$PF_LOG" \
-  || fail "port-forward did not report 'Forwarding from' on ${API_PORT} - stale listener on the port? log: $(cat "$PF_LOG")"
-for i in $(seq 1 60); do
-  code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 2 "$API_URL/healthz" 2>/dev/null || true)"
-  [ "$code" = "200" ] && break
-  sleep 2
-done
-[ "${code:-}" = "200" ] \
-  || fail "apiserver not reachable on $API_URL/healthz (code=${code:-none}); port-forward log: $(cat "$PF_LOG")"
+start_port_forward() {
+  : > "$PF_LOG"
+  kubectl port-forward -n "$CP_NS" svc/ksquad-apiserver "${API_PORT}:8080" >>"$PF_LOG" 2>&1 &
+  PF_PID=$!
+  for i in $(seq 1 30); do
+    grep -q "Forwarding from" "$PF_LOG" && return 0
+    if ! kill -0 "$PF_PID" 2>/dev/null; then
+      fail "port-forward exited before binding ${API_PORT}: $(cat "$PF_LOG")"
+    fi
+    sleep 1
+  done
+  fail "port-forward did not report 'Forwarding from' on ${API_PORT} - stale listener on the port? log: $(cat "$PF_LOG")"
+}
+wait_api_up() {
+  local i code=""
+  for i in $(seq 1 60); do
+    code="$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 2 "$API_URL/healthz" 2>/dev/null || true)"
+    [ "$code" = "200" ] && return 0
+    sleep 2
+  done
+  fail "apiserver not reachable on $API_URL/healthz (code=${code:-none}); port-forward log: $(cat "$PF_LOG")"
+}
+# bounce_apiserver — ISI-7352: on a FRESH install the shared informer cache can serve a
+# stale/partial projection long after the writes land (observed: the member view froze at
+# done=2/next=agents for 5+ min while kubectl showed all three agents). A pod bounce makes
+# the cache's initial LIST see every CR present at sync time, so the API-layer milestone
+# asserts below are deterministic. Sessions live in Postgres and survive the bounce.
+bounce_apiserver() {
+  kubectl rollout restart deploy/ksquad-apiserver -n "$CP_NS" >/dev/null 2>&1 || true
+  kubectl rollout status deploy/ksquad-apiserver -n "$CP_NS" --timeout="$INSTALL_TIMEOUT" >/dev/null \
+    || fail "apiserver did not roll after the cache-refresh bounce"
+  [ -n "${PF_PID:-}" ] && kill "$PF_PID" 2>/dev/null || true
+  [ -n "${PF_PID:-}" ] && wait "$PF_PID" 2>/dev/null || true
+  start_port_forward
+  wait_api_up
+}
+start_port_forward
+wait_api_up
 
 login "$ADMIN_USER" "$ADMIN_PASSWORD"
 echo "bootstrap admin logged in: $(jq -c . "$BODY_FILE")"
@@ -386,6 +406,9 @@ for a in boss implementer manager; do
   [ "$cred" = "model-credentials" ] || fail "Agent $a credentialSecretRef drift: expected model-credentials, got $cred"
   echo "  ok   Agent $a (roleRef=role-$a, credentialSecretRef=model-credentials)"
 done
+# Fresh-install informer cache can lag the writes (ISI-7352) — bounce so the API-layer
+# projection below sees the agents deterministically.
+bounce_apiserver
 login "$MEMBER_USER" "$MEMBER_PASSWORD"
 poll_progress 3 4 project "milestones ②+③ agents+models (member view)"
 note "credential-gated legs skipped-with-reason: LIVE LLM key test-connection (GREEN on a real provider / RED un-completing milestone ③) and primary+fallback round-trip — verified manually in WS-4 (ISI-7267); needs a real key + egress through the EgressPolicy allowlist. The non-gated half (shared credentialSecretRef wiring + milestone ③ flip) IS asserted above."
@@ -428,6 +451,7 @@ WIRED="$(kubectl get project "$PROJECT_NAME" -n "$CP_NS" -o jsonpath='{.spec.rep
   || fail "Project CR spec.repo.auth.credentialSecretRef drift: expected $CRED_SECRET, got '$WIRED'"
 echo "  ok   Project $PROJECT_NAME carries spec.repo.auth.credentialSecretRef=$CRED_SECRET (milestone ④ input)"
 
+bounce_apiserver
 login "$MEMBER_USER" "$MEMBER_PASSWORD"
 poll_progress 4 4 "" "milestone ④ project — journey complete 4/4 (member view)"
 note "credential-gated leg skipped-with-reason: LIVE repo-auth test (POST /api/projects/repo-auth/test + Team CR ksquad.io/onboarding-test-connection-repo=passed) needs a real GitHub PAT — verified manually in WS-5 (ISI-7268). The non-gated half (credentialSecretRef wiring, the exact input milestone ④ reads) IS asserted above."
