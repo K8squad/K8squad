@@ -848,8 +848,9 @@ func (r *ClientFleetListReader) EffectiveModel(ctx context.Context, teamUID, nam
 	}
 
 	// Fetch the referenced Role best-effort: a dangling roleRef contributes
-	// nothing to the walk (its own guard, GuardAgentRole, owns rejection), while a
-	// transient read error fails closed so the read-out never lies about the tier.
+	// nothing to the walk (its own guard, GuardAgentRole, owns the dangling-ref
+	// warning — ISI-7403), while a transient read error fails closed so the
+	// read-out never lies about the tier.
 	var role *ksquadv1.Role
 	if agent.Spec.RoleRef.Name != "" {
 		roleNS := agent.Spec.RoleRef.Namespace

@@ -1042,7 +1042,7 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 // roleFor resolves the Agent's Role via spec.roleRef (Model-Per-Role S4). An
 // empty roleRef, or a role that no longer exists, contributes no role tier
 // (nil) rather than failing the dispatch: a dangling roleRef is admission's
-// rejection to own (GuardAgentRole), and a role deleted after admission simply
+// warning to own (GuardAgentRole, ISI-7403), and a role deleted after admission simply
 // falls the resolver through to the system-default tier — never empty. Only a
 // TRANSIENT read error fails closed, so a lookup glitch can never silently
 // widen or drop the model.

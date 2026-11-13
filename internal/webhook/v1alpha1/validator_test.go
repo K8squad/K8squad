@@ -373,11 +373,12 @@ func invalidCases() []invalidCase {
 			dangle(&a.Spec.RuntimeRef, "ghost-runtime")
 			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
 		}},
-		{GuardAgentRole, func(ctx context.Context, v *CrossRefValidator) error {
-			a := validAgent()
-			dangle(&a.Spec.RoleRef, "ghost-role")
-			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
-		}},
+		// GuardAgentRole intentionally has NO entry here (ISI-7403,
+		// ADR-0033 D3): its dangling specimen now admits with a WARNING
+		// instead of rejecting, so the reject-table cannot carry it. The
+		// warn surface (and its falsification) is pinned in
+		// validator_roleref_warn_test.go; the read-error fail-closed half
+		// is pinned by TestAgentRoleRefReadFailsClosed there.
 		{GuardAgentSkills, func(ctx context.Context, v *CrossRefValidator) error {
 			a := validAgent()
 			dangle(&a.Spec.SkillRefs[0], "ghost-skill")
@@ -440,7 +441,6 @@ var (
 		GuardTeamProjects:         "spec.projects[0]",
 		GuardTeamAgents:           "spec.agents[0]",
 		GuardAgentRuntime:         "spec.runtimeRef",
-		GuardAgentRole:            "spec.roleRef",
 		GuardAgentSkills:          "spec.skillRefs[0]",
 		GuardAgentSecret:          "spec.credentialSecretRef",
 		GuardAgentToolCredentials: "spec.toolCredentials[0].secretRef",
@@ -453,7 +453,6 @@ var (
 		GuardTeamProjects:         "ghost-project",
 		GuardTeamAgents:           "ghost-agent",
 		GuardAgentRuntime:         "ghost-runtime",
-		GuardAgentRole:            "ghost-role",
 		GuardAgentSkills:          "ghost-skill",
 		GuardAgentSecret:          "ghost-secret",
 		GuardAgentToolCredentials: "ghost-tc-secret",
@@ -466,7 +465,6 @@ var (
 		GuardTeamProjects:         "create it first or fix the ref",
 		GuardTeamAgents:           "create it first or fix the ref",
 		GuardAgentRuntime:         "FR-D3",
-		GuardAgentRole:            "create it first or fix the ref",
 		GuardAgentSkills:          "grant it via an existing Skill",
 		GuardAgentSecret:          "BYO credential Secret",
 		GuardAgentToolCredentials: "tool-credential Secret",
