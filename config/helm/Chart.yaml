@@ -8,8 +8,8 @@ description: |
   independently-versioned k8squad-crds chart (config/helm-crds), which must be
   installed/upgraded first (ADR-0002, Option B).
 type: application
-version: 0.3.0
-appVersion: "0.3.0"
+version: 0.4.0
+appVersion: "0.4.0"
 kubeVersion: ">=1.29.0-0"
 annotations:
   # Minimum k8squad-crds chart version this control plane requires (ADR-0002
