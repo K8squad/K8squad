@@ -286,7 +286,20 @@ func main() {
 		} else {
 			endpointSecretReader = sr
 		}
-		fleetList = apiserver.NewClientFleetListReader(cacheReader, endpointSecretReader)
+		// ISI-7354: the effective-model resolver reads the org-default
+		// ModelConfig singleton from the RELEASE namespace (POD_NAMESPACE — the
+		// same namespace the chart seeds and the compose write targets) over a
+		// DIRECT reader: the informer cache can never serve that Get (no
+		// list/watch grant for a fixed singleton), which is what hung
+		// inherit-tier effective-model reads on fresh installs.
+		var modelConfigReader client.Reader
+		if mcr, mcrErr := apiserver.NewDirectKSquadReader(); mcrErr != nil {
+			log.Printf("ksquad-apiserver: model-config direct reader unavailable — effective-model org-default reads keep the cache path (may block): %v", mcrErr)
+		} else {
+			modelConfigReader = mcr
+		}
+		fleetList = apiserver.NewClientFleetListReader(cacheReader, endpointSecretReader).
+			WithModelConfigSource(modelConfigReader, os.Getenv("POD_NAMESPACE"))
 		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader

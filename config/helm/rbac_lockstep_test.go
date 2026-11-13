@@ -219,9 +219,10 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"skills"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles"}, Verbs: []string{"get", "list", "create", "update"}},
-		// modelconfigs (ISI-4890): org-default model tier — compose upsert of the
-		// fixed k8squad-system/default singleton + hydration GET. No list (singleton).
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"modelconfigs"}, Verbs: []string{"get", "create", "update"}},
+		// modelconfigs moved OFF this ClusterRole (ISI-7354): the org-default
+		// singleton write/read is a namespaced Role in the release namespace —
+		// see TestApiserverModelConfigRoleLeastPrivilege below. A cluster-scoped
+		// grant let one install's apiserver mutate another install's default.
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agentruntimes", "runs"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list", "create", "update"}},
@@ -330,6 +331,52 @@ func TestApiserverModelEndpointRoleLeastPrivilege(t *testing.T) {
 	// The grant is useless without the namespaced RoleBinding to the apiserver SA;
 	// an EXTRA subject would be an unintended recipient of this Secret-write grant.
 	assertNamespacedRoleBinding(t, string(chartYAML), "apiserver-model-endpoint", "ksquad-apiserver")
+}
+
+// TestApiserverModelConfigRoleLeastPrivilege pins the ISI-7354 org-default
+// ModelConfig grant: get+create+update on modelconfigs in a NAMESPACED Role in
+// the release namespace — never the ClusterRole. Until ISI-7354 this rule rode
+// the cluster-scoped apiserver ClusterRole with the compose write target
+// hardcoded to "k8squad-system", so on a cluster hosting several installs one
+// apiserver could MUTATE another install's org-default singleton (observed
+// live when a fresh onboarding-lane install bumped the shared install's
+// default rev 3→4). The code now targets the release namespace
+// ($POD_NAMESPACE, the same ns the chart seeds via templates/modelconfig.yaml),
+// so the least-privilege grant is the namespaced Role: get = GET
+// /api/modelconfig hydration + the upsert's Get-then-Create-or-Update + the
+// effective-model resolver's direct singleton Get; create+update = the upsert.
+// No list/watch (fixed singleton, direct client, no informers), no
+// patch/delete. Update this expectation only when the compose modelconfig verb
+// usage actually changes (internal/apiserver/composecrd.go planModelConfig).
+func TestApiserverModelConfigRoleLeastPrivilege(t *testing.T) {
+	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
+	if err != nil {
+		t.Fatalf("read chart rbac.yaml: %v", err)
+	}
+	got := roleRulesByName(t, string(chartYAML), "apiserver-modelconfig")
+
+	want := []rbacv1.PolicyRule{
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"modelconfigs"}, Verbs: []string{"get", "create", "update"}},
+	}
+	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
+		t.Fatalf("apiserver modelconfig Role drift: chart rbac.yaml grant is not the least-privilege set.\n"+
+			"If the compose modelconfig verb usage changed, update both the chart and this test in lockstep.\n"+
+			"want:\n%+v\n\ngot:\n%+v", w, g)
+	}
+
+	// The grant is useless without the namespaced RoleBinding to the apiserver
+	// SA; an EXTRA subject would be an unintended recipient of this grant.
+	assertNamespacedRoleBinding(t, string(chartYAML), "apiserver-modelconfig", "ksquad-apiserver")
+
+	// Containment guard: the ClusterRole must NOT still carry a modelconfigs
+	// grant — that is the cross-install mutation vector ISI-7354 closes.
+	for _, rule := range clusterRoleRulesByName(t, string(chartYAML), "apiserver") {
+		for _, res := range rule.Resources {
+			if res == "modelconfigs" {
+				t.Fatalf("modelconfigs still granted in the apiserver ClusterRole — the org-default singleton write must stay namespaced (ISI-7354)")
+			}
+		}
+	}
 }
 
 // assertNamespacedRoleBinding is the namespaced (kind: Role) analog of

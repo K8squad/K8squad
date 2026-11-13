@@ -386,6 +386,24 @@ type ClientFleetListReader struct {
 	// dedicated reader decodes corev1. Nil in tests whose fixtures have no BYO
 	// endpoint — the resolver then falls back to reader.
 	secretReader client.Reader
+
+	// modelConfigReader is the DIRECT (uncached) reader the effective-model
+	// resolver uses for the org-default ModelConfig singleton Get (ISI-7354).
+	// The shared informer cache can never serve it: the apiserver holds no
+	// list/watch grant for modelconfigs (a fixed singleton needs none), so the
+	// ModelConfig informer never syncs and a cache Get blocks — the
+	// inherit-tier effective-model hang observed live during WS-4. Nil ⇒ falls
+	// back to the cache reader (the pre-7354 behavior of tests without a
+	// seeded default).
+	modelConfigReader client.Reader
+
+	// systemNamespace is where the org-default ModelConfig singleton lives for
+	// the effective-model resolver (pkg/modelendpoint Resolver.SystemNamespace).
+	// Empty ⇒ the resolver default ("k8squad-system"). Production wires the
+	// apiserver's POD_NAMESPACE — the SAME release namespace the chart seeds
+	// and the compose write targets (ISI-7354) — so shared-cluster installs can
+	// never resolve each other's org default.
+	systemNamespace string
 }
 
 // NewClientFleetListReader builds the fleet-list read model over a client.Reader
@@ -395,6 +413,22 @@ type ClientFleetListReader struct {
 // nil when the fixture has no BYO endpoint (the resolver falls back to reader).
 func NewClientFleetListReader(r client.Reader, secretReader client.Reader) *ClientFleetListReader {
 	return &ClientFleetListReader{reader: r, secretReader: secretReader}
+}
+
+// WithModelConfigSource wires the effective-model resolver's org-default
+// singleton read (ISI-7354): reader is the DIRECT (uncached) reader for the
+// ModelConfig Get and systemNamespace the release namespace the singleton
+// lives in. Both seams are optional — a nil reader falls back to the shared
+// cache reader and an empty namespace to the resolver default, which is the
+// pre-7354 behavior (and what tests without a seeded default rely on).
+func (r *ClientFleetListReader) WithModelConfigSource(reader client.Reader, systemNamespace string) *ClientFleetListReader {
+	if reader != nil {
+		r.modelConfigReader = reader
+	}
+	if systemNamespace != "" {
+		r.systemNamespace = systemNamespace
+	}
+	return r
 }
 
 // scope returns the List options that fence a list to the caller's tenancy: nil
@@ -833,7 +867,20 @@ func (r *ClientFleetListReader) EffectiveModel(ctx context.Context, teamUID, nam
 		}
 	}
 
-	resolver := modelendpoint.Resolver{Reader: r.reader, SecretReader: r.secretReader}
+	// ISI-7354: the org-default ModelConfig Get must NOT ride the shared
+	// informer cache — the apiserver holds no list/watch grant for
+	// modelconfigs, so that informer never syncs and the Get blocks (the
+	// inherit-tier hang). It goes through the direct model-config reader when
+	// wired, and the singleton lives in the wired release namespace.
+	mcReader := r.modelConfigReader
+	if mcReader == nil {
+		mcReader = r.reader
+	}
+	resolver := modelendpoint.Resolver{
+		Reader:          mcReader,
+		SecretReader:    r.secretReader,
+		SystemNamespace: r.systemNamespace,
+	}
 	primary, fallback, tier, ok, err := resolver.ResolveEffective(ctx, agent, role)
 	if errors.Is(err, modelendpoint.ErrNoModel) {
 		// Fail-closed (ISI-4430 D3): a non-error verdict for the read-out — it
