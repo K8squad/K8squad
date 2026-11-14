@@ -9,7 +9,10 @@ metadata:
   labels:
     {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
 spec:
-  replicas: {{ .Values.controlPlane.scmWebhook.replicas | default 1 }}
+  {{- /* the '| default 1' idiom swallows a legitimate 0 (the documented read-surface
+       opt-out, cf. controlPlane.operator.replicas in operator.yaml); only
+       default when nil, exactly like operator. */}}
+  replicas: {{ if kindIs "invalid" .Values.controlPlane.scmWebhook.replicas }}1{{ else }}{{ .Values.controlPlane.scmWebhook.replicas }}{{ end }}
   selector:
     matchLabels:
       {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 6 }}
