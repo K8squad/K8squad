@@ -77,6 +77,17 @@ const LIFECYCLE_EVENTS = [
  * on THIS per-run stream — no second EventSource (ISI-5174 AC4).
  */
 const THINKING_EVENT = "thinking";
+/**
+ * `event: ticket_comment` — a DURABLE work-item comment echoed as a run event
+ * (ISI-7274, parent ISI-7262 WS-2). Payload mirrors the durable coord.comment
+ * triple {runId, workItemId, author, body, kind, at}: the agent's final
+ * task-io comment (kind 'summary' / plain) captured post-commit, and the
+ * settle's terminal rows co-committed with their INSERT. The ticket surface
+ * re-fetches the thread when this frame arrives, so the final comment
+ * materializes live without racing the run's `ended` milestone. Reuses the
+ * legacy "COMMENT" kind: these rows are durable thread comments, not ephemeral.
+ */
+const COMMENT_EVENT = "ticket_comment";
 
 function coerceEvent(id: string, raw: unknown): RunEvent | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -127,6 +138,24 @@ function thinkingEvent(id: string, raw: unknown): RunEvent | null {
     ts: typeof r.at === "string" && r.at ? r.at : new Date().toISOString(),
     summary: body,
     ...(tier ? { tier } : {}),
+  };
+}
+
+/** Shape a `ticket_comment` payload into a RunEvent (kind COMMENT), or null
+ * when it carries no body (nothing durable to materialize ⇒ ignore). `at` is
+ * the comment's server-stamped created_at; fall back to now so the row still
+ * sorts sensibly if an older backend omits it. */
+function commentEvent(id: string, raw: unknown): RunEvent | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const body = typeof r.body === "string" ? r.body : "";
+  if (!body) return null;
+  return {
+    id,
+    kind: "COMMENT",
+    actor: typeof r.author === "string" && r.author ? r.author : "unknown",
+    ts: typeof r.at === "string" && r.at ? r.at : new Date().toISOString(),
+    summary: body,
   };
 }
 
@@ -183,6 +212,15 @@ export function useRunStream(runId: string) {
     };
     es.addEventListener(THINKING_EVENT, onThinking);
 
+    // Live durable-comment echo: `event: ticket_comment` (ISI-7274, parent
+    // ISI-7262 WS-2). The payload is the durable comment triple, not a
+    // rendering row; consumers re-fetch the thread to materialize it.
+    const onComment = (msg: MessageEvent) => {
+      const parsed = parse(msg);
+      if (parsed !== null) push(commentEvent(msg.lastEventId || "", parsed));
+    };
+    es.addEventListener(COMMENT_EVENT, onComment);
+
     // Discrete lifecycle milestones (ADR-0021 D4): assigned/scheduled/sandbox_bound/started/ended.
     const lifecycleListeners = LIFECYCLE_EVENTS.map((name) => {
       const listener = (msg: MessageEvent) => {
@@ -204,6 +242,7 @@ export function useRunStream(runId: string) {
     return () => {
       es.removeEventListener(RECONCILE_EVENT, onAdvanced);
       es.removeEventListener(THINKING_EVENT, onThinking);
+      es.removeEventListener(COMMENT_EVENT, onComment);
       for (const [name, listener] of lifecycleListeners) {
         es.removeEventListener(name, listener);
       }

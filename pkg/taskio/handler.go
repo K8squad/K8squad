@@ -26,7 +26,9 @@ type Store interface {
 	// ErrNotFound if the item does not exist.
 	GetTask(ctx context.Context, workItemID string) (TaskDetail, error)
 	// PostComment appends a comment attributed to principal and returns it.
-	PostComment(ctx context.Context, workItemID, principal, body string) (Comment, error)
+	// runID binds the comment's liveness echo to the per-run stream (ISI-7274,
+	// parent ISI-7262 WS-2); empty skips the echo, not the append.
+	PostComment(ctx context.Context, workItemID, principal, runID, body string) (Comment, error)
 	// PostInitialFindings appends the run's single early initial-findings note and
 	// emits the 'initial_findings_authored' audit signal atomically (ADR-0029
 	// Option B, ISI-5603). It is the same append as PostComment plus the durable
@@ -329,7 +331,7 @@ func (h *Handler) postComment(w http.ResponseWriter, r *http.Request, tok RunTok
 	)
 	switch req.Kind {
 	case "":
-		c, err = h.store.PostComment(r.Context(), tok.WorkItemID, tok.Principal, req.Body)
+		c, err = h.store.PostComment(r.Context(), tok.WorkItemID, tok.Principal, tok.RunID, req.Body)
 	case CommentKindInitialFindings:
 		c, err = h.store.PostInitialFindings(r.Context(), tok.WorkItemID, tok.Principal, tok.RunID, req.Body)
 	case CommentKindSummary:

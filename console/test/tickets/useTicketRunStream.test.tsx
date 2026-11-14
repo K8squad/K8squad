@@ -192,3 +192,112 @@ describe("useTicketRunStream — live tail + terminal resolve (ISI-5206)", () =>
     expect(onEnded).toHaveBeenCalledTimes(1);
   });
 });
+
+// ISI-7274 (parent ISI-7262 WS-2): the durable `ticket_comment` echo must
+// materialize a committed final comment LIVE. The settle's terminal rows commit
+// AFTER the run's `ended` milestone, and a task-io final comment can commit at
+// any moment — the ended-keyed re-fetch alone races them. Every new comment
+// frame re-fetches the thread (same onEnded callback), so the re-fetch always
+// follows the durable row and no manual refresh is needed.
+describe("useTicketRunStream — live final comments (ISI-7274)", () => {
+  it("fires the re-fetch on each NEW `ticket_comment` frame", () => {
+    const instances = stubEventSource();
+    const onEnded = vi.fn();
+    renderHook(() =>
+      useTicketRunStream("run-7", "in_progress", undefined, onEnded),
+    );
+    act(() => {
+      instances[0].emit(
+        "ticket_comment",
+        {
+          workItemId: "wi-1",
+          runId: "run-7",
+          author: "agent:sam",
+          body: "What I did: shipped the seam",
+          kind: "summary",
+          at: "2026-11-12T10:00:00.000Z",
+        },
+        "evt-101",
+      );
+    });
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    act(() => {
+      instances[0].emit(
+        "ticket_comment",
+        {
+          workItemId: "wi-1",
+          runId: "run-7",
+          author: "ksquad-operator",
+          body: "Run succeeded: recorded on the ticket.",
+          kind: "summary",
+          at: "2026-11-12T10:00:02.000Z",
+        },
+        "evt-102",
+      );
+    });
+    expect(onEnded).toHaveBeenCalledTimes(2);
+    // A replayed comment (SSE reconnect, same outbox id) must NOT re-fire.
+    act(() => {
+      instances[0].emit(
+        "ticket_comment",
+        {
+          workItemId: "wi-1",
+          runId: "run-7",
+          author: "ksquad-operator",
+          body: "Run succeeded: recorded on the ticket.",
+          kind: "summary",
+          at: "2026-11-12T10:00:02.000Z",
+        },
+        "evt-102",
+      );
+    });
+    expect(onEnded).toHaveBeenCalledTimes(2);
+  });
+
+  it("fires the re-fetch even AFTER the `ended` milestone already fired (the fast-commit race)", () => {
+    const instances = stubEventSource();
+    const onEnded = vi.fn();
+    renderHook(() =>
+      useTicketRunStream("run-7", "in_progress", undefined, onEnded),
+    );
+    act(() => {
+      instances[0].emit("ended", { run_id: "run-7", agent: "sam" }, "evt-201");
+    });
+    expect(onEnded).toHaveBeenCalledTimes(1);
+    // The settle comment commits after `ended` — its echo arrives a frame later
+    // and must re-fetch again (this is the exact race the issue reported).
+    act(() => {
+      instances[0].emit(
+        "ticket_comment",
+        {
+          workItemId: "wi-1",
+          runId: "run-7",
+          author: "ksquad-operator",
+          body: "Run succeeded — agent sam: recorded on the ticket.",
+          kind: "summary",
+          at: "2026-11-12T10:00:05.000Z",
+        },
+        "evt-202",
+      );
+    });
+    expect(onEnded).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps `ticket_comment` rows OUT of the live thinking rows (thinking tier is unchanged)", () => {
+    const instances = stubEventSource();
+    const { result } = renderHook(() =>
+      useTicketRunStream("run-7", "in_progress", undefined, () => {}),
+    );
+    act(() => {
+      instances[0].emit("ticket_comment", {
+        workItemId: "wi-1",
+        runId: "run-7",
+        author: "agent:sam",
+        body: "final recap",
+        kind: "summary",
+        at: "2026-11-12T10:00:00.000Z",
+      });
+    });
+    expect(result.current).toEqual([]);
+  });
+});

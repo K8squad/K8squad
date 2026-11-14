@@ -61,14 +61,16 @@ function isEnded(summary: string | undefined): boolean {
 /**
  * Live-tail the ticket's active holding run (see ambientRunId) off the shared
  * per-run SSE bus. Returns the live `thinking` rows in arrival order, and invokes
- * `onEnded` exactly once when the run reports its terminal milestone so the caller
- * can re-fetch the durable thread. Inert (returns []) whenever there is no ambient
- * run to open.
+ * `onEnded` when the live stream materializes durable thread state so the caller
+ * can re-fetch: exactly once on the run's terminal `ended` milestone, and once
+ * per new `ticket_comment` frame (ISI-7274 — the settle's terminal comment
+ * commits after the `ended` milestone, so the ended-keyed re-fetch alone races
+ * it). Inert (returns []) whenever there is no ambient run to open.
  *
  * @param runId         the ticket's current holding run (thread.runId; "" ⇒ none)
  * @param state         the ticket lane (drives the `isRunningState` liveness gate)
  * @param dispatchRunId the run the self-dispatch ladder is already streaming, if any
- * @param onEnded       fired once on the run's `ended` milestone (re-fetch the thread)
+ * @param onEnded       fired on the `ended` milestone and per new live `ticket_comment` (re-fetch the thread)
  */
 export function useTicketRunStream(
   runId: string,
@@ -84,16 +86,42 @@ export function useTicketRunStream(
   // Guarded per-stream-id so a replayed `ended` (SSE reconnect / a re-fetch that
   // keeps the ticket in a Review lane) can never loop the re-fetch.
   const firedFor = useRef<string>("");
+  // ISI-7274: the guard ref for the per-comment re-fetch below.
+  const commentFor = useRef<string>("");
   const onEndedRef = useRef(onEnded);
   onEndedRef.current = onEnded;
   useEffect(() => {
     if (!id) {
       firedFor.current = "";
+      commentFor.current = "";
       return;
     }
     if (firedFor.current === id) return;
     if (events.some((e) => e.kind === "LIFECYCLE" && isEnded(e.summary))) {
       firedFor.current = id;
+      onEndedRef.current();
+    }
+  }, [id, events]);
+
+  // ISI-7274 (parent ISI-7262 WS-2): every `ticket_comment` frame also re-fetches
+  // the thread. The settle's terminal rows commit AFTER the `ended` milestone (the
+  // machine advances first, then Terminal settles in its own transaction), and a
+  // fast final comment can commit between re-renders — the ended-keyed re-fetch
+  // alone races them. The echo commits WITH its durable row (settle) or strictly
+  // after it (task-io post-commit), so a re-fetch on this frame always
+  // materializes the comment. Guarded per-frame-id: one re-fetch per new comment,
+  // replayed frames (SSE reconnect / Last-Event-ID resume) never loop it.
+  useEffect(() => {
+    if (!id) {
+      commentFor.current = "";
+      return;
+    }
+    let last = "";
+    for (const e of events) {
+      if (e.kind === "COMMENT") last = e.id;
+    }
+    if (last && commentFor.current !== last) {
+      commentFor.current = last;
       onEndedRef.current();
     }
   }, [id, events]);

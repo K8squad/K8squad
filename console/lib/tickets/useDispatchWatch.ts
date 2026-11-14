@@ -54,6 +54,17 @@ export interface DispatchWatch {
    * (card fixtures, older callers) needs no live feed; the hook always sets it.
    */
   thinking?: RunEvent[];
+  /**
+   * Live DURABLE `ticket_comment` echoes from the SAME stream (ISI-7274, parent
+   * ISI-7262 WS-2), in arrival order. This hook's run is the one the ambient
+   * useTicketRunStream skips, so the self-dispatch surface observes its own
+   * comment frames here: the run's final comment (and the settle's terminal
+   * rows) can commit after the ladder froze terminal, when the once-per-dispatch
+   * onRunSettled reload already fired. The caller re-fetches the thread per new
+   * frame id. Optional for the same fixture-compatibility reason as thinking;
+   * the hook always sets it.
+   */
+  comments?: RunEvent[];
 }
 
 // ── Board-locked / tuning constants (interaction f3d5c62e) ─────────────────────────────────────
@@ -227,6 +238,7 @@ export function toDispatchWatch(m: DispatchMachine): DispatchWatch {
     degrade: m.degrade,
     runId: m.runId,
     thinking: [], // live rows are grafted on by the hook (they need the SSE feed)
+    comments: [], // live durable-comment echoes, same grafting as thinking (ISI-7274)
   };
 }
 
@@ -441,6 +453,19 @@ export function useDispatchWatch(
     [events, haveRun],
   );
 
+  // ISI-7274 (parent ISI-7262 WS-2): the durable `ticket_comment` echoes off the
+  // SAME stream. This hook's run is the ONE the ambient useTicketRunStream
+  // deliberately skips (no second EventSource), so the self-dispatch surface
+  // must observe its own comment frames here: the run's final task-io comment
+  // (and the settle's terminal rows, which commit after the `ended` milestone)
+  // can land after the ladder froze terminal, when the once-per-dispatch
+  // onRunSettled reload (TicketDetail) has already fired. The caller re-fetches
+  // the thread per new frame id.
+  const comments = useMemo(
+    () => (haveRun ? events.filter((e) => e.kind === "COMMENT") : []),
+    [events, haveRun],
+  );
+
   if (!active) return null;
-  return { ...toDispatchWatch(machine), thinking };
+  return { ...toDispatchWatch(machine), thinking, comments };
 }
