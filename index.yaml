@@ -5,14 +5,14 @@ entries:
       k8squad.io/min-crds-version: 0.3.0
     apiVersion: v2
     appVersion: 0.4.0
-    created: "2026-11-13T18:10:56.170619528Z"
+    created: "2026-11-14T14:10:32.218363392Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
       NO CRDs: the ksquad.io CRDs are owned by the standalone, independently-versioned
       k8squad-crds chart (config/helm-crds), which must be installed/upgraded first
       (ADR-0002, Option B). '
-    digest: 351ab73daa6254d03051d5ce3e17bd767e87a8656738d41f6037e1e469a3220b
+    digest: 5c60eaa10044327451ce0ff6d1f89073ff628cd6ea6aa91aa10ae8a2dc579b4e
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -35,7 +35,7 @@ entries:
       k8squad.io/min-crds-version: 0.3.0
     apiVersion: v2
     appVersion: 0.3.0
-    created: "2026-11-13T18:10:56.169230239Z"
+    created: "2026-11-14T14:10:32.216994322Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
@@ -65,7 +65,7 @@ entries:
       k8squad.io/min-crds-version: 0.2.0
     apiVersion: v2
     appVersion: 0.2.0
-    created: "2026-11-13T18:10:56.167328313Z"
+    created: "2026-11-14T14:10:32.214936192Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
@@ -95,7 +95,7 @@ entries:
       k8squad.io/min-crds-version: 0.1.0
     apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-11-13T18:10:56.165933464Z"
+    created: "2026-11-14T14:10:32.212985616Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
@@ -124,7 +124,7 @@ entries:
   k8squad-crds:
   - apiVersion: v2
     appVersion: 0.3.0
-    created: "2026-11-13T18:10:56.175030874Z"
+    created: "2026-11-14T14:10:32.222201938Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -132,7 +132,7 @@ entries:
       chart, and upgrade it independently to roll CRD schema changes forward on their
       own cadence. CRDs carry helm.sh/resource-policy: keep, so uninstalling never
       deletes the CRDs or the user''s custom resources. '
-    digest: 527e3aadb01a9c8734328c5a2bfbb660362d505c2dd9d6297f8c4e7cfe9fe858
+    digest: 128b0e2451380e7241b2f29ea51a4cc9f81303320a88512bbe5043f5aef9debb
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -153,7 +153,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: 0.2.0
-    created: "2026-11-13T18:10:56.173375132Z"
+    created: "2026-11-14T14:10:32.220582125Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -182,7 +182,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-11-13T18:10:56.172171323Z"
+    created: "2026-11-14T14:10:32.219559466Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -209,4 +209,4 @@ entries:
     urls:
     - https://charts.k8squad.io/k8squad-crds-0.1.0.tgz
     version: 0.1.0
-generated: "2026-11-13T18:10:56.16371399Z"
+generated: "2026-11-14T14:10:32.210447943Z"
