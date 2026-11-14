@@ -398,6 +398,20 @@ group "STEP 6 — milestones ②+③ agents/models: compose minimal-trio (preset
 kubectl -n "$CP_NS" create secret generic model-credentials \
   --from-literal=token=ci-dummy-model-token --dry-run=client -o yaml | kubectl apply -f -
 
+# ISI-7365 / ADR-0033 D2: milestone ② requires the preset Role CRs to EXIST in
+# the team namespace, not just be referenced by Agents. In a real install the
+# operator's team reconciler seeds them (pkg/controller/team/rolepresets);
+# this lane runs with the operator disabled (like getting-started-smoke), so
+# seed the documented source (config/roles — the operator mirror is
+# byte-identical, enforced by TestRolePresetsMatchConfigRoles) directly.
+kubectl apply -k config/roles/ -n "$CP_NS" \
+  || fail "kubectl apply -k config/roles/ -n $CP_NS failed — preset Role CRs are milestone ② input"
+for r in role-boss role-implementer role-manager; do
+  kubectl get role.ksquad.io "$r" -n "$CP_NS" >/dev/null 2>&1 \
+    || fail "preset Role $r missing in $CP_NS after seeding config/roles (ISI-7365)"
+  echo "  ok   preset Role $r seeded in $CP_NS"
+done
+
 # ISI-3924: the admin's tenancy root rebinds to the newest team at next login.
 login "$ADMIN_USER" "$ADMIN_PASSWORD"
 api POST /api/compose/squad "$(jq -nc '{template:"minimal-trio"}')"
