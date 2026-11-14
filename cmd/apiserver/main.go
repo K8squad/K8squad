@@ -300,11 +300,23 @@ func main() {
 		}
 		fleetList = apiserver.NewClientFleetListReader(cacheReader, endpointSecretReader).
 			WithModelConfigSource(modelConfigReader, os.Getenv("POD_NAMESPACE"))
-		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
 		projectRefs = apiserver.NewClientProjectRefResolver(cacheReader)
 		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
+	}
+
+	// ISI-7352: the onboarding-progress read model deliberately does NOT ride the informer cache
+	// above. The journey is write-then-immediately-read (create Team / materialize squad → the
+	// Launchpad must flip on the next poll), and on fresh installs the cache's watch loop can
+	// fail and retry long enough to keep serving the pre-write zero snapshot for ~a minute —
+	// so this read gets a DIRECT uncached reader, the same no-stale-cache discipline as the
+	// CRD-apply write surface (NewCRDApplier). Nil ⇒ the route keeps the documented 501.
+	if onboardingReader, oerr := apiserver.NewOnboardingDirectReader(); oerr != nil {
+		log.Printf("ksquad-apiserver: onboarding direct reader unavailable — GET /api/onboarding/progress keeps the documented 501: %v", oerr)
+	} else {
+		onboarding = apiserver.NewClientOnboardingReader(onboardingReader)
+		log.Printf("ksquad-apiserver: onboarding progress read model ready (direct uncached reader — no informer staleness, ISI-7352)")
 	}
 
 	// S4a-wire host-flip (ISI-4079, ADR-0012 §D): the project file-explorer WorkspaceReader backed

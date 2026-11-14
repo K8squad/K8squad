@@ -295,6 +295,14 @@ type dispatchSource interface {
 	// WorkItem returns the work item's title and body (the §8.5 envelope's
 	// concrete work instruction).
 	WorkItem(ctx context.Context, id string) (title, body string, err error)
+	// WorkItemSource returns the work item's origin marker
+	// (coord.work_item.source): 'board' for human-board items, 'discussion'
+	// for items minted from the room — an @-mention dispatch
+	// (markSourceDiscussion) or a party-advance facilitator mint both stamp
+	// it. It selects the discussion-shaped reply contract at the buildTask
+	// seam (ISI-7367). Purely observational: an unreadable source narrows to
+	// the default contract and never fails the dispatch.
+	WorkItemSource(ctx context.Context, id string) (string, error)
 	// TicketKey returns the work item's HUMAN ticket key (ISI-6061): the
 	// board-readable identifier (e.g. an external board key or a GitHub
 	// issue ref) resolved from the work item record, distinct from the
@@ -318,6 +326,20 @@ func (s sqlDispatchSource) WorkItem(ctx context.Context, id string) (string, str
 		return "", "", fmt.Errorf("rundrive: read work item %s: %w", id, err)
 	}
 	return title.String, body.String, nil
+}
+
+// WorkItemSource reads the work item's origin marker (coord.work_item.source,
+// ISI-7367): 'discussion' selects the discussion-shaped reply contract at the
+// buildTask seam. A NULL/absent source ("") is the plain board default.
+func (s sqlDispatchSource) WorkItemSource(ctx context.Context, id string) (string, error) {
+	var source sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT source FROM coord.work_item WHERE id = $1::uuid`, id).
+		Scan(&source)
+	if err != nil {
+		return "", fmt.Errorf("rundrive: read work item source for %s: %w", id, err)
+	}
+	return source.String, nil
 }
 
 // ticketKeyLabelPrefixes are the work-item label conventions that carry a
@@ -437,7 +459,19 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 	// context file, mesh crewaiRouter via crewTaskText). Appended AFTER any
 	// assembled context so it is the closing instruction the model reads;
 	// with the side-channel off it is the entire context.
-	env.SystemContext = appendFinalCommentContract(env.SystemContext)
+	// ISI-7367 (WS-7a): origin-aware append — every envelope still closes
+	// with the final-comment contract; a work item minted from the discussion
+	// room (source='discussion', stamped by BOTH room seams: the @-mention
+	// dispatch ledger and the party-advance facilitator mint) additionally
+	// closes with the discussion-room reply contract, because that run's
+	// board-facing output is the in-run discussion_post reply. The source
+	// read is observational: a miss can only narrow to the default contract,
+	// never fail the dispatch.
+	fromDiscussion := false
+	if src, err := d.source.WorkItemSource(ctx, run.Spec.WorkItemRef); err == nil && src == workItemSourceDiscussion {
+		fromDiscussion = true
+	}
+	env.SystemContext = appendDispatchContracts(env.SystemContext, fromDiscussion)
 
 	// Resolve the EFFECTIVE model endpoint across the Model-Per-Role tiers
 	// (ISI-4430 S4: agent → role → system-default ModelConfig). An Agent with
@@ -1008,7 +1042,7 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 // roleFor resolves the Agent's Role via spec.roleRef (Model-Per-Role S4). An
 // empty roleRef, or a role that no longer exists, contributes no role tier
 // (nil) rather than failing the dispatch: a dangling roleRef is admission's
-// rejection to own (GuardAgentRole), and a role deleted after admission simply
+// warning to own (GuardAgentRole, ISI-7403), and a role deleted after admission simply
 // falls the resolver through to the system-default tier — never empty. Only a
 // TRANSIENT read error fails closed, so a lookup glitch can never silently
 // widen or drop the model.

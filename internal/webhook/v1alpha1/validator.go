@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -30,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/credinject"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/sandbox"
@@ -45,8 +48,15 @@ const (
 	GuardTeamProjects = "team/projects"
 	GuardTeamAgents   = "team/agents"
 	GuardAgentRuntime = "agent/runtimeRef"
-	GuardAgentRole    = "agent/roleRef"
-	GuardAgentSkills  = "agent/skillRefs"
+	// GuardAgentRole guards spec.roleRef on TWO surfaces (ADR-0033 D3,
+	// ISI-7403): a Role READ that errors fails closed (reject), but a Role
+	// that is merely ABSENT surfaces as an admission WARNING, never a
+	// rejection — apply-order workflows legitimately apply the Role moments
+	// after the Agent, and the operator seeds the preset names
+	// (team.RolePresetNames) on team-namespace provisioning, so a hard deny
+	// broke both while a warning still names the dangling ref immediately.
+	GuardAgentRole   = "agent/roleRef"
+	GuardAgentSkills = "agent/skillRefs"
 	// #nosec G101 -- guard path key naming the field it guards, not a credential
 	GuardAgentSecret = "agent/credentialSecretRef"
 	// GuardAgentCredentialClass validates spec.credentialClass against the
@@ -232,10 +242,12 @@ func (v *CrossRefValidator) ValidateTeam(ctx context.Context, team *ksquadv1alph
 	return errs
 }
 
-// ValidateAgent rejects an Agent whose runtimeRef, roleRef, skillRefs or
-// credentialSecretRef dangle. This is the webhook half of the ticket's
-// "Agent.runtime" example: the runtime TYPE discipline is CEL on the
-// AgentRuntime CRD (FR-D3); the runtime REF existence is checked here.
+// ValidateAgent rejects an Agent whose runtimeRef, skillRefs or
+// credentialSecretRef dangle, and whose roleRef READ errors (a Role that is
+// merely absent warns instead — warnIfRoleRefDangling, ADR-0033 D3/ISI-7403).
+// This is the webhook half of the ticket's "Agent.runtime" example: the
+// runtime TYPE discipline is CEL on the AgentRuntime CRD (FR-D3); the
+// runtime REF existence is checked here.
 func (v *CrossRefValidator) ValidateAgent(ctx context.Context, agent *ksquadv1alpha1.Agent) field.ErrorList {
 	var errs field.ErrorList
 	if v.on(GuardAgentRuntime) {
@@ -252,12 +264,13 @@ func (v *CrossRefValidator) ValidateAgent(ctx context.Context, agent *ksquadv1al
 	if v.on(GuardAgentRole) {
 		ref := agent.Spec.RoleRef
 		ns := resolveNamespace(ref, agent.Namespace)
-		ok, err := refExists(ctx, v.Reader, &ksquadv1alpha1.Role{}, ns, ref.Name)
-		switch {
-		case err != nil:
+		_, err := refExists(ctx, v.Reader, &ksquadv1alpha1.Role{}, ns, ref.Name)
+		// Only the READ fails closed here. A Role that is merely ABSENT is
+		// warnIfRoleRefDangling's to own (ADR-0033 D3, ISI-7403): rejecting
+		// it broke apply-order workflows where the Role is applied moments
+		// after the Agent in the same bundle.
+		if err != nil {
 			errs = append(errs, invalidf("spec.roleRef", ref, "admission read failed (fail-closed): %v", err))
-		case !ok:
-			errs = append(errs, invalidf("spec.roleRef", ref, "referenced Role %s/%s does not exist; create it first or fix the ref", ns, ref.Name))
 		}
 	}
 	if v.on(GuardAgentSkills) {
@@ -419,8 +432,8 @@ func (v *CrossRefValidator) systemNamespace() string {
 //     it loudly now, do not reject THIS Agent (which resolved fine).
 //
 // The Role is fetched best-effort: a dangling roleRef is GuardAgentRole's
-// rejection to own — here a missing Role just means the role tier contributes
-// nothing. A transient Role read error fails closed.
+// warning to own (ISI-7403) — here a missing Role just means the role tier
+// contributes nothing. A transient Role read error fails closed.
 func (v *CrossRefValidator) validateAgentModel(ctx context.Context, agent *ksquadv1alpha1.Agent) (admission.Warnings, field.ErrorList) {
 	if !v.on(GuardAgentModelResolves) {
 		return nil, nil
@@ -434,8 +447,8 @@ func (v *CrossRefValidator) validateAgentModel(ctx context.Context, agent *ksqua
 		case err == nil:
 			role = &r
 		case apierrors.IsNotFound(err):
-			// Dangling roleRef: GuardAgentRole rejects it; here the role tier
-			// simply contributes nothing to the walk.
+			// Dangling roleRef: GuardAgentRole warns on it (ISI-7403); here
+			// the role tier simply contributes nothing to the walk.
 		default:
 			return nil, field.ErrorList{invalidf("spec.roleRef", agent.Spec.RoleRef, "admission read of Role %s/%s failed (fail-closed): %v", ns, agent.Spec.RoleRef.Name, err)}
 		}
@@ -479,16 +492,47 @@ func (v *CrossRefValidator) warnIfDefaultModelConfigAbsent(ctx context.Context) 
 	return nil
 }
 
+// warnIfRoleRefDangling returns a single admission WARNING when spec.roleRef
+// names a Role that is ABSENT from the ref's namespace (ADR-0033 D3,
+// ISI-7403). Absence warns rather than rejects: apply-order workflows may
+// legitimately apply the Role moments after the Agent, and a hard deny broke
+// those bundles — while the warning still names the dangling ref at apply
+// time instead of letting it surface as a silent dispatch failure later.
+// Preset names (team.RolePresetNames) never warn: the operator seeds them on
+// team-namespace provisioning, so a fresh team namespace may race the seeder
+// legitimately (that contract is D1, PR #1020). A transient read error
+// yields no warning here — that read is ValidateAgent's fail-closed
+// rejection to own.
+func (v *CrossRefValidator) warnIfRoleRefDangling(ctx context.Context, agent *ksquadv1alpha1.Agent) admission.Warnings {
+	if !v.on(GuardAgentRole) {
+		return nil
+	}
+	ref := agent.Spec.RoleRef
+	if ref.Name == "" || slices.Contains(team.RolePresetNames, ref.Name) {
+		return nil
+	}
+	ns := resolveNamespace(ref, agent.Namespace)
+	ok, err := refExists(ctx, v.Reader, &ksquadv1alpha1.Role{}, ns, ref.Name)
+	if err != nil || ok {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.roleRef: referenced Role %q not found in namespace %q — role resolution will fail at dispatch until the Role exists; create it (or fix the ref). Preset names (%s) are seeded automatically by the operator and never warn",
+		ref.Name, ns, strings.Join(team.RolePresetNames, ", "))}
+}
+
 // ValidateAgentWithWarnings runs the cross-ref Agent guards (ValidateAgent) and
-// the Model-Per-Role effective-model guard together, returning the D3 soft-warn
-// alongside the aggregated hard errors. It is the entry point the admission
-// wiring calls so a warning (missing default ModelConfig) can ride back on an
+// the Model-Per-Role effective-model guard together, returning the D3
+// soft-warns (missing default ModelConfig; dangling roleRef) alongside the
+// aggregated hard errors. It is the entry point the admission wiring calls so
+// a warning (missing default ModelConfig) can ride back on an
 // otherwise-admitted Agent — field.ErrorList carries no warning channel, so the
 // warning is threaded separately here.
 func (v *CrossRefValidator) ValidateAgentWithWarnings(ctx context.Context, agent *ksquadv1alpha1.Agent) (admission.Warnings, field.ErrorList) {
 	errs := v.ValidateAgent(ctx, agent)
 	warnings, modelErrs := v.validateAgentModel(ctx, agent)
 	errs = append(errs, modelErrs...)
+	warnings = append(warnings, v.warnIfRoleRefDangling(ctx, agent)...)
 	return warnings, errs
 }
 

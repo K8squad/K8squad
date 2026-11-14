@@ -56,6 +56,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/K8squad/K8squad/pkg/events"
 )
 
 // SettleLaneOf maps a terminal reconcile step onto the board lane the settle
@@ -211,10 +214,6 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 	// PROGRESS row (it joins the per-run Activity feed), never a second summary. A
 	// coord.comment INSERT never touches coord.work_item, so both branches stay
 	// compatible with the succeeded no-mutation contract above.
-	runParam := sql.NullString{}
-	if runID != "" {
-		runParam = sql.NullString{String: runID, Valid: true}
-	}
 	hasSummary := false
 	if runID != "" {
 		if err := tx.QueryRowContext(ctx, `
@@ -235,10 +234,8 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 		// state_transition audit row above); the "Run succeeded" one-liner
 		// was canned noise on top of the run's clean comment.
 		if terminalStep != "succeeded" {
-			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
-				VALUES ($1::uuid, $2, $3, 'progress', $4::uuid)`,
-				workItemID, principal, settleSummary(terminalStep, lane, moved, agent.String), runParam); err != nil {
+			if err := insertSettleComment(ctx, tx, workItemID, runID, principal, "progress",
+				settleSummary(terminalStep, lane, moved, agent.String)); err != nil {
 				return "", false, fmt.Errorf("coord.SettleTerminalLane: terminal progress: %w", err)
 			}
 		}
@@ -252,13 +249,55 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 	if err != nil {
 		return "", false, fmt.Errorf("coord.SettleTerminalLane: synthesize summary: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
-		VALUES ($1::uuid, $2, $3, 'summary', $4::uuid)`,
-		workItemID, principal, body, runParam); err != nil {
+	if err := insertSettleComment(ctx, tx, workItemID, runID, principal, "summary", body); err != nil {
 		return "", false, fmt.Errorf("coord.SettleTerminalLane: summary: %w", err)
 	}
 	return lane, moved, nil
+}
+
+// insertSettleComment appends one engine-authored thread row (kind, body) and
+// — for a run-bound settle — co-commits the ISI-7274 `ticket_comment` liveness
+// echo in THIS transaction (livecomment.go documents the seam). The settle
+// comment commits AFTER the run's `ended` lifecycle row (Terminal settles in
+// its own transaction, after the terminal advance), so the console's
+// ended-keyed re-fetch races it; the echo rides the same per-run stream one
+// frame later and re-arms the re-fetch, and because it commits WITH the
+// comment, a client that receives the frame always sees the row on reload
+// (ISI-7274, parent ISI-7262 WS-2). runID == "" leaves the comment un-echoed:
+// the projector keys the per-run fan on run_id, and nothing else correlates
+// the frame. An echo failure fails the settle write it narrates — the same
+// co-committed discipline every outbox row in this transaction already keeps.
+func insertSettleComment(ctx context.Context, tx *sql.Tx, workItemID, runID, principal, kind, body string) error {
+	runParam := sql.NullString{}
+	if runID != "" {
+		runParam = sql.NullString{String: runID, Valid: true}
+	}
+	var created time.Time
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO coord.comment (work_item_id, author_principal, body, kind, run_id)
+		VALUES ($1::uuid, $2, $3, $4, $5::uuid)
+		RETURNING created_at`,
+		workItemID, principal, body, kind, runParam).Scan(&created); err != nil {
+		return err
+	}
+	if runID == "" {
+		return nil
+	}
+	payload, err := json.Marshal(LiveCommentEcho{
+		WorkItemID: workItemID,
+		RunID:      runID,
+		Author:     principal,
+		Body:       body,
+		Kind:       kind,
+		At:         created,
+	})
+	if err != nil {
+		return fmt.Errorf("coord.insertSettleComment: echo payload: %w", err)
+	}
+	if err := events.CaptureRunForWorkItem(ctx, tx, workItemID, runID, LiveCommentEventType, payload); err != nil {
+		return fmt.Errorf("coord.insertSettleComment: echo capture: %w", err)
+	}
+	return nil
 }
 
 // synthesizeSummary builds the platform's minimal structured recap for a run that
