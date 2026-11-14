@@ -202,10 +202,19 @@ poll_progress() {
   kubectl get agents -A -o json 2>/dev/null | jq -r '.items[] | [.metadata.namespace, .metadata.name, .spec.roleRef.name, .spec.credentialSecretRef.name] | @tsv' || true
   echo "--- projects (all namespaces):"
   kubectl get projects -A -o json 2>/dev/null | jq -r '.items[] | [.metadata.namespace, .metadata.name, (.spec.repo.auth.credentialSecretRef.name // "-")] | @tsv' || true
-  echo "--- roles in $CP_NS:"
-  kubectl get roles -n "$CP_NS" -o json 2>/dev/null | jq -r '.items[].metadata.name' || true
-  echo "--- apiserver log tail (onboarding/agent/watch/error lines):"
-  kubectl -n "$CP_NS" logs deploy/ksquad-apiserver --tail=200 2>/dev/null | grep -aiE "onboarding|agent|watch|error|rebind" | tail -30 || true
+  echo "--- roles (ksquad.io CRs) in $CP_NS:"
+  kubectl get roles.ksquad.io -n "$CP_NS" -o json 2>/dev/null | jq -r '.items[].metadata.name' || true
+  echo "--- full Agent boss CR (live API):"
+  kubectl get agent boss -n "$CP_NS" -o json 2>/dev/null | jq -c '.spec' || true
+  echo "--- /api/squad/teams as the polling member (same informer cache), raw:"
+  curl -sS --noproxy '*' --max-time 10 -H "Cookie: ksquad_session=$SESSION_TOKEN" "$API_URL/api/squad/teams" 2>/dev/null | head -c 1500 || true; echo
+  echo "--- /api/squad/agents as the polling member (same informer cache), raw:"
+  curl -sS --noproxy '*' --max-time 10 -H "Cookie: ksquad_session=$SESSION_TOKEN" "$API_URL/api/squad/agents" 2>/dev/null | head -c 3000 || true; echo
+  echo "--- apiserver log tail (onboarding funnel attrs: team.id / onboarding.step / done):"
+  kubectl -n "$CP_NS" logs deploy/ksquad-apiserver --tail=600 2>/dev/null \
+    | grep -aoE "onboarding\.(step|done|next_milestone|team)\"[^,]*|team\.id\"[^,]*|onboarding progress read failed[^\"]*" | tail -30 || true
+  echo "--- progress right now as the polling member, raw:"
+  curl -sS --noproxy '*' --max-time 10 -H "Cookie: ksquad_session=$SESSION_TOKEN" "$API_URL/api/onboarding/progress" 2>/dev/null || true; echo
   echo "::endgroup::"
   fail "$label never reached done=$want_done step=$want_step next='${want_next}' within ${PROGRESS_TIMEOUT}s (ISI-7352 informer-lag window exceeded?) — last observation: $got"
 }
