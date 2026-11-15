@@ -18,6 +18,10 @@
 #   opencode — sst/opencode@v1.18.27 musl tarball, musl/libstdc++ libs staged (ISI-3667)
 #   claude   — Claude Code@2.1.236 native binary, sha256-verified (ISI-3667; the shim
 #              adapter for claude-code itself remains Phase 2, pkg/shim/runtimes)
+#   crewai   — NOT a cli-<runtime> stage here: the standing child is python +
+#              crewai[a2a] (manylinux wheels — no alpine/distroless base possible), so
+#              crewai ships as its own composed image, Dockerfile.shim-crewai (ISI-7463),
+#              still published as ksquad-shim-crewai by the shim lane.
 # openclaw/hermes are intentionally UNPACKAGED (disposition at their stages, ISI-3667).
 # This matches the shim matrix in .github/workflows/component-matrix.yml. An unknown
 # RUNTIME fails closed at `FROM cli-${RUNTIME}` (no matching stage).
