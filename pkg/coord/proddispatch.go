@@ -186,10 +186,22 @@ func (d *ProdDispatcher) ReadHandoff(ctx context.Context, sourceWorkItemID strin
 		return v, fmt.Errorf("coord.ReadHandoff: read item: %w", err)
 	}
 
+	// ISI-7457: the handoff record the next agent/coordinator reads is the
+	// human/summary conversation, not the completing run's ProgressMirror
+	// firehose. Passing the [run …][tool/[status/[llm:response] telemetry
+	// forward (18/20 of a busy run's rows, ISI-7454) buries the real handoff
+	// signal in the downstream context. Exclude it on the `[run ` mirror
+	// prefix — the signature migration 0042 reclassifies on, and the one every
+	// mirrored row carries. The prefix (not the 0042 `kind` column) is the
+	// guard here deliberately: this read is proven on the shipped base schema
+	// (0001) in the spine-chaos gate, which does not apply 0042, so a `kind`
+	// predicate would reference a column that does not exist there; the
+	// body-prefix guard is schema-independent and filters the whole firehose.
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT author_principal, body, created_at::text
 		  FROM coord.comment
 		 WHERE work_item_id = $1::uuid
+		   AND body NOT LIKE '[run %'
 		 ORDER BY created_at, id`, sourceWorkItemID)
 	if err != nil {
 		return v, fmt.Errorf("coord.ReadHandoff: comments: %w", err)

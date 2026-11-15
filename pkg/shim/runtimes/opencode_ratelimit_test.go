@@ -42,6 +42,48 @@ func TestOpenCodeErrorEmitsRateLimitedSignal(t *testing.T) {
 	assert.True(t, sawSignal, "the zai 429 limit-exhausted frame must emit the EventRateLimited signal")
 }
 
+// TestOpenCodeThrottleStreamsAsThinkingNotDeliverable (ISI-7457): a recoverable
+// provider throttle must NOT consume the engine's exactly-one-deliverable slot.
+// The 5.11 SwitchModel fallback lets the Run continue, so the agent still owes a
+// real final answer; the throttle text therefore streams as kind=thinking so the
+// engine terminal backstop can still promote the run's real deliverable. Tagging
+// it kind=deliverable (the pre-ISI-7457 behavior) pre-empted that slot and left
+// the run with no substantive final board comment (parent ISI-7454).
+func TestOpenCodeThrottleStreamsAsThinkingNotDeliverable(t *testing.T) {
+	line := `{"type":"error","error":{"name":"API Error","data":{"message":"429 Weekly/Monthly Limit Exhausted (org quota, reset later)"}}}`
+	var sawMsg bool
+	for _, p := range parseOpenCodeLine(line) {
+		if p.Kind == a2a.EventMessage {
+			sawMsg = true
+			require.NotNil(t, p.Message)
+			assert.Equal(t, a2a.MessageKindThinking, p.Message.Kind,
+				"a recoverable throttle must stream as thinking, never the run's one deliverable")
+		}
+	}
+	assert.True(t, sawMsg, "the throttle frame must still carry a user-facing message")
+}
+
+// TestOpenCodeGenuineErrorStaysDeliverable: a non-throttle error IS the failed
+// run's terminal answer and must remain kind=deliverable (ISI-7098 behavior is
+// preserved — ISI-7457 narrows only the recoverable-throttle case).
+func TestOpenCodeGenuineErrorStaysDeliverable(t *testing.T) {
+	for _, line := range []string{
+		`{"type":"error","error":{"name":"API Error","data":{"message":"connection refused"}}}`,
+		`{"type":"error","error":{"name":"Model Error","data":{"message":"invalid model id"}}}`,
+	} {
+		var sawMsg bool
+		for _, p := range parseOpenCodeLine(line) {
+			if p.Kind == a2a.EventMessage {
+				sawMsg = true
+				require.NotNil(t, p.Message)
+				assert.Equal(t, a2a.MessageKindDeliverable, p.Message.Kind,
+					"a genuine error %s is the failed run's terminal answer", line)
+			}
+		}
+		assert.True(t, sawMsg, "the error frame must carry a message for %s", line)
+	}
+}
+
 // TestOpenCodeOrdinaryErrorEmitsNoRateLimitedSignal: detection is narrow —
 // ordinary provider/timeout errors must NOT park or switch a Run.
 func TestOpenCodeOrdinaryErrorEmitsNoRateLimitedSignal(t *testing.T) {

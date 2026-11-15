@@ -481,11 +481,30 @@ func parseOpenCodeLine(line string) []Progress {
 		if ev.Error != nil && ev.Error.Data.Message != "" {
 			text = name + ": " + ev.Error.Data.Message
 		}
+		// ISI-7457: a provider THROTTLE is not the run's final answer. The
+		// EventRateLimited unit below arms the core's 5.11 SwitchModel fallback,
+		// so a throttled Run keeps going and the agent still owes a real
+		// deliverable. Tagging the throttle text kind=deliverable here consumed
+		// the engine's exactly-one-deliverable slot (ISI-7098 funnel, first
+		// deliverable wins) and disabled the terminal backstop, so the agent's
+		// actual final message was demoted to thinking and never became the
+		// durable kind='summary' comment — the deepseek single-slot-endpoint
+		// "no substantive final comment" symptom (ISI-7454, parent of ISI-7457),
+		// where the busy endpoint throttles routinely. A throttle therefore
+		// streams as THINKING; the engine terminal backstop still promotes the
+		// run's real final text (or, for a run that ultimately fails, the
+		// terminal reason). A genuine (non-throttle) opencode error stays the
+		// failed run's terminal answer (kind=deliverable) exactly as before
+		// (ISI-7098).
+		rateLimited := isRateLimitError(name, detail)
+		msgKind := a2a.MessageKindDeliverable
+		if rateLimited {
+			msgKind = a2a.MessageKindThinking
+		}
 		out := []Progress{
 			{
-				Kind: a2a.EventMessage,
-				// ISI-7098: the error text is a failed run's terminal answer.
-				Message: &a2a.MessagePayload{Role: "agent", Kind: a2a.MessageKindDeliverable, Text: text, Trust: "untrusted"},
+				Kind:    a2a.EventMessage,
+				Message: &a2a.MessagePayload{Role: "agent", Kind: msgKind, Text: text, Trust: "untrusted"},
 			},
 			{
 				Kind:  a2a.EventUsage,
@@ -501,7 +520,7 @@ func parseOpenCodeLine(line string) []Progress {
 		// Exhausted" among them). RetryAfter stays empty — opencode's error
 		// frame carries no provider window, which the payload treats as the
 		// backoff path.
-		if isRateLimitError(name, detail) {
+		if rateLimited {
 			out = append(out, Progress{
 				Kind:        a2a.EventRateLimited,
 				RateLimited: &a2a.RateLimitedPayload{},

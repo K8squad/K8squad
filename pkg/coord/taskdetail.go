@@ -194,11 +194,23 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 // reads like a conversation, not a log; the console surfaces them separately
 // under its per-run "Activity (N events)" expander via ReadRunActivity.
 func readComments(ctx context.Context, db *sql.DB, workItemID string) ([]TaskComment, error) {
+	// ISI-7457: the kind filter (0042) is the structural exclusion of the
+	// ProgressMirror firehose, but a telemetry row that lands as kind='human'
+	// — a pre-0042 binary wrote the [run …] mirror rows via the plain
+	// AppendComment path, and the deployed image that surfaced ISI-7454 did
+	// exactly that (18/20 ticket comments were [run …][llm:response]/[status]
+	// machine events) — would slip through on kind alone. The `[run ` prefix is
+	// the mirror's own signature (migration 0042 reclassifies on `body LIKE '[run
+	// %'`), and neither a human comment nor an agent/synth summary ever begins
+	// with it, so excluding it here is a belt-and-suspenders guard that keeps run
+	// telemetry out of the ticket thread regardless of how the row was tagged.
+	// The per-run Activity feed (ReadRunActivity) is where those rows belong.
 	rows, err := db.QueryContext(ctx, `
 		SELECT author_principal, body, created_at, payload, kind, run_id::text
 		  FROM coord.comment
 		 WHERE work_item_id = $1::uuid
 		   AND kind IN ('human', 'summary')
+		   AND body NOT LIKE '[run %'
 		 ORDER BY created_at ASC, id ASC`, workItemID)
 	if err != nil {
 		return nil, fmt.Errorf("coord.ReadTaskDetail: read comments for %s: %w", workItemID, err)
