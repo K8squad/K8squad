@@ -333,15 +333,16 @@ func decodeRev(rev string) (updatedAt, cutoff time.Time, err error) {
 // run firehose — folding the per-run [run …][tool/[status/[llm:response]
 // telemetry back into the SystemContext (18/20 of a ticket's rows on a busy
 // run, ISI-7454) floods the window with the agent's own machine trace and
-// crowds out the signal. Exclude the firehose on the same two axes the ticket
-// thread uses (0042 kind + the `[run ` mirror-prefix guard for a mis-tagged
-// row); the per-run Activity feed keeps that detail for the console.
+// crowds out the signal. Exclude it on the `[run ` mirror prefix — the
+// signature migration 0042 reclassifies on, and the one every mirrored row
+// carries; the per-run Activity feed keeps that detail for the console. The
+// prefix guard (rather than the 0042 `kind` column) keeps this read portable
+// across the base-schema harnesses the coord spine is proven on.
 func (s *Source) comments(ctx context.Context, workItemID string, cutoff time.Time) ([]contextasm.Comment, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT author_principal, body, created_at
 		   FROM coord.comment
 		  WHERE work_item_id = $1::uuid AND created_at <= $2
-		    AND kind IN ('human', 'summary')
 		    AND body NOT LIKE '[run %'
 		  ORDER BY created_at ASC, id ASC`, workItemID, cutoff)
 	if err != nil {
