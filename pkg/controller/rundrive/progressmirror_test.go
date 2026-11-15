@@ -37,9 +37,7 @@ type mirrorFixture struct {
 	got         []string            // "workItem|author|body" per appended progress row
 	summaries   []string            // "workItem|author|runID|body" per deliverable summary (ISI-7099)
 	published   []publishedThinking // liveness echoes (ISI-5193), in order
-	failOn      int                 // append calls >= failOn fail (0 = never)
 	failSummary int                 // appendSummary calls >= failSummary fail (0 = never)
-	calls       int
 	sumCalls    int
 }
 
