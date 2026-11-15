@@ -13,7 +13,8 @@ name: Component Matrix
 #
 #   go         — deployable Go binaries        (operator, apiserver, memory, event-relay,
 #                                                scm-webhook, buildreader)
-#   shims      — per-runtime A2A shim images   (claude, openclaw, hermes, opencode, codex)
+#   shims      — per-runtime A2A shim images   (claude, openclaw, hermes, opencode, codex,
+#                                              crewai — composed image: Dockerfile.shim-crewai)
 #   helm       — Helm charts                    (k8squad)
 #   node       — Node/TypeScript surfaces       (console)
 #   toolchains — catalog toolchain images       (Dockerfile.toolchain-<tool>, ISI-3413)
@@ -33,6 +34,7 @@ name: Component Matrix
 # STABLE CHECK-RUN NAMES (branch protection wires these per component — ISI-2674):
 #   go / operator      go / apiserver     go / memory      go / buildreader
 #   shim / claude      shim / openclaw    shim / hermes    shim / opencode    shim / codex
+#   shim / crewai
 #   helm / k8squad     node / console     db / migrations self-check
 # Consumers MUST keep their `name:` templates in sync with these so a required check never
 # silently renames itself out from under branch protection.
@@ -86,7 +88,11 @@ jobs:
             # stage), NOT a per-runtime cmd/shim-<runtime> dir. Those dirs never existed, so the
             # ci.yml shim lane skip-with-reasoned every runtime. `path` now points at the real
             # source so the lanes lint+build+test the shim main per-runtime, and codex is added.
-            echo 'shims=[{"runtime":"claude","path":"cmd/shim"},{"runtime":"openclaw","path":"cmd/shim"},{"runtime":"hermes","path":"cmd/shim"},{"runtime":"opencode","path":"cmd/shim"},{"runtime":"codex","path":"cmd/shim"}]'
+            # ISI-7463: crewai rides the same family but ships a COMPOSED image
+            # (Dockerfile.shim-crewai: the Go shim supervising a python + crewai[a2a]
+            # standing child) — the build-images.yml shim plan picks Dockerfile.shim-<rt>
+            # per row when that file exists, else the single Dockerfile.shim.
+            echo 'shims=[{"runtime":"claude","path":"cmd/shim"},{"runtime":"openclaw","path":"cmd/shim"},{"runtime":"hermes","path":"cmd/shim"},{"runtime":"opencode","path":"cmd/shim"},{"runtime":"codex","path":"cmd/shim"},{"runtime":"crewai","path":"cmd/shim"}]'
             echo 'helm=[{"chart":"k8squad","path":"config/helm"}]'
             echo 'node=[{"component":"console","path":"console"}]'
             # Toolchain image family (ISI-3413). `version` is the CATALOG TAG referenced by

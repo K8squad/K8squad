@@ -1,0 +1,83 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-shim-crewai — the COMPOSED crewai sandbox image (ISI-7463).
+#
+# Unlike the other shim runtimes (Dockerfile.shim: distroless/static base + a
+# cli-<runtime> overlay), the crewai sandbox pod's standing child is the crew's
+# python + crewai[a2a] A2A server, so the image must carry BOTH halves:
+#   1. /usr/local/bin/shim — the generic A2A shim main (cmd/shim), the pod's
+#      entrypoint/supervisor (cmd/shim/gateway.go case "crewai" ->
+#      mesh.NewCrewAIAdapter + NewCrewaiRouter(AUTH_TOKEN), ISI-6569; the crew's
+#      A2A server reads the same AUTH_TOKEN via SimpleTokenAuth, ISI-6547).
+#   2. python + uv + crewai[a2a]==1.15.28 — the crew half, pin-identical to
+#      Dockerfile.toolchain-crewai (python:3.12-slim; the [a2a] extra's litellm-heavy
+#      manylinux wheels rule out the alpine/distroless bases the other runtimes use).
+# The build lane is the SHIM lane (build-images.yml build-shim job, matrix row
+# runtime=crewai): it publishes ghcr.io/k8squad/ksquad-shim-crewai, and the shim
+# change-gate (go list -deps ./cmd/shim UNION Dockerfile.shim*) rebuilds this image
+# whenever the shim Go code moves — a catalog-toolchain row would NOT inherit that
+# gate, which is why this is a shims-family row, not a toolchains-family row.
+#
+# ENTRYPOINT is the shim (NOT python3): the shim is the pod's PID-1 supervisor and
+# spawns the crew's python A2A server as its standing child (always-up pool:
+# crews hold open SSE connections; KSQUAD_MESH_LIFECYCLE_ALWAYS_UP, see gateway.go).
+#
+#   docker buildx build -f Dockerfile.shim-crewai \
+#     --platform linux/amd64,linux/arm64 -t ghcr.io/k8squad/ksquad-shim-crewai .
+
+# Pins mirror Dockerfile.toolchain-crewai (ISI-6569) exactly — ADR-017 reproducibility.
+ARG PYTHON_IMAGE=python:3.12-slim
+ARG UV_VERSION=0.5.31
+ARG CREWAI_VERSION=1.15.28
+
+# ---- Go build: the generic shim main (mirrors the build stage of Dockerfile.shim) ---------
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+# The directory replace target must be readable by go mod download (P3.2 re-land, ISI-6035):
+COPY third_party/k8sagentmesh/go.mod ./third_party/k8sagentmesh/
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/shim ./cmd/shim
+
+# ---- uv (same staging as Dockerfile.toolchain-crewai) ------------------------------------
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
+
+# ---- Final: python base + crewai[a2a] + the shim binary on top ---------------------------
+FROM ${PYTHON_IMAGE}
+ARG CREWAI_VERSION
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-shim-crewai" \
+      org.opencontainers.image.description="KSquad crewai composed sandbox image (Go shim supervisor + python/crewai[a2a] standing child, ISI-7463)" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+# Security upgrades + git for crew projects cloned into the workdir (same as the
+# toolchain image).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates git && \
+    rm -rf /var/lib/apt/lists/*
+
+# Stage uv binaries from the upstream scratch-based image.
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+# Install the pinned crewai[a2a] extra into the system Python so the crew A2A
+# server imports resolve without activating a virtual environment.
+RUN uv pip install --system "crewai[a2a]==${CREWAI_VERSION}"
+
+# The Go half: the shim binary (CGO_ENABLED=0, static — runs fine on the Debian base).
+COPY --from=build /out/shim /usr/local/bin/shim
+
+# Self-describing flavor (same contract as Dockerfile.shim: the in-pod supervisor
+# reads the runtime type from this env; Boot may override it).
+ENV KSQUAD_RUNTIME_TYPE=crewai
+# Nonroot parity with Dockerfile.shim (65532:65532) + a writable HOME: crew projects
+# materialize deps via uv at runtime and uid 65532 owns no passwd entry.
+ENV HOME=/tmp
+USER 65532:65532
+WORKDIR /
+# The shim, NOT python3 — the standing child is spawned by the shim, never PID-1.
+ENTRYPOINT ["/usr/local/bin/shim"]

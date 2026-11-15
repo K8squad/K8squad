@@ -208,8 +208,10 @@ jobs:
 
       # ISI-3653 shim image lane planning. The A2A shim sidecar was previously NOT a
       # container-image lane here (see the header) — it is now. One row per runtime from the
-      # component-matrix `shims` family; every row builds the SAME Dockerfile.shim with a
-      # RUNTIME build-arg selecting the CLI layer, and publishes ghcr.io/k8squad/ksquad-shim-
+      # component-matrix `shims` family; every row builds Dockerfile.shim with a RUNTIME
+      # build-arg selecting the CLI layer — UNLESS a composed per-runtime image exists
+      # (Dockerfile.shim-<rt>; crewai's python-based sandbox, ISI-7463) — and publishes
+      # ghcr.io/k8squad/ksquad-shim-
       # <runtime>. Real CLI layers today: codex (static-musl codex@rust-v0.152.0 + the
       # ksquad-codex-exec wrapper, ISI-3653), opencode (sst/opencode@v1.18.27) and claude
       # (Claude Code@2.1.236, sha256-verified) per ISI-3667; openclaw/hermes intentionally
@@ -257,7 +259,7 @@ jobs:
             else
               CHANGED=$(git diff --name-only "$BEFORE" "${GITHUB_SHA}" -- \
                 "${DEP_PATHS[@]}" \
-                'Dockerfile.shim' \
+                'Dockerfile.shim*' \
                 'cmd/ksquad-codex-exec/**' \
                 'go.mod' \
                 'go.sum' \
@@ -277,12 +279,19 @@ jobs:
           rows = []
           for s in shims:
               rt = s["runtime"]
+              # ISI-7463: runtimes whose sandbox needs a non-distroless base (crewai: the
+              # Go shim supervises a python + crewai[a2a] standing child) ship their own
+              # composed image, Dockerfile.shim-<rt>; every other runtime builds the
+              # single Dockerfile.shim with the RUNTIME build-arg. Existence-checked so
+              # the override set can never drift from the file tree.
+              df = "Dockerfile.shim-" + rt if os.path.isfile("Dockerfile.shim-" + rt) else "Dockerfile.shim"
               rows.append({
                   "runtime": rt,
+                  "dockerfile": df,
                   # OCI refs must be lowercase — hardcode the lowercased owner path (the raw
                   # owner is 'K8squad'; same reasoning as the imgref steps below).
                   "image": f"ghcr.io/k8squad/ksquad-shim-{rt}",
-                  "buildargs": f"RUNTIME={rt}",
+                  "buildargs": f"RUNTIME={rt}" if df == "Dockerfile.shim" else "",
               })
           rows.sort(key=lambda r: r["runtime"])
           print("shims=" + json.dumps(rows, separators=(",", ":")))
@@ -601,7 +610,8 @@ jobs:
           echo "Cleanup completed"
 
   # ISI-3653 shim image lane. Builds and publishes the per-runtime A2A shim sidecars
-  # (ghcr.io/k8squad/ksquad-shim-<runtime>) from the single Dockerfile.shim, selecting the
+  # (ghcr.io/k8squad/ksquad-shim-<runtime>) from Dockerfile.shim (or a composed
+  # Dockerfile.shim-<runtime> when one exists — crewai, ISI-7463), selecting the
   # CLI layer with a RUNTIME build-arg. The matrix comes from the plan leg (component-matrix
   # shims family, change-gated); it is empty on plain main pushes with no shim-relevant diff.
   # Supply-chain posture mirrors the toolchain lane: sign/attest/provenance on EVERY publish
@@ -637,7 +647,9 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: Dockerfile.shim
+          # Per-row dockerfile (ISI-7463): Dockerfile.shim-<rt> for composed runtimes
+          # (crewai), Dockerfile.shim + the RUNTIME build-arg for everything else.
+          file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
@@ -670,6 +682,24 @@ jobs:
           OUT=$(docker run --rm --entrypoint /bin/sh "$REF" -c 'echo sh-ok; /bin/bash -c "echo bash-ok"')
           echo "$OUT" | grep -Fq sh-ok
           echo "$OUT" | grep -Fq bash-ok
+
+      - name: Composed-image smoke (shim + crewai import, ISI-7463)
+        # The crewai sandbox image is COMPOSED (ISI-7463): the Go shim is the
+        # entrypoint/supervisor and the python half must import crewai (the crew's
+        # A2A server standing child). Fail the publish if either half is missing or
+        # the entrypoint is not the shim (regression guard against the image
+        # degenerating into the python3-entrypoint toolchain shape).
+        if: github.event_name != 'pull_request' && matrix.runtime == 'crewai'
+        run: |
+          set -euo pipefail
+          REF="${{ steps.imgref.outputs.ref }}"
+          EP=$(docker image inspect --format '{{join .Config.Entrypoint " "}}' "$REF")
+          echo "entrypoint=${EP}"
+          case "$EP" in
+            /usr/local/bin/shim) ;;
+            *) echo "::error::crewai sandbox entrypoint must be the shim, got: ${EP}"; exit 1 ;;
+          esac
+          docker run --rm --entrypoint /bin/sh "$REF" -c "test -x /usr/local/bin/shim && python3 -c 'import crewai, importlib.metadata as m; print(\"crewai\", m.version(\"crewai\"))'"
 
       - name: Generate SBOM (Syft)
         if: github.event_name != 'pull_request'
