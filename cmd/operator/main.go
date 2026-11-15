@@ -1032,6 +1032,14 @@ func main() {
 			}
 		}
 
+		// ISI-7454: mirror drop observability — a run that completes without
+		// its one substantive summary comment (evidence run f4d45f5b, agent
+		// sam/deepseek-chat, 2026-11-14) must leave an operator log line, not
+		// just the hollow settle synth.
+		progressMirror := rundrive.NewProgressMirror(db)
+		progressMirror.Log = func(format string, args ...any) {
+			ctrl.Log.Error(nil, fmt.Sprintf(format, args...))
+		}
 		var a2aErr error
 		a2aDispatcher, a2aErr = rundrive.NewOperatorDispatcher(rundrive.OperatorDispatchConfig{
 			DB:     db,
@@ -1044,7 +1052,7 @@ func main() {
 			// appends F16-trust-tagged comments on the Run's work item
 			// WHILE the run executes; its failures are swallowed by design
 			// (a sink error would cancel the live task).
-			RunEvents: rundrive.NewProgressMirror(db),
+			RunEvents: progressMirror,
 			ShimBin: func() string {
 				if v := os.Getenv("KSQUAD_SHIM_BIN"); v != "" {
 					return v

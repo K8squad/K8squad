@@ -226,7 +226,10 @@ func readComments(ctx context.Context, db *sql.DB, workItemID string) ([]TaskCom
 
 // ReadRunActivity reads the PROGRESS rows for a work item — the run sub-steps
 // (tool results, status transitions, LLM digests, narration) the default thread
-// (readComments) excludes. It is the console's "Activity (N events)" backing
+// (readComments) excludes. Since ISI-7454 the mirror writes no telemetry rows
+// here at all (usage/status are live-SSE only; their durable home is
+// Run.Status.LLMInteractions), so this feed serves settle narration plus
+// pre-ISI-7454 legacy rows. It is the console's "Activity (N events)" backing
 // query (ISI-7095): chronological, carrying each row's run id so the client can
 // group the feed per run. A legacy progress row written before 0042 carries a
 // NULL run_id ("" here); the console lumps those into one legacy group. Read-only

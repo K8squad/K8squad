@@ -110,10 +110,13 @@ type ProgressMirror struct {
 	// checkout claim (coord.claim.assignee_agent — default over db). "" when
 	// unset/unresolvable. Test seam.
 	assignee func(ctx context.Context, workItemID string) string
-	// append appends one PROGRESS comment (default: coord.AppendProgress over db,
-	// ISI-7094 — tagged kind='progress' with the run id so the thread excludes it
-	// and the console groups it under the per-run Activity expander). Test seam.
-	append func(ctx context.Context, workItemID, author, runID, body string) error
+	// Log reports conditions that silently degrade the run's durable thread
+	// record — a dropped deliverable summary, or a deliverable lost to an
+	// unresolved dispatch marker (ISI-7454: the mirror still swallows every
+	// failure — a sink error must never cancel the live task — but a seat
+	// whose one substantive comment evaporated must not be invisible).
+	// Optional; nil disables.
+	Log func(format string, args ...any)
 	// publish emits the liveness projection of a mirrored comment as a
 	// run-entity outbox event (default: events.CaptureRunForWorkItem over db),
 	// which the apiserver's run-event projector fans onto the EXISTING per-run
@@ -128,11 +131,12 @@ type ProgressMirror struct {
 	// run-id stamped so settle's exactly-one invariant counts it). Test seam.
 	appendSummary func(ctx context.Context, workItemID, author, runID, body string) error
 
-	// minInterval bounds the per-run DURABLE row rate (progress-tier rows):
-	// events arriving faster are DROPPED (not queued — the next event after
-	// the window lands, so the thread still advances). Terminal status events
-	// bypass the guard, and the deliverable tier is never guarded at all.
-	// Field (not const) so tests can zero or stretch it.
+	// minInterval bounds the per-run progress-tier event rate (usage digests
+	// and terminal status — live echoes since ISI-7454): events arriving
+	// faster are DROPPED (not queued). Terminal status events bypass the
+	// guard — the run's outcome must always reach the live stream — and the
+	// deliverable tier is never guarded at all. Field (not const) so tests
+	// can zero or stretch it.
 	minInterval time.Duration
 
 	// pubInterval bounds the per-run EPHEMERAL thinking-publish rate: the
@@ -164,10 +168,6 @@ func NewProgressMirror(db *sql.DB) *ProgressMirror {
 	}
 	m.lookup = m.lookupDispatchMarker
 	m.assignee = m.lookupAssigneeAgent
-	m.append = func(ctx context.Context, workItemID, author, runID, body string) error {
-		_, err := coord.AppendProgress(ctx, m.db, workItemID, author, runID, body)
-		return err
-	}
 	m.appendSummary = func(ctx context.Context, workItemID, author, runID, body string) error {
 		_, err := coord.AppendSummary(ctx, m.db, workItemID, author, runID, body)
 		return err
@@ -245,6 +245,11 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 
 	wi, err := m.workItem(ctx, ev.A2ATaskID)
 	if err != nil || wi == "" {
+		if t == mirrorTierDeliverable && m.Log != nil {
+			// ISI-7454: the deliverable is the run's ONE durable comment —
+			// losing it here leaves only the hollow settle synth on the board.
+			m.Log("progressmirror: deliverable dropped, dispatch marker unresolved (task=%s err=%v)", ev.A2ATaskID, err)
+		}
 		return nil // marker not written yet, or transient DB failure — drop
 	}
 	// Author with the agent identity (agent:<name>) so the console can render
@@ -270,12 +275,19 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 				m.delivered[runID] = false // a later deliverable may retry; settle's synth backstops the recap
 				m.mu.Unlock()
 			}
+			if m.Log != nil {
+				m.Log("progressmirror: deliverable summary dropped (work_item=%s run=%s body_len=%d); settle synth backstops", wi, runID, len(body))
+			}
 			return nil // dropped — settle's synthesized-summary backstop still owes the run exactly one recap
 		}
 	default:
-		if err := m.append(ctx, wi, author, runID, body); err != nil {
-			return nil // the durable comment is the source of truth — no comment, no liveness echo
-		}
+		// ISI-7454: usage digests and terminal-status transitions are raw run
+		// telemetry — live-SSE ONLY, never a durable coord.comment row. Their
+		// durable home is Run.Status.LLMInteractions (ISI-4238, the run page)
+		// plus the run lifecycle events; the ticket comment store keeps
+		// human/summary rows and settle narration only. Guard semantics above
+		// are unchanged (terminal status still bypasses pacing); this branch
+		// just falls through to the shared liveness echo below.
 	}
 	// Liveness echo (ISI-5193): the row is durable (or the deliverable just
 	// landed), so project it as a run-entity outbox event so the per-run SSE hub
@@ -287,14 +299,15 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 
 // mirrorTier classifies an event into its ISI-7099 handling tier: the WS-1
 // deliverable (a kind=deliverable message) is the run's ONE durable comment;
-// usage digests and terminal status stay kind='progress' Activity rows; every
-// other progress surface (thinking messages, tool calls) is EPHEMERAL — live
-// SSE only, never a durable coord.comment row.
+// usage digests and terminal status are LIVE-STREAM telemetry echoes only
+// (ISI-7454 — never a durable coord.comment row; Run.Status.LLMInteractions
+// is their durable home); every other progress surface (thinking messages,
+// tool calls) is EPHEMERAL — live SSE only, never a durable coord.comment row.
 type mirrorTier int
 
 const (
 	mirrorTierEphemeral   mirrorTier = iota // thinking/tool narration: live SSE echo only
-	mirrorTierProgress                      // usage digests + terminal status: durable Activity row + echo
+	mirrorTierProgress                      // usage digests + terminal status: live-SSE echo only (ISI-7454)
 	mirrorTierDeliverable                   // the WS-1 final answer: the run's one kind='summary' comment
 )
 
@@ -512,13 +525,15 @@ func mirrorBody(runID string, ev wire.Event) string {
 	return ""
 }
 
-// mirrorUsageBody renders the CR LLMInteraction "response" digest into the
-// ticket feed (ISI-5192): the same model + token summary run-detail already
-// surfaces from Run.Status.LLMInteractions (activityFromInteraction → the
-// "response" case), carried here as a parseable `[llm:response]` envelope so
-// the ticket agent-turn card can show that a model round-trip completed — a
-// signal the ticket thread otherwise never saw (only run-detail did, off the
-// CR). It is deliberately a DIGEST — model + bounded token counts, matching
+// mirrorUsageBody renders the CR LLMInteraction "response" digest onto the
+// run's LIVE event stream (ISI-5192, rescoped by ISI-7454): the same model +
+// token summary run-detail already surfaces from Run.Status.LLMInteractions
+// (activityFromInteraction → the "response" case) — that CR projection is the
+// digest's durable home. This envelope rides the live per-run SSE only, so a
+// watching board sees model round-trips complete while the ticket comment
+// store never persists raw telemetry (the 19-of-20-row flood on work item
+// 8fc6e9c9 was exactly these rows landing durably). It is deliberately a
+// DIGEST — model + bounded token counts, matching
 // what the CR LLMInteraction stores — NEVER the response TEXT (opt-in content
 // capture is hard-gated on ISI-4812). "" when the usage event carries no
 // signal worth a row (no model and no tokens), so empty churn stays silent.
