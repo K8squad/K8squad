@@ -100,6 +100,21 @@ type MeshPoolSpec struct {
 	// ProjectPVC mounts the per-Project workspace shared at
 	// WorkspaceMountPath, exactly like a claim-path sandbox pod.
 	ProjectPVC string
+	// AuthTokenSecret / AuthTokenSecretKey inject the crewai always-on pool's
+	// A2A SimpleTokenAuth bearer (ISI-7470, ISI-6547 wire contract): the
+	// crewaiRouter and the crew's standing A2A child both read AUTH_TOKEN from
+	// the pod env. This is a SHARED pool-level token, NOT a per-Agent BYO seat
+	// credential — pkg/credinject's per-(runtime,class) Bind path never runs
+	// for a mesh pod (it never Binds, no task-io Secret volume), so the token
+	// cannot ride that seam. It is injected BY REFERENCE (SecretKeySelector):
+	// the kubelet materialises it into the container and the control plane
+	// never reads the bytes, so it cannot ride WithPodEnv either (ADR-0007 —
+	// values-only). Empty Secret name leaves the pod without AUTH_TOKEN — the
+	// minimal-env invariant; only the crewai pool carries it (the composition
+	// root gates which runtime populates these — see KubeEnsurer.specFor).
+	// Empty key defaults to "token".
+	AuthTokenSecret    string
+	AuthTokenSecretKey string
 }
 
 // MeshLifecycleSpec is the declarative lifecycle knob set (RolePool.spec.
@@ -229,6 +244,29 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 	}
 	if spec.IngressURL != "" {
 		env = append(env, corev1.EnvVar{Name: "KSQUAD_SUPERVISOR_INGRESS_URL", Value: spec.IngressURL})
+	}
+	// The crewai always-on pool's A2A SimpleTokenAuth bearer (ISI-7470):
+	// AUTH_TOKEN injected BY REFERENCE via a SecretKeySelector so the kubelet
+	// materialises the token and the control plane never reads the bytes
+	// (ADR-0007 — WithPodEnv is values-only, so a secret cannot ride it).
+	// Stamped only when the operator configured a Secret — the minimal-env
+	// invariant; non-crewai pools leave AuthTokenSecret empty and never carry
+	// it. The crew's standing A2A child inherits it from the pod env the same
+	// way every mesh child env stamp wins (LocalHost appends onto os.Environ).
+	if spec.AuthTokenSecret != "" {
+		key := spec.AuthTokenSecretKey
+		if key == "" {
+			key = "token"
+		}
+		env = append(env, corev1.EnvVar{
+			Name: "AUTH_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: spec.AuthTokenSecret},
+					Key:                  key,
+				},
+			},
+		})
 	}
 	// The operator's OTLP passthrough reaches the gateway the same way it
 	// reaches sandbox supervisors (values only — minimal-env invariant).

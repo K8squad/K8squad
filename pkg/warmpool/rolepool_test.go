@@ -438,3 +438,68 @@ func TestKubeEnsurer_UnknownRuntimeTypeFailsBoot(t *testing.T) {
 		t.Fatalf("a pool with no resolvable image must fail closed, never boot a wrong-shaped pod")
 	}
 }
+
+// The crewai pool's A2A AUTH_TOKEN Secret (ISI-7470) is stamped by reference
+// onto the crewai pod ONLY — a non-crewai pool with the same KubeEnsurer wiring
+// never carries it, keeping the shared pool token scoped to the one runtime
+// whose router + standing child read it.
+func TestKubeEnsurer_CrewAIAuthTokenScoped(t *testing.T) {
+	authSecretRef := func(t *testing.T, pod *corev1.Pod) (string, string) {
+		t.Helper()
+		for _, e := range pod.Spec.Containers[0].Env {
+			if e.Name == "AUTH_TOKEN" && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+				return e.ValueFrom.SecretKeyRef.Name, e.ValueFrom.SecretKeyRef.Key
+			}
+		}
+		return "", ""
+	}
+	newEnsurer := func(k *warmpool.KubeProvisioner) *warmpool.KubeEnsurer {
+		return &warmpool.KubeEnsurer{
+			Provisioner:              k,
+			ImageFor:                 func(rt string) string { return "ghcr.io/k8squad/shim-" + rt + ":dev" },
+			PodNS:                    "ksquad-sandbox",
+			CrewAIAuthTokenSecret:    "crewai-a2a-token",
+			CrewAIAuthTokenSecretKey: "token",
+		}
+	}
+
+	t.Run("crewai-stamped", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := newEnsurer(k).EnsurePool(context.Background(), agentmesh.PoolPlan{
+			Team: "team-acme", Name: "crew", Role: "crew",
+			Envelope: agentmesh.Envelope{RuntimeType: "crewai"},
+			Min:      1, Max: 1,
+		}); err != nil {
+			t.Fatalf("EnsurePool: %v", err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{
+			Namespace: "ksquad-sandbox", Name: warmpool.MeshPoolPodName("team-acme", "crew"),
+		}, &pod); err != nil {
+			t.Fatalf("get pod: %v", err)
+		}
+		if name, key := authSecretRef(t, &pod); name != "crewai-a2a-token" || key != "token" {
+			t.Fatalf("crewai AUTH_TOKEN SecretKeyRef = (%q,%q), want (crewai-a2a-token,token)", name, key)
+		}
+	})
+
+	t.Run("non-crewai-omits", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := newEnsurer(k).EnsurePool(context.Background(), agentmesh.PoolPlan{
+			Team: "team-acme", Name: "coder", Role: "coder",
+			Envelope: agentmesh.Envelope{RuntimeType: "codex"},
+			Min:      1, Max: 1,
+		}); err != nil {
+			t.Fatalf("EnsurePool: %v", err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{
+			Namespace: "ksquad-sandbox", Name: warmpool.MeshPoolPodName("team-acme", "coder"),
+		}, &pod); err != nil {
+			t.Fatalf("get pod: %v", err)
+		}
+		if name, _ := authSecretRef(t, &pod); name != "" {
+			t.Fatalf("non-crewai pool carried AUTH_TOKEN Secret %q; must be crewai-scoped", name)
+		}
+	})
+}
