@@ -186,10 +186,19 @@ func (d *ProdDispatcher) ReadHandoff(ctx context.Context, sourceWorkItemID strin
 		return v, fmt.Errorf("coord.ReadHandoff: read item: %w", err)
 	}
 
+	// ISI-7457: the handoff record the next agent/coordinator reads is the
+	// human/summary conversation, not the completing run's ProgressMirror
+	// firehose. Passing the [run …][tool/[status/[llm:response] telemetry
+	// forward (18/20 of a busy run's rows, ISI-7454) buries the real handoff
+	// signal in the downstream context. Exclude it on the same two axes the
+	// ticket thread uses (0042 kind + the `[run ` mirror-prefix guard for a
+	// mis-tagged row).
 	rows, err := d.db.QueryContext(ctx, `
 		SELECT author_principal, body, created_at::text
 		  FROM coord.comment
 		 WHERE work_item_id = $1::uuid
+		   AND kind IN ('human', 'summary')
+		   AND body NOT LIKE '[run %'
 		 ORDER BY created_at, id`, sourceWorkItemID)
 	if err != nil {
 		return v, fmt.Errorf("coord.ReadHandoff: comments: %w", err)
