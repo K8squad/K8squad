@@ -37,9 +37,7 @@ type mirrorFixture struct {
 	got         []string            // "workItem|author|body" per appended progress row
 	summaries   []string            // "workItem|author|runID|body" per deliverable summary (ISI-7099)
 	published   []publishedThinking // liveness echoes (ISI-5193), in order
-	failOn      int                 // append calls >= failOn fail (0 = never)
 	failSummary int                 // appendSummary calls >= failSummary fail (0 = never)
-	calls       int
 	sumCalls    int
 }
 
@@ -70,16 +68,6 @@ func newMirrorFixture(t *testing.T) *mirrorFixture {
 	}
 	m.lookup = func(context.Context, string) (string, error) {
 		return "11111111-1111-1111-1111-111111111111", nil
-	}
-	m.append = func(_ context.Context, workItemID, author, runID, body string) error {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.calls++
-		if f.failOn != 0 && f.calls >= f.failOn {
-			return errors.New("append boom")
-		}
-		f.got = append(f.got, workItemID+"|"+author+"|"+body)
-		return nil
 	}
 	m.appendSummary = func(_ context.Context, workItemID, author, runID, body string) error {
 		f.mu.Lock()
@@ -141,12 +129,15 @@ func statusEv(seq uint64, task string, state wire.TaskState) wire.Event {
 		Payload: wire.StatusPayload{State: state}}
 }
 
-// TestProgressMirrorWritesIncrementalComments is the ISI-4235 AC, rescoped
-// by ISI-7099: the DURABLE progress surface (usage digests, terminal status)
-// still lands incrementally as kind='progress' Activity rows while the run
-// executes — while thinking text and tool calls are EPHEMERAL (echoed to the
-// live run SSE only, zero durable rows).
-func TestProgressMirrorWritesIncrementalComments(t *testing.T) {
+// TestProgressMirrorTelemetryIsLiveOnly is the ISI-4235 AC, rescoped by
+// ISI-7099 and again by ISI-7454: NOTHING the mirror sees becomes a durable
+// coord.comment row except the run's ONE deliverable summary — thinking text,
+// tool calls, usage digests and terminal status are all LIVE-SSE echoes only.
+// Raw run telemetry (the [llm:response] token digests and [status] transitions
+// that flooded 19-of-20 rows on work item 8fc6e9c9, run f4d45f5b) never lands
+// in the ticket comment store; its durable home is Run.Status.LLMInteractions
+// plus the run lifecycle events.
+func TestProgressMirrorTelemetryIsLiveOnly(t *testing.T) {
 	f := newMirrorFixture(t)
 	ctx := context.Background()
 	task := "9952db54-0000-0000-0000-000000000000"
@@ -163,32 +154,28 @@ func TestProgressMirrorWritesIncrementalComments(t *testing.T) {
 		}
 	}
 
-	// Ephemeral tier: message + tool produce NO durable rows, only echoes.
-	got := f.comments()
-	if len(got) != 2 {
-		t.Fatalf("appended %d durable rows, want 2 (usage + terminal status): %v", len(got), got)
-	}
-	if !strings.Contains(got[0], "[llm:response] qwen") {
-		t.Fatalf("usage digest row wrong: %q", got[0])
-	}
-	if !strings.Contains(got[1], "[status] completed") {
-		t.Fatalf("terminal status row wrong: %q", got[1])
-	}
-	for _, c := range got {
-		parts := strings.SplitN(c, "|", 3)
-		if parts[0] != "11111111-1111-1111-1111-111111111111" {
-			t.Fatalf("row not on the dispatch-marker work item: %q", c)
-		}
-		if parts[1] != "run/9952db54" {
-			t.Fatalf("author not run-provenanced: %q", parts[1])
-		}
-		if !strings.HasPrefix(parts[2], "[run 9952db54]") {
-			t.Fatalf("body lacks the short-run prefix: %q", parts[2])
-		}
+	// ISI-7454: zero durable rows from ANY tier above — the comment store is
+	// human/summary territory (plus settle narration).
+	if got := f.comments(); len(got) != 0 {
+		t.Fatalf("appended %d durable rows, want 0 (telemetry is live-only): %v", len(got), got)
 	}
 	echoes := f.echoes()
 	if len(echoes) != 4 {
-		t.Fatalf("published %d echoes, want 4 (2 ephemeral + 2 durable): %d", len(echoes), len(echoes))
+		t.Fatalf("published %d echoes, want 4 (msg + tool + usage + status): %d", len(echoes), len(echoes))
+	}
+	if !strings.Contains(string(echoes[2].payload), "[llm:response] qwen · 15 tok (10 in / 5 out)") {
+		t.Fatalf("usage digest echo missing: %s", echoes[2].payload)
+	}
+	if !strings.Contains(string(echoes[3].payload), "[status] completed") {
+		t.Fatalf("terminal status echo missing: %s", echoes[3].payload)
+	}
+	for _, e := range echoes {
+		if e.runID != task {
+			t.Fatalf("echo run id = %q, want full run id %q", e.runID, task)
+		}
+		if e.workItemID != "11111111-1111-1111-1111-111111111111" {
+			t.Fatalf("echo not on the dispatch-marker work item: %+v", e)
+		}
 	}
 	if !strings.Contains(string(echoes[0].payload), "Reading the repo layout") ||
 		!strings.Contains(string(echoes[1].payload), "[tool:shell/start]") {
@@ -407,10 +394,16 @@ func TestProgressMirrorFloodGuardDropsButTerminalLands(t *testing.T) {
 	if got := f.echoes(); len(got) != 1 {
 		t.Fatalf("ephemeral pacing failed: %d echoes, want 1: %+v", len(got), got)
 	}
+	// ISI-7454: terminal status bypasses every guard — its LIVE echo must land
+	// even inside the stretched window (the run's outcome is never dropped) —
+	// and it still writes no durable row.
 	_ = f.m.Event(ctx, statusEv(4, task, wire.TaskCompleted))
-	got := f.comments()
-	if len(got) != 1 || !strings.Contains(got[0], "[status] completed") {
-		t.Fatalf("terminal event must bypass the flood guard: %v", got)
+	echoes := f.echoes()
+	if len(echoes) != 2 || !strings.Contains(string(echoes[1].payload), "[status] completed") {
+		t.Fatalf("terminal event must bypass the flood guard: %+v", echoes)
+	}
+	if got := f.comments(); len(got) != 0 {
+		t.Fatalf("terminal status must not append a durable row (ISI-7454): %v", got)
 	}
 	// The deliverable bypasses every guard (ISI-7099: today the final answer
 	// is droppable — that latent bug is the reason it is exempt).
@@ -425,11 +418,11 @@ func TestProgressMirrorFloodGuardDropsButTerminalLands(t *testing.T) {
 // mirroring is strictly best-effort.
 func TestProgressMirrorSwallowsOwnFailures(t *testing.T) {
 	f := newMirrorFixture(t)
-	f.failOn = 1 // every append fails
+	f.failSummary = 1 // every appendSummary fails (ISI-7454: the only durable write left)
 	ctx := context.Background()
 
-	if err := f.m.Event(ctx, msgEv(1, "r3", "text")); err != nil {
-		t.Fatalf("append failure surfaced: %v", err)
+	if err := f.m.Event(ctx, deliverableEv(1, "r3", "the answer")); err != nil {
+		t.Fatalf("appendSummary failure surfaced: %v", err)
 	}
 	// Lookup failure path: rebind lookup to error, new task id.
 	f.m.lookup = func(context.Context, string) (string, error) {
@@ -501,32 +494,34 @@ func TestProgressMirrorPublishesLivenessEcho(t *testing.T) {
 }
 
 // TestProgressMirrorNoEchoWhenCommentFails: the liveness echo is strictly
-// secondary to the DURABLE row — if the progress/summary write fails there
-// is no row to be live about, so no run event is published (the reload thread
-// is the source of truth). The ephemeral thinking tier has no durable row to
-// guard, so its echo fires without one (ISI-7099).
+// secondary to the DURABLE row — if the summary write fails there is no row
+// to be live about, so no run event is published (the reload thread is the
+// source of truth). The live-only tiers (thinking since ISI-7099; usage and
+// status telemetry since ISI-7454) have no durable row to guard, so their
+// echoes fire without one.
 func TestProgressMirrorNoEchoWhenCommentFails(t *testing.T) {
 	f := newMirrorFixture(t)
 	ctx := context.Background()
 	task := "9952db54-0000-0000-0000-000000000000"
 
-	f.failOn = 1
+	// ISI-7454: usage digests are live-only — no durable write exists to
+	// fail, so the echo fires unconditionally.
 	_ = f.m.Event(ctx, wire.Event{Seq: 1, A2ATaskID: task, Type: wire.EventUsage,
 		Payload: wire.UsagePayload{Model: "qwen", Input: 1, Output: 1}})
-	if echoes := f.echoes(); len(echoes) != 0 {
-		t.Fatalf("published %d echoes despite a failed progress write, want 0", len(echoes))
+	if echoes := f.echoes(); len(echoes) != 1 {
+		t.Fatalf("published %d echoes for live-only usage, want 1", len(echoes))
 	}
 
 	f.failSummary = 1
 	_ = f.m.Event(ctx, deliverableEv(2, task, "answer"))
-	if echoes := f.echoes(); len(echoes) != 0 {
-		t.Fatalf("published %d echoes despite a failed summary write, want 0", len(echoes))
+	if echoes := f.echoes(); len(echoes) != 1 {
+		t.Fatalf("published %d echoes despite a failed summary write, want no new one", len(echoes))
 	}
 
 	// Ephemeral thinking has no durable dependency — the echo fires anyway.
 	_ = f.m.Event(ctx, msgEv(3, task, "thinking aloud"))
-	if echoes := f.echoes(); len(echoes) != 1 {
-		t.Fatalf("published %d echoes after thinking, want 1 (ephemeral)", len(echoes))
+	if echoes := f.echoes(); len(echoes) != 2 {
+		t.Fatalf("published %d echoes after thinking, want 2 (usage + thinking)", len(echoes))
 	}
 }
 
@@ -578,25 +573,34 @@ func TestProgressMirrorMirrorsResponseDigest(t *testing.T) {
 
 	_ = f.m.Event(ctx, wire.Event{Seq: 1, A2ATaskID: task, Type: wire.EventUsage,
 		Payload: wire.UsagePayload{Model: "qwen", Input: 100, Output: 23}})
-	got := f.comments()
-	if len(got) != 1 {
-		t.Fatalf("usage digest: %d comments, want 1: %v", len(got), got)
+	if got := f.comments(); len(got) != 0 {
+		t.Fatalf("usage digest must not append durable rows (ISI-7454): %v", got)
 	}
-	body := strings.SplitN(got[0], "|", 3)[2]
-	if body != "[run r9][llm:response] qwen · 123 tok (100 in / 23 out)" {
-		t.Fatalf("digest body = %q", body)
+	echoes := f.echoes()
+	if len(echoes) != 1 {
+		t.Fatalf("usage digest: %d echoes, want 1: %+v", len(echoes), echoes)
+	}
+	var p thinkingPayload
+	if err := json.Unmarshal(echoes[0].payload, &p); err != nil {
+		t.Fatalf("digest echo payload not valid JSON: %v", err)
+	}
+	if p.Body != "[run r9][llm:response] qwen · 123 tok (100 in / 23 out)" {
+		t.Fatalf("digest body = %q", p.Body)
 	}
 
 	// An empty-model runtime (ISI-4412) still reports token-bearing usage: the
 	// digest falls back to a generic model label rather than dropping the signal.
 	_ = f.m.Event(ctx, wire.Event{Seq: 2, A2ATaskID: task, Type: wire.EventUsage,
 		Payload: wire.UsagePayload{Input: 5, Output: 0}})
-	got = f.comments()
-	if len(got) != 2 {
-		t.Fatalf("empty-model digest: %d comments, want 2: %v", len(got), got)
+	echoes = f.echoes()
+	if len(echoes) != 2 {
+		t.Fatalf("empty-model digest: %d echoes, want 2: %+v", len(echoes), echoes)
 	}
-	if body := strings.SplitN(got[1], "|", 3)[2]; body != "[run r9][llm:response] model · 5 tok (5 in / 0 out)" {
-		t.Fatalf("empty-model digest body = %q", body)
+	if err := json.Unmarshal(echoes[1].payload, &p); err != nil {
+		t.Fatalf("empty-model echo payload not valid JSON: %v", err)
+	}
+	if p.Body != "[run r9][llm:response] model · 5 tok (5 in / 0 out)" {
+		t.Fatalf("empty-model digest body = %q", p.Body)
 	}
 }
 
@@ -634,8 +638,9 @@ func TestProgressMirrorGenericJSONPayloads(t *testing.T) {
 
 // TestProgressMirrorConcurrentRuns: one shared mirror instance serves every
 // followed Run — concurrent event streams must not interleave their dedup
-// state incorrectly (goes-with-race). Uses durable usage rows so assertions
-// do not race the relaxed ephemeral pacing (ISI-7099).
+// state incorrectly (goes-with-race). Uses usage digests — live-only since
+// ISI-7454 — asserted via the synchronous publish seam, so nothing races the
+// relaxed ephemeral pacing.
 func TestProgressMirrorConcurrentRuns(t *testing.T) {
 	f := newMirrorFixture(t)
 	ctx := context.Background()
@@ -656,21 +661,24 @@ func TestProgressMirrorConcurrentRuns(t *testing.T) {
 	// The exact count is timing-dependent, so assert only a non-empty, deduped
 	// result: every appended body carries its own run prefix and no task wrote
 	// more than 25.
-	got := f.comments()
-	if len(got) == 0 {
-		t.Fatal("no comments appended under concurrency")
+	// ISI-7454: usage digests are live-only — assert on the published echoes
+	// (the fixture's publish seam is synchronous, so this does not race).
+	echoes := f.echoes()
+	if len(echoes) == 0 {
+		t.Fatal("no echoes published under concurrency")
 	}
 	seen := map[string]int{}
-	for _, c := range got {
-		parts := strings.SplitN(c, "|", 3)
-		if len(parts) != 3 {
-			t.Fatalf("comment not workItem|author|body: %q", c)
+	for _, e := range echoes {
+		var p thinkingPayload
+		if err := json.Unmarshal(e.payload, &p); err != nil {
+			t.Fatalf("echo payload not valid JSON: %v", err)
 		}
-		prefix := strings.TrimSuffix(strings.TrimPrefix(parts[2], "[run "), "]…")
-		prefix = strings.SplitN(prefix, "]", 2)[0]
-		seen[prefix]++
-		if seen[prefix] > 25 {
-			t.Fatalf("run %s appended %d comments — dedup broken", prefix, seen[prefix])
+		if p.RunID == "" {
+			t.Fatalf("echo missing run id: %+v", e)
+		}
+		seen[p.RunID]++
+		if seen[p.RunID] > 25 {
+			t.Fatalf("run %s published %d echoes — dedup broken", p.RunID, seen[p.RunID])
 		}
 	}
 }
