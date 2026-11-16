@@ -466,7 +466,7 @@ var allowedSurface = map[string]string{
 	"AppendProgress":                        "§6.1 append a provenanced kind='progress' coord.comment (ISI-7094) — a run sub-step the ProgressMirror mirrors; stored but excluded from the default thread, author/run server-supplied; not an agent-to-agent channel",
 	"AppendSummary":                         "§6.1 append a provenanced kind='summary' coord.comment (ISI-7094) — the run's single end-of-run recap settle counts toward the exactly-one-summary invariant, author/run server-supplied; not an agent-to-agent channel",
 	"LiveCommentEventType":                  "§6.6/ISI-7274 the `ticket_comment` outbox event_type of the durable-comment liveness echo — a projection row the apiserver run-event projector fans to the per-run SSE hub so the ticket page materializes the final comment live; transient liveness signal, never a write or an agent-to-agent channel",
-	"LiveCommentEcho":                      "§6.6/ISI-7274 the payload envelope of the `ticket_comment` echo — the durable coord.comment triple (author/body/at) plus workItemId/runId/kind, a read projection of an already-committed row; not an agent-to-agent channel",
+	"LiveCommentEcho":                       "§6.6/ISI-7274 the payload envelope of the `ticket_comment` echo — the durable coord.comment triple (author/body/at) plus workItemId/runId/kind, a read projection of an already-committed row; not an agent-to-agent channel",
 	"CaptureLiveCommentEcho":                "§6.6/ISI-7274 best-effort post-commit capture of the `ticket_comment` echo onto coord.outbox (ISI-7274): a liveness projection of a DURABLE comment that already committed — never a dispatch, never a lane change, never an agent-to-agent channel (the durable row stays §6.1's record; a lost echo costs liveness only)",
 	"ReadRunActivity":                       "§6.1 read the kind='progress' rows (run sub-steps) the default thread excludes (ISI-7094) — the console per-run Activity feed backing query, read-only",
 	"TaskDetail":                            "§6.1 the richer work-item read projection (title/body/state/comments/fence, read-only)",
@@ -591,18 +591,19 @@ var allowedSurface = map[string]string{
 	// ADR-0020 (ISI-4348-S1) durable a2a follow-settlement marker: a custody
 	// annotation on coord.a2a_dispatch + its §6.5 audit, NOT an agent-to-agent
 	// channel — settlement is a post-terminal marker on the follow goroutine.
-	"ProdSettler":                         "ADR-0020 §2.2 durable a2a follow-settlement writer bound to coord.a2a_dispatch",
-	"NewProdSettleWriter":                 "ADR-0020 §2.2 constructor (follow-settlement marker writer)",
-	"ProdSettler.Settle":                  "ADR-0020 §2.2 at-most-once settled_at/settle_outcome marker + a2a_settled audit (§6.5)",
-	"ProdSettleReader":                    "ADR-0020 §2.3 durable follow-settlement reader for the restart-safe reaper (ISI-4348-S2)",
-	"NewProdSettleReader":                 "ADR-0020 §2.3 constructor (follow-settlement marker reader)",
-	"ProdSettleReader.Settled":            "ADR-0020 §2.3 indexed EXISTS over idx_a2a_dispatch_settled: has this run's follow settled?",
-	"ProdSettleReader.SettledForWorkItem": "ADR-0020 §2.4 (ISI-4403) S3 read path: (dispatched, settled) by work_item_id for the Run status finalize-window hold",
-	"ProdSettleReader.RunFollowOutcome":   "ISI-4435 latest-lap (dispatched, settled, outcome) by run_id for the drive-loop terminal gate + death-path guard (read-only, no content)",
-	"A2AFollowGateOpen":                   "ISI-4435 pure predicate: may the terminal collecting→succeeded advance commit given the latest lap's settlement (custody decision, no content)",
-	"SettleOutcomeSucceeded":              "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
-	"SettleOutcomeFailed":                 "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
-	"SettleOutcomeFollowError":            "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"ProdSettler":                              "ADR-0020 §2.2 durable a2a follow-settlement writer bound to coord.a2a_dispatch",
+	"NewProdSettleWriter":                      "ADR-0020 §2.2 constructor (follow-settlement marker writer)",
+	"ProdSettler.Settle":                       "ADR-0020 §2.2 at-most-once settled_at/settle_outcome marker + a2a_settled audit (§6.5)",
+	"ProdSettleReader":                         "ADR-0020 §2.3 durable follow-settlement reader for the restart-safe reaper (ISI-4348-S2)",
+	"NewProdSettleReader":                      "ADR-0020 §2.3 constructor (follow-settlement marker reader)",
+	"ProdSettleReader.Settled":                 "ADR-0020 §2.3 indexed EXISTS over idx_a2a_dispatch_settled: has this run's follow settled?",
+	"ProdSettleReader.SettledForWorkItem":      "ADR-0020 §2.4 (ISI-4403) S3 read path: (dispatched, settled) by work_item_id for the Run status finalize-window hold",
+	"ProdSettleReader.RunFollowOutcome":        "ISI-4435 latest-lap (dispatched, settled, outcome) by run_id for the drive-loop terminal gate + death-path guard (read-only, no content)",
+	"ProdSettleReader.FailureCauseForWorkItem": "ISI-7498 WS-A terminal-failure cause by work_item_id (a2a settle outcome, else gone-sandbox reap reason) for the Run status Failed message (read-only, no agent-to-agent content)",
+	"A2AFollowGateOpen":                        "ISI-4435 pure predicate: may the terminal collecting→succeeded advance commit given the latest lap's settlement (custody decision, no content)",
+	"SettleOutcomeSucceeded":                   "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"SettleOutcomeFailed":                      "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"SettleOutcomeFollowError":                 "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
 
 	// ADR-0020 §5(a) (ISI-4348-S4) leader-elect follow re-attach read side: a
 	// read-only lookup of unsettled dispatch laps whose follow must be re-opened

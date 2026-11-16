@@ -66,11 +66,11 @@ const (
 	// credential type(s) are not materialized for the project. Normalizes to the
 	// apiserver credentialHoldReasons token "credentialrequired".
 	reasonCredentialRequired = "CredentialRequired"
-	reasonCancelling        = "Cancelling"
-	reasonSucceeded         = "Succeeded"
-	reasonFailed            = "Failed"
-	reasonCancelled         = "Cancelled"
-	reasonUnknownStep       = "UnknownStep"
+	reasonCancelling         = "Cancelling"
+	reasonSucceeded          = "Succeeded"
+	reasonFailed             = "Failed"
+	reasonCancelled          = "Cancelled"
+	reasonUnknownStep        = "UnknownStep"
 )
 
 // PhaseOf bridges the reconcile machine's coarse Phase (pkg/reconcile) onto the
@@ -115,7 +115,7 @@ func PhaseOf(step reconcile.Step) api.RunPhase {
 // from the clock) so the LastTransitionTime is deterministic in tests and stable
 // across a no-op requeue.
 func ProjectStatus(current api.RunStatus, step reconcile.Step, generation int64, now metav1.Time) api.RunStatus {
-	return ProjectStatusWithPause(current, step, generation, now, nil)
+	return projectStatus(current, step, generation, now, nil, "")
 }
 
 // PauseDetail is the per-credential attribution snapshot the credential pause
@@ -179,10 +179,25 @@ func (d PauseDetail) GateMessage() string {
 // so a stale snapshot can never fabricate a hold the durable step does not
 // command (status stays downstream of the step, AC2).
 func ProjectStatusWithPause(current api.RunStatus, step reconcile.Step, generation int64, now metav1.Time, detail *PauseDetail) api.RunStatus {
+	return projectStatus(current, step, generation, now, detail, "")
+}
+
+// ProjectStatusWithFailureCause is ProjectStatus with the ISI-7498 WS-A terminal-
+// failure attribution: when step is StepFailed and failCause is non-empty, the
+// Ready condition's Message names the concrete cause (the a2a settle outcome, or
+// the gone-sandbox reason) instead of the static "Run reached a terminal failure",
+// so a failed seat is legible on the CR without DB access. failCause is ignored
+// for every non-Failed step — status stays downstream of the durable step (AC2),
+// so a stale cause can never fabricate a failure the step does not command.
+func ProjectStatusWithFailureCause(current api.RunStatus, step reconcile.Step, generation int64, now metav1.Time, failCause string) api.RunStatus {
+	return projectStatus(current, step, generation, now, nil, failCause)
+}
+
+func projectStatus(current api.RunStatus, step reconcile.Step, generation int64, now metav1.Time, detail *PauseDetail, failCause string) api.RunStatus {
 	out := *current.DeepCopy()
 	out.Phase = PhaseOf(step)
 	out.ObservedGeneration = generation
-	meta.SetStatusCondition(&out.Conditions, readyCondition(step, generation, now, detail))
+	meta.SetStatusCondition(&out.Conditions, readyCondition(step, generation, now, detail, failCause))
 	return out
 }
 
@@ -193,7 +208,9 @@ func ProjectStatusWithPause(current api.RunStatus, step reconcile.Step, generati
 // legible on its own — rate-limit vs credential expiry vs rotation vs endpoint
 // — and, when the reconciler supplies the per-credential detail, the message is
 // the 7.6 operator string with the attributed credential and resume horizon.
-func readyCondition(step reconcile.Step, generation int64, now metav1.Time, detail *PauseDetail) metav1.Condition {
+// failCause, when non-empty on StepFailed, names the concrete terminal-failure
+// cause (ISI-7498 WS-A); it is inert on every other step.
+func readyCondition(step reconcile.Step, generation int64, now metav1.Time, detail *PauseDetail, failCause string) metav1.Condition {
 	c := metav1.Condition{
 		Type:               ConditionReady,
 		ObservedGeneration: generation,
@@ -207,7 +224,7 @@ func readyCondition(step reconcile.Step, generation int64, now metav1.Time, deta
 	case reconcile.StepFailed:
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonFailed
-		c.Message = "Run reached a terminal failure"
+		c.Message = failedMessage(failCause)
 	case reconcile.StepCancelled:
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonCancelled
@@ -266,6 +283,18 @@ func readyCondition(step reconcile.Step, generation int64, now metav1.Time, deta
 		c.Message = "Run reconcile_step is not recognised by this controller"
 	}
 	return c
+}
+
+// failedMessage renders the StepFailed Ready message (ISI-7498 WS-A): the
+// concrete, attributed cause when the reconciler resolved one from coord, else
+// the generic terminal-failure string. The condition is never empty and never
+// invents a cause it was not given (status stays downstream of the durable
+// step, AC2).
+func failedMessage(cause string) string {
+	if cause == "" {
+		return "Run reached a terminal failure"
+	}
+	return "Run failed: " + cause
 }
 
 // pauseMessage prefers the attributed operator string (7.6) and falls back to

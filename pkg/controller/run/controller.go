@@ -89,6 +89,24 @@ type SettleSource interface {
 	SettledForWorkItem(ctx context.Context, workItemID string) (dispatched, settled bool, err error)
 }
 
+// FailureCauseSource resolves the concrete terminal-failure cause for a work item
+// (ISI-7498 WS-A), so a failed Run's Ready condition names WHY it failed instead
+// of the static "Run reached a terminal failure". The production implementation
+// is pkg/coord.ProdSettleReader.FailureCauseForWorkItem, which reads the two
+// causes already durable in coord: the latest a2a settle outcome
+// (coord.a2a_dispatch.settle_outcome) and, failing that, the gone-sandbox reason
+// (coord.audit_log event_type='sandbox_bind_cleared').
+//
+// Nil disables the attribution — the projector then falls back to the generic
+// terminal-failure message, so a deployment wired without this reader is strictly
+// non-regressing. It is consulted ONLY when the durable step is StepFailed.
+type FailureCauseSource interface {
+	// FailureCauseForWorkItem returns a short, human-legible terminal-failure
+	// cause for a Run's spec.workItemRef, or "" when none is durably recorded
+	// (the projector then uses the generic message).
+	FailureCauseForWorkItem(ctx context.Context, workItemID string) (cause string, err error)
+}
+
 // Clock returns the timestamp stamped onto condition transitions. It is a field
 // so tests pin it and a no-op requeue produces byte-identical status.
 type Clock func() metav1.Time
@@ -119,6 +137,10 @@ type Reconciler struct {
 	// (pre-S3 behaviour), which is why it is a separate opt-in seam, not folded
 	// into StepSource.
 	Settlement SettleSource
+	// FailureCause resolves the concrete cause of a terminal failure so the
+	// StepFailed Ready message names it (ISI-7498 WS-A). Nil disables the
+	// attribution (generic message), like Settlement — opt-in and non-regressing.
+	FailureCause FailureCauseSource
 	// Now defaults to metav1.Now when nil.
 	Now Clock
 	// RBAC renders the per-Run toolchain Role union. Nil disables the
@@ -227,6 +249,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	desired := ProjectStatus(runObj.Status, step, runObj.Generation, now)
+
+	// ISI-7498 WS-A: a failed Run's Ready message should name the concrete cause
+	// (the a2a settle outcome, or the gone-sandbox reason) so a failed seat is
+	// legible on the CR without DB access. Consulted only at StepFailed and only
+	// when a reader is wired; an empty cause falls back to the generic message.
+	// Fail-closed on a read error — the projector requeues rather than stamp a
+	// terminal condition it could not attribute.
+	if step == reconcile.StepFailed && r.FailureCause != nil {
+		cause, cerr := r.FailureCause.FailureCauseForWorkItem(ctx, runObj.Spec.WorkItemRef)
+		if cerr != nil {
+			return ctrl.Result{}, fmt.Errorf("read failure cause for run %s: %w", req.NamespacedName, cerr)
+		}
+		desired = ProjectStatusWithFailureCause(runObj.Status, step, runObj.Generation, now, cause)
+	}
 
 	// ISI-5542: a terminal Run phase is ABSORBING — the projector must never move
 	// a Run CR off Succeeded/Failed/Cancelled. The projection is keyed on the

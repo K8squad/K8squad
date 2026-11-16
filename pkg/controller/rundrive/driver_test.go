@@ -1043,6 +1043,117 @@ func TestFollowFailedStillTakesDeathPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ISI-7498 WS-A: infra-class retry budget on intake-minted (nil-policy) Runs
+// ---------------------------------------------------------------------------
+
+// TestInfraDeathRetriesOnNilPolicy: the live incident shape — an intake-minted
+// Run (NO spec.retryPolicy) whose sandbox was reaped across an operator restart.
+// Its follow never settled `failed` (here: never dispatched — the parked
+// slot-waiter), so the death is INFRA-class and the defaultInfraRetries budget
+// must turn pass one into a RetryEnter, NOT the zero-budget terminal FailEnter
+// that killed seats pre-fix. maxRetries(run)==0 alone would terminal-fail here.
+func TestInfraDeathRetriesOnNilPolicy(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001") // intake-minted: nil RetryPolicy
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepDispatching, Fence: 4, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAgo(time.Minute), ItemState: "in_progress"},
+		laps: 0, retryOK: true, retryNewFence: 5}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: false} // never dispatched ⇒ infra, not a business failure
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("infra death drive: %v", err)
+	}
+	if rq == 0 {
+		t.Fatal("infra retry lap must requeue on backoff")
+	}
+	if len(claims.retryCalls) != 1 {
+		t.Fatalf("infra death must RetryEnter within the default budget: retry=%v", claims.retryCalls)
+	}
+	if claims.failCall {
+		t.Fatal("infra death must NOT terminal-fail a queued seat on the first pass (ISI-7498)")
+	}
+}
+
+// TestBusinessFailureTerminalOnNilPolicy: the guardrail — a CLEAN business
+// failure (the agent's follow settled `failed`) on a nil-policy Run keeps the
+// pre-ISI-7498 semantics: terminal FailEnter on the first death, never a blind
+// re-dispatch of a deterministic task failure. Only the explicit-policy path
+// (TestFollowFailedStillTakesDeathPath) retries a settled-failed follow.
+func TestBusinessFailureTerminalOnNilPolicy(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001") // nil RetryPolicy
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepCollecting, Fence: 2, Holder: "a", RunID: uid,
+		LeaseExpiresAt: leaseAgo(time.Minute), ItemState: "in_progress"},
+		laps: 0, failOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFailed}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("business failure drive: %v", err)
+	}
+	if !claims.failCall {
+		t.Fatal("clean business failure on a nil-policy run must terminal-fail (current semantics preserved)")
+	}
+	if len(claims.retryCalls) != 0 {
+		t.Fatalf("business failure must NOT consume an infra retry lap: retry=%v", claims.retryCalls)
+	}
+}
+
+// TestFollowErrorRetriesOnNilPolicy: a follow_error (broken SSE/transport — NOT
+// proof the agent finished) is INFRA-class, so a nil-policy Run retries it
+// rather than terminal-failing, same as a no-settlement death.
+func TestFollowErrorRetriesOnNilPolicy(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepRunning, Fence: 3, Holder: "a", RunID: uid,
+		LeaseExpiresAt: leaseAgo(time.Minute), ItemState: "in_progress"},
+		laps: 0, retryOK: true, retryNewFence: 4}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFollowError}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("follow_error death drive: %v", err)
+	}
+	if len(claims.retryCalls) != 1 || claims.failCall {
+		t.Fatalf("follow_error death must retry (infra), not fail: retry=%v fail=%v", claims.retryCalls, claims.failCall)
+	}
+}
+
+// TestNilSettleKeepsZeroBudget: with NO follow reader wired (ledger-only /
+// non-a2a runs, and the existing unit harness), a nil-policy death keeps the
+// deterministic zero-retry behaviour — the infra default is opt-in on the
+// Settle seam, exactly like followSucceeded.
+func TestNilSettleKeepsZeroBudget(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepRunning, Fence: 2, Holder: "a", RunID: uid,
+		LeaseExpiresAt: leaseAgo(time.Minute), ItemState: "in_progress"},
+		laps: 0, failOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	d.Sandbox = &fakeReleaser{} // d.Settle intentionally nil
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("nil-settle death drive: %v", err)
+	}
+	if !claims.failCall || len(claims.retryCalls) != 0 {
+		t.Fatalf("nil Settle must keep zero budget (terminal fail): retry=%v fail=%v", claims.retryCalls, claims.failCall)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ISI-5037: per-BYO-endpoint serialization gate
 // ---------------------------------------------------------------------------
 
