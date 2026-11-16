@@ -18,8 +18,14 @@ package rundrive
 
 import (
 	"errors"
+	"math"
+	"strconv"
 	"sync"
 	"time"
+
+	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // endpoint_gate.go — the per-BYO-endpoint serialization gate (ISI-5037).
@@ -47,6 +53,19 @@ import (
 // (a fresh Run acquiring between leader-elect and re-attach) degrades to the
 // pre-gate behavior — the loser waits or the reaper cleans up — never to a
 // wrong execution.
+//
+// Priority-ordered admission (ISI-7499): a queued run is admitted not by
+// wait time alone but by its PriorityKey — work-item class first (issue /
+// board work ranks above discussion / party work), then the work item's
+// numeric priority, then the durable FIFO wait-start as the final,
+// starvation-free tiebreak. Every component of the key is a durable Run-CR
+// fact (label, annotation, condition timestamp), so a restart rebuilds the
+// exact queue order: reattach jitter can never reorder runs across classes
+// or priorities, and equal-key runs keep their wait-start order (ISI-7501).
+// Admission is strictly NON-PREEMPTIVE (ISI-7499 D4): an admitted holder
+// keeps its slot until its own terminal release or a ReclaimHolders verdict
+// of dead — a later, higher-ranked arrival only queues; the gate exposes no
+// path that evicts, demotes, or terminalizes a live holder.
 //
 // Lifecycle:
 //   - Acquire: operatorDispatch.buildTask, right after the BYO endpoint
@@ -82,11 +101,95 @@ const endpointSlotWaitDelay = 10 * time.Second
 // healthy waiter. It exists only to reclaim the queue from a waiter that
 // vanished WITHOUT a terminal release (ReleaseByRun already drops the queue
 // entry on every terminal/reap path) — without it a dead front-of-queue run
-// could wedge the slot indefinitely under FIFO admission.
+// could wedge the slot indefinitely. The TTL is key-agnostic (ISI-7499): a
+// silent top-ranked waiter is evicted exactly like a silent FIFO one, and it
+// NEVER applies to holders.
 const endpointWaiterTTL = 90 * time.Second
 
+// Work-item admission classes (ISI-7499): a lower value admits earlier.
+const (
+	// ClassIssue is the class of board/issue work-item runs — the work that
+	// ranks ABOVE discussion/party work in every admission decision
+	// (Henrik's spec: an issue run waits for the in-flight discussion to
+	// finish, but outranks every discussion run in the queue).
+	ClassIssue = 0
+
+	// ClassDiscussion is the class of discussion/party work-item runs —
+	// fan-out @-mention and party-advance work that must never jump ahead
+	// of queued issue work, however long it has been waiting.
+	ClassDiscussion = 1
+)
+
+// UnsetPriority is the numeric priority of a run whose work item carries no
+// priority stamp (discussions today; issue runs before ISI-7509 lands the
+// intake stamping). Any stamped priority sorts before it; among unstamped
+// runs of the same class, FIFO wait order alone decides.
+const UnsetPriority = math.MaxInt32
+
+// PriorityKey is a run's admission ordering key (ISI-7499 D2). Order is
+// lexicographic: Class first (issue before discussion), then Priority with
+// LOWER values admitting earlier, then WaitSince (earlier wait-start first,
+// runID breaking exact ties inside the gate) as the final, starvation-free
+// tiebreak. The key is derived only from durable Run-CR facts
+// (runPriorityKey): the work-item-source label, the work-item-priority
+// annotation, and the WaitingForEndpointSlot condition's wait-start — which
+// is what makes the post-restart queue rebuild deterministic (ISI-7501's
+// restart-stable FIFO, promoted to a restart-stable full ordering key).
+type PriorityKey struct {
+	// Class is the work-item class: ClassIssue (0) or ClassDiscussion (1).
+	Class int
+	// Priority is the work item's numeric priority; lower admits earlier.
+	// Unstamped runs carry UnsetPriority.
+	Priority int
+	// WaitSince is the durable wait-start (ISI-7501): the WaitingForEndpointSlot
+	// condition's LastTransitionTime once the run has queued, else the Run's
+	// creationTimestamp. The zero value means "no durable fact supplied" —
+	// the gate then freezes the FIFO key to its clock at first sight (the
+	// legacy behavior; production always supplies a real timestamp).
+	WaitSince time.Time
+}
+
+// before reports whether k admits strictly earlier than o at the class and
+// priority levels (the wait-start/ID tiebreak lives in the gate, which owns
+// the waiter identities).
+func (k PriorityKey) before(o PriorityKey) bool {
+	if k.Class != o.Class {
+		return k.Class < o.Class
+	}
+	return k.Priority < o.Priority
+}
+
+// runPriorityKey derives a run's PriorityKey from durable Run-CR facts: the
+// class from the ksquad.io/work-item-source label ("discussion" →
+// ClassDiscussion, anything else — "board", unset — → ClassIssue), the
+// numeric priority from the ksquad.io/work-item-priority annotation (stamped
+// at intake by ISI-7509; absent or unparseable → UnsetPriority, so a
+// malformed stamp can never promote a run), and the wait-start from the
+// WaitingForEndpointSlot condition (LastTransitionTime) with the Run's
+// creationTimestamp as the pre-queue fallback (ISI-7501). Because every
+// field comes from the Run object, every lap of the same run derives an
+// identical key — the property the restart rebuild relies on.
+func runPriorityKey(run *api.Run) PriorityKey {
+	key := PriorityKey{Class: ClassIssue, Priority: UnsetPriority}
+	if run == nil {
+		return key
+	}
+	if run.Labels[api.LabelWorkItemSource] == workItemSourceDiscussion {
+		key.Class = ClassDiscussion
+	}
+	if v, err := strconv.Atoi(run.Annotations[api.AnnotationWorkItemPriority]); err == nil {
+		key.Priority = v
+	}
+	key.WaitSince = run.CreationTimestamp.Time
+	if c := meta.FindStatusCondition(run.Status.Conditions, ConditionEndpointSlotWait); c != nil && c.Status == metav1.ConditionTrue {
+		key.WaitSince = c.LastTransitionTime.Time
+	}
+	return key
+}
+
 // EndpointGate bounds how many runs may concurrently hold a given BYO
-// endpoint and admits waiters in FIFO wait-order (ISI-5594). The
+// endpoint and admits waiters in (class, priority, FIFO wait-start) order
+// (ISI-7499 on top of the ISI-5594/ISI-7501 FIFO base). The
 // zero-value-ready constructor takes the DEFAULT per-endpoint slot count
 // (1 = strict serialization, the Ollama mitigation default); a per-endpoint
 // override (modelendpoint maxConcurrent) is supplied on each Acquire.
@@ -124,6 +227,10 @@ type EndpointGate struct {
 // order is reconstructed deterministically from the CRs rather than lost with
 // the counter. runID breaks exact-timestamp ties (deterministic, not arbitrary).
 type endpointWaiter struct {
+	// key carries the waiter's class and priority (ISI-7499), refreshed on
+	// every poll so a re-stamped priority takes effect at the next requeue.
+	key PriorityKey
+	// since is the durable FIFO key (ISI-7501), frozen at first sight.
 	since    time.Time
 	lastSeen time.Time
 }
@@ -143,37 +250,32 @@ func NewEndpointGate(maxConcurrent int) *EndpointGate {
 	}
 }
 
-// resolveWaitSince picks the restart-stable FIFO key the caller supplied, or
-// the zero time when none was passed (the legacy 3-arg callers and tests, for
-// which registerWaiter falls back to the gate clock on first sight).
-func resolveWaitSince(waitSince []time.Time) time.Time {
-	if len(waitSince) > 0 {
-		return waitSince[0]
-	}
-	return time.Time{}
-}
-
 // Acquire takes a slot on endpoint for runID. maxConcurrent is the endpoint's
 // own declared capacity (modelendpoint maxConcurrent); values <= 0 fall back
 // to the gate's default. It is idempotent for a run that already holds a slot
 // (re-drive / retry lap / follow re-attach): the same run re-acquiring its own
 // permit is always granted.
 //
-// Fair FIFO admission (ISI-5594): a run that cannot be admitted is registered
-// as a waiter keyed on when it began waiting. When a slot is free it is granted
-// ONLY to the longest-waiting (earliest-`since`) live waiter, so a freed slot is
-// never handed to a late arrival ahead of a run that has been queued longer —
-// deterministic, starvation-free. On refusal it returns one current holder's run
-// uid (or, when the slot is free but a longer-waiting run is ahead, that run's
-// uid) for the wait message, and ok=false.
+// Fair admission (ISI-5594/ISI-7501/ISI-7499): a run that cannot be admitted
+// is registered as a waiter keyed on its PriorityKey. When a slot is free it
+// is granted ONLY to the (class, priority, wait-start)-minimal live waiter,
+// so a freed slot is never handed to a lower-ranked run ahead of a
+// higher-ranked one, nor to a later equal-key arrival ahead of a
+// longer-waiting one — deterministic and starvation-free within equal keys.
+// On refusal it returns one current holder's run uid (or, when the slot is
+// free but a better-ranked run is ahead, that run's uid) for the wait
+// message, and ok=false.
 //
-// waitSince (ISI-7501) is the restart-stable wait-start the caller reconstructs
-// from the Run CR (WaitingForEndpointSlot condition LastTransitionTime, else
-// creationTimestamp). It seeds the waiter's FIFO key so queue order survives an
-// operator restart that empties the in-process gate. Variadic for backward
-// compatibility: a caller that omits it gets the pre-ISI-7501 behavior (the
-// waiter's key is frozen to the gate clock at first sight).
-func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, waitSince ...time.Time) (holder string, ok bool) {
+// Admission is strictly non-preemptive (ISI-7499 D4 invariant): this call
+// can never remove, demote, or terminalize an existing holder — a
+// higher-ranked arrival queues behind the current holders and is admitted
+// only when a slot frees (terminal release or a dead-holder reclaim).
+//
+// key (ISI-7501/ISI-7499) is the restart-stable ordering key the caller
+// derives from the Run CR (runPriorityKey): class, numeric priority, and
+// the durable wait-start. It seeds the waiter's FIFO key so queue order
+// survives an operator restart that empties the in-process gate.
+func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, key PriorityKey) (holder string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -191,7 +293,7 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, waitSi
 
 	now := g.now()
 	g.evictStaleWaiters(endpoint, now)
-	g.registerWaiter(endpoint, runID, resolveWaitSince(waitSince), now)
+	g.registerWaiter(endpoint, runID, key, now)
 
 	if len(holders) < max && g.frontWaiter(endpoint) == runID {
 		g.dropWaiter(endpoint, runID)
@@ -215,13 +317,16 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, waitSi
 // wait-start `since` and refreshing its last-seen poll time on every call (so a
 // live, polling waiter keeps its place and its freshness).
 //
-// `since` is the restart-stable FIFO key (ISI-7501): a non-zero waitSince is a
-// durable Run-CR fact (condition LastTransitionTime / creationTimestamp), so it
-// is re-applied on every call — stable input, no thrash — which is also how a
-// re-driving waiter restores its pre-restart position when the gate is empty.
-// A zero waitSince (legacy 3-arg callers) freezes the key to the gate clock at
-// first sight, preserving the pre-ISI-7501 wait-order-by-arrival behavior.
-func (g *EndpointGate) registerWaiter(endpoint, runID string, waitSince, now time.Time) {
+// `since` is the restart-stable FIFO key (ISI-7501): a non-zero key.WaitSince
+// is a durable Run-CR fact (condition LastTransitionTime /
+// creationTimestamp), so it is re-applied on every call — stable input, no
+// thrash — which is also how a re-driving waiter restores its pre-restart
+// position when the gate is empty. A zero key.WaitSince (tests) freezes the
+// key to the gate clock at first sight. The class/priority half of the key
+// is re-applied on every call too (ISI-7499): a priority re-stamped mid-queue
+// takes effect at the next poll, while the frozen `since` keeps the FIFO
+// tiebreak stable.
+func (g *EndpointGate) registerWaiter(endpoint, runID string, key PriorityKey, now time.Time) {
 	ws := g.waiters[endpoint]
 	if ws == nil {
 		ws = map[string]*endpointWaiter{}
@@ -229,16 +334,17 @@ func (g *EndpointGate) registerWaiter(endpoint, runID string, waitSince, now tim
 	}
 	if w, ok := ws[runID]; ok {
 		w.lastSeen = now
-		if !waitSince.IsZero() {
-			w.since = waitSince
+		w.key = key
+		if !key.WaitSince.IsZero() {
+			w.since = key.WaitSince
 		}
 		return
 	}
-	since := waitSince
+	since := key.WaitSince
 	if since.IsZero() {
 		since = now
 	}
-	ws[runID] = &endpointWaiter{since: since, lastSeen: now}
+	ws[runID] = &endpointWaiter{key: key, since: since, lastSeen: now}
 }
 
 // dropWaiter removes runID from endpoint's waiter queue (on grant or release),
@@ -269,15 +375,18 @@ func (g *EndpointGate) evictStaleWaiters(endpoint string, now time.Time) {
 	}
 }
 
-// frontWaiter returns the earliest-`since` (longest-waiting) run uid queued on
-// endpoint, or "" when none are queued. runID breaks exact-timestamp ties so
-// the choice is deterministic across restarts and reconcile orderings.
+// frontWaiter returns the (class, priority, wait-start, id)-minimal run uid
+// queued on endpoint — the run a freed slot is reserved for — or "" when
+// none are queued (ISI-7499 ordering on the ISI-7501 FIFO base). runID
+// breaks exact-timestamp ties so the choice is deterministic across
+// restarts and reconcile orderings.
 func (g *EndpointGate) frontWaiter(endpoint string) string {
-	var front string
-	var best time.Time
+	front, frontW := "", (*endpointWaiter)(nil)
 	for id, w := range g.waiters[endpoint] {
-		if front == "" || w.since.Before(best) || (w.since.Equal(best) && id < front) {
-			front, best = id, w.since
+		if frontW == nil || w.key.before(frontW.key) ||
+			(!w.key.before(frontW.key) && !frontW.key.before(w.key) &&
+				(w.since.Before(frontW.since) || (w.since.Equal(frontW.since) && id < front))) {
+			front, frontW = id, w
 		}
 	}
 	return front

@@ -665,7 +665,7 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			return ctrl.Result{}, fmt.Errorf("rundrive: resolve BYO endpoint for %s: %w", req.NamespacedName, lerr)
 		}
 		if endpoint != "" {
-			if holder, ok := r.EndpointGate.Acquire(endpoint, runID, maxConc); !ok {
+			if holder, ok := r.EndpointGate.Acquire(endpoint, runID, maxConc, runPriorityKey(&run)); !ok {
 				busyErr := fmt.Errorf("rundrive: BYO model endpoint %s has no free slot (held by run %s); run %s waits: %w",
 					endpoint, holder, runID, errEndpointSlotBusy)
 				noopTick = true // parked pre-bind; nothing dispatched this pass
