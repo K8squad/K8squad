@@ -100,15 +100,12 @@ type EndpointGate struct {
 	// endpoint; empty sets are deleted so the map does not grow unboundedly.
 	holders map[string]map[string]struct{}
 	// waiters maps an endpoint to the runs queued behind a full slot, each
-	// tagged with a monotonic sequence (enqueue order) and a last-seen poll
-	// time. A freed slot is granted to the lowest-seq live waiter, making
+	// tagged with a wait-start timestamp (FIFO key) and a last-seen poll time.
+	// A freed slot is granted to the earliest-`since` live waiter, making
 	// admission deterministic FIFO-by-wait-time instead of whichever requeue
 	// timer happened to fire first (the pre-ISI-5594 starvation risk). Empty
 	// sets are deleted so the map does not grow unboundedly.
 	waiters map[string]map[string]*endpointWaiter
-	// seq hands out strictly increasing enqueue tokens; a waiter's seq is its
-	// FIFO key. uint64 never realistically wraps over a leader's lifetime.
-	seq uint64
 	// now is the injectable clock (time.Now in production; overridden in
 	// tests to exercise TTL eviction and wait-order without real sleeps).
 	now func() time.Time
@@ -117,8 +114,17 @@ type EndpointGate struct {
 }
 
 // endpointWaiter is one run's place in an endpoint's FIFO admission queue.
+//
+// The FIFO key is `since` — the moment the run began waiting on this endpoint —
+// NOT an in-process counter (ISI-7501). The gate is in-process and empties on
+// an operator restart, but `since` is seeded on every Acquire from a durable
+// Run-CR fact (the WaitingForEndpointSlot condition's LastTransitionTime, or
+// the Run's creationTimestamp before that condition stamps). So after a roll,
+// re-driving waiters re-register with the SAME `since` they had before — FIFO
+// order is reconstructed deterministically from the CRs rather than lost with
+// the counter. runID breaks exact-timestamp ties (deterministic, not arbitrary).
 type endpointWaiter struct {
-	seq      uint64
+	since    time.Time
 	lastSeen time.Time
 }
 
@@ -137,6 +143,16 @@ func NewEndpointGate(maxConcurrent int) *EndpointGate {
 	}
 }
 
+// resolveWaitSince picks the restart-stable FIFO key the caller supplied, or
+// the zero time when none was passed (the legacy 3-arg callers and tests, for
+// which registerWaiter falls back to the gate clock on first sight).
+func resolveWaitSince(waitSince []time.Time) time.Time {
+	if len(waitSince) > 0 {
+		return waitSince[0]
+	}
+	return time.Time{}
+}
+
 // Acquire takes a slot on endpoint for runID. maxConcurrent is the endpoint's
 // own declared capacity (modelendpoint maxConcurrent); values <= 0 fall back
 // to the gate's default. It is idempotent for a run that already holds a slot
@@ -144,13 +160,20 @@ func NewEndpointGate(maxConcurrent int) *EndpointGate {
 // permit is always granted.
 //
 // Fair FIFO admission (ISI-5594): a run that cannot be admitted is registered
-// as a waiter keyed on its first-seen wait order. When a slot is free it is
-// granted ONLY to the longest-waiting (lowest-seq) live waiter, so a freed
-// slot is never handed to a late arrival ahead of a run that has been queued
-// longer — deterministic, starvation-free. On refusal it returns one current
-// holder's run uid (or, when the slot is free but a longer-waiting run is
-// ahead, that run's uid) for the wait message, and ok=false.
-func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int) (holder string, ok bool) {
+// as a waiter keyed on when it began waiting. When a slot is free it is granted
+// ONLY to the longest-waiting (earliest-`since`) live waiter, so a freed slot is
+// never handed to a late arrival ahead of a run that has been queued longer —
+// deterministic, starvation-free. On refusal it returns one current holder's run
+// uid (or, when the slot is free but a longer-waiting run is ahead, that run's
+// uid) for the wait message, and ok=false.
+//
+// waitSince (ISI-7501) is the restart-stable wait-start the caller reconstructs
+// from the Run CR (WaitingForEndpointSlot condition LastTransitionTime, else
+// creationTimestamp). It seeds the waiter's FIFO key so queue order survives an
+// operator restart that empties the in-process gate. Variadic for backward
+// compatibility: a caller that omits it gets the pre-ISI-7501 behavior (the
+// waiter's key is frozen to the gate clock at first sight).
+func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, waitSince ...time.Time) (holder string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -168,7 +191,7 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int) (holde
 
 	now := g.now()
 	g.evictStaleWaiters(endpoint, now)
-	g.registerWaiter(endpoint, runID, now)
+	g.registerWaiter(endpoint, runID, resolveWaitSince(waitSince), now)
 
 	if len(holders) < max && g.frontWaiter(endpoint) == runID {
 		g.dropWaiter(endpoint, runID)
@@ -188,10 +211,17 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int) (holde
 	return g.frontWaiter(endpoint), false
 }
 
-// registerWaiter records runID as a waiter on endpoint, assigning it the next
-// FIFO sequence on first sight and refreshing its last-seen poll time on every
-// subsequent call (so a live, polling waiter keeps its place and its freshness).
-func (g *EndpointGate) registerWaiter(endpoint, runID string, now time.Time) {
+// registerWaiter records runID as a waiter on endpoint, keying it by its
+// wait-start `since` and refreshing its last-seen poll time on every call (so a
+// live, polling waiter keeps its place and its freshness).
+//
+// `since` is the restart-stable FIFO key (ISI-7501): a non-zero waitSince is a
+// durable Run-CR fact (condition LastTransitionTime / creationTimestamp), so it
+// is re-applied on every call — stable input, no thrash — which is also how a
+// re-driving waiter restores its pre-restart position when the gate is empty.
+// A zero waitSince (legacy 3-arg callers) freezes the key to the gate clock at
+// first sight, preserving the pre-ISI-7501 wait-order-by-arrival behavior.
+func (g *EndpointGate) registerWaiter(endpoint, runID string, waitSince, now time.Time) {
 	ws := g.waiters[endpoint]
 	if ws == nil {
 		ws = map[string]*endpointWaiter{}
@@ -199,10 +229,16 @@ func (g *EndpointGate) registerWaiter(endpoint, runID string, now time.Time) {
 	}
 	if w, ok := ws[runID]; ok {
 		w.lastSeen = now
+		if !waitSince.IsZero() {
+			w.since = waitSince
+		}
 		return
 	}
-	g.seq++
-	ws[runID] = &endpointWaiter{seq: g.seq, lastSeen: now}
+	since := waitSince
+	if since.IsZero() {
+		since = now
+	}
+	ws[runID] = &endpointWaiter{since: since, lastSeen: now}
 }
 
 // dropWaiter removes runID from endpoint's waiter queue (on grant or release),
@@ -233,14 +269,15 @@ func (g *EndpointGate) evictStaleWaiters(endpoint string, now time.Time) {
 	}
 }
 
-// frontWaiter returns the lowest-seq (longest-waiting) run uid queued on
-// endpoint, or "" when none are queued.
+// frontWaiter returns the earliest-`since` (longest-waiting) run uid queued on
+// endpoint, or "" when none are queued. runID breaks exact-timestamp ties so
+// the choice is deterministic across restarts and reconcile orderings.
 func (g *EndpointGate) frontWaiter(endpoint string) string {
 	var front string
-	var best uint64
+	var best time.Time
 	for id, w := range g.waiters[endpoint] {
-		if front == "" || w.seq < best {
-			front, best = id, w.seq
+		if front == "" || w.since.Before(best) || (w.since.Equal(best) && id < front) {
+			front, best = id, w.since
 		}
 	}
 	return front
