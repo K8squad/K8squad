@@ -117,6 +117,15 @@ type KubeEnsurer struct {
 	Ingress string
 	// WorkPVC is the optional per-Project workspace PVC.
 	WorkPVC string
+	// CrewAIAuthTokenSecret / CrewAIAuthTokenSecretKey name the Secret holding
+	// the crewai always-on pool's A2A SimpleTokenAuth bearer (ISI-7470). The
+	// composition root wires these from operator env; specFor stamps them onto
+	// the pod spec ONLY for a crewai-runtime pool, so the AUTH_TOKEN injection
+	// (by reference, see MeshPoolSpec.AuthTokenSecret) stays scoped to the one
+	// runtime that reads it and meshpool.go stays runtime-agnostic. Empty name
+	// leaves the pool without AUTH_TOKEN.
+	CrewAIAuthTokenSecret    string
+	CrewAIAuthTokenSecretKey string
 }
 
 // EnsurePool boots the standing gateway pod for the plan if absent.
@@ -128,7 +137,7 @@ func (e *KubeEnsurer) EnsurePool(ctx context.Context, plan agentmesh.PoolPlan) e
 // and band from the plan, substrate placement (namespace, ingress, PVC,
 // image) from the host wiring the composition root injected here.
 func (e *KubeEnsurer) specFor(plan agentmesh.PoolPlan) MeshPoolSpec {
-	return MeshPoolSpec{
+	spec := MeshPoolSpec{
 		Team:        plan.Team,
 		Role:        plan.Role,
 		Image:       e.ImageFor(plan.Envelope.RuntimeType),
@@ -142,6 +151,15 @@ func (e *KubeEnsurer) specFor(plan agentmesh.PoolPlan) MeshPoolSpec {
 		IngressURL:  e.Ingress,
 		ProjectPVC:  e.WorkPVC,
 	}
+	// The crewai pool's A2A SimpleTokenAuth bearer (ISI-7470): injected by
+	// reference, and ONLY for a crewai-runtime pool — the one runtime whose
+	// router + standing child read AUTH_TOKEN. Keeping the gate here (not in
+	// meshpool.go) leaves the pod-boot seam runtime-agnostic.
+	if plan.Envelope.RuntimeType == ksquadv1alpha1.RuntimeTypeCrewAI {
+		spec.AuthTokenSecret = e.CrewAIAuthTokenSecret
+		spec.AuthTokenSecretKey = e.CrewAIAuthTokenSecretKey
+	}
+	return spec
 }
 
 // meshLifecycleSpec converts the plan's generic lifecycle knobs back onto

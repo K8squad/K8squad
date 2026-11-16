@@ -312,3 +312,75 @@ func TestBootMeshPool_RuntimeTypeEnv(t *testing.T) {
 		}
 	})
 }
+
+// secretEnvOf returns the (secretName, key) a pod's env var references via a
+// SecretKeySelector, or ("","") if the var is absent or not secret-backed.
+func secretEnvOf(t *testing.T, pod *corev1.Pod, name string) (string, string) {
+	t.Helper()
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == name && e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			return e.ValueFrom.SecretKeyRef.Name, e.ValueFrom.SecretKeyRef.Key
+		}
+	}
+	return "", ""
+}
+
+// The crewai always-on pool's A2A SimpleTokenAuth bearer (ISI-7470): AUTH_TOKEN
+// is injected BY REFERENCE (SecretKeySelector) so the control plane never reads
+// the token bytes (ADR-0007), stamped only when a Secret is configured (the
+// minimal-env invariant), and defaults the Secret key to "token" when unset.
+func TestBootMeshPool_AuthTokenSecret(t *testing.T) {
+	t.Run("explicit-key", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{
+			Team: "t", Role: "coder", Image: "img", RuntimeType: "crewai",
+			AuthTokenSecret: "crewai-a2a", AuthTokenSecretKey: "bearer",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		// Injected by reference — never a plaintext Value (ADR-0007).
+		if got := envOf(t, &pod, "AUTH_TOKEN"); got != "" {
+			t.Fatalf("AUTH_TOKEN carried a plaintext value %q; must be by reference", got)
+		}
+		name, key := secretEnvOf(t, &pod, "AUTH_TOKEN")
+		if name != "crewai-a2a" || key != "bearer" {
+			t.Fatalf("AUTH_TOKEN SecretKeyRef = (%q,%q), want (crewai-a2a,bearer)", name, key)
+		}
+	})
+	t.Run("default-key", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{
+			Team: "t", Role: "coder", Image: "img", RuntimeType: "crewai",
+			AuthTokenSecret: "crewai-a2a",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		name, key := secretEnvOf(t, &pod, "AUTH_TOKEN")
+		if name != "crewai-a2a" || key != "token" {
+			t.Fatalf("AUTH_TOKEN SecretKeyRef = (%q,%q), want (crewai-a2a,token)", name, key)
+		}
+	})
+	t.Run("unset-omits", func(t *testing.T) {
+		k, cl := newMeshProvisioner(t)
+		if err := k.BootMeshPool(context.Background(), warmpool.MeshPoolSpec{
+			Team: "t", Role: "coder", Image: "img", RuntimeType: "crewai",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var pod corev1.Pod
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "mesh-t-coder"}, &pod); err != nil {
+			t.Fatal(err)
+		}
+		if name, _ := secretEnvOf(t, &pod, "AUTH_TOKEN"); name != "" {
+			t.Fatalf("AUTH_TOKEN stamped (%q) without a configured Secret; minimal-env invariant", name)
+		}
+	})
+}

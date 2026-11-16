@@ -1215,6 +1215,12 @@ func main() {
 						PodNS:       os.Getenv("KSQUAD_WARM_POOL_NAMESPACE"),
 						Ingress:     os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL"),
 						WorkPVC:     os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
+						// The crewai always-on pool's A2A SimpleTokenAuth bearer
+						// (ISI-7470): Secret name + key, injected by reference
+						// onto the crewai pool pod only. Unset leaves the pool
+						// without AUTH_TOKEN — the minimal-env invariant.
+						CrewAIAuthTokenSecret:    os.Getenv("KSQUAD_CREWAI_AUTH_TOKEN_SECRET"),
+						CrewAIAuthTokenSecretKey: os.Getenv("KSQUAD_CREWAI_AUTH_TOKEN_SECRET_KEY"),
 					},
 					&kubepool.RegistryStandingCounter{Registry: registry},
 					&kubepool.ClientStatusWriter{Client: mgr.GetClient()},
