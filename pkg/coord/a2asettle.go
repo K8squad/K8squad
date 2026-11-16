@@ -345,3 +345,74 @@ func (r *ProdSettleReader) SettledForWorkItem(ctx context.Context, workItemID st
 	}
 	return dispatched, settled, nil
 }
+
+// FailureCauseForWorkItem resolves the concrete terminal-failure cause for a
+// work item (ISI-7498 WS-A), reading the two causes already durable in coord so
+// a failed Run's Ready condition names WHY it failed without a DB round-trip by
+// the operator:
+//
+//   - the latest SETTLED a2a dispatch lap's outcome (coord.a2a_dispatch.
+//     settle_outcome): a `failed` lap is the agent's own terminal non-success; a
+//     `follow_error` lap is a broken follow stream. Rendered as "the agent run
+//     settled <outcome>". A `succeeded` lap is never a failure cause (it is
+//     skipped — a Failed step with a succeeded latest lap means a later,
+//     unsettled lap failed, so the gone-sandbox fallback below is the right
+//     source).
+//   - failing that, the most recent gone-sandbox reap reason
+//     (coord.audit_log event_type='sandbox_bind_cleared', payload.reason, e.g.
+//     "sandbox pod not found") — the INFRA death that carries no settle marker.
+//
+// Returns "" when neither is recorded (the projector then uses its generic
+// message). A "" or non-uuid workItemID is "" WITHOUT touching the DB, matching
+// SettledForWorkItem. Two indexed point-reads (idx_a2a_dispatch, the work-item
+// audit index); it runs only when the projector observes StepFailed.
+func (r *ProdSettleReader) FailureCauseForWorkItem(ctx context.Context, workItemID string) (string, error) {
+	if r == nil || r.db == nil {
+		return "", errors.New("coord.ProdSettleReader: nil db")
+	}
+	if workItemID == "" {
+		return "", nil
+	}
+	if _, perr := uuid.Parse(workItemID); perr != nil {
+		return "", nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	var outcome string
+	switch err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(settle_outcome, '')
+		  FROM coord.a2a_dispatch
+		 WHERE work_item_id = $1::uuid AND settled_at IS NOT NULL
+		 ORDER BY settled_at DESC, id DESC
+		 LIMIT 1`,
+		workItemID).Scan(&outcome); {
+	case errors.Is(err, sql.ErrNoRows):
+		// no settled lap — fall through to the gone-sandbox reason
+	case err != nil:
+		return "", fmt.Errorf("coord.ProdSettleReader.FailureCauseForWorkItem: settle outcome for %s: %w", workItemID, err)
+	default:
+		if outcome == SettleOutcomeFailed || outcome == SettleOutcomeFollowError {
+			return "the agent run settled " + outcome, nil
+		}
+	}
+
+	var reason string
+	switch err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(payload->>'reason', '')
+		  FROM coord.audit_log
+		 WHERE work_item_id = $1::uuid AND event_type = 'sandbox_bind_cleared'
+		 ORDER BY id DESC
+		 LIMIT 1`,
+		workItemID).Scan(&reason); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("coord.ProdSettleReader.FailureCauseForWorkItem: sandbox reap reason for %s: %w", workItemID, err)
+	}
+	if reason == "" {
+		return "", nil
+	}
+	return reason, nil
+}

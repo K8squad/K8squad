@@ -592,8 +592,12 @@ func main() {
 			}
 		}
 		if err := (&runctrl.Reconciler{
-			Source:            coord.NewReconcileStepReader(db),
-			Settlement:        phaseSettleReader,
+			Source:     coord.NewReconcileStepReader(db),
+			Settlement: phaseSettleReader,
+			// ISI-7498 WS-A: name the concrete terminal-failure cause on the Run's
+			// Ready condition (same coord settle reader — it owns the a2a outcome +
+			// gone-sandbox reason reads).
+			FailureCause:      phaseSettleReader,
 			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 			Assembler:         assembler,
 			ContextAssemblers: ctxDeps,

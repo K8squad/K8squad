@@ -398,6 +398,51 @@ func TestSpineDrive(t *testing.T) {
 		}
 	})
 
+	t.Run("D3b ISI-7498 WS-A: intake-minted (nil-policy) INFRA death across a restart retries, not terminal-fails", func(t *testing.T) {
+		// The live incident shape: an operator lost leader election, restarted,
+		// and reaped its seats' sandbox pods mid-flight. A parked slot-waiter
+		// (dispatching, never a2a-dispatched → no settle, so NOT a business
+		// failure) then dies under the dead holder. With the Settle reader wired
+		// (production path) and no explicit retryPolicy, the defaultInfraRetries
+		// budget must turn pass one into a fence-first retry lap — the zero-budget
+		// terminal FailEnter that killed seats in D3 only holds without a settle
+		// reader. maxRetries(run)==0 here; retryBudget grants the infra lap.
+		db, item := driveFixture(t)
+		cl := fake.NewClientBuilder().WithScheme(driveScheme(t)).Build()
+		newDriveRun(t, cl, "3b3b3b3b-3b3b-3b3b-3b3b-3b3b3b3b3b3b", "run-1", item) // no RetryPolicy
+
+		if _, err := db.ExecContext(ctx, `
+			UPDATE coord.claim SET reconcile_step='dispatching', holder_principal='ksquad-operator',
+			       lease_expires_at = clock_timestamp() - interval '5 minutes', fence_token = 1
+			 WHERE work_item_id=$1::uuid`, item); err != nil {
+			t.Fatalf("stage death: %v", err)
+		}
+
+		driver, _ := newTestDriver(cl, db, coord.DefaultProdResumeConfig())
+		settle, serr := coord.NewProdSettleReader(db)
+		if serr != nil {
+			t.Fatalf("settle reader: %v", serr)
+		}
+		driver.Settle = settle // production wiring (cmd/operator): classifies the death
+
+		res, err := driver.Reconcile(ctx, request("run-1"))
+		if err != nil {
+			t.Fatalf("infra death drive: %v", err)
+		}
+		if res.RequeueAfter == 0 {
+			t.Fatal("infra retry lap must requeue on backoff, not terminal-fail")
+		}
+		if got := stepOf(t, db, item); got == reconcile.StepFailed {
+			t.Fatal("intake-minted INFRA death terminal-failed on the first pass (the ISI-7498 regression)")
+		}
+		if n := countOf(t, db, `SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='retry_lap_entered'`, item); n != 1 {
+			t.Fatalf("retry_lap_entered audit rows = %d, want 1 (infra lap consumed)", n)
+		}
+		if n := countOf(t, db, `SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='run_failed_entered'`, item); n != 0 {
+			t.Fatalf("run_failed_entered audit rows = %d, want 0 (no terminal fail on the first infra death)", n)
+		}
+	})
+
 	t.Run("D4 3.7 park → single durable wake → requeue into dispatching", func(t *testing.T) {
 		db, item := driveFixture(t)
 		cl := fake.NewClientBuilder().WithScheme(driveScheme(t)).

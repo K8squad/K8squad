@@ -231,6 +231,77 @@ func TestReconcile_S3SettlementErrorRequeues(t *testing.T) {
 	}
 }
 
+// fakeFailureCause is a fixed FailureCauseSource answer (ISI-7498 WS-A), plus an
+// optional error and a call counter so a test can prove it is consulted only at
+// StepFailed.
+type fakeFailureCause struct {
+	cause string
+	err   error
+	calls int
+}
+
+func (f *fakeFailureCause) FailureCauseForWorkItem(context.Context, string) (string, error) {
+	f.calls++
+	return f.cause, f.err
+}
+
+// TestReconcileFailedNamesCause (ISI-7498 WS-A): a terminal-Failed Run whose
+// cause the reader resolves surfaces it on the Ready condition message, so a
+// failed seat is legible on the CR without DB access. The reader is NOT consulted
+// for a non-Failed step.
+func TestReconcileFailedNamesCause(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	fc := &fakeFailureCause{cause: "sandbox pod not found"}
+	r := &Reconciler{
+		Client:       c,
+		Source:       fakeSource{step: reconcile.StepFailed, found: true},
+		FailureCause: fc,
+		Now:          func() metav1.Time { return fixedNow },
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"}}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile failed run: %v", err)
+	}
+	cond := meta.FindStatusCondition(getRun(t, c).Status.Conditions, ConditionReady)
+	if cond == nil || cond.Message != "Run failed: sandbox pod not found" {
+		t.Fatalf("failed Ready message = %+v, want the named cause", cond)
+	}
+	if fc.calls != 1 {
+		t.Fatalf("FailureCause consulted %d times, want exactly 1 (at StepFailed)", fc.calls)
+	}
+
+	// Non-Failed step: the reader is never consulted (call count unchanged).
+	r.Source = fakeSource{step: reconcile.StepRunning, found: true}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("reconcile running run: %v", err)
+	}
+	if fc.calls != 1 {
+		t.Fatalf("FailureCause consulted on a non-Failed step (calls=%d)", fc.calls)
+	}
+}
+
+// TestReconcileFailedCauseErrorRequeues: a failure-cause read error surfaces so
+// the reconciler requeues rather than stamping a terminal condition it could not
+// attribute.
+func TestReconcileFailedCauseErrorRequeues(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	r := &Reconciler{
+		Client:       c,
+		Source:       fakeSource{step: reconcile.StepFailed, found: true},
+		FailureCause: &fakeFailureCause{err: errors.New("connection reset")},
+		Now:          func() metav1.Time { return fixedNow },
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"},
+	}); err == nil {
+		t.Fatal("a failure-cause read error must surface so the reconciler requeues")
+	}
+}
+
 // TestReconcileEmitsEventPerPhaseTransition proves a Normal Event fires on each
 // phase change (ISI-4381 polish) and NOT on a same-phase or no-op reconcile —
 // so `kubectl describe run` shows the lifecycle and the event stream mirrors the

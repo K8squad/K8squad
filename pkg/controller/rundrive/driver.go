@@ -113,6 +113,21 @@ const (
 	defaultBackoffBase = time.Second
 	// backoffCap ceilings the retry-lap exponential.
 	backoffCap = 5 * time.Minute
+	// defaultInfraRetries is the retry budget an INFRA-class death gets when the
+	// Run carries no explicit spec.retryPolicy — which EVERY intake-minted Run
+	// does (the M1 "one agent, one ticket" dispatch mints a bare Run CR with no
+	// policy). Without it, maxRetries returns 0 and the FIRST death terminal-fails
+	// the seat: the ISI-7498 live incident was an operator losing leader election,
+	// restarting, and reaping its seats' sandbox pods mid-flight — every parked
+	// slot-waiter and the holder then routed through the death path and terminal-
+	// failed on pass one, with no retry lap, because the budget was zero. A small
+	// nonzero budget lets a transient death (gone sandbox after an operator
+	// restart, an API-outage lease lapse, a broken follow stream) consume a lap
+	// instead of a seat; a genuinely wedged run still terminalizes within a few
+	// §6.3-backed-off laps. A clean BUSINESS failure (the agent finished and its
+	// follow settled `failed`) is NOT infra and keeps the zero-retry default —
+	// see retryBudget.
+	defaultInfraRetries = 2
 )
 
 // ClaimState is the durable claim-row snapshot one drive pass decides on.
@@ -925,9 +940,11 @@ func (r *Driver) leaseExpired(cs ClaimState) bool {
 }
 
 // retryOrFail executes the §5.3 decision after a death (or a failed attempt):
-// within the spec.retryPolicy budget → §6.3 fence-first RetryEnter + backoff;
+// within the effective retry budget → §6.3 fence-first RetryEnter + backoff;
 // outside it → terminal FailEnter. The dead run's sandbox is torn down first
-// so the retry lap provisions a fresh one (never reattaches a corpse).
+// so the retry lap provisions a fresh one (never reattaches a corpse). The
+// budget is retryBudget (not the raw maxRetries): an intake-minted Run with no
+// policy still gets an INFRA-class lap for a transient death (ISI-7498).
 func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (ctrl.Result, error) {
 	runID := string(run.UID)
 	if r.Sandbox != nil {
@@ -935,11 +952,18 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 		// pool's draining state retries it (§9.3).
 		_ = r.Sandbox.Release(ctx, runID)
 	}
+	budget, err := r.retryBudget(ctx, run)
+	if err != nil {
+		// A transient follow-read error must not be MISCLASSIFIED as a business
+		// failure and terminal-fail the seat — surface it so the level-triggered
+		// next pass re-reads and re-decides (same discipline as followSucceeded).
+		return ctrl.Result{}, fmt.Errorf("rundrive: retry budget for %s: %w", runID, err)
+	}
 	laps, err := r.Claims.LapsUsed(ctx, runID)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("rundrive: count laps for %s: %w", runID, err)
 	}
-	if laps < maxRetries(run) {
+	if laps < budget {
 		if _, ok, err := r.Claims.RetryEnter(ctx, run.Spec.WorkItemRef, runID, cs.Fence); err != nil {
 			return ctrl.Result{}, fmt.Errorf("rundrive: retry-enter %s: %w", run.Spec.WorkItemRef, err)
 		} else if !ok {
@@ -1046,12 +1070,52 @@ func firstAgentName(run *api.Run) string {
 	return run.Spec.Agents[0].Name
 }
 
-// maxRetries reads the retry budget (nil policy = 0: no automatic retry).
+// maxRetries reads the EXPLICIT spec.retryPolicy budget (nil policy = 0: no
+// operator-declared automatic retry). retryBudget layers the INFRA-class
+// default over this for the nil-policy case.
 func maxRetries(run *api.Run) int {
 	if run.Spec.RetryPolicy == nil || run.Spec.RetryPolicy.MaxRetries == nil {
 		return 0
 	}
 	return int(*run.Spec.RetryPolicy.MaxRetries)
+}
+
+// retryBudget is the effective number of retry laps a death is decided against.
+// An explicit spec.retryPolicy.maxRetries wins unconditionally — operator intent
+// is honoured for business and infra deaths alike. With no explicit policy (every
+// intake-minted Run), the budget depends on the death CLASS, read from the run's
+// latest a2a follow settlement:
+//
+//   - a clean BUSINESS failure — the follow settled `failed`, a terminal
+//     non-success the agent itself reported — keeps the pre-ISI-7498 zero-retry
+//     default: blindly re-dispatching a deterministic task failure just burns the
+//     same work twice (and the failure is already surfaced on the ticket).
+//   - every OTHER death is INFRA-class: a follow_error (broken SSE/transport — not
+//     proof the agent finished), a death with no settlement at all (a parked
+//     slot-waiter whose sandbox was reaped across an operator restart — it never
+//     dispatched, so no lap settled), or a lease lapse under a died holder. These
+//     get defaultInfraRetries so a transient kill consumes a lap, not a seat.
+//
+// A nil Settle reader (unit tests / ledger-only, non-a2a runs) disables the
+// classification and keeps the explicit-policy-only budget — the same opt-in
+// discipline followSucceeded uses. A follow read error is surfaced (not swallowed)
+// so the caller requeues rather than defaulting a transient DB stall into either
+// direction.
+func (r *Driver) retryBudget(ctx context.Context, run *api.Run) (int, error) {
+	if run.Spec.RetryPolicy != nil && run.Spec.RetryPolicy.MaxRetries != nil {
+		return int(*run.Spec.RetryPolicy.MaxRetries), nil
+	}
+	if r.Settle == nil {
+		return 0, nil
+	}
+	_, settled, outcome, err := r.Settle.RunFollowOutcome(ctx, string(run.UID))
+	if err != nil {
+		return 0, err
+	}
+	if settled && outcome == coord.SettleOutcomeFailed {
+		return 0, nil // clean business failure: keep current (zero-retry) semantics
+	}
+	return defaultInfraRetries, nil
 }
 
 // requeueSandboxPending is the quiet requeue for the ISI-4441/ISI-5028

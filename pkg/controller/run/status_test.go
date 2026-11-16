@@ -120,6 +120,36 @@ func TestProjectStatusReadyConditionPerStep(t *testing.T) {
 	}
 }
 
+// TestProjectStatusWithFailureCause proves the ISI-7498 WS-A terminal-failure
+// attribution: a non-empty cause at StepFailed names it on the Ready message; an
+// empty cause falls back to the generic string; and a cause is inert on any
+// non-Failed step (status stays downstream of the durable step — a stale cause
+// never fabricates a failure the step does not command).
+func TestProjectStatusWithFailureCause(t *testing.T) {
+	// Concrete cause → named message, still Failed/ConditionFalse.
+	got := ProjectStatusWithFailureCause(api.RunStatus{}, reconcile.StepFailed, 1, fixedNow, "the agent run settled failed")
+	cond := meta.FindStatusCondition(got.Conditions, ConditionReady)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonFailed {
+		t.Fatalf("failed condition = %+v, want ConditionFalse/%s", cond, reasonFailed)
+	}
+	if cond.Message != "Run failed: the agent run settled failed" {
+		t.Errorf("message = %q, want the named cause", cond.Message)
+	}
+
+	// Empty cause → generic fallback (byte-identical to the no-cause projection).
+	empty := ProjectStatusWithFailureCause(api.RunStatus{}, reconcile.StepFailed, 1, fixedNow, "")
+	if m := meta.FindStatusCondition(empty.Conditions, ConditionReady).Message; m != "Run reached a terminal failure" {
+		t.Errorf("empty-cause message = %q, want the generic fallback", m)
+	}
+
+	// A cause is inert on a non-Failed step: Running never carries it.
+	running := ProjectStatusWithFailureCause(api.RunStatus{}, reconcile.StepRunning, 1, fixedNow, "the agent run settled failed")
+	if rc := meta.FindStatusCondition(running.Conditions, ConditionReady); rc.Reason != reasonRunning ||
+		rc.Message == "Run failed: the agent run settled failed" {
+		t.Errorf("running condition leaked the failure cause: %+v", rc)
+	}
+}
+
 // TestProjectStatusPreservesEffectFields proves the projection is a merge, not a
 // clobber: fields written by the claim/effects path (SandboxRef, ArtifactRefs,
 // ClaimedAt) survive a status projection that only owns Phase/Conditions/gen.
