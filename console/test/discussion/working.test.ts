@@ -301,3 +301,46 @@ describe("groupByMessage / hasActiveWork", () => {
     ).toBe(true);
   });
 });
+
+// ISI-7483 (queued ≠ failed): a timed-out watch whose agent provably still
+// holds a live (queued or running) run must NOT expire to failed.
+describe("expireStale stillLive (ISI-7483)", () => {
+  const watch = (agentName: string): DispatchWatch => ({
+    key: `m1:${agentName.toLowerCase()}`,
+    agentName,
+    messageId: "m1",
+    phase: "working",
+    since: 0,
+  });
+  const now = 10 * 60_000;
+  const timeout = 5 * 60_000;
+
+  it("keeps a timed-out watch when the agent provably still has a live run", () => {
+    const out = expireStale([watch("ada")], now, timeout, {
+      stillLive: (w) => w.agentName === "ada",
+    });
+    expect(out[0].phase).toBe("working");
+  });
+
+  it("expires a timed-out watch when the probe says the run is not live", () => {
+    const out = expireStale([watch("ada")], now, timeout, {
+      stillLive: () => false,
+    });
+    expect(out[0].phase).toBe("failed");
+  });
+
+  it("expires when no probe is supplied (legacy wall-clock behavior)", () => {
+    const out = expireStale([watch("ada")], now, timeout);
+    expect(out[0].phase).toBe("failed");
+  });
+
+  it("never touches non-working or unexpired watches regardless of the probe", () => {
+    const replied: DispatchWatch = { ...watch("ada"), phase: "replied" };
+    const fresh = { ...watch("brin"), since: now - 1_000 }; // unexpired
+    const out = expireStale([replied, fresh], now, timeout, {
+      stillLive: () => false,
+    });
+    expect(out[0].phase).toBe("replied");
+    expect(out[1].phase).toBe("working");
+  });
+});

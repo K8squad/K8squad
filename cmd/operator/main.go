@@ -1534,7 +1534,17 @@ func main() {
 			// so the wait trips the pod-liveness zombie predicate exactly like
 			// the endpoint-slot case above.
 			MeshQueueWait: liveRuns,
-			Log:           func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+			// ISI-7483: the gate-side holder backstop. A run that
+			// terminalizes through any path other than OnDone / FailEnter /
+			// cancelFinish (projector force-fail, reaper force-fail, an
+			// errored follow that keeps its permit by design then budget
+			// exhaustion) leaked its in-process BYO endpoint permit forever —
+			// one dead holder starved every queued seat behind a single-slot
+			// endpoint (the 47m deepseek starvation). Each sweep pass now
+			// reclaims slots whose holder is terminal or gone.
+			EndpointGate:   endpointGate,
+			HolderTerminal: liveRuns,
+			Log:            func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register claim hygiene sweep")
 			os.Exit(1)

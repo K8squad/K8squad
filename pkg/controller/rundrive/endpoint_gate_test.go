@@ -224,3 +224,52 @@ func TestEndpointGateEvictsStaleWaiter(t *testing.T) {
 		t.Fatal("a stale front waiter (run-2) must be evicted so run-3 is admitted")
 	}
 }
+
+// ISI-7483: a holder whose run is terminal or gone must lose its slot so the
+// FIFO waiters proceed; a checker error must never reclaim (fail-safe).
+func TestEndpointGateReclaimHoldersEvictsDeadHolder(t *testing.T) {
+	g := NewEndpointGate(1)
+	const ep = "https://api.deepseek.com/v1"
+	if _, ok := g.Acquire(ep, "holder", 1); !ok {
+		t.Fatalf("holder acquire refused on an empty gate")
+	}
+	if _, ok := g.Acquire(ep, "waiter", 1); ok {
+		t.Fatalf("waiter admitted into a full slot")
+	}
+	evicted := g.ReclaimHolders(func(runID string) (bool, error) {
+		if runID != "holder" {
+			t.Fatalf("liveness asked about unknown run %q", runID)
+		}
+		return false, nil // terminal
+	})
+	if len(evicted) != 1 || evicted[0].RunID != "holder" || evicted[0].Endpoint != ep {
+		t.Fatalf("evicted = %+v, want exactly the dead holder on %s", evicted, ep)
+	}
+	if _, ok := g.Acquire(ep, "waiter", 1); !ok {
+		t.Fatalf("waiter still refused after the dead holder was reclaimed")
+	}
+}
+
+// ISI-7483: a liveness-checker error is a maybe — the holder keeps its slot.
+func TestEndpointGateReclaimHoldersFailsSafeOnCheckerError(t *testing.T) {
+	g := NewEndpointGate(1)
+	const ep = "http://10.0.0.185:11434"
+	g.Acquire(ep, "holder", 1)
+	g.Acquire(ep, "waiter", 1)
+	if ev := g.ReclaimHolders(func(string) (bool, error) { return false, fmt.Errorf("list runs: boom") }); len(ev) != 0 {
+		t.Fatalf("checker error reclaimed %d slots; want fail-safe keep", len(ev))
+	}
+	if _, ok := g.Acquire(ep, "waiter", 1); ok {
+		t.Fatalf("waiter admitted after a fail-unsafe reclaim")
+	}
+}
+
+// ISI-7483: a live holder is never reclaimed.
+func TestEndpointGateReclaimHoldersKeepsLiveHolder(t *testing.T) {
+	g := NewEndpointGate(1)
+	g.Acquire("ep", "holder", 1)
+	g.Acquire("ep", "waiter", 1)
+	if ev := g.ReclaimHolders(func(string) (bool, error) { return true, nil }); len(ev) != 0 {
+		t.Fatalf("live holder reclaimed: %+v", ev)
+	}
+}

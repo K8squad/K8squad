@@ -254,17 +254,40 @@ export function applyReply(
  * a run dies or never posts back (ISI-5174 AC3). Pure in `now`: the caller owns
  * the clock (a component timer), which keeps this trivially testable. Input list
  * is not mutated.
+ *
+ * ISI-7483 (queued ≠ failed): a wall-clock timeout alone cannot distinguish "the
+ * run died" from "the run is honestly QUEUED" — a multi-seat dispatch serialized
+ * behind a busy single-slot BYO endpoint makes every later seat wait far past
+ * any fixed timeout while its run is alive and holding a FIFO queue position,
+ * and expiring those seats to "could not respond" is a lie (the live
+ * repro: four seats queued 47+ minutes behind a leaked slot). The optional
+ * `stillLive` probe is the escape hatch: when it can PROVE the watch's agent
+ * still has a live run (per-agent presence off the overview feed, where "queued"
+ * includes WaitingForEndpointSlot), the watch stays `working` — honest "still
+ * waiting", never a false failure. The probe is false on absent data (no
+ * presence feed ⇒ the pre-ISI-7483 wall-clock behavior, unchanged).
  */
+export interface ExpireStaleOptions {
+  /**
+   * ISI-7483: prove this watch's agent still holds a live (queued or running)
+   * run. True ⇒ the timed-out watch is KEPT as `working` instead of being
+   * expired to `failed`. Absent ⇒ pure wall-clock expiry (legacy behavior).
+   */
+  stillLive?: (w: DispatchWatch) => boolean;
+}
+
 export function expireStale(
   existing: readonly DispatchWatch[],
   now: number,
   timeoutMs: number,
+  opts?: ExpireStaleOptions,
 ): DispatchWatch[] {
-  return existing.map((w) =>
-    w.phase === "working" && now - w.since >= timeoutMs
-      ? { ...w, phase: "failed" as const }
-      : w,
-  );
+  const stillLive = opts?.stillLive;
+  return existing.map((w) => {
+    if (w.phase !== "working" || now - w.since < timeoutMs) return w;
+    if (stillLive?.(w) === true) return w; // provably queued/running — keep waiting honestly
+    return { ...w, phase: "failed" as const };
+  });
 }
 
 /** Group watches by their triggering message id, for per-message rendering. */

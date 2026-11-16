@@ -276,3 +276,45 @@ func (g *EndpointGate) ReleaseByRun(runID string) {
 		g.dropWaiter(endpoint, runID)
 	}
 }
+
+// EvictedHolder names one reclaimed slot: the endpoint whose slot was freed
+// and the dead holder run that lost it (ISI-7483).
+type EvictedHolder struct {
+	Endpoint string
+	RunID    string
+}
+
+// ReclaimHolders evicts every slot holder the caller reports as no longer live
+// (terminal Run or Run CR gone) and returns the evicted pairs. It is the
+// holder-side backstop of the ISI-5037 gate: every release site (the
+// dispatcher's clean OnDone, the driver's FailEnter / cancelFinish) fires from
+// the dispatch/driver paths, so a run that terminalizes through any OTHER path
+// — projector force-fail, reaper force-fail, an errored follow whose OnDone
+// keeps the permit by design followed by budget exhaustion — leaks its permit
+// forever. The gate is the only admission authority on a single-slot endpoint,
+// so ONE dead holder starves every waiter indefinitely (ISI-7483: a Failed
+// run held the deepseek slot for 47+ minutes while four queued seats sat
+// "exempt from zombie reap" with zero throughput). The heartbeat sweep calls
+// this every tick with a liveness callback over the Run CRs. live is TRUE =
+// keep the slot; a checker ERROR also counts as live — a slot is never
+// reclaimed on a maybe, mirroring the reaper discipline (never reap on a
+// maybe).
+func (g *EndpointGate) ReclaimHolders(live func(runID string) (bool, error)) []EvictedHolder {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var evicted []EvictedHolder
+	for endpoint, holders := range g.holders {
+		for id := range holders {
+			isLive, err := live(id)
+			if err != nil || isLive {
+				continue // fail-safe: never reclaim on a maybe
+			}
+			delete(holders, id)
+			evicted = append(evicted, EvictedHolder{Endpoint: endpoint, RunID: id})
+		}
+		if len(holders) == 0 {
+			delete(g.holders, endpoint)
+		}
+	}
+	return evicted
+}
