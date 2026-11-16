@@ -56,9 +56,14 @@ LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 # Security upgrades + git for crew projects cloned into the workdir (same as the
-# toolchain image).
+# toolchain image). --only-upgrade zlib1g pulls the debian-security build of zlib
+# (CVE-2026-85091 gz_vacate heap overflow + CVE-2026-76844, both HIGH, fixed
+# in 1:1.3.dfsg+really1.3.1-1+deb13u1) ahead of the rolling base ref — same targeted
+# pattern as Dockerfile.toolchain-ffmpeg (ISI-7469).
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates git && \
+    apt-get install -y --no-install-recommends --only-upgrade zlib1g && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Stage uv binaries from the upstream scratch-based image.
@@ -66,7 +71,11 @@ COPY --from=uv /uv /uvx /usr/local/bin/
 
 # Install the pinned crewai[a2a] extra into the system Python so the crew A2A
 # server imports resolve without activating a virtual environment.
-RUN uv pip install --system "crewai[a2a]==${CREWAI_VERSION}"
+# --no-cache: do NOT bake uv's download cache (/root/.cache/uv) into the image — it
+# carried a vulnerable uv wheel (uv 0.11.33, GHSA-hq85-5cpj-mr62 CRITICAL) that
+# tripped the Trivy gate although uv-the-binary is pinned above (ISI-7469). Runtime
+# uv (USER 65532, HOME=/tmp) keeps its own cache, untouched by this build-time flag.
+RUN uv pip install --no-cache --system "crewai[a2a]==${CREWAI_VERSION}"
 
 # The Go half: the shim binary (CGO_ENABLED=0, static — runs fine on the Debian base).
 COPY --from=build /out/shim /usr/local/bin/shim
