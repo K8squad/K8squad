@@ -695,6 +695,61 @@ func (c *ProdClaims) GateResume(ctx context.Context, workItemID string) (bool, e
 	return true, nil
 }
 
+// GateResumeDispatch regresses a dispatching checkout back to
+// claiming_sandbox (ISI-7487): a run parked in the BYO endpoint-slot wait
+// whose bound warm pod died before dispatch re-enters the pre-bind hold and
+// re-queues pod-less, instead of the gone-sandbox death path burning a retry
+// lap (terminal at retryPolicy=0). Same guarded-step + audit + outbox
+// discipline as GateResume; ok=false means the step was not dispatching.
+func (c *ProdClaims) GateResumeDispatch(ctx context.Context, workItemID string) (bool, error) {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResumeDispatch: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE coord.claim
+		   SET reconcile_step = 'claiming_sandbox'
+		 WHERE work_item_id = $1::uuid
+		   AND reconcile_step = 'dispatching'`, workItemID)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResumeDispatch: update: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResumeDispatch: rows: %w", err)
+	}
+	if n == 0 {
+		return false, nil // not parked at dispatching
+	}
+
+	runID := c.runIDFor(ctx, tx, workItemID)
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, from_state, to_state)
+		VALUES ($1::uuid, NULLIF($2,'')::uuid, 'slot_wait_rebound', $3,
+		        'dispatching', 'claiming_sandbox')`,
+		workItemID, runID, c.principal); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResumeDispatch: audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'slot_wait_rebound',
+		       wi.id, NULLIF($2,'')::uuid,
+		       jsonb_build_object('from_step', 'dispatching',
+		                          'to_step', 'claiming_sandbox')
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
+		workItemID, runID); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResumeDispatch: outbox: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.GateResumeDispatch: commit: %w", err)
+	}
+	return true, nil
+}
+
 // ProdPauses adapts coord.ProdResumeStore to the Pauses seam.
 type ProdPauses struct{ store *coord.ProdResumeStore }
 
