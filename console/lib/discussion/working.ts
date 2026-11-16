@@ -249,6 +249,39 @@ export function applyReply(
 }
 
 /**
+ * Resolve `working` watches when a run's FINAL comment echo arrives over the
+ * project bus (a bridged `ticket_comment`, ISI-7485): the agent did answer —
+ * its terminal recap is the response even when no in-thread reply ever posts.
+ * Correlation mirrors applyReply exactly (author identity, run-stamped
+ * `agent:{name}` prefix stripped, case-insensitive; lone-working fallback), so
+ * the two resolution paths can never disagree about which watch a given agent
+ * resolves. Input list is not mutated.
+ */
+export function applyAuthorReply(
+  existing: readonly DispatchWatch[],
+  author: string,
+): DispatchWatch[] {
+  const name = (author ?? "").replace(/^agent:/, "").toLowerCase();
+  if (!name) return existing.slice();
+  const active = existing.filter((w) => w.phase === "working");
+  if (active.length === 0) return existing.slice();
+
+  const byName = active.filter((w) => w.agentName.toLowerCase() === name);
+  let resolve: ReadonlySet<string>;
+  if (byName.length > 0) {
+    resolve = new Set(byName.map((w) => w.key));
+  } else if (active.length === 1) {
+    resolve = new Set([active[0].key]);
+  } else {
+    return existing.slice(); // ambiguous — let the timeout decide
+  }
+
+  return existing.map((w) =>
+    resolve.has(w.key) ? { ...w, phase: "replied" as const } : w,
+  );
+}
+
+/**
  * Expire `working` watches older than `timeoutMs` to `failed` ("agent could not
  * respond"), so the room never leaves a working indicator spinning forever when
  * a run dies or never posts back (ISI-5174 AC3). Pure in `now`: the caller owns

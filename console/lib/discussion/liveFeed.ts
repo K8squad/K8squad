@@ -40,12 +40,45 @@ export interface ThinkingRow {
 }
 
 /**
+ * One live `ticket_comment` echo bridged onto the per-project bus (ISI-7485,
+ * WS-4 of parent ISI-7482): the run's FINAL work-item comment (ISI-7274),
+ * self-describing — the durable comment triple (author/body/at) plus the ids a
+ * project surface needs to correlate it (runId for the ended-watch backstop,
+ * workItemId for the ticket deep link). Same author correlation as a thinking
+ * envelope: it renders as the run's deliverable under the dispatch it answers.
+ */
+export interface TicketCommentRow {
+  runId: string;
+  workItemId: string;
+  author: string;
+  body: string;
+  /** coord comment kind token: summary / progress / plain (absent = plain). */
+  kind?: string;
+  at: string;
+}
+
+/**
+ * One terminal `run_ended` milestone bridged onto the per-project bus
+ * (ISI-7485): the happy-path `ended` lifecycle row (ISI-4386) remapped from
+ * its outbox event_type onto the run-entity-named project event. Only the
+ * fields a room surface needs are decoded; the payload stays the lifecycle v1
+ * frame verbatim on the wire.
+ */
+export interface RunEndedRow {
+  runId: string;
+  agent?: string;
+}
+
+/**
  * The discriminated event the room's ONE project EventSource delivers: a room
  * message change (the `discussion` named event) or a live thinking envelope (the
  * `thinking` named event). Both ride the single 8.2 stream — no second transport.
  */
 export type RoomStreamEvent =
-  { kind: "room"; event: RoomEvent } | { kind: "thinking"; row: ThinkingRow };
+  | { kind: "room"; event: RoomEvent }
+  | { kind: "thinking"; row: ThinkingRow }
+  | { kind: "ticket_comment"; row: TicketCommentRow }
+  | { kind: "run_ended"; row: RunEndedRow };
 
 /** Parse a raw `thinking` SSE `data:` payload into a ThinkingRow, or null when it
  * carries no renderable body (author or body missing ⇒ nothing to show). */
@@ -71,6 +104,77 @@ export function parseThinkingRow(raw: string): ThinkingRow | null {
     seq: typeof e.seq === "number" ? e.seq : 0,
     at: typeof e.at === "string" ? e.at : "",
     ...(kind ? { kind } : {}),
+  };
+}
+
+/**
+ * Parse a raw `ticket_comment` SSE `data:` payload (a coord.LiveCommentEcho
+ * frame, ISI-7274) into a TicketCommentRow, or null when it carries no
+ * renderable body (author or body missing ⇒ nothing to show — the durable
+ * comment row stays the record either way).
+ */
+export function parseTicketCommentRow(raw: string): TicketCommentRow | null {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const e = obj as Record<string, unknown>;
+  const body = typeof e.body === "string" ? e.body : "";
+  const author = typeof e.author === "string" ? e.author : "";
+  if (!body || !author) return null;
+  const kind = typeof e.kind === "string" && e.kind ? e.kind : undefined;
+  return {
+    runId: typeof e.runId === "string" ? e.runId : "",
+    workItemId: typeof e.workItemId === "string" ? e.workItemId : "",
+    author,
+    body,
+    ...(kind ? { kind } : {}),
+    at: typeof e.at === "string" ? e.at : "",
+  };
+}
+
+/**
+ * Parse a raw `run_ended` SSE `data:` payload (a ksquad.lifecycle.v1 frame
+ * for run.ended) into a RunEndedRow, or null when it names no run. A frame
+ * whose `event` names another domain event is rejected — the SSE name said
+ * run_ended, the payload must agree.
+ */
+export function parseRunEndedRow(raw: string): RunEndedRow | null {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const e = obj as Record<string, unknown>;
+  const runId = typeof e.run_id === "string" ? e.run_id : "";
+  if (!runId) return null;
+  if (typeof e.event === "string" && e.event !== "run.ended") return null;
+  const agent = typeof e.agent === "string" && e.agent ? e.agent : undefined;
+  return { runId, ...(agent ? { agent } : {}) };
+}
+
+/**
+ * Map a bridged `ticket_comment` echo onto the deliverable-tier ThinkingRow
+ * the room already renders beneath the dispatch it answers (ISI-7098 wire
+ * tiers: "deliverable" = the run's ONE final answer). `seq` keys the
+ * per-(runId, seq) dedup in appendThinking: the echo carries no sequence, so
+ * the comment's own server-stamped `at` (epoch ms) stands in — stable across
+ * redeliveries, unique per comment.
+ */
+export function ticketCommentToDeliverable(row: TicketCommentRow): ThinkingRow {
+  const atMs = Date.parse(row.at);
+  return {
+    runId: row.runId,
+    author: row.author,
+    body: row.body,
+    seq: Number.isFinite(atMs) ? atMs : 0,
+    at: row.at,
+    kind: "deliverable",
   };
 }
 

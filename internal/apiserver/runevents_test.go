@@ -350,3 +350,74 @@ func TestRunEventSource_BridgesDiscussionMessageToRoomEvent(t *testing.T) {
 		t.Fatal("project bus: received an extra event")
 	}
 }
+
+// ISI-7485 (WS-4 of parent ISI-7482): the needed-subset bridge — a run's final
+// `ticket_comment` echo (ISI-7274) rides the project bus under its own name
+// and the terminal `ended` lifecycle milestone (ISI-4386) remaps onto
+// `run_ended`, both payload-verbatim; the per-run hub keeps the raw types;
+// non-terminal lifecycle (`started`) and per-run detail (`reconcile_advanced`)
+// stay on the per-run hub only.
+func TestRunEventSource_BridgesTicketCommentAndEndedToProject(t *testing.T) {
+	reader := &fakeRunReader{errLatest: errors.New("seed-at-0")}
+	hub := NewHub()
+	projectHub := NewProjectHub()
+	runSub := hub.Subscribe("run-a")
+	projSub := projectHub.Subscribe("ns/proj")
+
+	resolve := func(_ context.Context, uid string) (string, bool) {
+		if uid == "uid-1" {
+			return "ns/proj", true
+		}
+		return "", false
+	}
+	src := NewRunEventSource(reader, hub, WithProjectorPoll(5*time.Millisecond),
+		WithProjectBridge(projectHub, resolve))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = src.Run(ctx) }()
+
+	ticketPayload := []byte(`{"workItemId":"wi-1","runId":"run-a","author":"agent:john","body":"final recap","kind":"summary","at":"2026-11-16T08:00:00Z"}`)
+	endedPayload := []byte(`{"schema":"ksquad.lifecycle.v1","event":"run.ended","from_step":"collecting","to_step":"succeeded","run_id":"run-a","agent":"john"}`)
+	reader.add(
+		events.RunEvent{ID: 1, RunID: "run-a", ProjectID: "uid-1", EventType: "reconcile_advanced", Payload: []byte(`{"to_step":"collecting"}`)},
+		events.RunEvent{ID: 2, RunID: "run-a", ProjectID: "uid-1", EventType: "ticket_comment", Payload: ticketPayload},
+		events.RunEvent{ID: 3, RunID: "run-a", ProjectID: "uid-1", EventType: "started", Payload: []byte(`{"event":"run.started"}`)},
+		events.RunEvent{ID: 4, RunID: "run-a", ProjectID: "uid-1", EventType: "ended", Payload: endedPayload},
+	)
+
+	// Per-run hub: all four rows, raw event types, in id order.
+	for i, want := range []struct {
+		id  string
+		typ string
+	}{
+		{"1", "reconcile_advanced"},
+		{"2", "ticket_comment"},
+		{"3", "started"},
+		{"4", "ended"},
+	} {
+		ev := recvWithin(t, runSub, time.Second)
+		if ev.ID != want.id || ev.Type != want.typ {
+			t.Fatalf("run hub event %d: want %s/%s, got %s/%s", i+1, want.id, want.typ, ev.ID, ev.Type)
+		}
+	}
+
+	// Project bus: ONLY the bridged pair — ticket_comment under its own name,
+	// payload verbatim, then ended remapped onto run_ended, payload verbatim.
+	ev, ok := nrecvWithin(projSub, time.Second)
+	if !ok {
+		t.Fatal("project bus: expected the bridged ticket_comment, got none")
+	}
+	if ev.ID != "2" || ev.Type != "ticket_comment" || ev.Data != string(ticketPayload) {
+		t.Fatalf("project bus: want 2/ticket_comment verbatim, got %s/%s %s", ev.ID, ev.Type, ev.Data)
+	}
+	ev, ok = nrecvWithin(projSub, time.Second)
+	if !ok {
+		t.Fatal("project bus: expected the bridged run_ended, got none")
+	}
+	if ev.ID != "4" || ev.Type != "run_ended" || ev.Data != string(endedPayload) {
+		t.Fatalf("project bus: want 4/run_ended verbatim, got %s/%s %s", ev.ID, ev.Type, ev.Data)
+	}
+	if leak, extra := nrecvWithin(projSub, 50*time.Millisecond); extra {
+		t.Fatalf("project bus: a non-bridged type leaked (id %s)", leak.ID)
+	}
+}

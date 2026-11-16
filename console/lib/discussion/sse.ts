@@ -7,6 +7,8 @@
 import { encodeProjectId } from "@/lib/projectId";
 import {
   parseRoomEvent,
+  parseRunEndedRow,
+  parseTicketCommentRow,
   parseThinkingRow,
   type RoomStreamEvent,
 } from "./liveFeed";
@@ -26,13 +28,21 @@ export function streamUrl(projectId: string): string {
 
 /**
  * Subscribe to a thread's live events over the shared 8.2 project channel. The ONE
- * EventSource multiplexes two named events (§13 "one bus, no polling"):
+ * EventSource multiplexes four named events (§13 "one bus, no polling"):
  *   - `discussion` → a RoomEvent (message created/updated/deleted), filtered to
  *     this thread and delivered as `{kind:"room"}`;
  *   - `thinking`   → a live run thinking envelope (ISI-5208), delivered as
  *     `{kind:"thinking"}`. A thinking envelope carries no thread id, so it is NOT
  *     filtered here — the Room correlates it to a working watch by author (which is
- *     itself thread-scoped), dropping any that belong to no active dispatch.
+ *     itself thread-scoped), dropping any that belong to no active dispatch;
+ *   - `ticket_comment` → the run's final work-item comment echo (ISI-7274),
+ *     bridged project-wide by the apiserver run-event projector (ISI-7485),
+ *     delivered as `{kind:"ticket_comment"}`. Like thinking it carries no thread
+ *     id — the Room correlates it by author, and it doubles as the dispatch's
+ *     reply: the final comment IS the agent's response;
+ *   - `run_ended`  → the run's terminal `ended` lifecycle milestone
+ *     (ISI-4386, bridged ISI-7485), delivered as `{kind:"run_ended"}` — the
+ *     Room re-fetches on terminal state without ever learning the run id.
  * Returns an unsubscribe function.
  */
 export function subscribeRoom(
@@ -57,7 +67,17 @@ export function subscribeRoom(
     const row = parseThinkingRow(e.data);
     if (row) onEvent({ kind: "thinking", row });
   };
+  const ticketCommentHandler = (e: { data: string }) => {
+    const row = parseTicketCommentRow(e.data);
+    if (row) onEvent({ kind: "ticket_comment", row });
+  };
+  const runEndedHandler = (e: { data: string }) => {
+    const row = parseRunEndedRow(e.data);
+    if (row) onEvent({ kind: "run_ended", row });
+  };
   src.addEventListener("discussion", roomHandler);
   src.addEventListener("thinking", thinkingHandler);
+  src.addEventListener("ticket_comment", ticketCommentHandler);
+  src.addEventListener("run_ended", runEndedHandler);
   return () => src.close();
 }

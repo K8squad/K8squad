@@ -24,12 +24,14 @@ import { isPartyStart, newestTerminalSession } from "@/lib/discussion/party";
 import {
   applyRoomEvent,
   isResetMarker,
+  ticketCommentToDeliverable,
   type RoomStreamEvent,
   type ThinkingRow,
 } from "@/lib/discussion/liveFeed";
 import { appendThinking } from "@/lib/discussion/liveThinking";
 import { audienceWire } from "@/lib/discussion/audience";
 import {
+  applyAuthorReply,
   applyReply,
   dispatchTargets,
   expireStale,
@@ -324,6 +326,37 @@ export function DiscussionRoom({
         );
         return;
       }
+      if (se.kind === "ticket_comment") {
+        // ISI-7485: the run's final work-item comment, bridged project-wide by
+        // the apiserver projector. Same handling as a thinking envelope (run id
+        // → ended-watch backstop; deliverable-tier render under the dispatch it
+        // answers) PLUS the working-watch resolution — the final comment IS the
+        // agent's response, even when no in-thread reply ever lands.
+        if (se.row.runId) {
+          setRunWatches((cur) =>
+            cur.includes(se.row.runId) ? cur : [...cur, se.row.runId],
+          );
+        }
+        setLiveThinking((cur) =>
+          appendThinking(
+            cur,
+            ticketCommentToDeliverable(se.row),
+            workingRef.current,
+          ),
+        );
+        setWorking((cur) => applyAuthorReply(cur, se.row.author));
+        return;
+      }
+      if (se.kind === "run_ended") {
+        // ISI-7485: terminal milestone bridged project-wide — the coalesced
+        // re-fetch fires even when the room never learned the run id from a
+        // thinking envelope. The watch is NOT resolved here: the settle comment
+        // commits AFTER `ended` (load-bearing ordering, ISI-7274), so the
+        // reply may still be in flight; the ticket_comment bridge or the reply
+        // itself resolves it, and the timeout sweep stays the failure backstop.
+        if (se.row.runId) onRunEnded(se.row.runId);
+        return;
+      }
       const evt = se.event;
       // ADR-0030 clear-signal (ISI-5674 WS-D): a reset marker over the bus clears
       // the local transcript (applyRoomEvent drops the floor, never a bubble) and
@@ -346,7 +379,7 @@ export function DiscussionRoom({
       }
     });
     return unsub;
-  }, [subscribe]);
+  }, [subscribe, onRunEnded]);
 
   // Failure sweep (ISI-5174 AC3): expire a still-working watch to "could not
   // respond" once its run has been silent past the timeout, so an indicator
