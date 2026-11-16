@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // OutboxRow is one unflushed event the relay is about to publish. Only the
@@ -154,6 +155,10 @@ type RunEvent struct {
 	ProjectID string
 	EventType string
 	Payload   []byte
+	// OccurredAt is the row's commit stamp (coord.outbox.occurred_at). The SSE
+	// wire omits it (live frames are client-stamped); the REST history tail
+	// (ISI-7484) surfaces it so hydrated Activity rows keep their true time.
+	OccurredAt time.Time
 }
 
 // RunEventReader reads run-entity events from coord.outbox for the apiserver SSE
@@ -193,7 +198,7 @@ func (s *SQLStore) RunEventsAfter(ctx context.Context, afterID int64, limit int)
 		limit = defaultRunEventLimit
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, run_id::text, COALESCE(project_id::text, ''), event_type, payload
+		SELECT id, run_id::text, COALESCE(project_id::text, ''), event_type, payload, occurred_at
 		  FROM coord.outbox
 		 WHERE entity = 'run' AND run_id IS NOT NULL AND id > $1
 		 ORDER BY id
@@ -212,7 +217,7 @@ func (s *SQLStore) RunEventsForRun(ctx context.Context, runID string, afterID in
 		limit = defaultRunEventLimit
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, run_id::text, COALESCE(project_id::text, ''), event_type, payload
+		SELECT id, run_id::text, COALESCE(project_id::text, ''), event_type, payload, occurred_at
 		  FROM coord.outbox
 		 WHERE entity = 'run' AND run_id = $1::uuid AND id > $2
 		 ORDER BY id
@@ -231,7 +236,7 @@ func scanRunEvents(rows *sql.Rows, where string) ([]RunEvent, error) {
 	for rows.Next() {
 		var r RunEvent
 		var payload []byte
-		if err := rows.Scan(&r.ID, &r.RunID, &r.ProjectID, &r.EventType, &payload); err != nil {
+		if err := rows.Scan(&r.ID, &r.RunID, &r.ProjectID, &r.EventType, &payload, &r.OccurredAt); err != nil {
 			return nil, fmt.Errorf("events.SQLStore.%s: scan: %w", where, err)
 		}
 		r.Payload = append([]byte(nil), payload...)
@@ -241,4 +246,22 @@ func scanRunEvents(rows *sql.Rows, where string) ([]RunEvent, error) {
 		return nil, fmt.Errorf("events.SQLStore.%s: rows: %w", where, err)
 	}
 	return out, nil
+}
+
+// PruneRunEventsBefore deletes run-entity rows older than cutoff through the
+// governed coord.prune_run_events path (db/migrations/0044) — the SINGLE
+// sanctioned retention exception to the outbox append-only guard. Only relayed
+// rows (published_at set) are eligible, so the NATS at-least-once backlog is
+// never touched; non-run rows are never touched either. Returns the number of
+// rows pruned (0 when the window is empty) so the caller can observe the sweep.
+//
+// This is the one WRITE on the journal from this store — owned by the apiserver
+// retention sweep (cmd/apiserver/runeventretention.go), never a read path.
+func (s *SQLStore) PruneRunEventsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	var pruned int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT coord.prune_run_events($1)`, cutoff).Scan(&pruned); err != nil {
+		return 0, fmt.Errorf("events.SQLStore.PruneRunEventsBefore: %w", err)
+	}
+	return pruned, nil
 }

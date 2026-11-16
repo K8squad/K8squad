@@ -14,6 +14,7 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/auth"
+	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/search"
 )
 
@@ -306,6 +307,13 @@ type Options struct {
 	// Runs is the ISI-4571 run-list and run-detail read model (global listing, project-scoped listing, run detail with steps/comments)
 	// behind the SAME §13 choke point. When nil the run routes keep the documented 501 (dev run without an informer cache).
 	Runs *RunsService
+	// RunEvents is the ISI-7484 durable run-event history read side: the
+	// coord.outbox entity='run' tail behind GET /api/runs/{runId}/events, so a
+	// reload / late join hydrates the Activity feed from the same journal the
+	// SSE projector live-tails and Last-Event-ID replay resumes from (one
+	// source of truth; overlap dedupes by outbox row id). Nil ⇒ the route keeps
+	// the documented 501 (a DB-less dev run), exactly like the other read models.
+	RunEvents events.RunEventReader
 	// Onboarding is the E1 onboarding-progress read model (ISI-3673, AD-2): the
 	// derived 4-milestone projection over CRD existence (Team / preset Agents /
 	// credentials / Project-with-repo-auth) plus the non-CR-derivable flags held
@@ -512,6 +520,28 @@ func (s *Server) routes(opts Options) {
 		stream := s.router.Path("/api/runs/{runId}/stream").Subrouter()
 		stream.Use(authz)
 		stream.HandleFunc("", s.hub.streamRun).Methods(http.MethodGet)
+
+		// ISI-7484 WS-3 (parent ISI-7482/ISI-7480) — durable Activity history:
+		// the run's coord.outbox entity='run' tail as plain JSON, so a page
+		// reload or late join hydrates the Activity feed BEFORE the live SSE
+		// tail takes over. Rows carry the SAME outbox id the SSE `id:` line
+		// uses, so the console dedupes the hydration/live overlap exactly like
+		// Last-Event-ID replay. Nil reader keeps the documented 501 (DB-less
+		// dev run), exactly like the sibling read models.
+		runEventsRoute := s.router.Path("/api/runs/{runId}/events").Subrouter()
+		runEventsRoute.Use(authz)
+		if opts.RunEvents != nil {
+			var resolveRunUID runEventUIDResolver
+			if opts.Runs != nil {
+				runsSvc := opts.Runs
+				resolveRunUID = func(ctx context.Context, name string) (string, error) {
+					return runsSvc.ResolveRunUID(ctx, name)
+				}
+			}
+			runEventsRoute.HandleFunc("", runEventsHandler(opts.RunEvents, resolveRunUID)).Methods(http.MethodGet)
+		} else {
+			runEventsRoute.HandleFunc("", notImplemented("run-event history", "ISI-7484: wire an events.RunEventReader (Postgres coord store) to enable")).Methods(http.MethodGet)
+		}
 
 		// ISI-5194 (S6, plan ISI-5185) — the per-project SSE fan-out bus. One EventSource per
 		// project carries every producer's events (discussion append, agent working/thinking,
