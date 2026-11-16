@@ -152,10 +152,10 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 		t.Fatalf("NewSQLIntakeSource: %v", err)
 	}
 
-	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent", "source"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder", "board").
-		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil, "discussion")
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source
+	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent", "source", "priority"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder", "board", "urgent").
+		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil, "discussion", nil)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source, wi.priority
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
 		   AND wi.blocked_reason IS NULL
@@ -189,6 +189,14 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 	}
 	if items[1].Source != "discussion" {
 		t.Fatalf("row 1 source: got %q want discussion", items[1].Source)
+	}
+	// priority is selected too (ISI-7499 C2): the enum column (migration
+	// 0020) is mapped onto the numeric Run annotation at buildRun time.
+	if items[0].Priority != "urgent" {
+		t.Fatalf("row 0 priority: got %q want urgent", items[0].Priority)
+	}
+	if items[1].Priority != "" {
+		t.Fatalf("row 1 priority (NULL): got %q want empty", items[1].Priority)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -1276,5 +1284,58 @@ func TestSQLIntakeSourceParkWorkItem(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestIntakeSweepStampsSchedulingKey pins the ISI-7499 C2 stamping path:
+// every minted Run carries the numeric scheduling key — class (board=0 vs
+// discussion=1, derived from the source the LabelWorkItemSource label
+// carries) and issue-priority rank (coord.work_item.priority enum → 0..4,
+// 0 = unset) — as annotations next to the ADR-0024c source label. C3/C4
+// order admission queues off these annotations alone.
+func TestIntakeSweepStampsSchedulingKey(t *testing.T) {
+	const (
+		boardItemID = "44444444-4444-4444-4444-444444444444"
+		partyItemID = "55555555-5555-5555-5555-555555555555"
+		teamUID     = "22222222-2222-2222-2222-222222222222"
+		squadNS     = "squad-key"
+		agentName   = "coder"
+	)
+	objs := squadGraph(teamUID, squadNS, "keyteam", agentName, "proj-cr-name")
+	for _, o := range objs {
+		if p, ok := o.(*api.Project); ok {
+			p.UID = types.UID("proj-uid-key")
+		}
+	}
+	in, cl, _ := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: boardItemID, TeamID: teamUID, ProjectID: "proj-uid-key", Source: "board", Priority: "high"},
+		{ID: partyItemID, TeamID: teamUID, ProjectID: "proj-uid-key", Source: "discussion"},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	cases := []struct {
+		itemID          string
+		wantClass       string
+		wantPriority    string
+		wantSourceLabel string
+	}{
+		{boardItemID, "0", "3", "board"},
+		{partyItemID, "1", "0", "discussion"},
+	}
+	for _, tc := range cases {
+		var run api.Run
+		if err := cl.Get(context.Background(), client.ObjectKey{Namespace: squadNS, Name: "intake-" + tc.itemID + "-" + agentName}, &run); err != nil {
+			t.Fatalf("get minted run for %s: %v", tc.itemID, err)
+		}
+		if got := run.Annotations[api.AnnotationWorkItemClass]; got != tc.wantClass {
+			t.Fatalf("%s class annotation: got %q want %q", tc.itemID, got, tc.wantClass)
+		}
+		if got := run.Annotations[api.AnnotationWorkItemPriority]; got != tc.wantPriority {
+			t.Fatalf("%s priority annotation: got %q want %q", tc.itemID, got, tc.wantPriority)
+		}
+		if got := run.Labels[api.LabelWorkItemSource]; got != tc.wantSourceLabel {
+			t.Fatalf("%s source label: got %q want %q", tc.itemID, got, tc.wantSourceLabel)
+		}
 	}
 }

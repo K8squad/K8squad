@@ -117,6 +117,13 @@ type IntakeItem struct {
 	// Run (ADR-0024c D2, ISI-5138) — the capability gate (pkg/capability) uses
 	// the label rather than querying coord so it never imports the coord DB.
 	Source string
+	// Priority is the coord.work_item.priority enum value ("low", "medium",
+	// "high", "urgent"; "" when NULL — migration 0020; the column mirrors the
+	// Paperclip board issue priority set). Carried to buildRunForAgent to
+	// stamp api.AnnotationWorkItemPriority (numeric rank, via
+	// api.WorkItemPriorityRank) on the minted Run (ISI-7499 plan D1 / C2) —
+	// half of the scheduling key the C3/C4 admission ordering consumes.
+	Priority string
 }
 
 // IntakeSource is the board read-side seam, minimal so tests bind a fake (the
@@ -179,7 +186,7 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 	// the block. This is the dispatch-side gate; RearmSettled carries the same
 	// guard (defense in depth at both intake seams).
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source
+		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source, wi.priority
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
 		   AND wi.blocked_reason IS NULL
@@ -198,11 +205,13 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 		var it IntakeItem
 		var requestedAgent sql.NullString
 		var source sql.NullString
-		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID, &requestedAgent, &source); err != nil {
+		var priority sql.NullString
+		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID, &requestedAgent, &source, &priority); err != nil {
 			return nil, fmt.Errorf("rundrive.intake: scan due work item: %w", err)
 		}
 		it.RequestedAgent = requestedAgent.String // "" when NULL
 		it.Source = source.String                 // "" when NULL (treated as "board")
+		it.Priority = priority.String             // "" when NULL (rank 0 — plan D1 default)
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -745,6 +754,18 @@ func (i *Intake) buildRunForAgent(ctx context.Context, item IntakeItem, team api
 		}
 		meta.Labels[api.LabelWorkItemSource] = item.Source
 	}
+	// ISI-7499 C2 (plan D1): stamp the scheduling key onto the Run as
+	// annotations — numeric class (board=0/issue vs discussion=1/party,
+	// derived from the same source signal as the label above via
+	// api.WorkItemClassFromSource) and numeric issue-priority rank
+	// (coord.work_item.priority enum → 0..4 via api.WorkItemPriorityRank,
+	// 0 = unset). Both are total keys stamped unconditionally, so the
+	// admission-ordering consumers — C3 endpoint-gate waiters, C4
+	// per-agent queues — order Runs (including post-restart queue rebuilds)
+	// off the Run annotations alone. No admission-ordering change happens
+	// here; C3/C4 consume the key.
+	meta.Annotations[api.AnnotationWorkItemClass] = strconv.Itoa(api.WorkItemClassFromSource(item.Source))
+	meta.Annotations[api.AnnotationWorkItemPriority] = strconv.Itoa(api.WorkItemPriorityRank(item.Priority))
 
 	return &api.Run{
 		ObjectMeta: meta,
