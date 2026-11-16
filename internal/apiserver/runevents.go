@@ -43,18 +43,42 @@ type ProjectSlugResolver func(ctx context.Context, projectUID string) (slug stri
 
 // projectBridgeEventTypes is the allowlist of run-event types the projector ALSO
 // fans onto the per-project bus, mapped to the per-project SSE event NAME each
-// type bridges onto. `thinking` (ISI-5193) reuses its own name — the discussion
-// Room (ISI-5208) renders an active run's live thinking deltas inline,
-// correlated to its working watch by author; `discussion_message` (ISI-7272,
-// parent ISI-7262 WS-1) remaps onto the room's `discussion` event so an agent's
-// run-authored post — captured on the outbox by the discussion store,
-// cross-process from cmd/memory — live-appends exactly like the handler's
-// synchronous human echo. Per-run lifecycle/step events stay on the per-run hub
-// (the ticket surface, ISI-5206) and are not re-fanned project-wide, keeping the
-// project bus scoped to what a project surface consumes.
+// type bridges onto. This map IS the bus-scoping contract (ISI-7485, WS-4 of
+// parent ISI-7482): a run event bridges project-wide ONLY when a project
+// surface renders or acts on it without knowing the run id —
+//   - `thinking` (ISI-5193) reuses its own name — the discussion Room
+//     (ISI-5208) renders an active run's live thinking deltas inline,
+//     correlated to its working watch by author;
+//   - `discussion_message` (ISI-7272, parent ISI-7262 WS-1) remaps onto the
+//     room's `discussion` event so an agent's run-authored post — captured on
+//     the outbox by the discussion store, cross-process from cmd/memory —
+//     live-appends exactly like the handler's synchronous human echo;
+//   - `ticket_comment` (ISI-7274) rides its own name — the run's FINAL
+//     work-item comment echo is self-describing (coord.LiveCommentEcho:
+//     author/body/runId), so the Room surfaces the agent's final answer live
+//     under the dispatch it answers, by the same author correlation as
+//     thinking, even when no in-thread reply ever posts;
+//   - `ended` (the ISI-4386 happy-path terminal lifecycle milestone) remaps
+//     onto `run_ended` — the one lifecycle milestone a project surface acts
+//     on (the Room re-fetches / clears its working affordance on terminal
+//     state) without holding a per-run stream. The bridged name carries the
+//     run entity family because `ended` is run vocabulary the project bus
+//     shares with no other entity.
+//
+// Everything else stays on the per-run hub (the ticket surface, ISI-5206):
+// per-run steps/tools/telemetry, the coarse `reconcile_advanced` projection,
+// and the NON-terminal lifecycle milestones (`scheduled`, `sandbox_bound`,
+// `started`) — per-run detail must not fan project-wide. Note the failure
+// terminals publish no discrete `ended` (reconcile.LifecycleEventsFor maps
+// the happy path only), so a FAILED run reaches a project surface only via its
+// final comment echo or the surface's own working-timeout sweep; bridging
+// `reconcile_advanced` instead would fan every step advance project-wide,
+// which this contract forbids.
 var projectBridgeEventTypes = map[string]string{
 	"thinking":           "thinking",
 	"discussion_message": projectStreamEventName,
+	"ticket_comment":     "ticket_comment",
+	"ended":              "run_ended",
 }
 
 // RunEventSource tails coord.outbox for run-entity events and fans each to the
