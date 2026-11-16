@@ -166,6 +166,19 @@ func (l *LiveRuns) IsWaitingForEndpointSlot(ctx context.Context, runID string) (
 	return false, nil
 }
 
+// endpointSlotGate is the sweep-facing subset of *EndpointGate (ISI-7483):
+// reclaim the permits of dead holders and release a run's slots outright.
+type endpointSlotGate interface {
+	ReclaimHolders(live func(runID string) (bool, error)) []EvictedHolder
+	ReleaseByRun(runID string)
+}
+
+// runTerminalChecker answers "is this run uid terminal or gone?" for the
+// ISI-7483 holder reclaim (satisfied by *LiveRuns.TerminalOrGone).
+type runTerminalChecker interface {
+	TerminalOrGone(ctx context.Context, runID string) (bool, error)
+}
+
 // meshQueueWaitChecker answers "is this Run queued at the Supervisor on a
 // saturated mesh pool?" for the S4 zombie-reap exemption (ISI-5831, chapter
 // §5.4 D9.1). A mesh-routed Run whose dispatch was refused with 409 (every
@@ -283,6 +296,17 @@ type HeartbeatSweeper struct {
 	// behind a saturated mesh pool (ISI-5831 / QueuedAtSupervisor — S4,
 	// D9.1). Nil disables the exemption (pre-S4 behavior; tests opt in).
 	MeshQueueWait meshQueueWaitChecker
+	// EndpointGate is the per-BYO-endpoint slot gate (ISI-5037). When set
+	// (with HolderTerminal) each sweep pass reclaims slots whose holder run
+	// is terminal or gone — the ISI-7483 backstop for permits leaked by
+	// failure paths that never reach the gate's release sites (a Failed run
+	// held a single-slot endpoint for 47+ minutes while every queued seat
+	// sat "exempt from zombie reap"). Nil disables the reclaim
+	// (pre-ISI-7483 behavior; tests opt in explicitly).
+	EndpointGate endpointSlotGate
+	// HolderTerminal reports whether a run uid is terminal or its Run CR is
+	// gone (*LiveRuns.TerminalOrGone). Nil disables the reclaim.
+	HolderTerminal runTerminalChecker
 	// ZombieStallGrace overrides DefaultZombieStallGrace when > 0 (tests shrink
 	// it). A pod-less in-flight claim older than this is released as a zombie.
 	ZombieStallGrace time.Duration
@@ -330,6 +354,10 @@ func (s *HeartbeatSweeper) Start(ctx context.Context) error {
 
 // sweep is one level-triggered pass over every held claim row.
 func (s *HeartbeatSweeper) sweep(ctx context.Context) {
+	// ISI-7483: free BYO endpoint slots held by dead runs FIRST — the
+	// reclaim must not wait on the claim backlog (nor on a DB stall).
+	s.reclaimDeadHolders(ctx)
+
 	held, err := s.due(ctx)
 	if err != nil {
 		s.logf("rundrive.heartbeat: %v", err)
@@ -387,10 +415,10 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 					// through to renew and retry next level-triggered tick.
 					s.logf("rundrive.heartbeat: sandbox liveness for %s run %s: %v — renewing, zombie check deferred",
 						hc.workItemID, hc.holderRun, err)
-			} else if !live && !s.endpointSlotWaiter(ctx, hc) && !s.meshQueueWaiter(ctx, hc) {
-				// Pod-less past the grace AND not a legitimate endpoint-slot
-				// waiter (ISI-5591) AND not a Supervisor-queued mesh run
-				// (ISI-5831 S4): a genuine zombie. Release it as failed.
+				} else if !live && !s.endpointSlotWaiter(ctx, hc) && !s.meshQueueWaiter(ctx, hc) {
+					// Pod-less past the grace AND not a legitimate endpoint-slot
+					// waiter (ISI-5591) AND not a Supervisor-queued mesh run
+					// (ISI-5831 S4): a genuine zombie. Release it as failed.
 					if err := s.releaseZombie(ctx, hc); err != nil {
 						s.logf("rundrive.heartbeat: zombie-release %s: %v", hc.workItemID, err)
 					} else {
@@ -407,6 +435,42 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 			s.renew(ctx, hc)
 		}
 	}
+}
+
+// reclaimDeadHolders frees BYO endpoint slots held by runs that are terminal
+// or whose Run CR is gone (ISI-7483). This is the holder-side backstop of the
+// ISI-5037 gate: the release sites all fire from the dispatch/driver paths, so
+// a run terminalized by the projector, a reaper, or an errored-follow +
+// budget-exhaustion sequence leaked its in-process permit forever — and one
+// dead holder starved every waiter on a single-slot endpoint while the
+// ISI-5591 waiter exemption kept their claims alive. Runs BEFORE the claim
+// backlog walk (a DB stall must not delay the reclaim) and fails safe: a
+// liveness error counts as live (never reclaim on a maybe).
+func (s *HeartbeatSweeper) reclaimDeadHolders(ctx context.Context) {
+	if s.EndpointGate == nil || s.HolderTerminal == nil {
+		return
+	}
+	evicted := s.EndpointGate.ReclaimHolders(func(runID string) (bool, error) {
+		dead, err := s.HolderTerminal.TerminalOrGone(ctx, runID)
+		if err != nil {
+			return true, err // fail-safe: never reclaim on a maybe
+		}
+		return !dead, nil
+	})
+	for _, e := range evicted {
+		s.logf("rundrive.heartbeat: reclaimed BYO endpoint slot on %s from dead holder run %s — queued waiters proceed (ISI-7483)",
+			e.Endpoint, e.RunID)
+	}
+}
+
+// releaseGateSlot drops a dead/terminal run's endpoint-gate presence (slots
+// AND FIFO waiter entries) as the claim-release paths' belt-and-braces half of
+// the ISI-7483 holder backstop. Idempotent; nil-safe.
+func (s *HeartbeatSweeper) releaseGateSlot(hc heldClaim) {
+	if s.EndpointGate == nil || hc.holderRun == "" {
+		return
+	}
+	s.EndpointGate.ReleaseByRun(hc.holderRun)
 }
 
 // due lists every held claim row with its machine step.
@@ -525,6 +589,9 @@ func (s *HeartbeatSweeper) releaseTerminal(ctx context.Context, hc heldClaim) er
 	}
 	s.logf("rundrive.heartbeat: released terminal claim %s (run %s, step %s)",
 		hc.workItemID, hc.holderRun, hc.step)
+	// ISI-7483: the run is terminal — its BYO endpoint permit (if any) must
+	// not outlive the claim release (belt-and-braces to reclaimDeadHolders).
+	s.releaseGateSlot(hc)
 	return nil
 }
 
@@ -618,6 +685,9 @@ func (s *HeartbeatSweeper) releaseDead(ctx context.Context, hc heldClaim, reason
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit: %w", err)
 	}
+	// ISI-7483: the dead holder releases its BYO endpoint permit with its
+	// custody — one leak starves every waiter on a single-slot endpoint.
+	s.releaseGateSlot(hc)
 	return nil
 }
 

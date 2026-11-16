@@ -169,6 +169,21 @@ export function DiscussionRoom({
   const workingRef = useRef<DispatchWatch[]>([]);
   workingRef.current = working;
 
+  // ISI-7483 (queued ≠ failed): the failure sweep must not hard-fail a watch
+  // whose agent provably still holds a LIVE run — per-agent presence off the
+  // overview feed, where "queued" includes WaitingForEndpointSlot (a seat
+  // serialized behind a busy BYO endpoint slot is WAITING, not dead; the live
+  // repro queued four seats 47+ minutes behind one slot). Held in a ref so the
+  // sweep interval reads the CURRENT presence, not the arm-time capture.
+  const liveRunsRef = useRef(liveRuns);
+  liveRunsRef.current = liveRuns;
+  const watchStillLive = useCallback((w: DispatchWatch) => {
+    const byName = liveRunsRef.current;
+    if (!byName) return false; // no presence feed ⇒ legacy wall-clock expiry
+    const p = byName[w.agentName] ?? byName[w.agentName.toLowerCase()];
+    return !!p && (p.state === "queued" || p.state === "running");
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const flat = await client.getThread(projectId, threadId);
@@ -351,13 +366,20 @@ export function DiscussionRoom({
   // Failure sweep (ISI-5174 AC3): expire a still-working watch to "could not
   // respond" once its run has been silent past the timeout, so an indicator
   // never spins forever. The reducer is pure in `now`; this timer is the clock.
+  // ISI-7483: a watch whose agent provably still holds a live (queued/running)
+  // run is NOT expired — queued ≠ failed (see watchStillLive above).
   useEffect(() => {
     if (!hasActiveWork(working)) return;
     const t = setInterval(() => {
-      setWorking((cur) => expireStale(cur, Date.now(), WORKING_TIMEOUT_MS));
+      setWorking((cur) =>
+        expireStale(cur, Date.now(), WORKING_TIMEOUT_MS, {
+          stillLive: watchStillLive,
+        }),
+      );
     }, WORKING_SWEEP_MS);
     return () => clearInterval(t);
-  }, [working]);
+  }, [working, watchStillLive]);
+
 
   const threads = useMemo(() => nestMessages(messages), [messages]);
   const workingByMessageId = useMemo(() => groupByMessage(working), [working]);

@@ -867,7 +867,7 @@ func TestHeartbeatSweepReapsZombieNotMeshQueued(t *testing.T) {
 	mock.ExpectCommit()
 
 	rn := &fakeRenewer{ret: true}
-	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})            // no pod
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})           // no pod
 	s.MeshQueueWait = &fakeMeshQueueWait{queued: map[string]bool{}} // not queued
 	s.DB = db
 	s.sweep(context.Background())
@@ -950,5 +950,60 @@ func TestLiveRunsIsQueuedAtSupervisor(t *testing.T) {
 				t.Fatalf("IsQueuedAtSupervisor(%q) = %v, want %v", tc.uid, got, tc.want)
 			}
 		})
+	}
+}
+
+// fakeRunTerminalChecker fakes the ISI-7483 holder-liveness seam
+// (*LiveRuns.TerminalOrGone).
+type fakeRunTerminalChecker struct {
+	dead map[string]bool
+	err  error
+}
+
+func (f fakeRunTerminalChecker) TerminalOrGone(_ context.Context, runID string) (bool, error) {
+	return f.dead[runID], f.err
+}
+
+// ISI-7483: the sweep reclaims BYO endpoint slots from terminal/gone holders —
+// the leaked-permit backstop — so the queued waiter is admitted on its next
+// poll.
+func TestHeartbeatSweepReclaimsDeadEndpointHolders(t *testing.T) {
+	g := NewEndpointGate(1)
+	const ep = "https://api.deepseek.com/v1"
+	g.Acquire(ep, "dead-holder", 1)
+	g.Acquire(ep, "waiter", 1)
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{dead: map[string]bool{"dead-holder": true}}
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire(ep, "waiter", 1); !ok {
+		t.Fatalf("waiter still refused after the dead holder was reclaimed")
+	}
+}
+
+// ISI-7483: a holder-liveness checker error fails SAFE — the slot is kept.
+func TestHeartbeatSweepReclaimFailsSafeOnCheckerError(t *testing.T) {
+	g := NewEndpointGate(1)
+	g.Acquire("ep", "holder", 1)
+	g.Acquire("ep", "waiter", 1)
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{err: fmt.Errorf("list runs: boom")}
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1); ok {
+		t.Fatalf("waiter admitted after a fail-unsafe reclaim")
+	}
+}
+
+// ISI-7483: the claim-release paths drop the run's gate presence (slots AND
+// FIFO waiter entries) — idempotent and nil-safe.
+func TestHeartbeatReleaseGateSlot(t *testing.T) {
+	g := NewEndpointGate(1)
+	g.Acquire("ep", "run-1", 1)
+	g.Acquire("ep", "run-2", 1)
+	s := &HeartbeatSweeper{EndpointGate: g}
+	s.releaseGateSlot(heldClaim{holderRun: "run-1"})
+	if _, ok := g.Acquire("ep", "run-2", 1); !ok {
+		t.Fatalf("slot not freed by releaseGateSlot")
 	}
 }
