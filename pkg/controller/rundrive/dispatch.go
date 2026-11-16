@@ -133,6 +133,16 @@ type OperatorDispatchConfig struct {
 	// a stream the server will never start within the watchdog window. Nil
 	// disables gating (ledger-only lanes, tests that predate the gate).
 	EndpointGate *EndpointGate
+	// AgentGate, when set, serializes dispatch per (team, agent)
+	// (ISI-7499 C4/D3): one in-flight run per agent, everyone else queued
+	// by DispatchPriorityKey. buildTask re-acquires the run's slot
+	// idempotently — the sticky-admission re-grant that makes a re-drive /
+	// retry lap / follow re-attach of the SAME run a no-op while refusing a
+	// contending run for the same agent with errAgentSlotBusy (the driver
+	// converts it to the WaitingForAgentSlot wait, exactly like
+	// errEndpointSlotBusy). Nil disables the agent axis (tests, legacy
+	// wiring). Shares the single instance with the Driver's AgentGate.
+	AgentGate *AgentGate
 	// TaskIOCoordURL is the in-cluster coord/apiserver base URL injected as
 	// KSQUAD_COORD_URL (§AC7: an in-cluster Service, not a public surface).
 	// Empty disables task-io injection — both the minter and the URL are
@@ -282,6 +292,15 @@ type operatorDispatch struct {
 // scheduling/CNI/supervisor failure) escalates to a loud, recorded error so it
 // stands out from the normal race.
 var errSandboxPending = errors.New("rundrive: sandbox pod not ready to dispatch yet")
+
+// errMeshPoolSaturated marks the mesh-leg saturation refusal (ISI-7499
+// C4/D5, riding ISI-5831 S4): every standing process busy / band exhausted,
+// the run is queued at the Supervisor's re-drive. The sandboxTransport wraps
+// it around the 409 so the driver converts the refusal into the quiet
+// Supervisor wait (waitSupervisor) — a legible queue, never a span exception
+// and never a retry-lap burn — for every class, the same discipline
+// errEndpointSlotBusy gives the BYO-slot queue.
+var errMeshPoolSaturated = errors.New("rundrive: mesh supervisor pool saturated")
 
 // podIPReadyDeadline bounds how long the pre-IP / not-yet-Ready case stays
 // benign. A bound pod normally gets its IP and passes readiness within seconds;
@@ -487,6 +506,24 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 	var modelRoute wire.ModelRoute
 	var modelTier string
 	if len(run.Spec.Agents) > 0 {
+		// ISI-7499 C4/D3: per-agent non-preemptive admission at the dispatch
+		// seam. The driver's pre-dispatch check normally holds the slot
+		// already, making this an idempotent re-grant (re-drive lap, retry
+		// lap, or ReattachFollows re-running buildTask after an operator
+		// restart — the re-grant IS sticky admission, D4: nothing demotes an
+		// admitted run). A first lap that ran the machine straight through
+		// (minted at claiming, advanced to dispatching before any
+		// pre-dispatch pass) takes its refusal HERE: the wrapped
+		// errAgentSlotBusy rides the effects error to the driver's wait
+		// branch, parking the run with the legible WaitingForAgentSlot
+		// condition — never a failure, never a lap.
+		if ag := d.cfg.AgentGate; ag != nil {
+			agent := run.Spec.Agents[0].Name
+			if holder, ok := ag.Acquire(run.Spec.TeamRef.Name, agent, runID, agentPriorityKey(run)); !ok {
+				return wire.Task{}, fmt.Errorf("rundrive: agent %q (team %q) already has run %s in flight; run %s waits: %w",
+					agent, run.Spec.TeamRef.Name, holder, runID, errAgentSlotBusy)
+			}
+		}
 		endpoint, fallback, tier, hasFallback, err := d.resolveEffectiveEndpoint(ctx, run)
 		if err != nil {
 			return wire.Task{}, err
@@ -714,8 +751,16 @@ func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session
 			// Supervisor's re-drive. Stamp the legible-wait marker so the
 			// pod-less zombie sweep (ISI-5438) exempts it — a mesh run
 			// correctly boots no sandbox pod while it waits.
+			//
+			// ISI-7499 C4/D5: the refusal is a WAIT, not a failure — wrap
+			// the errMeshPoolSaturated sentinel so the driver parks the run
+			// on its quiet wait path (no span exception, no retry-lap burn)
+			// for every class, instead of the generic effects error the
+			// pre-C4 path fed to backoff.
 			if isMeshSaturation(serr) {
 				st.d.markMeshQueued(ctx, t.A2ATaskID, true)
+				return nil, fmt.Errorf("rundrive: mesh supervisor pool saturated (run queued at supervisor): %w; cause: %w",
+					errMeshPoolSaturated, serr)
 			}
 			return nil, serr
 		}
