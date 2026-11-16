@@ -298,10 +298,10 @@ class FakeEventSource {
   removeEventListener(name: string) {
     this.listeners.delete(name);
   }
-  emit(name: string, data: unknown) {
+  emit(name: string, data: unknown, lastEventId = "evt-1") {
     this.listeners.get(name)?.({
       data: JSON.stringify(data),
-      lastEventId: "evt-1",
+      lastEventId,
     } as MessageEvent);
   }
   close() {
@@ -569,11 +569,11 @@ describe("useDispatchWatch — hook wiring", () => {
         body: "What I did: shipped it",
         kind: "summary",
         at: "2026-11-12T10:00:00.000Z",
-      });
+      }, "evt-2");
     });
     expect(result.current?.comments).toHaveLength(1);
     expect(result.current?.comments?.[0]).toMatchObject({
-      id: "evt-1",
+      id: "evt-2",
       kind: "COMMENT",
       actor: "agent:alice",
       summary: "What I did: shipped it",
