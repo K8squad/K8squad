@@ -173,10 +173,55 @@ type endpointSlotGate interface {
 	ReleaseByRun(runID string)
 }
 
+// agentReclaimGate is the sweep-facing subset of *AgentGate (ISI-7499 C4):
+// reclaim the dispatch slot of a dead in-flight holder.
+type agentReclaimGate interface {
+	ReclaimInflight(live func(runID string) (bool, error)) []EvictedHolder
+	Release(runID string)
+}
+
 // runTerminalChecker answers "is this run uid terminal or gone?" for the
 // ISI-7483 holder reclaim (satisfied by *LiveRuns.TerminalOrGone).
 type runTerminalChecker interface {
 	TerminalOrGone(ctx context.Context, runID string) (bool, error)
+}
+
+// agentSlotWaitChecker answers "is this Run queued behind its busy agent?"
+// for the zombie-reap exemption (ISI-7499 C4). A run parked on the
+// per-agent non-preemptive dispatch queue intentionally has NO sandbox pod —
+// the driver parks it pod-less at the wait cadence with the
+// WaitingForAgentSlot condition until the agent's in-flight run goes
+// terminal — the exact pod-less predicate the ISI-5438 zombie gate reaps.
+// Nil disables the exemption.
+type agentSlotWaitChecker interface {
+	IsWaitingForAgentSlot(ctx context.Context, runID string) (bool, error)
+}
+
+// IsWaitingForAgentSlot reports whether the Run with the given UID currently
+// carries a True WaitingForAgentSlot condition (ISI-7499 C4) — the
+// legible-wait marker the driver stamps (ConditionAgentSlotWait /
+// Reason=AgentBusy) while the run is queued on its agent's single dispatch
+// slot. Such a run holds a real queue position, it is not wedged: it must
+// NOT be reaped as a pod-less zombie, force-failed, and re-minted. A list
+// error is returned so the reaper fails SAFE toward the waiter (never reap
+// on a maybe). Fails CLOSED (false,nil) on an empty runID or a Run whose UID
+// is gone.
+func (l *LiveRuns) IsWaitingForAgentSlot(ctx context.Context, runID string) (bool, error) {
+	if l == nil || l.Reader == nil || runID == "" {
+		return false, nil
+	}
+	runs := &ksquadv1alpha1.RunList{}
+	if err := l.Reader.List(ctx, runs); err != nil {
+		return false, fmt.Errorf("rundrive.heartbeat: list runs: %w", err)
+	}
+	for i := range runs.Items {
+		if string(runs.Items[i].UID) != runID {
+			continue
+		}
+		c := meta.FindStatusCondition(runs.Items[i].Status.Conditions, ConditionAgentSlotWait)
+		return c != nil && c.Status == metav1.ConditionTrue, nil
+	}
+	return false, nil
 }
 
 // meshQueueWaitChecker answers "is this Run queued at the Supervisor on a
@@ -296,6 +341,11 @@ type HeartbeatSweeper struct {
 	// behind a saturated mesh pool (ISI-5831 / QueuedAtSupervisor — S4,
 	// D9.1). Nil disables the exemption (pre-S4 behavior; tests opt in).
 	MeshQueueWait meshQueueWaitChecker
+	// AgentWait exempts a pod-less in-flight claim from the ISI-5438 zombie
+	// reap when its Run is legitimately queued behind its busy agent on the
+	// per-agent non-preemptive dispatch queue (ISI-7499 C4 /
+	// WaitingForAgentSlot). Nil disables the exemption.
+	AgentWait agentSlotWaitChecker
 	// EndpointGate is the per-BYO-endpoint slot gate (ISI-5037). When set
 	// (with HolderTerminal) each sweep pass reclaims slots whose holder run
 	// is terminal or gone — the ISI-7483 backstop for permits leaked by
@@ -304,6 +354,12 @@ type HeartbeatSweeper struct {
 	// sat "exempt from zombie reap"). Nil disables the reclaim
 	// (pre-ISI-7483 behavior; tests opt in explicitly).
 	EndpointGate endpointSlotGate
+	// AgentGate is the per-agent non-preemptive dispatch gate (ISI-7499
+	// C4). When set (with HolderTerminal) each sweep pass reclaims the
+	// agent slot of a holder run that terminalized through a path the
+	// driver's release sites missed — the agent-axis twin of the ISI-7483
+	// endpoint backstop. Nil disables the reclaim.
+	AgentGate agentReclaimGate
 	// HolderTerminal reports whether a run uid is terminal or its Run CR is
 	// gone (*LiveRuns.TerminalOrGone). Nil disables the reclaim.
 	HolderTerminal runTerminalChecker
@@ -415,10 +471,11 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 					// through to renew and retry next level-triggered tick.
 					s.logf("rundrive.heartbeat: sandbox liveness for %s run %s: %v — renewing, zombie check deferred",
 						hc.workItemID, hc.holderRun, err)
-				} else if !live && !s.endpointSlotWaiter(ctx, hc) && !s.meshQueueWaiter(ctx, hc) {
+				} else if !live && !s.endpointSlotWaiter(ctx, hc) && !s.meshQueueWaiter(ctx, hc) && !s.agentSlotWaiter(ctx, hc) {
 					// Pod-less past the grace AND not a legitimate endpoint-slot
 					// waiter (ISI-5591) AND not a Supervisor-queued mesh run
-					// (ISI-5831 S4): a genuine zombie. Release it as failed.
+					// (ISI-5831 S4) AND not an agent-queue waiter (ISI-7499
+					// C4): a genuine zombie. Release it as failed.
 					if err := s.releaseZombie(ctx, hc); err != nil {
 						s.logf("rundrive.heartbeat: zombie-release %s: %v", hc.workItemID, err)
 					} else {
@@ -447,19 +504,29 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 // backlog walk (a DB stall must not delay the reclaim) and fails safe: a
 // liveness error counts as live (never reclaim on a maybe).
 func (s *HeartbeatSweeper) reclaimDeadHolders(ctx context.Context) {
-	if s.EndpointGate == nil || s.HolderTerminal == nil {
+	if s.HolderTerminal == nil || (s.EndpointGate == nil && s.AgentGate == nil) {
 		return
 	}
-	evicted := s.EndpointGate.ReclaimHolders(func(runID string) (bool, error) {
+	live := func(runID string) (bool, error) {
 		dead, err := s.HolderTerminal.TerminalOrGone(ctx, runID)
 		if err != nil {
 			return true, err // fail-safe: never reclaim on a maybe
 		}
 		return !dead, nil
-	})
-	for _, e := range evicted {
-		s.logf("rundrive.heartbeat: reclaimed BYO endpoint slot on %s from dead holder run %s — queued waiters proceed (ISI-7483)",
-			e.Endpoint, e.RunID)
+	}
+	if s.EndpointGate != nil {
+		evicted := s.EndpointGate.ReclaimHolders(live)
+		for _, e := range evicted {
+			s.logf("rundrive.heartbeat: reclaimed BYO endpoint slot on %s from dead holder run %s — queued waiters proceed (ISI-7483)",
+				e.Endpoint, e.RunID)
+		}
+	}
+	if s.AgentGate != nil {
+		agentEvicted := s.AgentGate.ReclaimInflight(live)
+		for _, e := range agentEvicted {
+			s.logf("rundrive.heartbeat: reclaimed agent dispatch slot %s from dead holder run %s — queued runs proceed (ISI-7499 C4)",
+				e.Endpoint, e.RunID)
+		}
 	}
 }
 
@@ -749,6 +816,31 @@ func (s *HeartbeatSweeper) meshQueueWaiter(ctx context.Context, hc heldClaim) bo
 	}
 	if waiting {
 		s.logf("rundrive.heartbeat: run %s (item %s) queued at Supervisor on saturated mesh pool, held %s — exempt from zombie reap, renewing lease to hold queue position",
+			hc.holderRun, hc.workItemID, s.clock().Sub(hc.acquiredAt).Round(time.Second))
+	}
+	return waiting
+}
+
+// agentSlotWaiter reports whether a pod-less in-flight claim must be
+// EXEMPTED from the ISI-5438 zombie reap because its Run is legitimately
+// queued on the per-agent non-preemptive dispatch queue (ISI-7499 C4,
+// WaitingForAgentSlot). The run parks pod-less at the wait cadence until the
+// agent's in-flight run goes terminal; reaping it would force-fail a
+// transient queue state and churn r→r+1 re-mints, resetting the queue
+// position. Fails SAFE toward the waiter on a checker error — identical
+// discipline to endpointSlotWaiter/meshQueueWaiter.
+func (s *HeartbeatSweeper) agentSlotWaiter(ctx context.Context, hc heldClaim) bool {
+	if s.AgentWait == nil || hc.holderRun == "" {
+		return false
+	}
+	waiting, err := s.AgentWait.IsWaitingForAgentSlot(ctx, hc.holderRun)
+	if err != nil {
+		s.logf("rundrive.heartbeat: agent-queue check for %s run %s: %v — exempting from zombie reap (fail-safe), renewing",
+			hc.workItemID, hc.holderRun, err)
+		return true
+	}
+	if waiting {
+		s.logf("rundrive.heartbeat: run %s (item %s) queued on busy agent slot, held %s — exempt from zombie reap, renewing lease to hold queue position",
 			hc.holderRun, hc.workItemID, s.clock().Sub(hc.acquiredAt).Round(time.Second))
 	}
 	return waiting

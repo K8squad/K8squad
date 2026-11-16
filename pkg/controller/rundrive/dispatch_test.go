@@ -668,3 +668,75 @@ func TestCleanRunID(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ISI-7499 C4: per-agent non-preemptive admission at the buildTask seam
+// ---------------------------------------------------------------------------
+
+// TestBuildTaskSerializesRunsPerAgent: the dispatch seam re-grants the
+// holder's slot idempotatively (sticky admission) and refuses a second run
+// for the same (team, agent) with errAgentSlotBusy — the refusal names the
+// in-flight run; after the terminal release the contender dispatches.
+func TestBuildTaskSerializesRunsPerAgent(t *testing.T) {
+	const runUID1 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const runUID2 = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+	mkRun := func(uid, name string) *api.Run {
+		return &api.Run{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: types.UID(uid)},
+			Spec: api.RunSpec{
+				TeamRef:     api.ObjectRef{Name: "team-a"},
+				ProjectRef:  api.ObjectRef{Name: "proj-1"},
+				WorkItemRef: "99999999-8888-7777-6666-555555555555",
+				Agents:      []api.ObjectRef{{Name: "ollama-coder"}},
+			},
+		}
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "ollama-coder", Namespace: "team-a"},
+		Spec:       api.AgentSpec{Model: "qwen3.6:latest"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).
+		WithObjects(mkRun(runUID1, "run-agent-1"), mkRun(runUID2, "run-agent-2"), agent, dispatchTeamObj()).Build()
+	ag := NewAgentGate()
+	d := &operatorDispatch{
+		cfg:    OperatorDispatchConfig{Client: cl, AgentGate: ag},
+		source: fakeDispatchSource{title: "wire agent gate", body: "serialize per agent", fence: "3"},
+	}
+
+	if _, err := d.buildTask(context.Background(), runUID1, runUID1); err != nil {
+		t.Fatalf("first run's buildTask must acquire the agent slot: %v", err)
+	}
+	// Sticky: the holder's re-drive/re-attach re-grants as a no-op.
+	if _, err := d.buildTask(context.Background(), runUID1, runUID1); err != nil {
+		t.Fatalf("holder re-acquire must be idempotent: %v", err)
+	}
+	_, err := d.buildTask(context.Background(), runUID2, runUID2)
+	if err == nil || !errors.Is(err, errAgentSlotBusy) {
+		t.Fatalf("second run for the agent must fail with errAgentSlotBusy; got %v", err)
+	}
+	if !strings.Contains(err.Error(), runUID1) {
+		t.Fatalf("refusal must name the in-flight run %s: %v", runUID1, err)
+	}
+	// Terminal release admits the contender.
+	ag.Release(runUID1)
+	if _, err := d.buildTask(context.Background(), runUID2, runUID2); err != nil {
+		t.Fatalf("contender must dispatch after the terminal release: %v", err)
+	}
+}
+
+// TestBuildTaskAgentGateClassKey: the queue key the seam registers carries
+// the run's dispatch class (board vs discussion via the work-item source
+// label) — the C2-ready PriorityKey input.
+func TestBuildTaskAgentGateClassKey(t *testing.T) {
+	board := newTestRun(gateUID, "10000000-0000-0000-0000-000000000021")
+	disc := newTestRun(gateUID, "10000000-0000-0000-0000-000000000022")
+	disc.Labels = map[string]string{api.LabelWorkItemSource: workItemSourceDiscussion}
+	kb := agentPriorityKey(board)
+	kd := agentPriorityKey(disc)
+	if kb.Class != DispatchClassBoard || kd.Class != DispatchClassDiscussion {
+		t.Fatalf("class key mismatch: board=%d discussion=%d", kb.Class, kd.Class)
+	}
+	if !kb.before(kd) {
+		t.Fatalf("board key must outrank the discussion key at equal wait facts")
+	}
+}

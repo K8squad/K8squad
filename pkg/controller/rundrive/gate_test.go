@@ -18,10 +18,14 @@ package rundrive
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -307,5 +311,331 @@ func TestRunsForManagedSecret(t *testing.T) {
 	reqs := d.runsForManagedSecret(context.Background(), sec)
 	if len(reqs) != 1 || reqs[0].Name != "run-1" || reqs[0].Namespace != "default" {
 		t.Fatalf("mapper requests = %v, want exactly the default-ns Run (run-1)", reqs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ISI-7499 C4: per-agent non-preemptive dispatch queue (AgentGate)
+// ---------------------------------------------------------------------------
+
+// agentGateTestBase is the deterministic clock base for the queue tests
+// (the 2026-11-16T16:20Z party-batch mint second).
+var agentGateTestBase = time.Date(2026, 11, 16, 16, 20, 40, 0, time.UTC)
+
+// TestAgentGateSingleFlightNonPreemptive: one in-flight run per (team,
+// agent); a contender is refused and names the holder; a later board-class
+// arrival NEVER evicts the incumbent (non-preemption, D3); the holder's
+// re-acquire is an idempotent re-grant (sticky admission, D4); after the
+// terminal release the BOARD waiter is admitted ahead of the earlier-queued
+// discussion waiter (class beats FIFO, D1).
+func TestAgentGateSingleFlightNonPreemptive(t *testing.T) {
+	g := NewAgentGate()
+	k1 := DispatchPriorityKey{Class: DispatchClassBoard, Since: agentGateTestBase, RunID: "run-1"}
+	k2 := DispatchPriorityKey{Class: DispatchClassDiscussion, Since: agentGateTestBase.Add(time.Second), RunID: "run-2"}
+	k3 := DispatchPriorityKey{Class: DispatchClassBoard, Since: agentGateTestBase.Add(2 * time.Second), RunID: "run-3"}
+
+	if _, ok := g.Acquire("t", "sam", "run-1", k1); !ok {
+		t.Fatalf("the agent's first run must be admitted")
+	}
+	if h, ok := g.Acquire("t", "sam", "run-2", k2); ok || h != "run-1" {
+		t.Fatalf("second run for the agent must be refused naming the holder; got holder=%q ok=%v", h, ok)
+	}
+	if h, ok := g.Acquire("t", "sam", "run-3", k3); ok || h != "run-1" {
+		t.Fatalf("higher-priority arrival must queue, not preempt; got holder=%q ok=%v", h, ok)
+	}
+	if got := g.Holder("t", "sam"); got != "run-1" {
+		t.Fatalf("holder demoted to %q — admission must be sticky until terminal", got)
+	}
+	// Sticky re-grant: the holder re-acquiring (re-drive / retry lap /
+	// follow re-attach) is a no-op grant.
+	if h, ok := g.Acquire("t", "sam", "run-1", k1); !ok || h != "run-1" {
+		t.Fatalf("holder re-acquire must be an idempotent grant; got holder=%q ok=%v", h, ok)
+	}
+	// Other teams and other agents are independent axes.
+	if _, ok := g.Acquire("t2", "sam", "run-9", DispatchPriorityKey{Since: agentGateTestBase, RunID: "run-9"}); !ok {
+		t.Fatalf("same agent name in another team must not contend")
+	}
+	if _, ok := g.Acquire("t", "kai", "run-10", DispatchPriorityKey{Since: agentGateTestBase, RunID: "run-10"}); !ok {
+		t.Fatalf("another agent in the same team must not contend")
+	}
+
+	// Terminal release: the freed slot goes to the best-queued run. run-2
+	// (discussion, queued first) polls first and must be told the slot is
+	// reserved for run-3 (board) — class outranks FIFO. run-3's poll grants.
+	g.Release("run-1")
+	if h, ok := g.Acquire("t", "sam", "run-2", k2); ok || h != "run-3" {
+		t.Fatalf("discussion waiter must not jump the board waiter; got holder=%q ok=%v", h, ok)
+	}
+	if h, ok := g.Acquire("t", "sam", "run-3", k3); !ok || h != "run-3" {
+		t.Fatalf("board waiter must be admitted after the terminal release; got holder=%q ok=%v", h, ok)
+	}
+}
+
+// TestDispatchPriorityKeyOrder pins the D1 total order: class first, then
+// numeric priority, then FIFO wait start, then runID.
+func TestDispatchPriorityKeyOrder(t *testing.T) {
+	base := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	boardLate := DispatchPriorityKey{Class: DispatchClassBoard, Priority: 9, Since: base.Add(time.Hour), RunID: "zzz"}
+	discEarly := DispatchPriorityKey{Class: DispatchClassDiscussion, Priority: 0, Since: base, RunID: "aaa"}
+	if !boardLate.before(discEarly) {
+		t.Fatalf("board class must outrank discussion regardless of priority and wait time")
+	}
+	hi := DispatchPriorityKey{Class: DispatchClassBoard, Priority: 0, Since: base.Add(time.Minute), RunID: "b"}
+	lo := DispatchPriorityKey{Class: DispatchClassBoard, Priority: 1, Since: base, RunID: "a"}
+	if !hi.before(lo) {
+		t.Fatalf("within a class, smaller priority value must rank first (C2 seam)")
+	}
+	fifoA := DispatchPriorityKey{Class: DispatchClassBoard, Priority: 0, Since: base, RunID: "b"}
+	fifoB := DispatchPriorityKey{Class: DispatchClassBoard, Priority: 0, Since: base.Add(time.Second), RunID: "a"}
+	if !fifoA.before(fifoB) {
+		t.Fatalf("within a class and priority, earlier wait start must rank first")
+	}
+	tieA := DispatchPriorityKey{Class: DispatchClassBoard, Priority: 0, Since: base, RunID: "aaa"}
+	tieB := DispatchPriorityKey{Class: DispatchClassBoard, Priority: 0, Since: base, RunID: "bbb"}
+	if !tieA.before(tieB) || tieB.before(tieA) {
+		t.Fatalf("exact ties must break deterministically on runID")
+	}
+}
+
+// TestDispatchClassForRun: the class derives from the Run's
+// api.LabelWorkItemSource label, failing closed toward board.
+func TestDispatchClassForRun(t *testing.T) {
+	run := newTestRun(gateUID, "10000000-0000-0000-0000-000000000009")
+	if got := dispatchClassForRun(run); got != DispatchClassBoard {
+		t.Fatalf("no source label = board default; got %d", got)
+	}
+	run.Labels = map[string]string{api.LabelWorkItemSource: "board"}
+	if got := dispatchClassForRun(run); got != DispatchClassBoard {
+		t.Fatalf("board label = board; got %d", got)
+	}
+	run.Labels = map[string]string{api.LabelWorkItemSource: workItemSourceDiscussion}
+	if got := dispatchClassForRun(run); got != DispatchClassDiscussion {
+		t.Fatalf("discussion label = discussion; got %d", got)
+	}
+}
+
+// TestAgentGateWaiterTTLEvictsSilentWaiter: a waiter that stops re-polling
+// past the TTL loses its queue place (the dead-front-of-queue wedge guard).
+func TestAgentGateWaiterTTLEvictsSilentWaiter(t *testing.T) {
+	g := NewAgentGate()
+	clk := agentGateTestBase
+	g.now = func() time.Time { return clk }
+	if _, ok := g.Acquire("t", "sam", "run-1", DispatchPriorityKey{Since: clk, RunID: "run-1"}); !ok {
+		t.Fatalf("holder must be admitted")
+	}
+	if _, ok := g.Acquire("t", "sam", "run-2", DispatchPriorityKey{Since: clk.Add(time.Second), RunID: "run-2"}); ok {
+		t.Fatalf("waiter must be refused while the agent is busy")
+	}
+	// run-2 never re-polls; its entry ages past the TTL.
+	clk = clk.Add(2 * agentWaiterTTL)
+	g.Release("run-1")
+	// A fresh arrival is admitted immediately: the silent waiter no longer
+	// holds the front of the queue.
+	if h, ok := g.Acquire("t", "sam", "run-3", DispatchPriorityKey{Since: clk, RunID: "run-3"}); !ok || h != "run-3" {
+		t.Fatalf("stale waiter must have been evicted; got holder=%q ok=%v", h, ok)
+	}
+}
+
+// TestAgentGateReclaimInflightNeverOnAMaybe: the sweep backstop evicts only
+// PROVEN-dead holders; a live holder and a checker error both keep the slot.
+func TestAgentGateReclaimInflightNeverOnAMaybe(t *testing.T) {
+	g := NewAgentGate()
+	if _, ok := g.Acquire("t", "sam", "run-1", DispatchPriorityKey{RunID: "run-1"}); !ok {
+		t.Fatalf("holder must be admitted")
+	}
+	if ev := g.ReclaimInflight(func(string) (bool, error) { return true, nil }); len(ev) != 0 {
+		t.Fatalf("live holder must keep its slot; evicted=%v", ev)
+	}
+	if ev := g.ReclaimInflight(func(string) (bool, error) { return false, errors.New("maybe") }); len(ev) != 0 {
+		t.Fatalf("checker error must keep the slot (never reclaim on a maybe); evicted=%v", ev)
+	}
+	if ev := g.ReclaimInflight(func(string) (bool, error) { return false, nil }); len(ev) != 1 || ev[0].RunID != "run-1" {
+		t.Fatalf("dead holder must be evicted; evicted=%v", ev)
+	}
+	if got := g.Holder("t", "sam"); got != "" {
+		t.Fatalf("slot must be free after reclaim; got %q", got)
+	}
+}
+
+// TestAgentBusyParksPreDispatch (driver wiring): at the pending edge a run
+// whose agent already has a run in flight parks pod-less on the
+// WaitingForAgentSlot condition — nothing dispatches, no error surfaces, the
+// requeue rides the wait cadence.
+func TestAgentBusyParksPreDispatch(t *testing.T) {
+	run := newTestRun(gateUID, "10000000-0000-0000-0000-000000000011")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
+	eff := &fakeMachineEffects{}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
+	d.AgentGate = NewAgentGate()
+	if _, ok := d.AgentGate.Acquire("t", "sam", "other-run", DispatchPriorityKey{RunID: "other-run"}); !ok {
+		t.Fatalf("fixture: incumbent run must hold the agent slot")
+	}
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("busy agent must not surface an error: %v", err)
+	}
+	if rq != agentSlotWaitDelay {
+		t.Fatalf("requeue = %v, want agentSlotWaitDelay (%v)", rq, agentSlotWaitDelay)
+	}
+	if len(eff.dispatches) != 0 || eff.binds != 0 {
+		t.Fatalf("parked run must not bind or dispatch (binds=%d dispatches=%v)", eff.binds, eff.dispatches)
+	}
+	var got api.Run
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "run-1"}, &got); err != nil {
+		t.Fatalf("re-read run: %v", err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, ConditionAgentSlotWait)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("WaitingForAgentSlot condition not stamped: %+v", got.Status.Conditions)
+	}
+	if cond.Reason != "AgentBusy" || !strings.Contains(cond.Message, "other-run") {
+		t.Fatalf("condition must name the busy reason and the in-flight run: %+v", cond)
+	}
+}
+
+// TestAgentSlotAdmitsAfterTerminalRelease (driver wiring): once the
+// incumbent goes terminal the parked run acquires the slot, drives, and its
+// stale wait condition clears — admission only on terminal exit, then the
+// roster reads working, not queued.
+func TestAgentSlotAdmitsAfterTerminalRelease(t *testing.T) {
+	run := newTestRun(gateUID, "10000000-0000-0000-0000-000000000012")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
+	eff := &fakeMachineEffects{}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
+	d.AgentGate = NewAgentGate()
+	d.AgentGate.Acquire("t", "sam", "other-run", DispatchPriorityKey{RunID: "other-run"})
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("park lap: %v", err)
+	}
+	d.AgentGate.Release("other-run") // the incumbent went terminal
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("admit lap: %v", err)
+	}
+	if len(eff.dispatches) == 0 {
+		t.Fatalf("admitted run must dispatch (dispatches=%v)", eff.dispatches)
+	}
+	var got api.Run
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "run-1"}, &got); err != nil {
+		t.Fatalf("re-read run: %v", err)
+	}
+	if cond := meta.FindStatusCondition(got.Status.Conditions, ConditionAgentSlotWait); cond != nil {
+		t.Fatalf("stale agent-wait condition must clear once dispatched: %+v", cond)
+	}
+}
+
+// TestQueueWaiterNeverTerminalizes (the C1 regression, ISI-7499 C4/D5): a
+// never-dispatched run parked in a dispatch queue whose lease lapsed (the
+// exact death-path shape that terminal-failed the 16:20Z party waiters ≤1s
+// after mint) must re-park on the wait cadence — no FailEnter, no retry lap,
+// no sandbox teardown. Queue waits burn no retry budget for any class.
+func TestQueueWaiterNeverTerminalizes(t *testing.T) {
+	run := newTestRun(gateUID, "10000000-0000-0000-0000-000000000013")
+	run.Status.Conditions = []metav1.Condition{{
+		Type:               ConditionEndpointSlotWait,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "EndpointBusy",
+		Message:            "Waiting for a slot on the BYO model endpoint.",
+		LastTransitionTime: metav1.Now(),
+	}}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	expired := agentGateTestBase.Add(-time.Minute)
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepDispatching, Fence: 2, Holder: gateUID, RunID: gateUID,
+		LeaseExpiresAt: &expired, ItemState: "in_progress"},
+		laps: 5, failOK: true, acquireOK: true, acquireFence: 2}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: &fakeMachineStore{step: reconcile.StepDispatching, fence: 2, advanceOK: true}, effects: &fakeMachineEffects{}})
+	d.Settle = &fakeFollowSettle{dispatched: false} // never reached an agent
+	sandbox := &fakeReleaser{}
+	d.Sandbox = sandbox
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("queued waiter must not surface an error: %v", err)
+	}
+	if rq != endpointSlotWaitDelay {
+		t.Fatalf("requeue = %v, want the wait cadence (%v)", rq, endpointSlotWaitDelay)
+	}
+	if claims.failCall || len(claims.retryCalls) != 0 {
+		t.Fatalf("queue wait must burn no budget: fail=%v retry=%v", claims.failCall, claims.retryCalls)
+	}
+	if len(sandbox.released) != 0 {
+		t.Fatalf("queued waiter must not tear down a sandbox: %v", sandbox.released)
+	}
+}
+
+// TestDispatchedRunKeepsDeathSemantics: the queue-wait guard is scoped to
+// runs that never dispatched — a run WITH an a2a settlement keeps the
+// pre-C4 death path (retryOrFail decides by budget as before).
+func TestDispatchedRunKeepsDeathSemantics(t *testing.T) {
+	run := newTestRun(gateUID, "10000000-0000-0000-0000-000000000014")
+	run.Status.Conditions = []metav1.Condition{{
+		Type:               ConditionAgentSlotWait,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "AgentBusy",
+		Message:            "stale marker from a pre-dispatch park",
+		LastTransitionTime: metav1.Now(),
+	}}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	expired := agentGateTestBase.Add(-time.Minute)
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepDispatching, Fence: 2, Holder: gateUID, RunID: gateUID,
+		LeaseExpiresAt: &expired, ItemState: "in_progress"},
+		laps: 5, failOK: true, acquireOK: true, acquireFence: 2}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: &fakeMachineStore{step: reconcile.StepDispatching, fence: 2, advanceOK: true}, effects: &fakeMachineEffects{}})
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: "follow_error"} // it DID reach an agent
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("death drive: %v", err)
+	}
+	if !claims.failCall {
+		t.Fatalf("dispatched run outside its budget must still terminal-fail (stale wait marker must not loop it)")
+	}
+}
+
+// TestMeshSaturationParksQuietly (D5): a saturated-Supervisor refusal riding
+// the effects error converts to the quiet Supervisor wait — no reconcile
+// error, the QueuedAtSupervisor marker stamps, the wait cadence requeues.
+func TestMeshSaturationParksQuietly(t *testing.T) {
+	run := newTestRun(gateUID, "10000000-0000-0000-0000-000000000015")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepDispatching, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepDispatching, fence: 1, advanceOK: true}
+	eff := &fakeMachineEffects{err: fmt.Errorf("coord.ProdEffects.Dispatch: submit: mesh gateway refused: %w; cause: 409 Conflict: no idle process", errMeshPoolSaturated)}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
+	d.Settle = &fakeFollowSettle{}
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("mesh saturation must not surface an error: %v", err)
+	}
+	if rq != endpointSlotWaitDelay {
+		t.Fatalf("requeue = %v, want the wait cadence (%v)", rq, endpointSlotWaitDelay)
+	}
+	if store.advances != 0 {
+		t.Fatalf("the machine must not advance past a saturated pool (%d advances)", store.advances)
+	}
+	var got api.Run
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "run-1"}, &got); err != nil {
+		t.Fatalf("re-read run: %v", err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, ConditionQueuedAtSupervisor)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != "MeshPoolSaturated" {
+		t.Fatalf("QueuedAtSupervisor condition not stamped: %+v", got.Status.Conditions)
 	}
 }
