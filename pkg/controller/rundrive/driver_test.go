@@ -1174,6 +1174,36 @@ func TestEndpointGateReleasedOnCancelFinish(t *testing.T) {
 	}
 }
 
+// TestEndpointGateReleasedOnTerminalAbsorb: a run that re-acquires its
+// endpoint slot via ReattachFollows after an operator restart but whose
+// durable step is already terminal must release the slot on the terminal
+// absorb path, not orphan it forever (ISI-7487).
+func TestEndpointGateReleasedOnTerminalAbsorb(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	// Durable step is terminal — the run already completed before the restart.
+	claims := &fakeClaims{
+		found: true,
+		state: ClaimState{Step: reconcile.StepFailed, Fence: 5},
+	}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	// Simulate ReattachFollows re-populating the in-memory holder map.
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+		t.Fatal("fixture: the terminal run must re-acquire its slot on restart")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("terminal absorb drive: %v", err)
+	}
+	// The slot must be free so a waiting run can proceed.
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); !ok {
+		t.Fatal("terminal absorb must release the orphaned endpoint slot (ISI-7487)")
+	}
+}
+
 // TestEndpointGateKeptAcrossRetryLap: the retry path deliberately keeps the
 // permit — the same run re-acquires it as a no-op on the next lap, so no
 // other run can jump the lap's backoff queue.

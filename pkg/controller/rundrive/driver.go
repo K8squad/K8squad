@@ -413,6 +413,13 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		return ctrl.Result{}, nil
 	}
 	if reconcile.IsTerminal(cs.Step) {
+		// ISI-7487: a run that re-acquired its slot via ReattachFollows after an
+		// operator restart but whose durable step is already terminal would
+		// otherwise orphan the permit forever. ReleaseByRun is idempotent — a
+		// run that already released on the normal terminal path is unaffected.
+		if r.EndpointGate != nil {
+			r.EndpointGate.ReleaseByRun(runID)
+		}
 		noopTick = true
 		return ctrl.Result{}, nil // absorbing (AC5): the projector has it
 	}
