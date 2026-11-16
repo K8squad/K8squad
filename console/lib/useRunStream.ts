@@ -159,6 +159,84 @@ function commentEvent(id: string, raw: unknown): RunEvent | null {
   };
 }
 
+/**
+ * One row of the durable hydration tail (GET /api/runs/{id}/events, ISI-7484):
+ * the same id/type/data triple the SSE projector frames carry, plus the row's
+ * commit stamp so hydrated history keeps true timestamps.
+ */
+type RunHistoryRow = {
+  id?: unknown;
+  type?: unknown;
+  data?: unknown;
+  at?: unknown;
+};
+
+/**
+ * Numeric event id (the outbox row id) for ordered inserts; NaN for legacy
+ * frames that carry no id (those append in arrival order).
+ */
+function numericId(id: string): number {
+  const n = Number(id);
+  return Number.isFinite(n) ? n : Number.NaN;
+}
+
+/**
+ * Insert ev into prev deduped by id and, when ids are numeric, in id order —
+ * the overlap between hydration and live frames collapses exactly like an SSE
+ * reconnect replay (same id ⇒ same event, drop it). This is the ISI-7484
+ * hydration/live seam: the REST tail and the SSE tail share the outbox row id.
+ */
+function insertOrdered(prev: RunEvent[], ev: RunEvent): RunEvent[] {
+  if (ev.id && prev.some((p) => p.id === ev.id)) return prev;
+  if (!ev.id) return [...prev, ev];
+  const n = numericId(ev.id);
+  if (Number.isNaN(n)) return [...prev, ev];
+  let i = prev.length;
+  while (i > 0) {
+    const p = numericId(prev[i - 1].id);
+    if (Number.isNaN(p) || p <= n) break;
+    i--;
+  }
+  return [...prev.slice(0, i), ev, ...prev.slice(i)];
+}
+
+/**
+ * Shape a hydrated history row with the SAME mappers the live listeners use,
+ * so a hydrated row renders identically to its live twin (and dedupes against
+ * it by id). The hydrated lifecycle/step rows keep the row's commit stamp (at);
+ * thinking/comment rows read their own payload stamp, exactly like live.
+ * Unknown types are skipped, exactly like unlistened SSE event names.
+ */
+function shapeHistoryRow(row: unknown): RunEvent | null {
+  if (typeof row !== "object" || row === null) return null;
+  const r = row as RunHistoryRow;
+  if (typeof r.id !== "string" || typeof r.type !== "string") return null;
+  const at = typeof r.at === "string" && r.at ? r.at : new Date().toISOString();
+  if (r.type === THINKING_EVENT) return thinkingEvent(r.id, r.data);
+  if (r.type === COMMENT_EVENT) return commentEvent(r.id, r.data);
+  if (r.type === RECONCILE_EVENT) {
+    return {
+      id: r.id,
+      kind: "STEP",
+      actor: "reconciler",
+      ts: at,
+      summary: stepSummary(r.data),
+    };
+  }
+  if ((LIFECYCLE_EVENTS as readonly string[]).includes(r.type)) {
+    const name = r.type;
+    const step = stepSummary(r.data);
+    return {
+      id: r.id,
+      kind: "LIFECYCLE",
+      actor: lifecycleActor(r.data),
+      ts: at,
+      summary: step ? `${name}: ${step}` : name,
+    };
+  }
+  return null;
+}
+
 export function useRunStream(runId: string) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [status, setStatus] = useState<StreamStatus>("connecting");
@@ -170,6 +248,28 @@ export function useRunStream(runId: string) {
     const es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/stream`);
     esRef.current = es;
 
+    // ISI-7484 (WS-3, parents ISI-7482/ISI-7480): durable hydration. Fetch the
+    // run's outbox tail once on mount and seed the SAME list the live frames
+    // append to — a reload / late join never shows an empty Activity for a run
+    // that already produced steps. Best-effort by design: a failed or non-OK
+    // fetch leaves the live tail (and its Last-Event-ID reconnect replay) as
+    // the fallback; overlap dedupes by the shared outbox row id.
+    let hydrateCancelled = false;
+    fetch(`/api/runs/${encodeURIComponent(runId)}/events`, {
+      headers: { accept: "application/json" },
+      cache: "no-store",
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: unknown) => {
+        if (hydrateCancelled || body === null) return;
+        const rows = (body as { events?: unknown }).events;
+        if (!Array.isArray(rows)) return;
+        for (const row of rows) push(shapeHistoryRow(row));
+      })
+      .catch(() => {
+        // best-effort hydration — the SSE tail still covers everything live
+      });
+
     es.onopen = () => setStatus("open");
     es.onerror = () => setStatus("error"); // native EventSource auto-reconnects w/ Last-Event-ID
 
@@ -180,8 +280,13 @@ export function useRunStream(runId: string) {
         return null; // ignore non-JSON keepalives
       }
     };
+    // ISI-7484: id-deduped, id-ordered insert — hydration rows and live frames
+    // share the outbox row id, so a frame replayed after hydration (or arriving
+    // while the hydration fetch is in flight) is dropped instead of duplicated,
+    // and an older hydrated row lands BEFORE newer live rows even when the
+    // fetch resolves late.
     const push = (ev: RunEvent | null) => {
-      if (ev) setEvents((prev) => [...prev, ev]);
+      if (ev) setEvents((prev) => insertOrdered(prev, ev));
     };
 
     // Legacy kind-stamped payloads on the default message channel.
@@ -246,6 +351,7 @@ export function useRunStream(runId: string) {
       for (const [name, listener] of lifecycleListeners) {
         es.removeEventListener(name, listener);
       }
+      hydrateCancelled = true;
       es.close();
       esRef.current = null;
     };

@@ -455,6 +455,18 @@ func main() {
 		}
 	}()
 
+	// ISI-7484 WS-3 (parent ISI-7482/ISI-7480): durable run-step retention. The
+	// outbox now doubles as the replayable Activity history (SSE Last-Event-ID
+	// replay + GET /api/runs/{id}/events hydration), so it needs a bounded
+	// life: this sweep prunes RELAYED run-entity rows past the retention window
+	// through the governed coord.prune_run_events path (db/migrations/0044) —
+	// never an unflushed relay row, never a non-run row, and never a re-persist
+	// into coord.comment (ISI-7454 guardrail). KSQUAD_RUN_EVENT_RETENTION=0
+	// keeps the journal forever (the pre-ISI-7484 behavior).
+	if retention := runEventRetentionFromEnv(os.Getenv); retention > 0 {
+		go runEventPruneLoop(ctx, runEvents, retention)
+	}
+
 	// 8.14a human board-lane transition write path (ISI-2909): the DB is a hard start
 	// dependency here, so the store is always bound (the documented-501 fallback exists
 	// only for a store-less host shape, e.g. a DB-less dev run).
@@ -908,6 +920,7 @@ func main() {
 		ProjectOverview:     projectOverview,
 		SquadSeries:         squadSeries,
 		Runs:                runsService,
+		RunEvents:           runEvents,
 		Teams:               teams,
 		FleetList:           fleetList,
 		AgentActivity:       agentActivity,
