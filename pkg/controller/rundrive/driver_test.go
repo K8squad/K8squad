@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -93,6 +94,10 @@ type fakeClaims struct {
 	gateResumeOK   bool
 	gateResumeErr  error
 	gateResumeCall bool
+
+	gateResumeDispatchOK   bool
+	gateResumeDispatchErr  error
+	gateResumeDispatchCall bool
 }
 
 func (f *fakeClaims) State(context.Context, string) (ClaimState, bool, error) {
@@ -140,6 +145,10 @@ func (f *fakeClaims) GateHold(_ context.Context, workItemID string, missingTypes
 func (f *fakeClaims) GateResume(context.Context, string) (bool, error) {
 	f.gateResumeCall = true
 	return f.gateResumeOK, f.gateResumeErr
+}
+func (f *fakeClaims) GateResumeDispatch(context.Context, string) (bool, error) {
+	f.gateResumeDispatchCall = true
+	return f.gateResumeDispatchOK, f.gateResumeDispatchErr
 }
 
 type fakePauses struct {
@@ -1208,5 +1217,149 @@ func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
 	}
 	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
 		t.Fatal("the retrying run's own re-acquire must stay an idempotent grant")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ISI-7487: pre-bind BYO endpoint-slot admission + gone-pod waiter recovery
+// ---------------------------------------------------------------------------
+
+// fakeEndpointLookup stubs the driver-side BYO endpoint resolver.
+type fakeEndpointLookup struct {
+	endpoint string
+	max      int
+	err      error
+}
+
+func (f *fakeEndpointLookup) EffectiveBYOEndpoint(context.Context, *api.Run) (string, int, error) {
+	return f.endpoint, f.max, f.err
+}
+
+// TestPrebindEndpointSlotHoldParksBeforeBind: at the claiming_sandbox edge a
+// busy BYO endpoint parks the run BEFORE the machine runs — no durable step
+// moves (in particular no sandbox bind), the legible wait condition is
+// stamped, and the requeue rides the slot-wait cadence.
+func TestPrebindEndpointSlotHoldParksBeforeBind(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepClaimingSandbox, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 1, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	gate := NewEndpointGate(1)
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", "run-holder", 1); !ok {
+		t.Fatal("fixture: the holder must take the only slot")
+	}
+	d.EndpointGate = gate
+	d.EndpointLookup = &fakeEndpointLookup{endpoint: "https://api.deepseek.com/v1"}
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("busy endpoint must not surface an error: %v", err)
+	}
+	if rq != endpointSlotWaitDelay {
+		t.Fatalf("requeue = %v, want endpointSlotWaitDelay (%v)", rq, endpointSlotWaitDelay)
+	}
+	if store.advances != 0 {
+		t.Fatalf("the machine must not run (or bind) past a busy slot (%d advances)", store.advances)
+	}
+	var got api.Run
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "run-1"}, &got); err != nil {
+		t.Fatalf("re-read run: %v", err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, ConditionEndpointSlotWait)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("WaitingForEndpointSlot condition not stamped: %+v", got.Status.Conditions)
+	}
+	if !strings.Contains(cond.Message, "held by run run-holder") {
+		t.Fatalf("condition must name the holder: %+v", cond)
+	}
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1); ok {
+		t.Fatal("the parked run must not hold the busy endpoint's slot")
+	}
+}
+
+// TestPrebindEndpointSlotAdmittedDrivesAndHolds: a free slot is granted at
+// the claiming edge and held across the machine pass — buildTask's Acquire
+// re-grants idempotently at dispatch.
+func TestPrebindEndpointSlotAdmittedDrivesAndHolds(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepClaimingSandbox, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 1, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	d.EndpointLookup = &fakeEndpointLookup{endpoint: "https://api.deepseek.com/v1"}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("admitted drive: %v", err)
+	}
+	if store.advances == 0 {
+		t.Fatal("an admitted run must drive the machine (bind + dispatch)")
+	}
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1); !ok {
+		t.Fatal("the admitted run must hold the endpoint slot across the pass")
+	}
+}
+
+// TestGoneSandboxSlotWaiterRequeuesNotFails: a run parked in the endpoint
+// slot wait (WaitingForEndpointSlot True) whose bound warm pod died has
+// dispatched nothing — the gone-sandbox path must regress it to
+// claiming_sandbox and requeue at the wait cadence, never burn the retry lap
+// (terminal at retryPolicy=0).
+func TestGoneSandboxSlotWaiterRequeuesNotFails(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	run.Status.SandboxRef = &api.ObjectRef{Namespace: "default", Name: "gone-pod"}
+	run.Status.Conditions = []metav1.Condition{{
+		Type:               ConditionEndpointSlotWait,
+		Status:             metav1.ConditionTrue,
+		Reason:             "EndpointBusy",
+		Message:            "Waiting for a slot on the BYO model endpoint",
+		LastTransitionTime: metav1.Now(),
+	}}
+	sch := newScheme(t)
+	if err := corev1.AddToScheme(sch); err != nil {
+		t.Fatalf("register corev1: %v", err)
+	}
+	cl := fake.NewClientBuilder().WithScheme(sch).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	lease := time.Now().Add(time.Minute)
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepDispatching, Fence: 3, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: &lease, ItemState: "in_progress"},
+		renewOK: true, gateResumeDispatchOK: true}
+	store := &fakeMachineStore{step: reconcile.StepDispatching, fence: 3, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Sandbox = &fakeReleaser{}
+	gate := NewEndpointGate(1)
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1); !ok {
+		t.Fatal("fixture: the waiter must hold the endpoint slot")
+	}
+	d.EndpointGate = gate
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("gone-pod waiter must not surface an error: %v", err)
+	}
+	if rq != endpointSlotWaitDelay {
+		t.Fatalf("requeue = %v, want endpointSlotWaitDelay (%v)", rq, endpointSlotWaitDelay)
+	}
+	if claims.failCall || len(claims.retryCalls) != 0 {
+		t.Fatalf("the never-dispatched waiter must not take the death path: fail=%v retry=%v", claims.failCall, claims.retryCalls)
+	}
+	if !claims.gateResumeDispatchCall {
+		t.Fatal("the waiter must regress to claiming_sandbox via GateResumeDispatch")
+	}
+	if len(gate.holders) != 0 {
+		t.Fatalf("the regressed waiter must release its slot (holders=%v)", gate.holders)
 	}
 }

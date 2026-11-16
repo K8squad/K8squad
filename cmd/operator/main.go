@@ -1466,6 +1466,15 @@ func main() {
 		// terminal fail/cancel paths (runs that never reach a clean OnDone) and
 		// surfaces the endpoint-slot wait on the Run CR while a run queues.
 		driver.EndpointGate = endpointGate
+		// ISI-7487: the pre-bind BYO slot hold resolves the Run's endpoint
+		// with the dispatcher's own semantics before the machine binds a
+		// sandbox, so contenders queue pod-less instead of dying with their
+		// warm pod.
+		driver.EndpointLookup = rundrive.NewEndpointLookup(rundrive.OperatorDispatchConfig{
+			DB:     db,
+			Client: mgr.GetClient(),
+			Mapper: mapper,
+		})
 		// ISI-4310 gone-sandbox recovery: when a bound sandbox pod is provably
 		// gone (deploy-restart AdoptOrReap, eviction, node loss), the driver
 		// clears the durable bind marker so the retry lap binds fresh warmth

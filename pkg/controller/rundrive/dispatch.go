@@ -1104,6 +1104,35 @@ func (d *operatorDispatch) resolveEffectiveEndpoint(ctx context.Context, run *ap
 	return primary, fallback, tier, hasFallback, nil
 }
 
+// NewEndpointLookup builds the driver-side BYO endpoint resolver over the
+// dispatcher's own resolution semantics (resolveEffectiveEndpoint + the
+// ISI-6054 fallback-active override), without requiring the shim binary —
+// the ISI-7487 pre-bind hold consults it at the claiming_sandbox edge, so a
+// contending run queues before the machine binds a sandbox.
+func NewEndpointLookup(cfg OperatorDispatchConfig) EndpointLookup {
+	return &operatorDispatch{cfg: cfg}
+}
+
+// EffectiveBYOEndpoint reports the Run's effective BYO endpoint BaseURL and
+// its declared maxConcurrent (<= 0 = the gate's default). "" means the Run
+// has no BYO endpoint — no slot hold applies.
+func (d *operatorDispatch) EffectiveBYOEndpoint(ctx context.Context, run *api.Run) (string, int, error) {
+	if run == nil || len(run.Spec.Agents) == 0 {
+		return "", 0, nil
+	}
+	endpoint, fallback, _, hasFallback, err := d.resolveEffectiveEndpoint(ctx, run)
+	if err != nil {
+		return "", 0, err
+	}
+	if hasFallback && fallbackActive(run) {
+		endpoint = fallback
+	}
+	if endpoint.BaseURL == "" {
+		return "", 0, nil
+	}
+	return endpoint.BaseURL, endpoint.MaxConcurrent, nil
+}
+
 // recordModelProvenance stamps the winning tier's model onto
 // Run.status.modelSegments (ISI-4430 S4 provenance origin). Idempotent: if the
 // latest open segment already serves this model+tier it is a no-op, so a

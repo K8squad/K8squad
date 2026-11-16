@@ -198,6 +198,14 @@ type Claims interface {
 	// machine re-drives the edge and dispatches. Custody retained. ok=false ⇒
 	// not parked on the gate hold.
 	GateResume(ctx context.Context, workItemID string) (ok bool, err error)
+	// GateResumeDispatch regresses a dispatching checkout back to
+	// claiming_sandbox for a run parked in the BYO endpoint-slot wait whose
+	// bound sandbox pod died before anything dispatched (ISI-7487): same
+	// guarded-step discipline as GateResume, so the pre-bind hold re-parks
+	// the run pod-less instead of the gone-pod death path terminal-failing a
+	// never-dispatched contender. ok=false: the step was not dispatching
+	// (someone terminalized/reclaimed first) — the caller re-reads the world.
+	GateResumeDispatch(ctx context.Context, workItemID string) (ok bool, err error)
 }
 
 // Pauses is the 3.7 episode surface (bound to coord.ProdResumeStore).
@@ -251,6 +259,15 @@ type SandboxBindClearer interface {
 	ClearSandboxBind(ctx context.Context, runID string) error
 }
 
+// EndpointLookup resolves a Run's effective BYO model endpoint for the
+// ISI-7487 pre-bind slot hold, mirroring the dispatcher's resolution
+// (agent/role tier walk, ISI-6054 fallback-active override). endpoint ""
+// means the Run has no BYO endpoint (provider-default / mesh) — no hold
+// applies and the machine drives unchanged.
+type EndpointLookup interface {
+	EffectiveBYOEndpoint(ctx context.Context, run *api.Run) (endpoint string, maxConcurrent int, err error)
+}
+
 // Driver drives the durable reconcile machine for Run CRs.
 type Driver struct {
 	client.Client
@@ -267,6 +284,16 @@ type Driver struct {
 	// Optional — nil disables both the wait-condition surface and the
 	// defensive release (ledger-only lanes).
 	EndpointGate *EndpointGate
+	// EndpointLookup, when set, resolves a Run's effective BYO model endpoint
+	// for the ISI-7487 pre-bind slot hold: at the claiming_sandbox edge the
+	// driver asks the gate for the slot BEFORE the machine binds a sandbox,
+	// so a contending run queues pod-less (WaitingForEndpointSlot) instead of
+	// holding — and losing — a warm sandbox while it waits (the ISI-4310
+	// gone-sandbox death path then terminal-failed never-dispatched
+	// contenders with retryPolicy=0). Shares the dispatcher's resolution
+	// semantics (NewEndpointLookup). Optional — nil preserves the
+	// dispatch-time-only admission (legacy wiring, tests).
+	EndpointLookup EndpointLookup
 	// Settle reads a run's a2a follow-settlement (ISI-4435). When the latest
 	// dispatch lap settled SUCCESSFULLY, the drive skips the death / gone-sandbox
 	// paths for this pass: the sandbox pod OnDone tears down at agent completion is
@@ -465,6 +492,33 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		if gone, err := r.reapGoneSandbox(ctx, &run, cs); err != nil {
 			return ctrl.Result{}, err
 		} else if gone {
+			// ISI-7487: a run parked in the endpoint-slot wait has
+			// dispatched NOTHING — its bound warm pod dying while it queued
+			// is not a run death, and retryOrFail must not terminal-fail a
+			// never-dispatched contender (retryPolicy=0 makes it terminal).
+			// Regress dispatching → claiming_sandbox (the GateResume
+			// discipline) so the pre-bind hold re-parks it pod-less. A stale
+			// condition on an already-dispatched run is safe: the durable
+			// a2a_dispatch marker makes the re-drive reattach, never
+			// double-execute.
+			if cond := meta.FindStatusCondition(run.Status.Conditions, ConditionEndpointSlotWait); cond != nil && cond.Status == metav1.ConditionTrue {
+				if r.EndpointGate != nil {
+					r.EndpointGate.ReleaseByRun(runID)
+				}
+				ok, rerr := r.Claims.GateResumeDispatch(ctx, run.Spec.WorkItemRef)
+				if rerr != nil {
+					return ctrl.Result{}, fmt.Errorf("rundrive: slot-wait rebind for %s: %w", req.NamespacedName, rerr)
+				}
+				if !ok {
+					// Step moved under us (terminalized/reclaimed) — re-read.
+					return ctrl.Result{RequeueAfter: continueDelay}, nil
+				}
+				if r.NotifyPhase != nil {
+					r.NotifyPhase(&run)
+				}
+				noopTick = true
+				return ctrl.Result{RequeueAfter: endpointSlotWaitDelay}, nil
+			}
 			return r.retryOrFail(ctx, &run, cs)
 		}
 	}
@@ -524,6 +578,7 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	// provisions the sandbox dispatch; a satisfied or ungated Run advances
 	// normally. This is the first production consumer of the credential-pause
 	// loop (7.4/7.6 machinery had no callers).
+	resumedFromHold := false
 	if cs.Step == reconcile.StepClaimingSandbox || cs.Step == reconcile.StepPausedCredentialRequired {
 		decision, gerr := r.evaluateGoLiveGate(ctx, &run)
 		if gerr != nil {
@@ -544,11 +599,42 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		// Admitted. If we were parked on the hold, move back onto the happy path
 		// so the machine re-drives the edge and dispatches this same pass.
 		if cs.Step == reconcile.StepPausedCredentialRequired {
-			if _, rerr := r.Claims.GateResume(ctx, run.Spec.WorkItemRef); rerr != nil {
+			if ok, rerr := r.Claims.GateResume(ctx, run.Spec.WorkItemRef); rerr != nil {
 				return ctrl.Result{}, fmt.Errorf("rundrive: gate resume for %s: %w", req.NamespacedName, rerr)
+			} else {
+				resumedFromHold = ok
 			}
 			if r.NotifyPhase != nil {
 				r.NotifyPhase(&run)
+			}
+		}
+	}
+
+	// ISI-7487: pre-bind BYO endpoint-slot admission. A contending run must
+	// queue OUTSIDE the endpoint with NO sandbox bound: the machine binds the
+	// sandbox while advancing the claiming_sandbox edge, so waiting until
+	// buildTask (the ISI-5037 placement) left every waiter holding a warm pod
+	// for the whole multi-minute wait — and when that pod vanished (GC, node
+	// loss, operator restart), the ISI-4310 gone-sandbox death path
+	// terminal-failed the never-dispatched run (live audit: c6133517 failed
+	// 2026-11-16T09:01:44Z exactly this way; retryPolicy=0 makes the death
+	// lap terminal). Take the slot HERE, before the machine runs: a refusal
+	// parks the run pod-less at the wait cadence with the legible condition
+	// (the ISI-5591 zombie exemption now matches reality), and a grant is
+	// held across the bind+dispatch of this same pass — buildTask's Acquire
+	// re-grants idempotently, so dispatch behavior is unchanged.
+	if r.EndpointGate != nil && r.EndpointLookup != nil &&
+		(cs.Step == reconcile.StepClaimingSandbox || resumedFromHold) {
+		endpoint, maxConc, lerr := r.EndpointLookup.EffectiveBYOEndpoint(ctx, &run)
+		if lerr != nil {
+			return ctrl.Result{}, fmt.Errorf("rundrive: resolve BYO endpoint for %s: %w", req.NamespacedName, lerr)
+		}
+		if endpoint != "" {
+			if holder, ok := r.EndpointGate.Acquire(endpoint, runID, maxConc); !ok {
+				busyErr := fmt.Errorf("rundrive: BYO model endpoint %s has no free slot (held by run %s); run %s waits: %w",
+					endpoint, holder, runID, errEndpointSlotBusy)
+				noopTick = true // parked pre-bind; nothing dispatched this pass
+				return r.waitEndpointSlot(ctx, &run, runID, busyErr), nil
 			}
 		}
 	}
