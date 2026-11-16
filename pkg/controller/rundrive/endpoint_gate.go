@@ -60,6 +60,12 @@ import (
 //     paths, for runs that die or are killed before (or without) a clean
 //     follow — covers the acquire-then-never-dispatched and
 //     follow-errored-then-budget-exhausted edges. Idempotent.
+//
+// ISI-7499 C3: waiter ordering key is now (Class, Priority, Since) — class
+// beats priority beats FIFO. Holders are never preempted: a higher-priority
+// waiter arriving while slots are full is queued ahead of lower-priority ones
+// but cannot evict an in-flight holder. Queue order is rebuilt deterministically
+// from durable Run annotations after restart (same as ISI-7501 Since key).
 
 // errEndpointSlotBusy is the sentinel a buildTask wraps when its run's BYO
 // endpoint is fully held by other run(s). It rides the same plumbing as
@@ -100,15 +106,12 @@ type EndpointGate struct {
 	// endpoint; empty sets are deleted so the map does not grow unboundedly.
 	holders map[string]map[string]struct{}
 	// waiters maps an endpoint to the runs queued behind a full slot, each
-	// tagged with a monotonic sequence (enqueue order) and a last-seen poll
-	// time. A freed slot is granted to the lowest-seq live waiter, making
+	// tagged with a wait-start timestamp (FIFO key) and a last-seen poll time.
+	// A freed slot is granted to the earliest-`since` live waiter, making
 	// admission deterministic FIFO-by-wait-time instead of whichever requeue
 	// timer happened to fire first (the pre-ISI-5594 starvation risk). Empty
 	// sets are deleted so the map does not grow unboundedly.
 	waiters map[string]map[string]*endpointWaiter
-	// seq hands out strictly increasing enqueue tokens; a waiter's seq is its
-	// FIFO key. uint64 never realistically wraps over a leader's lifetime.
-	seq uint64
 	// now is the injectable clock (time.Now in production; overridden in
 	// tests to exercise TTL eviction and wait-order without real sleeps).
 	now func() time.Time
@@ -116,9 +119,33 @@ type EndpointGate struct {
 	waiterTTL time.Duration
 }
 
-// endpointWaiter is one run's place in an endpoint's FIFO admission queue.
+// PriorityKey is the admission-ordering key for an endpoint waiter (ISI-7499 C3).
+//
+// Ordering: higher Class is admitted first; ties break on higher Priority; ties
+// break on earlier Since (the FIFO key from ISI-7501, rebuilt from the Run CR
+// after restart). A final lexicographic tie-break on runID makes the order
+// deterministic across reconcile orderings. The zero value is the lowest
+// priority, so callers that only need FIFO-ordering pass PriorityKey{Since: t}.
+type PriorityKey struct {
+	// Class is the most significant admission dimension — higher wins.
+	Class int
+	// Priority is the second dimension — higher wins.
+	Priority int
+	// Since is the restart-stable FIFO key (WaitingForEndpointSlot condition
+	// LastTransitionTime, or creationTimestamp before the condition stamps).
+	// Earlier time wins within the same (Class, Priority).
+	Since time.Time
+}
+
+// endpointWaiter is one run's place in an endpoint's priority admission queue.
+//
+// The ordering key is (Class, Priority, Since) — class beats priority beats
+// FIFO (ISI-7499 C3). `since` is seeded from a durable Run-CR fact so queue
+// order survives an operator restart (ISI-7501). runID breaks exact-key ties.
 type endpointWaiter struct {
-	seq      uint64
+	class    int
+	priority int
+	since    time.Time
 	lastSeen time.Time
 }
 
@@ -141,16 +168,20 @@ func NewEndpointGate(maxConcurrent int) *EndpointGate {
 // own declared capacity (modelendpoint maxConcurrent); values <= 0 fall back
 // to the gate's default. It is idempotent for a run that already holds a slot
 // (re-drive / retry lap / follow re-attach): the same run re-acquiring its own
-// permit is always granted.
+// permit is always granted. Holders are NEVER preempted — a higher-priority
+// waiter queues ahead but cannot evict a run that already holds a slot.
 //
-// Fair FIFO admission (ISI-5594): a run that cannot be admitted is registered
-// as a waiter keyed on its first-seen wait order. When a slot is free it is
-// granted ONLY to the longest-waiting (lowest-seq) live waiter, so a freed
-// slot is never handed to a late arrival ahead of a run that has been queued
-// longer — deterministic, starvation-free. On refusal it returns one current
-// holder's run uid (or, when the slot is free but a longer-waiting run is
-// ahead, that run's uid) for the wait message, and ok=false.
-func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int) (holder string, ok bool) {
+// Priority-ordered admission (ISI-7499 C3): waiters are ordered by
+// (key.Class, key.Priority, key.Since, runID) — class beats priority beats
+// FIFO. When a slot is free it is granted ONLY to the front-of-queue waiter
+// under this ordering, so late arrivals with lower priority cannot jump ahead
+// of earlier or higher-priority waiters. On refusal it returns a current
+// holder's uid (or the waiter ahead in line) for the wait message, and ok=false.
+//
+// key.Since (ISI-7501) is the restart-stable FIFO key reconstructed from the
+// Run CR (WaitingForEndpointSlot condition LastTransitionTime, else
+// creationTimestamp). A zero Since freezes to the gate clock at first sight.
+func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, key PriorityKey) (holder string, ok bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -168,7 +199,7 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int) (holde
 
 	now := g.now()
 	g.evictStaleWaiters(endpoint, now)
-	g.registerWaiter(endpoint, runID, now)
+	g.registerWaiter(endpoint, runID, key, now)
 
 	if len(holders) < max && g.frontWaiter(endpoint) == runID {
 		g.dropWaiter(endpoint, runID)
@@ -181,17 +212,19 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int) (holde
 	}
 
 	// Refused: name a current holder if one exists, else the run ahead of us
-	// in the FIFO queue (the slot is free but held in reserve for it).
+	// in the queue (the slot is free but held in reserve for it).
 	if h := anyKey(holders); h != "" {
 		return h, false
 	}
 	return g.frontWaiter(endpoint), false
 }
 
-// registerWaiter records runID as a waiter on endpoint, assigning it the next
-// FIFO sequence on first sight and refreshing its last-seen poll time on every
-// subsequent call (so a live, polling waiter keeps its place and its freshness).
-func (g *EndpointGate) registerWaiter(endpoint, runID string, now time.Time) {
+// registerWaiter records runID as a waiter on endpoint, refreshing its
+// last-seen poll time on every call (so a live, polling waiter keeps its
+// freshness). Class and Priority from key override the stored values on every
+// call — stable input, no thrash. A non-zero key.Since re-applies the durable
+// FIFO key (ISI-7501); a zero Since freezes to the gate clock at first sight.
+func (g *EndpointGate) registerWaiter(endpoint, runID string, key PriorityKey, now time.Time) {
 	ws := g.waiters[endpoint]
 	if ws == nil {
 		ws = map[string]*endpointWaiter{}
@@ -199,10 +232,18 @@ func (g *EndpointGate) registerWaiter(endpoint, runID string, now time.Time) {
 	}
 	if w, ok := ws[runID]; ok {
 		w.lastSeen = now
+		w.class = key.Class
+		w.priority = key.Priority
+		if !key.Since.IsZero() {
+			w.since = key.Since
+		}
 		return
 	}
-	g.seq++
-	ws[runID] = &endpointWaiter{seq: g.seq, lastSeen: now}
+	since := key.Since
+	if since.IsZero() {
+		since = now
+	}
+	ws[runID] = &endpointWaiter{class: key.Class, priority: key.Priority, since: since, lastSeen: now}
 }
 
 // dropWaiter removes runID from endpoint's waiter queue (on grant or release),
@@ -233,17 +274,32 @@ func (g *EndpointGate) evictStaleWaiters(endpoint string, now time.Time) {
 	}
 }
 
-// frontWaiter returns the lowest-seq (longest-waiting) run uid queued on
-// endpoint, or "" when none are queued.
+// frontWaiter returns the highest-priority run uid queued on endpoint, or ""
+// when none are queued. Ordering: higher Class wins; ties break on higher
+// Priority; ties break on earlier Since; ties break lexicographically on runID.
 func (g *EndpointGate) frontWaiter(endpoint string) string {
 	var front string
-	var best uint64
+	var fw *endpointWaiter
 	for id, w := range g.waiters[endpoint] {
-		if front == "" || w.seq < best {
-			front, best = id, w.seq
+		if front == "" || beats(w, id, fw, front) {
+			front, fw = id, w
 		}
 	}
 	return front
+}
+
+// beats reports whether waiter (a, aid) has higher admission priority than (b, bid).
+func beats(a *endpointWaiter, aid string, b *endpointWaiter, bid string) bool {
+	if a.class != b.class {
+		return a.class > b.class
+	}
+	if a.priority != b.priority {
+		return a.priority > b.priority
+	}
+	if !a.since.Equal(b.since) {
+		return a.since.Before(b.since)
+	}
+	return aid < bid
 }
 
 // anyKey returns one key from the set (deterministically unnecessary — the

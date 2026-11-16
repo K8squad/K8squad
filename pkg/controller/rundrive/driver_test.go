@@ -1127,7 +1127,7 @@ func TestEndpointGateReleasedOnFailEnter(t *testing.T) {
 	d.Sandbox = &fakeReleaser{}
 	gate := NewEndpointGate(1)
 	d.EndpointGate = gate
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("fixture: the dying run must hold the endpoint slot")
 	}
 
@@ -1137,7 +1137,7 @@ func TestEndpointGateReleasedOnFailEnter(t *testing.T) {
 	if !claims.failCall {
 		t.Fatal("budget exhausted death must FailEnter")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
 		t.Fatal("FailEnter must release the dead run's endpoint slot")
 	}
 }
@@ -1159,7 +1159,7 @@ func TestEndpointGateReleasedOnCancelFinish(t *testing.T) {
 	d.Sandbox = &fakeReleaser{}
 	gate := NewEndpointGate(1)
 	d.EndpointGate = gate
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("fixture: the killed run must hold the endpoint slot")
 	}
 
@@ -1169,7 +1169,7 @@ func TestEndpointGateReleasedOnCancelFinish(t *testing.T) {
 	if !claims.cancelFinishCall {
 		t.Fatal("cancelling step must complete via CancelFinish")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
 		t.Fatal("CancelFinish must release the killed run's endpoint slot")
 	}
 }
@@ -1191,7 +1191,7 @@ func TestEndpointGateReleasedOnTerminalAbsorb(t *testing.T) {
 	gate := NewEndpointGate(1)
 	d.EndpointGate = gate
 	// Simulate ReattachFollows re-populating the in-memory holder map.
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("fixture: the terminal run must re-acquire its slot on restart")
 	}
 
@@ -1199,7 +1199,7 @@ func TestEndpointGateReleasedOnTerminalAbsorb(t *testing.T) {
 		t.Fatalf("terminal absorb drive: %v", err)
 	}
 	// The slot must be free so a waiting run can proceed.
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
 		t.Fatal("terminal absorb must release the orphaned endpoint slot (ISI-7487)")
 	}
 }
@@ -1223,7 +1223,7 @@ func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
 	d.Sandbox = &fakeReleaser{}
 	gate := NewEndpointGate(1)
 	d.EndpointGate = gate
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("fixture: the retrying run must hold the endpoint slot")
 	}
 
@@ -1233,10 +1233,10 @@ func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
 	if len(claims.retryCalls) != 1 {
 		t.Fatal("in-budget death must enter the retry lap")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); ok {
 		t.Fatal("the retry lap must KEEP the endpoint slot (same run re-acquires next lap)")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("the retrying run's own re-acquire must stay an idempotent grant")
 	}
 }
