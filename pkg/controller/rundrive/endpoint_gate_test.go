@@ -196,6 +196,68 @@ func TestEndpointGatePerEndpointConcurrency(t *testing.T) {
 	}
 }
 
+// TestEndpointGateFIFOSurvivesRestart pins the ISI-7501 core: a 2-slot endpoint
+// admits 2 concurrent holders and queues the rest, and the queue's FIFO order
+// survives an operator restart that empties the in-process gate — because the
+// FIFO key is the durable per-run wait-start the caller passes (reconstructed
+// from the Run CR), not an in-process counter that vanishes with the process.
+func TestEndpointGateFIFOSurvivesRestart(t *testing.T) {
+	const ep = "https://api.deepseek.com/v1"
+	// Durable wait-start timestamps as they would read off each Run's
+	// WaitingForEndpointSlot condition (monotone: seat1 waited first).
+	base := time.Unix(1_700_000_000, 0)
+	since := map[string]time.Time{
+		"seat1": base,
+		"seat2": base.Add(1 * time.Second),
+		"seat3": base.Add(2 * time.Second),
+		"seat4": base.Add(3 * time.Second),
+	}
+
+	// Pre-restart: a 2-slot endpoint admits seat1+seat2, queues seat3+seat4.
+	g := NewEndpointGate(1) // default is strict; the endpoint DECLARES 2.
+	for _, id := range []string{"seat1", "seat2"} {
+		if _, ok := g.Acquire(ep, id, 2, since[id]); !ok {
+			t.Fatalf("%s within the 2-slot capacity must be granted", id)
+		}
+	}
+	for _, id := range []string{"seat3", "seat4"} {
+		if _, ok := g.Acquire(ep, id, 2, since[id]); ok {
+			t.Fatalf("%s beyond the 2-slot capacity must queue", id)
+		}
+	}
+	if front := g.frontWaiter(ep); front != "seat3" {
+		t.Fatalf("pre-restart FIFO front must be seat3, got %q", front)
+	}
+
+	// Simulate the operator restart: a BRAND-NEW gate (all in-process holder
+	// and queue state gone). The reattach/re-drive re-registers the two
+	// holders, then the two waiters re-drive in REVERSE order (reconcile order
+	// after a roll is nondeterministic) — each passing its durable wait-start.
+	g = NewEndpointGate(1)
+	for _, id := range []string{"seat1", "seat2"} {
+		if _, ok := g.Acquire(ep, id, 2, since[id]); !ok {
+			t.Fatalf("%s must re-take its slot after restart (reattach)", id)
+		}
+	}
+	for _, id := range []string{"seat4", "seat3"} { // reverse re-drive order
+		if _, ok := g.Acquire(ep, id, 2, since[id]); ok {
+			t.Fatalf("%s must re-queue after restart (2 slots held)", id)
+		}
+	}
+
+	// A slot frees. Despite seat4 having re-registered FIRST post-restart, the
+	// earlier-waiting seat3 must win — FIFO order was reconstructed from the
+	// durable keys, not from post-restart arrival order. (Under the old
+	// in-process-counter key, seat4 would have won and this fails.)
+	g.ReleaseByRun("seat1")
+	if _, ok := g.Acquire(ep, "seat4", 2, since["seat4"]); ok {
+		t.Fatal("FIFO after restart: seat4 must not jump ahead of the earlier-waiting seat3")
+	}
+	if _, ok := g.Acquire(ep, "seat3", 2, since["seat3"]); !ok {
+		t.Fatal("FIFO after restart: the earliest-waiting seat3 must win the freed slot")
+	}
+}
+
 // TestEndpointGateEvictsStaleWaiter: a front-of-queue waiter that stops polling
 // past the TTL (vanished without a terminal release) must not wedge the slot —
 // it is evicted so the next live waiter is admitted.

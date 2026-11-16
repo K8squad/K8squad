@@ -33,6 +33,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -520,7 +521,20 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 				// ISI-5594: the endpoint's own declared capacity (Secret
 				// maxConcurrent) overrides the operator default; <= 0 falls
 				// back to it inside Acquire. Admission is FIFO by wait time.
-				if holder, ok := gate.Acquire(endpoint.BaseURL, runID, endpoint.MaxConcurrent); !ok {
+				//
+				// ISI-7501: the FIFO key is reconstructed from the Run CR so
+				// queue position survives an operator restart that empties the
+				// in-process gate. The WaitingForEndpointSlot condition's
+				// LastTransitionTime is the true wait-start and is stamped
+				// durably once the run first queues; before that (the very
+				// first refused Acquire) the Run's creationTimestamp is the
+				// stable fallback. Both outlive a roll, so a re-driving waiter
+				// re-registers with the same key it held before.
+				waitSince := run.CreationTimestamp.Time
+				if c := meta.FindStatusCondition(run.Status.Conditions, ConditionEndpointSlotWait); c != nil && c.Status == metav1.ConditionTrue {
+					waitSince = c.LastTransitionTime.Time
+				}
+				if holder, ok := gate.Acquire(endpoint.BaseURL, runID, endpoint.MaxConcurrent, waitSince); !ok {
 					return wire.Task{}, fmt.Errorf("rundrive: BYO model endpoint %s has no free slot (held by run %s); run %s waits: %w",
 						endpoint.BaseURL, holder, runID, errEndpointSlotBusy)
 				}
