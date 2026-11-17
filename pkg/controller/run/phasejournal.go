@@ -82,6 +82,42 @@ func phaseToken(p api.RunPhase) (string, bool) {
 	}
 }
 
+// phaseTokenRank orders the four chip tokens by run-life progression for the
+// backward-edge guard (ISI-7539): claiming < running < the terminal pair
+// (complete and failed share the terminal rank — a terminal flip between them
+// is not a regression). An empty or unrecognised token ranks -1 so it can never
+// count as the FROM side of a backward edge (the first observed transition has
+// no from token; a malformed token is never suppressed).
+func phaseTokenRank(token string) int {
+	switch token {
+	case phaseTokenClaiming:
+		return 0
+	case phaseTokenRunning:
+		return 1
+	case phaseTokenComplete, phaseTokenFailed:
+		return 2
+	default:
+		return -1
+	}
+}
+
+// BackwardPhaseEdge reports whether a folded-token journal edge from→to
+// REGRESSES the run's chart band (ISI-7539): toPhase strictly below fromPhase
+// in run-life order (claiming < running < terminal). running→claiming is the
+// crash-path example from the ISI-7538 repro (ddf159d6: the journal flapped
+// claiming→running, running→claiming, claiming→running inside one second
+// around the operator crash); a terminal flip (complete and failed share the
+// terminal rank) and a first-observed edge (empty from token) are NOT
+// backward. The production PhaseJournal adapter gates a backward edge on the
+// durable reclaim oracle — a regression is journaled only when the durable
+// fence was bumped for the run (a §6.3 RetryEnter reclaim) since its last
+// journaled edge — so a crash-path re-observation flap emits no backward row
+// while a genuine retry-lap regression still journals.
+func BackwardPhaseEdge(from, to string) bool {
+	fromRank, toRank := phaseTokenRank(from), phaseTokenRank(to)
+	return fromRank >= 0 && toRank >= 0 && toRank < fromRank
+}
+
 // PhaseEdge is one observed Run phase edge the projector hands the journal
 // seam. It carries the chip TOKENS (already folded by phaseToken), the Run CR's
 // owning tenancy UIDs (derived from the Run CR, NOT any linked work_item — not

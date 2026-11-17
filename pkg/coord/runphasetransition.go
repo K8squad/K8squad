@@ -130,3 +130,44 @@ func RecordRunPhaseTransition(ctx context.Context, db *sql.DB, row RunPhaseTrans
 	}
 	return nil
 }
+
+// RetryReclaimSinceLastPhaseEdge reports whether a §6.3/§8 retry re-entry was
+// committed for the run strictly AFTER the run's last journaled phase edge
+// (ISI-7539). RetryEnter co-commits its fence bump with a retry_lap_entered
+// audit row, so the audit trail IS the durable record of every legitimate
+// backward-edge producer; the journal's own last row bounds the window, making
+// the verdict restart-safe (no adapter memory involved). On the crash-path flap
+// from the ISI-7538 repro the racing forward row lands after the reclaim's
+// audit row, so the window contains no reclaim and the flap's backward edge is
+// suppressible. A run with no journaled edge yet bounds against -infinity: any
+// retry reclaim on record legitimizes, and a first-life run has none — its
+// backward edge is a re-observation artifact.
+//
+// Semantics:
+//   - (nil): the oracle answered; true means a reclaim backs a backward edge.
+//   - (ErrInvalidRunPhaseTransition): empty runUID (fail-closed, before any DB
+//     round-trip — same input discipline as the write seam).
+//   - (err): infrastructure failure; the CALLER fails open (the journal is
+//     observability history and must not silently swallow an honest regression).
+func RetryReclaimSinceLastPhaseEdge(ctx context.Context, db *sql.DB, runUID string) (bool, error) {
+	if db == nil {
+		return false, errors.New("coord.RetryReclaimSinceLastPhaseEdge: nil db")
+	}
+	if runUID == "" {
+		return false, fmt.Errorf("%w: runUID is required", ErrInvalidRunPhaseTransition)
+	}
+	var reclaimed bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			  FROM coord.audit_log a
+			 WHERE a.run_id = $1::uuid
+			   AND a.event_type = 'retry_lap_entered'
+			   AND a.created_at > (SELECT COALESCE(MAX(t.ts), '-infinity'::timestamptz)
+			                         FROM coord.run_phase_transition t
+			                        WHERE t.run_uid = $1::uuid)
+		)`, runUID).Scan(&reclaimed); err != nil {
+		return false, fmt.Errorf("coord.RetryReclaimSinceLastPhaseEdge: run %s: %w", runUID, err)
+	}
+	return reclaimed, nil
+}
