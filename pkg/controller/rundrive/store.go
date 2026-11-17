@@ -439,6 +439,35 @@ func (c *ProdClaims) CancelDue(ctx context.Context) ([]string, error) {
 	return coord.NewProdCancelStore(c.db).Due(ctx)
 }
 
+// InFlightDue implements Claims.InFlightDue: the periodic in-flight sweep's
+// (ISI-7536) backlog — work items whose durable reconcile_step is in-flight.
+// The step set is inlined in the statement as a compile-time contract (exactly
+// the inFlightStep trio; claiming_sandbox predates any dispatched signal,
+// paused variants have the 3.7 resume timer, terminal steps never resurrect).
+// Read-only: the sweep only kicks; every state change stays with the
+// level-triggered Reconcile.
+func (c *ProdClaims) InFlightDue(ctx context.Context) ([]string, error) {
+	rows, err := c.db.QueryContext(ctx, `
+		SELECT work_item_id::text FROM coord.claim
+		 WHERE reconcile_step IN ('dispatching', 'running', 'collecting')`)
+	if err != nil {
+		return nil, fmt.Errorf("rundrive.ProdClaims.InFlightDue: list in-flight claims: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("rundrive.ProdClaims.InFlightDue: scan in-flight claim: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rundrive.ProdClaims.InFlightDue: in-flight claims cursor: %w", err)
+	}
+	return out, nil
+}
+
 // runIDFor looks up the Run's uuid for the audit/outbox provenance: the
 // latest dispatch marker for the item (the run that was executing when the
 // episode landed). Empty when none exists — audit_log.run_id is nullable.

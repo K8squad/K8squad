@@ -197,6 +197,13 @@ type Claims interface {
 	// CancelDue lists work items parked at cancelling — the kill sweep's
 	// backlog it hands to the driver's kick.
 	CancelDue(ctx context.Context) (due []string, err error)
+	// InFlightDue lists work items whose durable reconcile_step is in-flight
+	// (dispatching/running/collecting) — the periodic in-flight sweep's
+	// (ISI-7536) backlog it hands to the driver's kick, so a Run wedged
+	// mid-flight after an operator roll (whose in-memory 2s self-poll chain
+	// was dropped) is re-examined within ~a sweep interval regardless of
+	// pod-watch coverage.
+	InFlightDue(ctx context.Context) (due []string, err error)
 	// RequeuePaused is the 3.7 resume re-entry: guarded paused(rate_limited) →
 	// dispatching (custody retained — short pauses keep the checkout), audited.
 	RequeuePaused(ctx context.Context, workItemID string) (ok bool, err error)
@@ -1202,6 +1209,18 @@ func (r *Driver) cancelFinish(ctx context.Context, run *api.Run, cs ClaimState) 
 // the sandbox down and commits the terminal cancelled transition. Pure latency
 // sugar for the kick — correctness is level-triggered off the durable step.
 func (r *Driver) OnCancelDue(ctx context.Context, due []string) {
+	for _, workItemID := range due {
+		r.kickWorkItem(ctx, workItemID)
+	}
+}
+
+// OnInFlightSweep is the periodic in-flight sweep's wake (ISI-7536): each work
+// item still at an in-flight durable step has its owning Run(s) kicked back
+// into the drive loop. The level-triggered Reconcile is a cheap no-op for a
+// healthy Run; for one wedged against a reaped sandbox it drives
+// reapGoneSandbox → retryOrFail — the recovery an operator roll's dropped 2s
+// self-poll chain used to be the only prompt carrier of.
+func (r *Driver) OnInFlightSweep(ctx context.Context, due []string) {
 	for _, workItemID := range due {
 		r.kickWorkItem(ctx, workItemID)
 	}

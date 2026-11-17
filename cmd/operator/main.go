@@ -1774,6 +1774,25 @@ func main() {
 			os.Exit(1)
 		}
 
+		// The periodic in-flight re-enqueue sweep (ISI-7531 / ISI-7536): a Run
+		// wedged in an in-flight step whose sandbox pod was reaped while the
+		// operator was down during a roll has no prompt re-trigger — the roll
+		// dropped the in-memory 2s self-poll chain, and controller-runtime
+		// never replays a DELETE the informer missed, so only the ~10h
+		// SyncPeriod re-list remained. This bounded sweep re-examines every
+		// in-flight Run within ~a minute (reapGoneSandbox → retryOrFail),
+		// independent of pod-watch coverage. mgr.Add runs it leader-elected,
+		// so only the active operator sweeps. Latency sugar for the kick;
+		// correctness is level-triggered off the durable step.
+		if err := mgr.Add(&rundrive.InFlightSweeper{
+			Claims: rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
+			OnDue:  driver.OnInFlightSweep,
+			Log:    func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to register in-flight sweep")
+			os.Exit(1)
+		}
+
 		// AgentMesh supervisor wiring (ISI-6010): the TTL sweep that ce1445f0
 		// registered here (rundrive.MeshSupervisor) is deliberately NOT
 		// registered alongside the gateway-health loop above. Sweep deletes
