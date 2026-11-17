@@ -675,6 +675,11 @@ func leaseAgo(d time.Duration) *time.Time {
 	return &t
 }
 
+func leaseAhead(d time.Duration) *time.Time {
+	t := time.Now().Add(d)
+	return &t
+}
+
 // TestDeathDetectedRetriesWithinBudget: an in-flight Run with an expired lease
 // under a holder tears its sandbox down, enters the retry lap (fence-first),
 // and requeues on backoff.
@@ -1039,6 +1044,108 @@ func TestFollowFailedStillTakesDeathPath(t *testing.T) {
 	}
 	if len(claims.retryCalls) != 1 {
 		t.Fatalf("settled-failed run did not enter the retry lap: retry=%v", claims.retryCalls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ISI-7524: a durably settled non-success lap finalizes without a lease death
+// ---------------------------------------------------------------------------
+
+// TestSettledNonSuccessFinalizesOnFreshLease: the main-tip wedge shape — an
+// in-flight Run holding its checkout with a FRESH lease (the drive loop
+// itself renews it, §6.2) whose latest a2a lap durably settled FAILED on a
+// sandbox pod that still exists. No lease death, no gone sandbox: without the
+// direct finalize edge the Run stays Running forever holding its BYO endpoint
+// slot (the party-batch wedge). The drive must terminal-fail it (nil policy
+// means a zero-retry business failure) and release the endpoint slot.
+func TestSettledNonSuccessFinalizesOnFreshLease(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepRunning, Fence: 7, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAhead(time.Minute), ItemState: "in_progress"},
+		laps: 1, failOK: true}
+	store := &fakeMachineStore{step: reconcile.StepRunning, fence: 7, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFailed}
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
+		t.Fatal("fixture: the wedged run must hold the endpoint slot")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("settled-failed fresh-lease drive: %v", err)
+	}
+	if !claims.failCall {
+		t.Fatal("a durably settled failed lap must FailEnter even on a fresh lease (ISI-7524)")
+	}
+	if claims.renewCalls != 0 {
+		t.Fatalf("terminal finalize must come before any custody renew: renew=%d", claims.renewCalls)
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
+		t.Fatal("FailEnter must release the wedged run's endpoint slot")
+	}
+}
+
+// TestSettledFollowErrorRetriesOnFreshLease: same fresh-lease shape but the
+// lap settled follow_error (infra) — the defaultInfraRetries budget turns the
+// direct finalize into a RetryEnter, and the retry lap keeps its endpoint
+// permit by design.
+func TestSettledFollowErrorRetriesOnFreshLease(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepRunning, Fence: 7, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAhead(time.Minute), ItemState: "in_progress"},
+		laps: 1, retryOK: true, retryNewFence: 8}
+	store := &fakeMachineStore{step: reconcile.StepRunning, fence: 7, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFollowError}
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
+		t.Fatal("fixture: the errored run must hold the endpoint slot")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("settled-follow_error fresh-lease drive: %v", err)
+	}
+	if len(claims.retryCalls) != 1 {
+		t.Fatalf("follow_error on a fresh lease must RetryEnter (infra budget): retry=%v", claims.retryCalls)
+	}
+	if claims.failCall {
+		t.Fatal("within budget the finalize is a retry, not a terminal fail")
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); ok {
+		t.Fatal("the retry lap keeps its endpoint permit by design")
+	}
+}
+
+// TestSettledNonSuccessForeignHolderNotFinalized: a settled-failed lap on a
+// checkout held by ANOTHER run is not ours to finalize — the holder's own
+// driver owns the death handling (the fence-first enter must never reclaim a
+// live foreign lease).
+func TestSettledNonSuccessForeignHolderNotFinalized(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepRunning, Fence: 7, Holder: "ksquad-operator", RunID: "99999999-9999-9999-9999-999999999999",
+		LeaseExpiresAt: leaseAhead(time.Minute), ItemState: "in_progress"}}
+	store := &fakeMachineStore{step: reconcile.StepRunning, fence: 7, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFailed}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("foreign-holder drive: %v", err)
+	}
+	if claims.failCall || len(claims.retryCalls) != 0 {
+		t.Fatalf("foreign-held checkout must not be finalized here: fail=%v retry=%v", claims.failCall, claims.retryCalls)
 	}
 }
 

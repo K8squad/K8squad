@@ -52,6 +52,31 @@ func TestFailureCauseSettledOutcomeWins(t *testing.T) {
 	}
 }
 
+// TestFailureCauseSettledOutcomeTiebreakColumns (ISI-7524 D2): the latest-lap
+// tiebreak must name only columns that exist on coord.a2a_dispatch — the live
+// schema has NO id column (a2a_task_id, work_item_id, run_id, dispatched_at,
+// settled_at, settle_outcome), so the pre-fix ORDER BY settled_at DESC, id
+// DESC errored SQLSTATE 42703 on EVERY Failed-run reconcile. sqlmock cannot
+// check a schema, so the tiebreak text is pinned: drift back to a
+// non-existent column breaks this expectation.
+func TestFailureCauseSettledOutcomeTiebreakColumns(t *testing.T) {
+	r, mock := newFailureCauseReader(t)
+	mock.ExpectQuery(regexp.QuoteMeta("ORDER BY settled_at DESC, a2a_task_id DESC")).
+		WithArgs(fcItem).
+		WillReturnRows(sqlmock.NewRows([]string{"settle_outcome"}).AddRow("failed"))
+
+	got, err := r.FailureCauseForWorkItem(context.Background(), fcItem)
+	if err != nil {
+		t.Fatalf("FailureCauseForWorkItem: %v", err)
+	}
+	if got != "the agent run settled failed" {
+		t.Fatalf("cause = %q, want the named settle outcome", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations (the ORDER BY tiebreak must use existing columns): %v", err)
+	}
+}
+
 // follow_error is infra, but still a legible terminal cause.
 func TestFailureCauseFollowError(t *testing.T) {
 	r, mock := newFailureCauseReader(t)

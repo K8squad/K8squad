@@ -506,6 +506,26 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			return ctrl.Result{}, fmt.Errorf("rundrive: read follow settlement for %s: %w", req.NamespacedName, ferr)
 		}
 		settledOK = ok
+		// ISI-7524: a durably settled NON-succeeded lap (failed / follow_error)
+		// is a terminal agent outcome — finalize it NOW through the §5.3 death
+		// path (retry-budgeted) instead of waiting for lease expiry or a gone
+		// sandbox. Neither ever fires for a failed lap while its sandbox pod
+		// still lives and this loop keeps renewing custody (§6.2): the follow
+		// gate parks the machine at running/collecting, so the Run stays
+		// Running forever holding its BYO endpoint and per-agent slots — the
+		// main-tip wedge that stalled the party batch. Skipped for a foreign
+		// holder (that holder's own driver owns the death handling); a queued
+		// run that never dispatched re-parks inside retryOrFail instead.
+		if !settledOK && cs.RunID == runID {
+			if lapOver, ferr := r.followSettledNonSuccess(ctx, runID); ferr != nil {
+				return ctrl.Result{}, fmt.Errorf("rundrive: read follow settlement for %s: %w", req.NamespacedName, ferr)
+			} else if lapOver {
+				slog.InfoContext(ctx, "rundrive: a2a lap settled non-success; finalizing run",
+					"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
+					"durable_step", string(cs.Step))
+				return r.retryOrFail(ctx, &run, cs)
+			}
+		}
 	}
 
 	if !settledOK {
@@ -914,6 +934,25 @@ func (r *Driver) followSucceeded(ctx context.Context, runID string) (bool, error
 		return false, err
 	}
 	return settled && outcome == coord.SettleOutcomeSucceeded, nil
+}
+
+// followSettledNonSuccess reports whether this run's LATEST a2a dispatch lap
+// durably settled with a non-succeeded terminal outcome (failed or
+// follow_error) — the agent turn is over (ISI-7524). The §5.3 death path must
+// finalize such a lap directly: unlike a lease death or a gone sandbox, a
+// settled lap can sit on a live pod with a freshly renewed lease forever, so
+// no other detector ever fires. Nil Settle keeps the pre-ISI-7524 behaviour
+// (unit tests / ledger-only runs); a read error is surfaced so the drive
+// requeues rather than misclassifying a transient DB stall as terminal.
+func (r *Driver) followSettledNonSuccess(ctx context.Context, runID string) (bool, error) {
+	if r.Settle == nil {
+		return false, nil
+	}
+	_, settled, outcome, err := r.Settle.RunFollowOutcome(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	return settled && (outcome == coord.SettleOutcomeFailed || outcome == coord.SettleOutcomeFollowError), nil
 }
 
 // dead reports the 3.2 death signal: in flight, held, and the lease expired.
