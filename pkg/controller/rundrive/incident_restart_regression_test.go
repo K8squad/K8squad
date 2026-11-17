@@ -151,7 +151,7 @@ func TestFourSeatSingleSlotRestartMidWaitNeverFailsSeats(t *testing.T) {
 	if seats[0].store.advances == 0 {
 		t.Fatal("the admitted seat-1 must drive the machine past the claiming edge")
 	}
-	if _, ok := gate.Acquire(incidentEndpoint, seats[0].uid, 1); !ok {
+	if _, ok := gate.Acquire(incidentEndpoint, seats[0].uid, 1, PriorityKey{}); !ok {
 		t.Fatal("seat-1 must hold the only endpoint slot after driving")
 	}
 	for _, s := range seats[1:] {
@@ -247,11 +247,15 @@ func TestFourSeatSingleSlotRestartMidWaitNeverFailsSeats(t *testing.T) {
 func TestSingleSlotFourSeatFIFOSurvivesRestart(t *testing.T) {
 	const ep = incidentEndpoint
 	base := time.Unix(1_700_000_000, 0)
-	since := map[string]time.Time{
-		"seat1": base,                      // took the slot first
-		"seat2": base.Add(1 * time.Second), // queued first
-		"seat3": base.Add(2 * time.Second),
-		"seat4": base.Add(3 * time.Second),
+	// All seats share class (issue) and priority (unset) — the gate's only
+	// discriminator is the durable WaitSince, so this pins pure FIFO-by-wait-
+	// start exactly as the ISI-7501 incident requires (ISI-7510 made the key a
+	// PriorityKey; equal class+priority falls through to the WaitSince tiebreak).
+	since := map[string]PriorityKey{
+		"seat1": {WaitSince: base},                      // took the slot first
+		"seat2": {WaitSince: base.Add(1 * time.Second)}, // queued first
+		"seat3": {WaitSince: base.Add(2 * time.Second)},
+		"seat4": {WaitSince: base.Add(3 * time.Second)},
 	}
 
 	// Pre-restart: seat1 holds the single slot; seat2..4 queue FIFO.
