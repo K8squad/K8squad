@@ -323,6 +323,9 @@ func TestHeartbeatSweepReleasesOrphanClaim(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO coord.outbox`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.a2a_dispatch`).
+		WithArgs("22222222-2222-2222-2222-222222222222", "follow_error").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE coord.work_item`).
 		WithArgs("11111111-1111-1111-1111-111111111111", "todo").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -445,6 +448,9 @@ func TestHeartbeatSweepReleasesZombieNoSandbox(t *testing.T) {
 		WithArgs(zItem, zRun, OperatorPrincipal, int64(9), "zombie_no_sandbox").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.a2a_dispatch`).
+		WithArgs(zRun, "follow_error").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE coord.work_item`).
 		WithArgs(zItem, "todo").
@@ -696,6 +702,9 @@ func TestHeartbeatSweepReapsZombieNotEndpointWaiting(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO coord.outbox`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.a2a_dispatch`).
+		WithArgs(zRun, "follow_error").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE coord.work_item`).
 		WithArgs(zItem, "todo").
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -860,6 +869,9 @@ func TestHeartbeatSweepReapsZombieNotMeshQueued(t *testing.T) {
 		WithArgs(zItem, zRun, OperatorPrincipal, int64(9), "zombie_no_sandbox").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.a2a_dispatch`).
+		WithArgs(zRun, "follow_error").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE coord.work_item`).
 		WithArgs(zItem, "todo").
