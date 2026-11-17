@@ -18,6 +18,7 @@ package rundrive
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -187,6 +188,14 @@ func (w *SecretCredentialWriter) stampRunID(ctx context.Context, pod *corev1.Pod
 	_ = w.client.Patch(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace}}, patch)
 }
 
+// errSandboxGone is the ISI-7538 death signal from the bind path: the
+// sandbox pod behind the binder-returned ref no longer exists (deleted
+// mid-run by node loss, eviction, or a restart-time reap), so the bind can
+// never complete and the unsettled lap behind it can never settle. The
+// driver routes it through the retry-or-fail death path instead of
+// requeueing the same BindSandbox error forever behind a corpse holder.
+var errSandboxGone = errors.New("rundrive: bound sandbox pod is gone at bind")
+
 // findSandboxPod locates the booted sandbox pod by its name (== sandbox_ref).
 // The pod carries a unique "sandbox" label (warmpool.Boot), so a label-scoped
 // list finds it without the caller knowing its namespace — the coord bind frame
@@ -201,5 +210,5 @@ func (w *SecretCredentialWriter) findSandboxPod(ctx context.Context, sandboxRef 
 			return &pods.Items[i], nil
 		}
 	}
-	return nil, fmt.Errorf("sandbox pod %s not found (cannot place task-io Secret)", sandboxRef)
+	return nil, fmt.Errorf("%w: sandbox pod %s not found (cannot place task-io Secret)", errSandboxGone, sandboxRef)
 }
