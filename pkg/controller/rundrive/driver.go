@@ -757,6 +757,22 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			return r.waitSupervisor(ctx, &run, runID, err), nil
 		}
 		if errors.Is(err, errSandboxGone) {
+			// ISI-7548: a gone bind pod AFTER this lap's follow durably
+			// settled SUCCEEDED is the expected end state, not a death —
+			// the task finished; teardown-and-replace already recycles the
+			// pod. Clear the stale marker and requeue so the follow gate
+			// finalizes success; never fail finished work.
+			if deferOK, derr := r.settleSucceededDefer(ctx, &run, cs); derr != nil {
+				return ctrl.Result{}, derr
+			} else if deferOK {
+				slog.InfoContext(ctx, "rundrive: bind hit a gone sandbox after a succeeded settle; deferring to success finalize",
+					"run.id", string(run.UID), "run.work_item_ref", run.Spec.WorkItemRef,
+					"durable_step", string(cs.Step))
+				if cerr := r.clearStaleSandbox(ctx, &run); cerr != nil {
+					return ctrl.Result{}, cerr
+				}
+				return ctrl.Result{RequeueAfter: continueDelay}, nil
+			}
 			// ISI-7538: the bind effect hit a sandbox pod that is provably
 			// gone — route through the death path, never the generic
 			// requeue (which re-drives BindSandbox into the same error
@@ -789,6 +805,22 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			return r.waitSupervisor(ctx, &run, runID, err), nil
 		}
 		if errors.Is(err, errSandboxGone) {
+			// ISI-7548: a gone bind pod AFTER this lap's follow durably
+			// settled SUCCEEDED is the expected end state, not a death —
+			// the task finished; teardown-and-replace already recycles the
+			// pod. Clear the stale marker and requeue so the follow gate
+			// finalizes success; never fail finished work.
+			if deferOK, derr := r.settleSucceededDefer(ctx, &run, cs); derr != nil {
+				return ctrl.Result{}, derr
+			} else if deferOK {
+				slog.InfoContext(ctx, "rundrive: bind hit a gone sandbox after a succeeded settle; deferring to success finalize",
+					"run.id", string(run.UID), "run.work_item_ref", run.Spec.WorkItemRef,
+					"durable_step", string(cs.Step))
+				if cerr := r.clearStaleSandbox(ctx, &run); cerr != nil {
+					return ctrl.Result{}, cerr
+				}
+				return ctrl.Result{RequeueAfter: continueDelay}, nil
+			}
 			// ISI-7538: the sticky effects error is the gone-sandbox
 			// death signal (see the sibling branch above).
 			return r.bindGoneDeathPath(ctx, &run, cs)
@@ -946,6 +978,27 @@ func (r *Driver) followSucceeded(ctx context.Context, runID string) (bool, error
 		return false, err
 	}
 	return settled && outcome == coord.SettleOutcomeSucceeded, nil
+}
+
+// settleSucceededDefer (ISI-7548) reports whether THIS run's current a2a lap
+// has durably settled SUCCEEDED. It is the last-chance guard on every death
+// path: during API-stall windows (host freezes, operator leader-election
+// restarts) the settle marker can land between the top-of-pass settledOK read
+// and the death-path commit, and the gone-sandbox path then terminal-fails a
+// lap whose agent task already finished — live evidence 2026-11-17: laps
+// settled succeeded 13:47:42Z / 13:48:06Z terminal-failed 30s later, failing
+// one run per verification batch before retry recovery. A foreign holder
+// never defers (its own driver owns the death handling); a settle-read error
+// surfaces so a transient DB stall is never defaulted into a terminal.
+func (r *Driver) settleSucceededDefer(ctx context.Context, run *api.Run, cs ClaimState) (bool, error) {
+	if cs.RunID != string(run.UID) {
+		return false, nil
+	}
+	ok, err := r.followSucceeded(ctx, string(run.UID))
+	if err != nil {
+		return false, fmt.Errorf("rundrive: settle re-read for %s: %w", string(run.UID), err)
+	}
+	return ok, nil
 }
 
 // followSettledNonSuccess reports whether this run's LATEST a2a dispatch lap
@@ -1114,6 +1167,20 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 				"run.id", runID, "run.name", run.Name, "run.namespace", run.Namespace)
 			return ctrl.Result{RequeueAfter: endpointSlotWaitDelay}, nil
 		}
+	}
+	// ISI-7548: a lap whose follow durably settled SUCCEEDED is a finished
+	// run, not a death. Re-read the marker one last time before any
+	// RetryEnter/FailEnter: if it flipped to succeeded since the top-of-pass
+	// read (the stall-window race), defer to the machine drive, whose follow
+	// gate finalizes collecting to succeeded. Never fail or re-lap work that
+	// already finished.
+	if deferOK, derr := r.settleSucceededDefer(ctx, run, cs); derr != nil {
+		return ctrl.Result{}, derr
+	} else if deferOK {
+		slog.InfoContext(ctx, "rundrive: death path deferred; a2a lap settled succeeded",
+			"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
+			"durable_step", string(cs.Step))
+		return ctrl.Result{RequeueAfter: continueDelay}, nil
 	}
 	if r.Sandbox != nil {
 		// Best-effort: a stuck teardown must not block the custody fix; the
