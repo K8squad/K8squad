@@ -79,3 +79,26 @@ func TestValidRunPhases(t *testing.T) {
 		}
 	}
 }
+
+
+
+// ISI-7543: forward edges (including the first transition and both terminal
+// targets) must still pass the input guards — only the lattice regression is
+// new. The offline DB then fails on connect, never on validation.
+func TestRecordRunPhaseTransitionForwardEdgesPassValidation(t *testing.T) {
+	db := offlineDB()
+	for name, row := range map[string]RunPhaseTransition{
+		"first transition":    {RunUID: "r", ProjectID: "p", FromPhase: "", ToPhase: RunPhaseClaiming},
+		"claiming to running": {RunUID: "r", ProjectID: "p", FromPhase: RunPhaseClaiming, ToPhase: RunPhaseRunning},
+		"running to complete": {RunUID: "r", ProjectID: "p", FromPhase: RunPhaseRunning, ToPhase: RunPhaseComplete},
+		"running to failed":   {RunUID: "r", ProjectID: "p", FromPhase: RunPhaseRunning, ToPhase: RunPhaseFailed},
+		"claiming to failed":  {RunUID: "r", ProjectID: "p", FromPhase: RunPhaseClaiming, ToPhase: RunPhaseFailed},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := RecordRunPhaseTransition(context.Background(), db, row)
+			if errors.Is(err, ErrInvalidRunPhaseTransition) {
+				t.Fatalf("forward edge must pass validation, got %v", err)
+			}
+		})
+	}
+}

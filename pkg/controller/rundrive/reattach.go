@@ -59,11 +59,33 @@ type followReattacher interface {
 	Submit(ctx context.Context, a2aTaskID, runID string) error
 }
 
-// reattachSettler is the coord settle-write seam (coord.ProdSettler in
-// production). Settle records the at-most-once terminal marker
-// (settled_at/settle_outcome + 'a2a_settled' audit row) that makes
-// UnsettledDispatches stop returning the lap on later leader-elects.
-type reattachSettler interface {
+// lapLiveness answers, for one unsettled dispatch lap, whether its run's
+// sandbox is provably dead (ISI-7543). It is consulted BEFORE Submit: Submit
+// rebuilds the task through the dispatcher Builder, which acquires the BYO
+// EndpointGate slot — a permit only the follow's clean OnDone or the driver's
+// terminal paths release. Re-submitting a lap whose supervisor pod is gone
+// therefore grants a slot to a corpse that can never settle it: the queue
+// then stalls behind an immortal holder (the ISI-7538 wedge — 4 queued runs
+// 10m+ behind one dead lap after an operator restart). The guard keeps a
+// dead sandbox from ever re-acquiring the slot on the re-attach path.
+type lapLiveness interface {
+	// DeadSandbox reports true only when the run is sandbox-BOUND and its pod
+	// is gone (terminating or terminal pods count as gone). False means
+	// "cannot prove dead": an unbound run (mesh/stdio lanes have no pod) is
+	// never condemned on pod evidence, and a CR that no longer exists is left
+	// to the Submit-failure / TTL backstop paths. An error means "cannot
+	// tell" — the caller defers the lap rather than guessing.
+	DeadSandbox(ctx context.Context, runID string) (bool, error)
+}
+
+// lapSettler is the coord settle-write seam (satisfied by *coord.ProdSettler):
+// it terminalizes a dead lap with the durable, at-most-once follow-settlement
+// marker, so UnsettledDispatches stops returning it on every leader-elect,
+// the drive loop's settled-non-success death path (ISI-7524) terminalizes the
+// Run, and the S2 reaper — whose precondition is a settled run — owns the
+// leftover pod. Nil keeps the guard's settle step off (log and skip: the lap
+// still never re-acquires the slot).
+type lapSettler interface {
 	Settle(ctx context.Context, a2aTaskID, runID, outcome, reason string) error
 }
 
@@ -88,18 +110,24 @@ type ReattachFollows struct {
 	// Window bounds re-attach eligibility by dispatch age; <= 0 uses
 	// DefaultReattachWindow.
 	Window time.Duration
-	// Settler terminally settles a re-attach-failing corpse lap once it is
-	// older than FailTTL (optional; nil keeps the legacy log-only behaviour —
-	// the lap then merely ages out of Window). In production this is
-	// *coord.ProdSettler, the same at-most-once marker OnDone writes, so the
-	// settle is idempotent across elects and audit-logged.
-	Settler reattachSettler
+	// Settler terminalizes dead laps (follow_error): Submit-failing laps older
+	// than FailTTL (ISI-7540) and liveness-guarded dead-sandbox laps (ISI-7543).
+	// Optional; nil keeps the legacy log-only behaviour for TTL path, and still
+	// blocks Submit for liveness-dead laps. In production this is
+	// *coord.ProdSettler, the same at-most-once marker OnDone writes.
+	Settler lapSettler
 	// FailTTL bounds how long a Submit-failing unsettled lap stays a candidate
 	// before it is settled follow_error; <= 0 uses DefaultReattachFailTTL.
 	FailTTL time.Duration
 	// Log records the one-pass outcome and per-lap re-attach failures. Nil
 	// discards.
 	Log func(format string, args ...any)
+	// Liveness, when set, gates each re-attach Submit on sandbox liveness
+	// (ISI-7543): a lap whose run is sandbox-bound with no live pod is NEVER
+	// re-submitted, so a dead sandbox cannot re-acquire the BYO EndpointGate
+	// slot after an operator restart. Nil keeps the pre-ISI-7543 behavior
+	// (Submit unconditionally; the TTL backstop owns the corpses).
+	Liveness lapLiveness
 }
 
 // Start runs the one re-attach pass and returns. It is best-effort: a lap whose
@@ -108,8 +136,10 @@ type ReattachFollows struct {
 // TTL backstop (§5 option b), never blocking the remaining laps. A failing lap
 // older than FailTTL is additionally terminally settled follow_error (ISI-7540)
 // so it is never re-Submitted on later elects — the reaper owns it from there.
-// A reader error aborts the pass but never the operator (returns nil): the next
-// elected leader re-runs it.
+// With Liveness wired (ISI-7543), a provably dead sandbox never even reaches
+// Submit: the lap is settled (follow_error) before it can re-acquire the BYO
+// endpoint slot. A reader error aborts the pass but never the operator (returns
+// nil): the next elected leader re-runs it.
 func (r *ReattachFollows) Start(ctx context.Context) error {
 	if r.Dispatcher == nil || r.Reader == nil {
 		r.logf("a2a follow re-attach skipped: dispatcher or reader unset (ledger-only operator)")
@@ -126,12 +156,42 @@ func (r *ReattachFollows) Start(ctx context.Context) error {
 		return nil
 	}
 
-	var reattached, failed, settled int
+	var reattached, failed, settled, deadSettled, deadSkipped int
 	for _, t := range targets {
 		if err := ctx.Err(); err != nil {
 			// Leadership lost / shutdown mid-pass: stop cleanly, the next leader re-runs.
 			r.logf("a2a follow re-attach interrupted after %d/%d laps: %v", reattached+failed, len(targets), err)
 			return nil
+		}
+		if r.Liveness != nil {
+			dead, derr := r.Liveness.DeadSandbox(ctx, t.RunID)
+			if derr != nil {
+				// Cannot tell: never condemn on a maybe. Skip this lap for
+				// this pass — no Submit either, an unverified lap must not
+				// re-acquire the slot (ISI-7543); the next leader-elect (or
+				// the TTL backstop) retries with fresh evidence.
+				failed++
+				r.logf("a2a follow re-attach liveness check failed for lap %s (run %s); deferring to next pass: %v", t.A2ATaskID, t.RunID, derr)
+				continue
+			}
+			if dead {
+				// Provably dead sandbox: do NOT Submit — Submit would rebuild
+				// the task and re-acquire the BYO EndpointGate slot for a
+				// corpse (ISI-7538/ISI-7543). Terminalize instead.
+				if r.Settler != nil {
+					if serr := r.Settler.Settle(ctx, t.A2ATaskID, t.RunID, coord.SettleOutcomeFollowError, "re-attach liveness guard: sandbox pod gone (ISI-7543)"); serr != nil {
+						failed++
+						r.logf("a2a follow re-attach: settling dead lap %s (run %s) failed; retrying next pass: %v", t.A2ATaskID, t.RunID, serr)
+						continue
+					}
+					deadSettled++
+					r.logf("a2a follow re-attach: dead-sandbox lap %s (run %s) settled follow_error without re-acquiring the endpoint slot (ISI-7543)", t.A2ATaskID, t.RunID)
+				} else {
+					deadSkipped++
+					r.logf("a2a follow re-attach skipped dead-sandbox lap %s (run %s): no settler wired; left to TTL backstop (ISI-7543)", t.A2ATaskID, t.RunID)
+				}
+				continue
+			}
 		}
 		if err := r.Dispatcher.Submit(ctx, t.A2ATaskID, t.RunID); err != nil {
 			// Supervisor gone (Begin unreachable) or a transient submit error:
@@ -163,8 +223,8 @@ func (r *ReattachFollows) Start(ctx context.Context) error {
 		}
 		reattached++
 	}
-	r.logf("a2a follow re-attach done: reattached=%d failed=%d settled=%d candidates=%d window=%s failTTL=%s",
-		reattached, failed, settled, len(targets), window, r.failTTL())
+	r.logf("a2a follow re-attach done: reattached=%d failed=%d settled=%d dead_settled=%d dead_skipped=%d candidates=%d window=%s failTTL=%s",
+		reattached, failed, settled, deadSettled, deadSkipped, len(targets), window, r.failTTL())
 	return nil
 }
 
