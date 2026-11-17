@@ -309,6 +309,19 @@ type Driver struct {
 	// semantics (NewEndpointLookup). Optional — nil preserves the
 	// dispatch-time-only admission (legacy wiring, tests).
 	EndpointLookup EndpointLookup
+	// AgentGate, when set, is the per-agent non-preemptive dispatch queue
+	// (ISI-7499 C4/D3): one in-flight dispatch per (team, agent); the
+	// agent's other ready Runs wait in a priority queue
+	// (DispatchPriorityKey — board class before discussion, then item
+	// priority, then FIFO) and are admitted only when the in-flight run
+	// goes terminal; a higher-priority arrival never evicts the incumbent
+	// (non-preemption). The driver takes the slot at the
+	// pending/claiming_sandbox edge (a refusal parks pod-less at the wait
+	// cadence with the legible WaitingForAgentSlot condition — no lap, no
+	// retry budget), buildTask re-grants idempotently for the holder
+	// (sticky admission, D4), and the terminal paths release. Optional —
+	// nil disables the agent axis entirely (legacy wiring, tests).
+	AgentGate *AgentGate
 	// Settle reads a run's a2a follow-settlement (ISI-4435). When the latest
 	// dispatch lap settled SUCCESSFULLY, the drive skips the death / gone-sandbox
 	// paths for this pass: the sandbox pod OnDone tears down at agent completion is
@@ -455,6 +468,13 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		return ctrl.Result{}, nil
 	}
 	if reconcile.IsTerminal(cs.Step) {
+		// ISI-7499 C4: a terminal run frees its per-agent dispatch slot
+		// now — the agent's queue admits its best waiter on that waiter's
+		// next poll. Idempotent and nil-safe; the sweep's ReclaimInflight
+		// is the backstop if this absorb lap never runs.
+		if r.AgentGate != nil {
+			r.AgentGate.Release(runID)
+		}
 		noopTick = true
 		return ctrl.Result{}, nil // absorbing (AC5): the projector has it
 	}
@@ -654,6 +674,29 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		}
 	}
 
+	// ISI-7499 C4/D3: per-agent non-preemptive admission. An agent works one
+	// run at a time: take the agent's dispatch slot BEFORE the machine binds
+	// a sandbox (and before the mint lap's first machine drive — hence the
+	// claiming step too), so a contending run for the same (team, agent)
+	// parks pod-less at the wait cadence with the legible
+	// WaitingForAgentSlot condition instead of thrashing the roster or
+	// racing a dispatch lap. Acquire is idempotent for the holder (re-drive,
+	// retry lap, follow re-attach), NON-preemptive (a higher-priority
+	// arrival is queued, never evicts the in-flight run), and the queue is
+	// priority-ordered (board before discussion, then item priority, then
+	// FIFO — see DispatchPriorityKey). Release rides the terminal paths.
+	if r.AgentGate != nil &&
+		(cs.Step == reconcile.StepPending || cs.Step == reconcile.StepClaimingSandbox || resumedFromHold) {
+		if agent := firstAgentName(&run); agent != "" {
+			if holder, ok := r.AgentGate.Acquire(run.Spec.TeamRef.Name, agent, runID, agentPriorityKey(&run)); !ok {
+				busyErr := fmt.Errorf("rundrive: agent %q (team %q) already has run %s in flight; run %s waits: %w",
+					agent, run.Spec.TeamRef.Name, holder, runID, errAgentSlotBusy)
+				noopTick = true // parked pre-dispatch; nothing dispatched this pass
+				return r.waitAgentSlot(ctx, &run, runID, busyErr), nil
+			}
+		}
+	}
+
 	// 3.1 drive: bind the per-Run machine and run it toward a terminal step.
 	store, err := r.Runner.Store(ctx, &run)
 	if err != nil {
@@ -685,6 +728,14 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			noopTick = true
 			return r.waitEndpointSlot(ctx, &run, runID, err), nil
 		}
+		if errors.Is(err, errMeshPoolSaturated) {
+			// ISI-7499 C4/D5: queued at a saturated mesh Supervisor — a
+			// wait, not a failure. The transport already stamped the
+			// QueuedAtSupervisor legible marker; re-park quietly so no span
+			// exception and no retry budget ride the saturation wait.
+			noopTick = true
+			return r.waitSupervisor(ctx, &run, runID, err), nil
+		}
 		if contextasm.IsFailClosed(err) {
 			finalStep = reconcile.StepFailed
 			return r.failClosedPark(ctx, &run, runID, store.Fence(), err)
@@ -704,6 +755,12 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			noopTick = true
 			return r.waitEndpointSlot(ctx, &run, runID, err), nil
 		}
+		if errors.Is(err, errMeshPoolSaturated) {
+			// ISI-7499 C4/D5: queued at a saturated mesh Supervisor — a
+			// wait, not a failure (see the sibling branch above).
+			noopTick = true
+			return r.waitSupervisor(ctx, &run, runID, err), nil
+		}
 		if contextasm.IsFailClosed(err) {
 			// ISI-5543: the dispatch effect's context assembly failed closed
 			// (must-include > window). This is DETERMINISTIC — the item/comment
@@ -718,10 +775,11 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		// An infrastructure error mid-effect must not read as "applied": requeue.
 		return ctrl.Result{}, fmt.Errorf("rundrive: effects for %s: %w", req.NamespacedName, err)
 	}
-	// The drive got past the dispatch step this pass, so no endpoint wait is
-	// in effect: clear a stale wait condition left by an earlier busy pass
-	// (transition-only — no patch when the condition was never stamped).
+	// The drive got past the dispatch step this pass, so no endpoint or
+	// agent wait is in effect: clear stale wait conditions left by an
+	// earlier busy pass (transition-only — no patch when never stamped).
 	r.clearEndpointSlotWait(ctx, &run)
+	r.clearAgentSlotWait(ctx, &run)
 
 	// A drive that advanced the durable step wakes the projector so the new
 	// phase is projected without waiting for its resync (ISI-4381 Option A). The
@@ -947,6 +1005,29 @@ func (r *Driver) leaseExpired(cs ClaimState) bool {
 // policy still gets an INFRA-class lap for a transient death (ISI-7498).
 func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (ctrl.Result, error) {
 	runID := string(run.UID)
+	// ISI-7499 C4/D5: a run parked in a dispatch queue (BYO endpoint slot,
+	// per-agent slot, or Supervisor mesh saturation) is WAITING, not dying.
+	// Its queue wait burns no retry budget for ANY class and can never
+	// terminalize the run — the C1 evidence pack (ISI-7508): party-batch
+	// waiters were stamped terminal Failed ≤1s after mint when a racing
+	// path classified the wrapped EndpointBusy error as a death. Guard:
+	// a LIVE wait marker plus no a2a dispatch settlement (the run never
+	// reached an agent) re-parks at the wait cadence; a run that HAS
+	// dispatched keeps the pre-C4 death semantics (its wait marker, if any,
+	// is stale — cleared on the first past-dispatch pass). A settle-read
+	// error surfaces so a transient DB stall is never defaulted into a
+	// terminal.
+	if queuedAwaitingDispatch(run) {
+		never, serr := r.neverDispatched(ctx, run)
+		if serr != nil {
+			return ctrl.Result{}, fmt.Errorf("rundrive: queue-wait settle read for %s: %w", runID, serr)
+		}
+		if never {
+			slog.InfoContext(ctx, "rundrive: run is queued awaiting dispatch; death path re-parks instead of failing",
+				"run.id", runID, "run.name", run.Name, "run.namespace", run.Namespace)
+			return ctrl.Result{RequeueAfter: endpointSlotWaitDelay}, nil
+		}
+	}
 	if r.Sandbox != nil {
 		// Best-effort: a stuck teardown must not block the custody fix; the
 		// pool's draining state retries it (§9.3).
@@ -984,6 +1065,14 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 	if r.EndpointGate != nil {
 		r.EndpointGate.ReleaseByRun(runID)
 	}
+	// ISI-7499 C4: same discipline on the agent axis — a terminally failed
+	// run frees its per-agent dispatch slot so the agent's queue admits its
+	// best waiter. (The retry path KEEPS the slot for the same reason the
+	// endpoint permit is kept: the same run re-grants idempotently next
+	// lap.)
+	if r.AgentGate != nil {
+		r.AgentGate.Release(runID)
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -1012,6 +1101,11 @@ func (r *Driver) cancelFinish(ctx context.Context, run *api.Run, cs ClaimState) 
 	// the terminal kill is the last certain chance to free the endpoint slot.
 	if r.EndpointGate != nil {
 		r.EndpointGate.ReleaseByRun(runID)
+	}
+	// ISI-7499 C4: the killed run's per-agent dispatch slot frees with the
+	// same terminal certainty.
+	if r.AgentGate != nil {
+		r.AgentGate.Release(runID)
 	}
 	return ctrl.Result{}, nil
 }
@@ -1191,6 +1285,92 @@ func (r *Driver) clearEndpointSlotWait(ctx context.Context, run *api.Run) {
 		slog.WarnContext(ctx, "rundrive: could not clear endpoint-slot wait condition",
 			"run.id", string(run.UID), "err", err.Error())
 	}
+}
+
+// ConditionAgentSlotWait is the legible-wait marker the driver stamps on a
+// Run whose agent already has another run in flight (ISI-7499 C4): True means
+// the Run is queued on the per-agent non-preemptive dispatch queue —
+// dispatched nowhere, burning no retry budget — until the in-flight run goes
+// terminal. Side by side with WaitingForEndpointSlot (a different condition
+// type survives the projector's SetStatusCondition merge), the roster reads
+// "queued" off a stable marker instead of oscillating (D6's input).
+const ConditionAgentSlotWait = "WaitingForAgentSlot"
+
+// waitAgentSlot is the quiet requeue for a run whose agent is busy with
+// another run (ISI-7499 C4): mirror of waitEndpointSlot — no lap consumed, no
+// span exception, a slow cadence requeue, and the legible CR condition so a
+// long hold reads as a queue. The wrapped error names the agent and the
+// in-flight run.
+func (r *Driver) waitAgentSlot(ctx context.Context, run *api.Run, runID string, busyErr error) ctrl.Result {
+	slog.InfoContext(ctx, "rundrive: agent busy with another run; run waits in the per-agent queue",
+		"run.id", runID, "run.name", run.Name, "run.namespace", run.Namespace, "err", busyErr.Error())
+	patched := run.DeepCopy()
+	changed := meta.SetStatusCondition(&patched.Status.Conditions, metav1.Condition{
+		Type:               ConditionAgentSlotWait,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "AgentBusy",
+		Message: fmt.Sprintf("Waiting for the agent's in-flight run to finish: %s. "+
+			"The run is queued on the per-agent dispatch queue and dispatches when the current run goes terminal.",
+			busyErr.Error()),
+		LastTransitionTime: metav1.Now(),
+	})
+	if changed {
+		// Best-effort like waitEndpointSlot: the requeue below is the
+		// mechanism; a status hiccup must not turn a benign queue into a
+		// reconcile error.
+		if err := r.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil && !apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "rundrive: could not surface agent-slot wait on the Run (wait continues regardless)",
+				"run.id", runID, "err", err.Error())
+		}
+	}
+	return ctrl.Result{RequeueAfter: agentSlotWaitDelay}
+}
+
+// clearAgentSlotWait removes a stale WaitingForAgentSlot condition once a
+// drive pass makes it past the dispatch step (the agent slot was acquired).
+// Transition-only; best-effort — a failed clear replays on the next pass.
+func (r *Driver) clearAgentSlotWait(ctx context.Context, run *api.Run) {
+	if meta.FindStatusCondition(run.Status.Conditions, ConditionAgentSlotWait) == nil {
+		return
+	}
+	patched := run.DeepCopy()
+	if !meta.RemoveStatusCondition(&patched.Status.Conditions, ConditionAgentSlotWait) {
+		return
+	}
+	if err := r.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil && !apierrors.IsNotFound(err) {
+		slog.WarnContext(ctx, "rundrive: could not clear agent-slot wait condition",
+			"run.id", string(run.UID), "err", err.Error())
+	}
+}
+
+// waitSupervisor is the quiet requeue for a mesh-routed run refused by a
+// saturated Supervisor pool (ISI-7499 C4/D5 riding ISI-5831 S4): the
+// transport stamped the QueuedAtSupervisor legible marker and exempted the
+// run from the pod-less zombie reap; this re-park keeps the wait off the
+// error/backoff path — no span exception, no retry-lap burn — at the same
+// slow cadence as the other dispatch queues. Idempotent condition stamp in
+// case the transport's best-effort patch raced.
+func (r *Driver) waitSupervisor(ctx context.Context, run *api.Run, runID string, satErr error) ctrl.Result {
+	slog.InfoContext(ctx, "rundrive: mesh supervisor pool saturated; run queued at the Supervisor",
+		"run.id", runID, "run.name", run.Name, "run.namespace", run.Namespace, "err", satErr.Error())
+	patched := run.DeepCopy()
+	changed := meta.SetStatusCondition(&patched.Status.Conditions, metav1.Condition{
+		Type:               ConditionQueuedAtSupervisor,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "MeshPoolSaturated",
+		Message: "Mesh route leg refused (pool saturated): the run is queued at the Supervisor " +
+			"and re-drives when a standing process frees. Exempt from the pod-less zombie reap (D9.1).",
+		LastTransitionTime: metav1.Now(),
+	})
+	if changed {
+		if err := r.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil && !apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "rundrive: could not surface Supervisor-queue wait on the Run (wait continues regardless)",
+				"run.id", runID, "err", err.Error())
+		}
+	}
+	return ctrl.Result{RequeueAfter: endpointSlotWaitDelay}
 }
 
 // BackoffFor is the retry-lap delay (attempt is 1-based): equal jitter over

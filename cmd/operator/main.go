@@ -1021,6 +1021,14 @@ func main() {
 			}
 		}
 		endpointGate := rundrive.NewEndpointGate(endpointGateSlots)
+		// ISI-7499 C4/D3: the per-agent non-preemptive dispatch queue — one
+		// in-flight run per (team, agent), contenders queued by
+		// DispatchPriorityKey (board before discussion, then item priority,
+		// then FIFO), admitted only when the in-flight run goes terminal.
+		// Shared by the driver (pre-dispatch admission + terminal release),
+		// the dispatcher (buildTask sticky re-grant), and the hygiene sweep
+		// (dead-holder reclaim).
+		agentGate := rundrive.NewAgentGate()
 
 		// ISI-5524: operator-side bound on the POST-to-supervisor response-header
 		// wait. Zero leaves the dispatcher on its default; a parse error logs and
@@ -1069,6 +1077,7 @@ func main() {
 			TaskIOMinter:      taskIOMinter,
 			TaskIOCoordURL:    taskIOCoordURL,
 			EndpointGate:      endpointGate,
+			AgentGate:         agentGate,
 			// ISI-5524: bound the sandbox-supervisor response-header wait so a
 			// Run over a slow/unreachable model endpoint frees its reconcile
 			// worker promptly instead of blocking it for minutes. Zero defers to
@@ -1470,6 +1479,10 @@ func main() {
 		// terminal fail/cancel paths (runs that never reach a clean OnDone) and
 		// surfaces the endpoint-slot wait on the Run CR while a run queues.
 		driver.EndpointGate = endpointGate
+		// ISI-7499 C4: the driver parks a contending run pod-less on the
+		// WaitingForAgentSlot condition (no lap, no retry budget) and frees
+		// the agent slot on every terminal path.
+		driver.AgentGate = agentGate
 		// ISI-7487: the pre-bind BYO slot hold resolves the Run's endpoint
 		// with the dispatcher's own semantics before the machine binds a
 		// sandbox, so contenders queue pod-less instead of dying with their
@@ -1547,6 +1560,11 @@ func main() {
 			// so the wait trips the pod-liveness zombie predicate exactly like
 			// the endpoint-slot case above.
 			MeshQueueWait: liveRuns,
+			// ISI-7499 C4: same exemption for a run queued behind its busy
+			// agent on the per-agent non-preemptive dispatch queue
+			// (WaitingForAgentSlot) — it boots no sandbox pod while it
+			// waits.
+			AgentWait: liveRuns,
 			// ISI-7483: the gate-side holder backstop. A run that
 			// terminalizes through any path other than OnDone / FailEnter /
 			// cancelFinish (projector force-fail, reaper force-fail, an
@@ -1555,7 +1573,11 @@ func main() {
 			// one dead holder starved every queued seat behind a single-slot
 			// endpoint (the 47m deepseek starvation). Each sweep pass now
 			// reclaims slots whose holder is terminal or gone.
-			EndpointGate:   endpointGate,
+			EndpointGate: endpointGate,
+			// ISI-7499 C4: the agent-axis twin of the holder backstop —
+			// reclaim the dispatch slot of a holder that terminalized
+			// through a path the driver's release sites missed.
+			AgentGate:      agentGate,
 			HolderTerminal: liveRuns,
 			Log:            func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
