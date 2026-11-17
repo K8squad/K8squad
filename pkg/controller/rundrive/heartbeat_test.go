@@ -970,13 +970,13 @@ func (f fakeRunTerminalChecker) TerminalOrGone(_ context.Context, runID string) 
 func TestHeartbeatSweepReclaimsDeadEndpointHolders(t *testing.T) {
 	g := NewEndpointGate(1)
 	const ep = "https://api.deepseek.com/v1"
-	g.Acquire(ep, "dead-holder", 1)
-	g.Acquire(ep, "waiter", 1)
+	g.Acquire(ep, "dead-holder", 1, PriorityKey{})
+	g.Acquire(ep, "waiter", 1, PriorityKey{})
 	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
 	s.EndpointGate = g
 	s.HolderTerminal = fakeRunTerminalChecker{dead: map[string]bool{"dead-holder": true}}
 	s.reclaimDeadHolders(context.Background())
-	if _, ok := g.Acquire(ep, "waiter", 1); !ok {
+	if _, ok := g.Acquire(ep, "waiter", 1, PriorityKey{}); !ok {
 		t.Fatalf("waiter still refused after the dead holder was reclaimed")
 	}
 }
@@ -984,13 +984,13 @@ func TestHeartbeatSweepReclaimsDeadEndpointHolders(t *testing.T) {
 // ISI-7483: a holder-liveness checker error fails SAFE — the slot is kept.
 func TestHeartbeatSweepReclaimFailsSafeOnCheckerError(t *testing.T) {
 	g := NewEndpointGate(1)
-	g.Acquire("ep", "holder", 1)
-	g.Acquire("ep", "waiter", 1)
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	g.Acquire("ep", "waiter", 1, PriorityKey{})
 	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
 	s.EndpointGate = g
 	s.HolderTerminal = fakeRunTerminalChecker{err: fmt.Errorf("list runs: boom")}
 	s.reclaimDeadHolders(context.Background())
-	if _, ok := g.Acquire("ep", "waiter", 1); ok {
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
 		t.Fatalf("waiter admitted after a fail-unsafe reclaim")
 	}
 }
@@ -999,11 +999,11 @@ func TestHeartbeatSweepReclaimFailsSafeOnCheckerError(t *testing.T) {
 // FIFO waiter entries) — idempotent and nil-safe.
 func TestHeartbeatReleaseGateSlot(t *testing.T) {
 	g := NewEndpointGate(1)
-	g.Acquire("ep", "run-1", 1)
-	g.Acquire("ep", "run-2", 1)
+	g.Acquire("ep", "run-1", 1, PriorityKey{})
+	g.Acquire("ep", "run-2", 1, PriorityKey{})
 	s := &HeartbeatSweeper{EndpointGate: g}
 	s.releaseGateSlot(heldClaim{holderRun: "run-1"})
-	if _, ok := g.Acquire("ep", "run-2", 1); !ok {
+	if _, ok := g.Acquire("ep", "run-2", 1, PriorityKey{}); !ok {
 		t.Fatalf("slot not freed by releaseGateSlot")
 	}
 }
