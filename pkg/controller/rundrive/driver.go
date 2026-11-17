@@ -496,19 +496,34 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	// here — and a lease that lapsed while the (now-done) agent ran — is the
 	// EXPECTED end state, not a death. Skip the death / gone-sandbox paths for such
 	// a run and fall through to the machine drive, whose follow-settlement gate now
-	// opens and commits collecting→succeeded with the real outcome. A not-settled,
-	// failed, or follow_error lap is NOT settledOK and still routes through the
-	// death paths below (a failed/errored follow finalizes there, retry-budgeted).
+	// opens and commits collecting→succeeded with the real outcome. A not-settled
+	// lap is NOT settledOK and keeps the death paths below. A settled-but-failed
+	// or follow_error lap is itself the death signal (ISI-7527): the follow gate
+	// parks it at collecting, and neither the lease-lapse nor the gone-sandbox
+	// detector can fire while the heartbeat sweeper renews the lease and the pod
+	// lives — so it routes STRAIGHT into retryOrFail, which finalizes it with the
+	// real outcome + retry budget and releases its slots.
 	settledOK := false
+	settledBad := false
 	if inFlightStep(cs.Step) {
-		ok, ferr := r.followSucceeded(ctx, runID)
+		settled, outcome, ferr := r.followSettlement(ctx, runID)
 		if ferr != nil {
 			return ctrl.Result{}, fmt.Errorf("rundrive: read follow settlement for %s: %w", req.NamespacedName, ferr)
 		}
-		settledOK = ok
+		settledOK = settled && outcome == coord.SettleOutcomeSucceeded
+		settledBad = settled && (outcome == coord.SettleOutcomeFailed || outcome == coord.SettleOutcomeFollowError)
 	}
 
 	if !settledOK {
+		// ISI-7527 defect 1: a durably settled failed / follow_error lap is
+		// terminal evidence the agent turn ended non-success — absorb it now
+		// through the same retryOrFail the death paths use, instead of waiting
+		// for a lease lapse or pod disappearance that never comes while the
+		// checkout is heart-kept (live wedge: intake-331ba0a6 stayed Running
+		// 16+ min with its BYO slot held and waiters renewing against it).
+		if settledBad {
+			return r.retryOrFail(ctx, &run, cs)
+		}
 		// 3.2 death detection: in flight with a lease that expired under a holder
 		// that stopped heart-keeping — sandbox or agent died mid-execution (§5.3).
 		if r.dead(cs) {
@@ -899,21 +914,22 @@ func (r *Driver) park(ctx context.Context, run *api.Run, runID string) (ctrl.Res
 	return ctrl.Result{}, nil
 }
 
-// followSucceeded reports whether this run's latest a2a dispatch lap durably
-// settled with a succeeded outcome (ISI-4435). It returns false (not an error to
-// the caller) when no Settle reader is wired — unit tests and ledger-only runs
-// keep the pre-4435 death-path behaviour. A read error IS surfaced so the drive
-// requeues rather than misclassifying a completed run as a death on a transient
-// DB stall.
-func (r *Driver) followSucceeded(ctx context.Context, runID string) (bool, error) {
+// followSettlement reports this run's latest a2a dispatch lap settlement for the
+// drive loop (ISI-4435; the outcome split is ISI-7527): settled reports whether
+// the lap durably settled, and outcome carries its settle outcome. It returns
+// false with an empty outcome string (not an error to the caller) when no Settle
+// reader is wired — unit tests and ledger-only runs keep the pre-4435
+// death-path behaviour. A read error IS surfaced so the drive requeues rather
+// than misclassifying a completed run as a death on a transient DB stall.
+func (r *Driver) followSettlement(ctx context.Context, runID string) (bool, string, error) {
 	if r.Settle == nil {
-		return false, nil
+		return false, "", nil
 	}
 	_, settled, outcome, err := r.Settle.RunFollowOutcome(ctx, runID)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
-	return settled && outcome == coord.SettleOutcomeSucceeded, nil
+	return settled, outcome, nil
 }
 
 // dead reports the 3.2 death signal: in flight, held, and the lease expired.

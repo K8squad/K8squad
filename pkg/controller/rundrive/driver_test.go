@@ -1043,6 +1043,65 @@ func TestFollowFailedStillTakesDeathPath(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ISI-7527 defect 1: a durably settled failed / follow_error lap terminalizes
+// its Run under a LIVE lease — the wedge shape the lease-lapse and
+// gone-sandbox death detectors cannot catch (the heartbeat sweeper keeps the
+// lease renewed; the sandbox pod is still alive). Live incident: party-batch
+// run intake-331ba0a6 parked at collecting 16+ min with its BYO slot held.
+// ---------------------------------------------------------------------------
+
+// TestSettledFailedLapTerminalizesUnderLiveLease: the lap's durable failed
+// settlement is itself the death signal — nil-policy business failure means
+// terminal FailEnter on the first pass, never an indefinite collecting park.
+func TestSettledFailedLapTerminalizesUnderLiveLease(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001") // nil RetryPolicy
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepCollecting, Fence: 2, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAgo(-time.Minute), ItemState: "in_progress"}, // LIVE lease: not expired
+		laps: 0, failOK: true}
+	store := &fakeMachineStore{step: reconcile.StepCollecting, fence: 2, advanceOK: false}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFailed}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("live-lease settled-failed drive: %v", err)
+	}
+	if !claims.failCall {
+		t.Fatal("settled failed lap under a live lease must terminal-fail (FailEnter), not park at collecting")
+	}
+	if len(claims.retryCalls) != 0 {
+		t.Fatalf("business failure must not consume a retry lap: retry=%v", claims.retryCalls)
+	}
+}
+
+// TestSettledFollowErrorRetriesUnderLiveLease: same wedge with a follow_error
+// outcome — infra-class, so the nil-policy run consumes an infra retry lap
+// (RetryEnter) rather than parking at collecting or terminal-failing.
+func TestSettledFollowErrorRetriesUnderLiveLease(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepRunning, Fence: 3, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAgo(-time.Minute), ItemState: "in_progress"}, // LIVE lease: not expired
+		laps: 0, retryOK: true, retryNewFence: 4}
+	store := &fakeMachineStore{step: reconcile.StepRunning, fence: 3, advanceOK: false}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFollowError}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("live-lease follow_error drive: %v", err)
+	}
+	if len(claims.retryCalls) != 1 || claims.failCall {
+		t.Fatalf("follow_error under a live lease must retry (infra), not park/fail: retry=%v fail=%v", claims.retryCalls, claims.failCall)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ISI-7498 WS-A: infra-class retry budget on intake-minted (nil-policy) Runs
 // ---------------------------------------------------------------------------
 

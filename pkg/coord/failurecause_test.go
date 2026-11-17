@@ -127,6 +127,30 @@ func TestFailureCauseNoneRecorded(t *testing.T) {
 }
 
 // A non-uuid work item is "" WITHOUT touching the DB (matches SettledForWorkItem).
+// ISI-7527 defect 2: the latest-lap ORDER BY must reference only columns that
+// exist on coord.a2a_dispatch (a2a_task_id, work_item_id, run_id, dispatched_at,
+// settled_at, settle_outcome — 0005; no id column, and no migration adds one).
+// The pre-fix query ordered by a bare id, so every reconcile of a Failed run
+// errored live with SQLSTATE 42703. Pin the exact clause so a regression fails
+// here instead of in the operator log.
+func TestFailureCauseQueryOrdersBySchemaColumns(t *testing.T) {
+	r, mock := newFailureCauseReader(t)
+	mock.ExpectQuery(regexp.QuoteMeta("ORDER BY settled_at DESC, a2a_task_id DESC")).
+		WithArgs(fcItem).
+		WillReturnRows(sqlmock.NewRows([]string{"settle_outcome"}).AddRow("failed"))
+
+	got, err := r.FailureCauseForWorkItem(context.Background(), fcItem)
+	if err != nil {
+		t.Fatalf("FailureCauseForWorkItem: %v (the query must ORDER BY existing columns only)", err)
+	}
+	if got != "the agent run settled failed" {
+		t.Fatalf("cause = %q, want the named settle outcome", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
+	}
+}
+
 func TestFailureCauseNonUUIDSkipsDB(t *testing.T) {
 	r, _ := newFailureCauseReader(t)
 	got, err := r.FailureCauseForWorkItem(context.Background(), "not-a-uuid")

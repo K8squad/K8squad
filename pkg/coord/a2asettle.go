@@ -385,7 +385,9 @@ func (r *ProdSettleReader) FailureCauseForWorkItem(ctx context.Context, workItem
 		SELECT COALESCE(settle_outcome, '')
 		  FROM coord.a2a_dispatch
 		 WHERE work_item_id = $1::uuid AND settled_at IS NOT NULL
-		 ORDER BY settled_at DESC, id DESC
+		 -- ISI-7527: a2a_dispatch has no id column (0005/0008); the deterministic
+		 -- a2a_task_id (run_id, or run_id#lapN) breaks settled_at ties.
+		 ORDER BY settled_at DESC, a2a_task_id DESC
 		 LIMIT 1`,
 		workItemID).Scan(&outcome); {
 	case errors.Is(err, sql.ErrNoRows):
