@@ -56,7 +56,74 @@ const (
 	// k8s-only packages can key on it without reading the coord DB
 	// (ADR-0024c D2, ISI-5138). Value examples: "board", "discussion".
 	LabelWorkItemSource = "ksquad.io/work-item-source"
+
+	// AnnotationWorkItemClass is the Run annotation carrying the numeric
+	// scheduling class of the work item the Run was minted from (ISI-7499
+	// plan D1 / C2): "0" = board/issue, "1" = discussion/party. It is
+	// derived from the same coord.work_item.source signal as
+	// LabelWorkItemSource (see WorkItemClassFromSource) and stamped next to
+	// it at intake (rundrive buildRunForAgent), so admission ordering
+	// consumers — endpoint gate waiters (C3), per-agent queues (C4) — and
+	// their post-restart rebuilds read a total numeric key off the Run
+	// without re-deriving vocabulary or querying coord. Lower class
+	// outranks: an issue (0) beats a discussion (1).
+	AnnotationWorkItemClass = "ksquad.io/work-item-class"
+
+	// AnnotationWorkItemPriority is the Run annotation carrying the numeric
+	// issue-priority rank of the work item the Run was minted from
+	// (ISI-7499 plan D1 / C2): "0" = unset, then low=1, medium=2, high=3,
+	// urgent=4. The source of truth is coord.work_item.priority (migration
+	// 0020; the enum deliberately mirrors the Paperclip board issue priority
+	// set), mapped by WorkItemPriorityRank and stamped at intake next to the
+	// source label. Higher rank outranks within a class; the intake FIFO
+	// order (created_at, id) stays the starvation-free tiebreak.
+	AnnotationWorkItemPriority = "ksquad.io/work-item-priority"
 )
+
+// Work-item scheduling classes (ISI-7499 plan D1). The numeric values are
+// the vocabulary carried by AnnotationWorkItemClass; LOWER outranks —
+// class 0 (board/issue) admits before class 1 (discussion/party).
+const (
+	// WorkItemClassBoard is the class of board/issue work items (source
+	// "board", or any value other than "discussion").
+	WorkItemClassBoard = 0
+	// WorkItemClassDiscussion is the class of discussion/party work items
+	// (source "discussion" — party-advance and @-mention thread runs).
+	WorkItemClassDiscussion = 1
+)
+
+// WorkItemClassFromSource maps coord.work_item.source onto the numeric
+// scheduling class: "discussion" → WorkItemClassDiscussion, everything else
+// (including "" — intake treats a NULL source as board) → WorkItemClassBoard.
+// It mirrors the capability gate semantics (pkg/capability keys on
+// source == "discussion" only), so class and capability can never disagree.
+func WorkItemClassFromSource(source string) int {
+	if source == "discussion" {
+		return WorkItemClassDiscussion
+	}
+	return WorkItemClassBoard
+}
+
+// WorkItemPriorityRank maps the coord.work_item.priority enum (migration
+// 0020: low|medium|high|urgent, mirroring the Paperclip board issue
+// priority set) onto the numeric urgency rank carried by
+// AnnotationWorkItemPriority: unset ("", the NULL column) → 0, the plan D1
+// default. A value outside the enum cannot survive the schema CHECK; it
+// maps to 0 fail-closed rather than fabricating urgency.
+func WorkItemPriorityRank(priority string) int {
+	switch priority {
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	case "urgent":
+		return 4
+	default:
+		return 0
+	}
+}
 
 // Cache field-index keys for RBAC scope queries (Epic 15.3). These are the
 // keys passed to client.MatchingFields after
