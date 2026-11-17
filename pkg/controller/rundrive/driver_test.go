@@ -1247,7 +1247,7 @@ func TestEndpointGateReleasedOnFailEnter(t *testing.T) {
 	d.Sandbox = &fakeReleaser{}
 	gate := NewEndpointGate(1)
 	d.EndpointGate = gate
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("fixture: the dying run must hold the endpoint slot")
 	}
 
@@ -1257,7 +1257,7 @@ func TestEndpointGateReleasedOnFailEnter(t *testing.T) {
 	if !claims.failCall {
 		t.Fatal("budget exhausted death must FailEnter")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
 		t.Fatal("FailEnter must release the dead run's endpoint slot")
 	}
 }
@@ -1279,7 +1279,7 @@ func TestEndpointGateReleasedOnCancelFinish(t *testing.T) {
 	d.Sandbox = &fakeReleaser{}
 	gate := NewEndpointGate(1)
 	d.EndpointGate = gate
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("fixture: the killed run must hold the endpoint slot")
 	}
 
@@ -1289,7 +1289,7 @@ func TestEndpointGateReleasedOnCancelFinish(t *testing.T) {
 	if !claims.cancelFinishCall {
 		t.Fatal("cancelling step must complete via CancelFinish")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
 		t.Fatal("CancelFinish must release the killed run's endpoint slot")
 	}
 }
@@ -1313,7 +1313,7 @@ func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
 	d.Sandbox = &fakeReleaser{}
 	gate := NewEndpointGate(1)
 	d.EndpointGate = gate
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("fixture: the retrying run must hold the endpoint slot")
 	}
 
@@ -1323,10 +1323,10 @@ func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
 	if len(claims.retryCalls) != 1 {
 		t.Fatal("in-budget death must enter the retry lap")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0); ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); ok {
 		t.Fatal("the retry lap must KEEP the endpoint slot (same run re-acquires next lap)")
 	}
-	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0); !ok {
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("the retrying run's own re-acquire must stay an idempotent grant")
 	}
 }
@@ -1361,7 +1361,7 @@ func TestPrebindEndpointSlotHoldParksBeforeBind(t *testing.T) {
 	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 1, advanceOK: true}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
 	gate := NewEndpointGate(1)
-	if _, ok := gate.Acquire("https://api.deepseek.com/v1", "run-holder", 1); !ok {
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", "run-holder", 1, PriorityKey{}); !ok {
 		t.Fatal("fixture: the holder must take the only slot")
 	}
 	d.EndpointGate = gate
@@ -1388,7 +1388,7 @@ func TestPrebindEndpointSlotHoldParksBeforeBind(t *testing.T) {
 	if !strings.Contains(cond.Message, "held by run run-holder") {
 		t.Fatalf("condition must name the holder: %+v", cond)
 	}
-	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1); ok {
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1, PriorityKey{}); ok {
 		t.Fatal("the parked run must not hold the busy endpoint's slot")
 	}
 }
@@ -1416,7 +1416,7 @@ func TestPrebindEndpointSlotAdmittedDrivesAndHolds(t *testing.T) {
 	if store.advances == 0 {
 		t.Fatal("an admitted run must drive the machine (bind + dispatch)")
 	}
-	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1); !ok {
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1, PriorityKey{}); !ok {
 		t.Fatal("the admitted run must hold the endpoint slot across the pass")
 	}
 }
@@ -1452,7 +1452,7 @@ func TestGoneSandboxSlotWaiterRequeuesNotFails(t *testing.T) {
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
 	d.Sandbox = &fakeReleaser{}
 	gate := NewEndpointGate(1)
-	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1); !ok {
+	if _, ok := gate.Acquire("https://api.deepseek.com/v1", uid, 1, PriorityKey{}); !ok {
 		t.Fatal("fixture: the waiter must hold the endpoint slot")
 	}
 	d.EndpointGate = gate
