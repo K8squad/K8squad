@@ -56,7 +56,6 @@ import (
 type seat struct {
 	name   string
 	uid    string
-	run    *api.Run
 	claims *fakeClaims
 	store  *fakeMachineStore
 	driver *Driver
