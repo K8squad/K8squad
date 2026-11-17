@@ -144,8 +144,12 @@ func (r *ReattachFollows) Start(ctx context.Context) error {
 			// returning it on every leader-elect (no more re-Submit / gate
 			// re-grant for a corpse); the reaper owns the lap from here. The
 			// outcome keeps A2AFollowGateOpen closed, so the run still finalizes
-			// through the death / retry path with its real budget.
-			if ttl := r.failTTL(); r.Settler != nil && time.Since(t.DispatchedAt) > ttl {
+			// through the death / retry path with its real budget. A zero
+			// DispatchedAt (a reader that cannot age the lap) never settles here —
+			// time.Since(zero) would otherwise dwarf any TTL and settle on the
+			// first failure; such a lap keeps the legacy log-only behaviour and
+			// ages out of Window instead.
+			if ttl := r.failTTL(); r.Settler != nil && !t.DispatchedAt.IsZero() && time.Since(t.DispatchedAt) > ttl {
 				reason := fmt.Sprintf("re-attach Submit failing for >%s since dispatch (supervisor unreachable): %v", ttl, err)
 				if serr := r.Settler.Settle(ctx, t.A2ATaskID, t.RunID, coord.SettleOutcomeFollowError, reason); serr != nil {
 					// Settle is best-effort too: the next leader-elect retries it.

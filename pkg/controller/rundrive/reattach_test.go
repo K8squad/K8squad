@@ -258,3 +258,25 @@ func TestReattachFollows_NilSettlerKeepsLegacyBehaviour(t *testing.T) {
 		t.Fatalf("lap must be attempted, got %+v", disp.got)
 	}
 }
+
+// A zero DispatchedAt (reader that cannot age the lap) must never trigger the
+// TTL settle: time.Since(zero) dwarfs any TTL, so without the guard a single
+// Submit failure would settle the lap immediately (cherry-picked from the
+// duplicate-lane review of #1049).
+func TestReattachFollows_ZeroDispatchedAtNeverSettles(t *testing.T) {
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "corpse", RunID: "run-corpse"}, // zero DispatchedAt
+	}}
+	disp := &fakeReattacher{failOn: map[string]error{"corpse": errors.New("gone")}}
+	settler := &fakeSettler{}
+	r := &ReattachFollows{Reader: reader, Dispatcher: disp, Settler: settler}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(disp.got) != 1 {
+		t.Fatalf("lap must be attempted, got %+v", disp.got)
+	}
+	if len(settler.gotCalls) != 0 {
+		t.Fatalf("zero DispatchedAt must never settle, got %+v", settler.gotCalls)
+	}
+}
