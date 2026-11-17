@@ -28,7 +28,8 @@ import (
 )
 
 // The reader returns one ReattachTarget per unsettled, non-terminal, in-window
-// dispatch lap — the (a2aTaskID, runID) pair Submit needs to reattach.
+// dispatch lap — the (a2aTaskID, runID) pair Submit needs to reattach, plus the
+// lap's dispatched_at so the re-attach pass can bound corpse retries (ISI-7542).
 func TestUnsettledDispatches_ReturnsLaps(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -36,11 +37,13 @@ func TestUnsettledDispatches_ReturnsLaps(t *testing.T) {
 	}
 	defer db.Close()
 
+	dispA := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	dispB := time.Date(2026, 11, 17, 13, 30, 0, 0, time.UTC)
 	mock.ExpectQuery("FROM coord.a2a_dispatch").
 		WithArgs((6 * time.Hour).Seconds()).
-		WillReturnRows(sqlmock.NewRows([]string{"a2a_task_id", "run_id"}).
-			AddRow("run-a#lap2", "run-a").
-			AddRow("run-b", "run-b"))
+		WillReturnRows(sqlmock.NewRows([]string{"a2a_task_id", "run_id", "dispatched_at"}).
+			AddRow("run-a#lap2", "run-a", dispA).
+			AddRow("run-b", "run-b", dispB))
 
 	r, err := coord.NewProdReattachReader(db)
 	if err != nil {
@@ -51,8 +54,8 @@ func TestUnsettledDispatches_ReturnsLaps(t *testing.T) {
 		t.Fatalf("UnsettledDispatches: %v", err)
 	}
 	want := []coord.ReattachTarget{
-		{A2ATaskID: "run-a#lap2", RunID: "run-a"},
-		{A2ATaskID: "run-b", RunID: "run-b"},
+		{A2ATaskID: "run-a#lap2", RunID: "run-a", DispatchedAt: dispA},
+		{A2ATaskID: "run-b", RunID: "run-b", DispatchedAt: dispB},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d targets, want %d: %+v", len(got), len(want), got)
@@ -103,7 +106,7 @@ func TestUnsettledDispatches_Empty(t *testing.T) {
 
 	mock.ExpectQuery("FROM coord.a2a_dispatch").
 		WithArgs((time.Hour).Seconds()).
-		WillReturnRows(sqlmock.NewRows([]string{"a2a_task_id", "run_id"}))
+		WillReturnRows(sqlmock.NewRows([]string{"a2a_task_id", "run_id", "dispatched_at"}))
 
 	r, _ := coord.NewProdReattachReader(db)
 	got, err := r.UnsettledDispatches(context.Background(), time.Hour)

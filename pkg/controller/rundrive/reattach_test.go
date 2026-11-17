@@ -51,6 +51,23 @@ func (f *fakeReattacher) Submit(_ context.Context, a2aTaskID, runID string) erro
 	return nil
 }
 
+type fakeSettler struct {
+	got  []settleCall
+	fail bool
+}
+
+type settleCall struct {
+	a2aTaskID, runID, outcome, reason string
+}
+
+func (f *fakeSettler) Settle(_ context.Context, a2aTaskID, runID, outcome, reason string) error {
+	f.got = append(f.got, settleCall{a2aTaskID: a2aTaskID, runID: runID, outcome: outcome, reason: reason})
+	if f.fail {
+		return errors.New("settle: db down")
+	}
+	return nil
+}
+
 // Every listed lap is re-submitted, in order, with the (a2aTaskID, runID) the
 // reader returned.
 func TestReattachFollows_ReattachesEveryLap(t *testing.T) {
@@ -88,6 +105,103 @@ func TestReattachFollows_SupervisorGoneSkipsAndContinues(t *testing.T) {
 	// Both were attempted; the live one is not blocked by the gone one.
 	if len(disp.got) != 2 {
 		t.Fatalf("both laps must be attempted, got %+v", disp.got)
+	}
+}
+
+// ISI-7542: a Submit-failing lap older than FailTTL is settled follow_error —
+// the durable marker that stops UnsettledDispatches from ever returning it
+// again, routes the Run through the settled-non-success death path (ISI-7524),
+// and lets the S2 reaper own the pod.
+func TestReattachFollows_SettlesCorpseAfterTTL(t *testing.T) {
+	old := time.Now().Add(-2 * time.Hour)
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "corpse", RunID: "run-corpse", DispatchedAt: old},
+		{A2ATaskID: "live", RunID: "run-live", DispatchedAt: old},
+	}}
+	disp := &fakeReattacher{failOn: map[string]error{"corpse": errors.New("dial tcp: no route to host")}}
+	settler := &fakeSettler{}
+	r := &ReattachFollows{Reader: reader, Dispatcher: disp, Settler: settler, FailTTL: time.Hour}
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(settler.got) != 1 {
+		t.Fatalf("settles = %+v, want exactly the corpse lap", settler.got)
+	}
+	c := settler.got[0]
+	if c.a2aTaskID != "corpse" || c.runID != "run-corpse" {
+		t.Fatalf("settled lap = %+v, want the corpse", c)
+	}
+	if c.outcome != coord.SettleOutcomeFollowError {
+		t.Fatalf("outcome = %q, want %q (transport-level end, agent outcome unknown)", c.outcome, coord.SettleOutcomeFollowError)
+	}
+	if c.reason == "" {
+		t.Fatal("settle reason must carry the submit error")
+	}
+	// The live lap is untouched by the corpse's settlement.
+	if len(disp.got) != 2 {
+		t.Fatalf("both laps must be attempted, got %+v", disp.got)
+	}
+}
+
+// A Submit-failing lap YOUNGER than FailTTL stays unsettled: a transient
+// failure may recover on a later leader-elect, and the corpse TTL only bounds
+// how long the retry may go on.
+func TestReattachFollows_YoungFailureStaysUnsettled(t *testing.T) {
+	young := time.Now().Add(-5 * time.Minute)
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "blip", RunID: "run-blip", DispatchedAt: young},
+	}}
+	disp := &fakeReattacher{failOn: map[string]error{"blip": errors.New("dial tcp: connection refused")}}
+	settler := &fakeSettler{}
+	r := &ReattachFollows{Reader: reader, Dispatcher: disp, Settler: settler, FailTTL: time.Hour}
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(settler.got) != 0 {
+		t.Fatalf("young failure must NOT settle, got %+v", settler.got)
+	}
+}
+
+// A zero DispatchedAt (a reader that does not populate the dispatch instant)
+// can never prove lap age, so it must keep the legacy log-and-skip behavior.
+func TestReattachFollows_ZeroDispatchedAtNeverSettles(t *testing.T) {
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "opaque", RunID: "run-opaque"}, // DispatchedAt zero
+	}}
+	disp := &fakeReattacher{failOn: map[string]error{"opaque": errors.New("boom")}}
+	settler := &fakeSettler{}
+	r := &ReattachFollows{Reader: reader, Dispatcher: disp, Settler: settler, FailTTL: time.Minute}
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(settler.got) != 0 {
+		t.Fatalf("unprovable age must NOT settle, got %+v", settler.got)
+	}
+}
+
+// A settle-write error fails open toward retry: the lap stays unsettled (next
+// leader-elect re-lists it), the pass continues, and Start stays best-effort.
+func TestReattachFollows_SettleErrorLeavesUnsettledAndContinues(t *testing.T) {
+	old := time.Now().Add(-3 * time.Hour)
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "corpse", RunID: "run-corpse", DispatchedAt: old},
+		{A2ATaskID: "live", RunID: "run-live", DispatchedAt: old},
+	}}
+	disp := &fakeReattacher{failOn: map[string]error{"corpse": errors.New("no route to host")}}
+	settler := &fakeSettler{fail: true}
+	r := &ReattachFollows{Reader: reader, Dispatcher: disp, Settler: settler, FailTTL: time.Hour}
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start must stay best-effort, got: %v", err)
+	}
+	if len(settler.got) != 1 {
+		t.Fatalf("settle must be attempted once, got %+v", settler.got)
+	}
+	if len(disp.got) != 2 {
+		t.Fatalf("both laps must still be attempted, got %+v", disp.got)
 	}
 }
 

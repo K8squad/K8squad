@@ -1405,12 +1405,34 @@ func main() {
 						reattachWindow = d
 					}
 				}
-				if err := mgr.Add(&rundrive.ReattachFollows{
+				// ISI-7542: bound how long a Submit-failing corpse lap may keep
+				// coming back on leader-elects before the re-attach pass settles it
+				// follow_error — terminal for the a2a row: no more corpse re-Submits
+				// on later leader-elects, the drive loop's settled-non-success death
+				// path (ISI-7524) terminalizes the Run, and the S2 reaper — whose
+				// precondition is a settled run — owns the leftover sandbox pod.
+				reattachFailTTL := rundrive.DefaultReattachFailTTL
+				if v := os.Getenv("KSQUAD_A2A_REATTACH_FAIL_TTL"); v != "" {
+					if d, derr := time.ParseDuration(v); derr != nil {
+						ctrl.Log.Error(derr, "invalid KSQUAD_A2A_REATTACH_FAIL_TTL; using default", "value", v, "default", reattachFailTTL.String())
+					} else {
+						reattachFailTTL = d
+					}
+				}
+				reattach := &rundrive.ReattachFollows{
 					Reader:     reader,
 					Dispatcher: a2aDispatcher,
 					Window:     reattachWindow,
 					Log:        func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
-				}); err != nil {
+				}
+				if settler != nil {
+					// The settle-write seam (the same ProdSettler OnDone uses)
+					// terminalizes re-attach corpses after the bounded TTL; a nil
+					// settler (writer unavailable) keeps the legacy log-and-skip.
+					reattach.Settler = settler
+					reattach.FailTTL = reattachFailTTL
+				}
+				if err := mgr.Add(reattach); err != nil {
 					ctrl.Log.Error(err, "unable to register a2a follow re-attach")
 					os.Exit(1)
 				}

@@ -43,9 +43,15 @@ import (
 // must be re-opened after a leader-elect. The pair is exactly what
 // a2a.Dispatcher.Submit needs: a2aTaskID keys the transport reattach (C1) and
 // runID rebuilds the Task deterministically (the Run CR survives the restart).
+// DispatchedAt is the lap's dispatch instant (coord.a2a_dispatch.dispatched_at,
+// DB clock) so the re-attach pass can bound how long a Submit-failing corpse
+// lap keeps being retried (ISI-7542): a lap older than the operator's
+// re-attach fail TTL whose supervisor stays unreachable is terminalized by the
+// settle-write seam instead of being re-Submitted on every leader-elect.
 type ReattachTarget struct {
-	A2ATaskID string
-	RunID     string
+	A2ATaskID    string
+	RunID        string
+	DispatchedAt time.Time
 }
 
 // ProdReattachReader lists the unsettled dispatch laps eligible for follow
@@ -97,7 +103,7 @@ func (r *ProdReattachReader) UnsettledDispatches(ctx context.Context, window tim
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT DISTINCT ON (d.work_item_id) d.a2a_task_id, d.run_id::text
+		SELECT DISTINCT ON (d.work_item_id) d.a2a_task_id, d.run_id::text, d.dispatched_at
 		  FROM coord.a2a_dispatch d
 		  JOIN coord.claim c ON c.work_item_id = d.work_item_id
 		 WHERE d.settled_at IS NULL
@@ -113,7 +119,7 @@ func (r *ProdReattachReader) UnsettledDispatches(ctx context.Context, window tim
 	var out []ReattachTarget
 	for rows.Next() {
 		var t ReattachTarget
-		if err := rows.Scan(&t.A2ATaskID, &t.RunID); err != nil {
+		if err := rows.Scan(&t.A2ATaskID, &t.RunID, &t.DispatchedAt); err != nil {
 			return nil, fmt.Errorf("coord.ProdReattachReader.UnsettledDispatches: scan: %w", err)
 		}
 		out = append(out, t)
