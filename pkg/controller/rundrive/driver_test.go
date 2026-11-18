@@ -82,6 +82,9 @@ type fakeClaims struct {
 	cancelDue    []string
 	cancelDueErr error
 
+	inFlightDue    []string
+	inFlightDueErr error
+
 	requeueOK   bool
 	requeueErr  error
 	requeueCall bool
@@ -133,6 +136,9 @@ func (f *fakeClaims) CancelFinish(_ context.Context, workItemID, runID string, f
 	return f.cancelFinishOK, f.cancelFinishErr
 }
 func (f *fakeClaims) CancelDue(context.Context) ([]string, error) { return f.cancelDue, f.cancelDueErr }
+func (f *fakeClaims) InFlightDue(context.Context) ([]string, error) {
+	return f.inFlightDue, f.inFlightDueErr
+}
 func (f *fakeClaims) RequeuePaused(context.Context, string) (bool, error) {
 	f.requeueCall = true
 	return f.requeueOK, f.requeueErr

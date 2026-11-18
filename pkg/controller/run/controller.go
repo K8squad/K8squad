@@ -429,12 +429,13 @@ func (r *Reconciler) recordPhaseTransition(ctx context.Context, run *api.Run, fr
 	}
 
 	if err := r.PhaseJournal.RecordRunPhaseTransition(ctx, PhaseEdge{
-		RunUID:    string(run.UID),
-		TeamID:    teamUID,
-		ProjectID: projectUID,
-		FromPhase: fromTok,
-		ToPhase:   toTok,
-		TS:        now.Time,
+		RunUID:     string(run.UID),
+		TeamID:     teamUID,
+		ProjectID:  projectUID,
+		WorkItemID: run.Spec.WorkItemRef,
+		FromPhase:  fromTok,
+		ToPhase:    toTok,
+		TS:         now.Time,
 	}); err != nil {
 		log.Error(err, "run phase-transition journal append failed",
 			"run", run.Namespace+"/"+run.Name, "fromToken", fromTok, "toToken", toTok)

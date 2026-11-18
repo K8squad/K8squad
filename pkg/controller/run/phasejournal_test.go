@@ -137,6 +137,10 @@ func TestReconcileJournalsPhaseTransitions(t *testing.T) {
 			t.Errorf("edge[%d] tenancy = run=%q project=%q team=%q, want run=uid-run-1 project=uid-proj-a team=uid-team-a",
 				i, e.RunUID, e.ProjectID, e.TeamID)
 		}
+		if e.WorkItemID != "wi-abc-123" {
+			t.Errorf("edge[%d] WorkItemID = %q, want wi-abc-123 (spec.workItemRef — the fence-oracle key, ISI-7541)",
+				i, e.WorkItemID)
+		}
 		if !e.TS.Equal(fixedNow.Time) {
 			t.Errorf("edge[%d] TS = %v, want %v", i, e.TS, fixedNow.Time)
 		}

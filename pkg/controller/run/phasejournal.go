@@ -127,9 +127,16 @@ type PhaseEdge struct {
 	RunUID    string
 	TeamID    string
 	ProjectID string
-	FromPhase string
-	ToPhase   string
-	TS        time.Time
+	// WorkItemID is the Run's spec.workItemRef — the opaque coordination-DB
+	// pointer (ADR-001) the journal's backward-edge guard resolves the durable
+	// claim fence through (coord.claim.fence_token, ISI-7541). It is NOT tenancy:
+	// tenancy stays Project/Team above. Empty (or non-uuid) means the oracle is
+	// unknown — the guard then suppresses backward edges fail-closed; forward
+	// edges always journal.
+	WorkItemID string
+	FromPhase  string
+	ToPhase    string
+	TS         time.Time
 }
 
 // PhaseJournal appends one observed Run phase edge to the durable append-only

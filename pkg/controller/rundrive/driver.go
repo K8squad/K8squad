@@ -197,6 +197,13 @@ type Claims interface {
 	// CancelDue lists work items parked at cancelling — the kill sweep's
 	// backlog it hands to the driver's kick.
 	CancelDue(ctx context.Context) (due []string, err error)
+	// InFlightDue lists work items whose durable reconcile_step is in-flight
+	// (dispatching/running/collecting) — the periodic in-flight sweep's
+	// (ISI-7536) backlog it hands to the driver's kick, so a Run wedged
+	// mid-flight after an operator roll (whose in-memory 2s self-poll chain
+	// was dropped) is re-examined within ~a sweep interval regardless of
+	// pod-watch coverage.
+	InFlightDue(ctx context.Context) (due []string, err error)
 	// RequeuePaused is the 3.7 resume re-entry: guarded paused(rate_limited) →
 	// dispatching (custody retained — short pauses keep the checkout), audited.
 	RequeuePaused(ctx context.Context, workItemID string) (ok bool, err error)
@@ -756,6 +763,13 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			noopTick = true
 			return r.waitSupervisor(ctx, &run, runID, err), nil
 		}
+		if errors.Is(err, errSandboxGone) {
+			// ISI-7538: the bind effect hit a sandbox pod that is provably
+			// gone — route through the death path, never the generic
+			// requeue (which re-drives BindSandbox into the same error
+			// forever behind a corpse BYO-endpoint holder).
+			return r.bindGoneDeathPath(ctx, &run, cs)
+		}
 		if contextasm.IsFailClosed(err) {
 			finalStep = reconcile.StepFailed
 			return r.failClosedPark(ctx, &run, runID, store.Fence(), err)
@@ -780,6 +794,11 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			// wait, not a failure (see the sibling branch above).
 			noopTick = true
 			return r.waitSupervisor(ctx, &run, runID, err), nil
+		}
+		if errors.Is(err, errSandboxGone) {
+			// ISI-7538: the sticky effects error is the gone-sandbox
+			// death signal (see the sibling branch above).
+			return r.bindGoneDeathPath(ctx, &run, cs)
 		}
 		if contextasm.IsFailClosed(err) {
 			// ISI-5543: the dispatch effect's context assembly failed closed
@@ -1007,18 +1026,54 @@ func (r *Driver) reapGoneSandbox(ctx context.Context, run *api.Run, cs ClaimStat
 	// The durable marker clear is what turns the retry lap into a FRESH bind;
 	// an error here is infrastructure (DB down) — surface it, the level-
 	// triggered next pass re-detects the gone pod and redoes the recovery.
-	if r.BindClear != nil {
-		if err := r.BindClear.ClearSandboxBind(ctx, runID); err != nil {
-			return false, fmt.Errorf("rundrive: clear sandbox bind for gone pod %s: %w", ref.Name, err)
-		}
-	}
-	// Null the stale status ref (idempotent merge patch); a transient patch
-	// error requeues and the next pass redoes the whole recovery.
-	patch := client.RawPatch(types.MergePatchType, []byte(`{"status":{"sandboxRef":null}}`))
-	if err := r.Status().Patch(ctx, run, patch); err != nil {
-		return false, fmt.Errorf("rundrive: clear status.sandboxRef for gone pod %s: %w", ref.Name, err)
+	if err := r.clearStaleSandbox(ctx, run); err != nil {
+		return false, err
 	}
 	return true, nil
+}
+
+// clearStaleSandbox drops a dead sandbox durable footprint so the next lap
+// provisions fresh warmth instead of reattaching to the corpse: the
+// coord.sandbox_bind marker (a retry lap BindSandbox would otherwise see
+// the marker and hand back the dead ref) and the status.sandboxRef the
+// console points at. Idempotent; shared by the ISI-4310 gone-pod probe and
+// the ISI-7538 bind-error death path. An error is infrastructure (DB or
+// apiserver down) — surface it, the level-triggered next pass re-detects
+// and redoes the no-ops.
+func (r *Driver) clearStaleSandbox(ctx context.Context, run *api.Run) error {
+	runID := string(run.UID)
+	if r.BindClear != nil {
+		if err := r.BindClear.ClearSandboxBind(ctx, runID); err != nil {
+			return fmt.Errorf("rundrive: clear sandbox bind for gone pod: %w", err)
+		}
+	}
+	// Null the stale status ref (idempotent merge patch); nil on a run whose
+	// ref was never observed is a harmless no-op patch.
+	patch := client.RawPatch(types.MergePatchType, []byte(`{"status":{"sandboxRef":null}}`))
+	if err := r.Status().Patch(ctx, run, patch); err != nil {
+		return fmt.Errorf("rundrive: clear status.sandboxRef: %w", err)
+	}
+	return nil
+}
+
+// bindGoneDeathPath routes a bind-time gone-sandbox error (ISI-7538) into
+// the 5.3 retry-or-fail death path. Before this, the generic requeue
+// re-drove BindSandbox into the same NotFound forever (live: run
+// intake-db7fa412 on build ddf159d6 looping every few seconds after its
+// sandbox pod died mid-run), keeping the unsettled lap as an in-process BYO
+// endpoint holder that could never settle — the single-slot gate starved
+// every queued run behind the corpse. Clearing the stale bind first makes
+// the retry lap provision a fresh sandbox; a spent budget terminalizes,
+// releasing the endpoint and agent slots — the wedge is bounded either way.
+func (r *Driver) bindGoneDeathPath(ctx context.Context, run *api.Run, cs ClaimState) (ctrl.Result, error) {
+	runID := string(run.UID)
+	slog.InfoContext(ctx, "rundrive: bind hit a gone sandbox pod; entering death path",
+		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
+		"durable_step", string(cs.Step))
+	if err := r.clearStaleSandbox(ctx, run); err != nil {
+		return ctrl.Result{}, err
+	}
+	return r.retryOrFail(ctx, run, cs)
 }
 
 // inFlightStep reports whether the durable step is one the machine drives
@@ -1154,6 +1209,18 @@ func (r *Driver) cancelFinish(ctx context.Context, run *api.Run, cs ClaimState) 
 // the sandbox down and commits the terminal cancelled transition. Pure latency
 // sugar for the kick — correctness is level-triggered off the durable step.
 func (r *Driver) OnCancelDue(ctx context.Context, due []string) {
+	for _, workItemID := range due {
+		r.kickWorkItem(ctx, workItemID)
+	}
+}
+
+// OnInFlightSweep is the periodic in-flight sweep's wake (ISI-7536): each work
+// item still at an in-flight durable step has its owning Run(s) kicked back
+// into the drive loop. The level-triggered Reconcile is a cheap no-op for a
+// healthy Run; for one wedged against a reaped sandbox it drives
+// reapGoneSandbox → retryOrFail — the recovery an operator roll's dropped 2s
+// self-poll chain used to be the only prompt carrier of.
+func (r *Driver) OnInFlightSweep(ctx context.Context, due []string) {
 	for _, workItemID := range due {
 		r.kickWorkItem(ctx, workItemID)
 	}

@@ -1,0 +1,27 @@
+-- 0043_run_phase_transition_fence.sql — the DURABLE FENCE column of the run
+-- phase-transition journal's backward-edge guard (ISI-7541, the journal
+-- follow-up to the ISI-7538 crash-path flap that PR #1047 deliberately left
+-- out of scope).
+--
+-- WHY (ISI-7538 live flap, build ddf159d6): during the operator crash the
+-- journal flapped claiming→running→claiming within seconds — the crash-path
+-- re-drive of a still-live claim regressed the projected phase under the SAME
+-- fence, and the Run CR ended Pending while the journal's last edge was running.
+-- A blind monotonic-edge guard is WRONG though: running→claiming is also the
+-- GENUINE post-death retry-lap regression (the death path re-claims the item,
+-- bumping coord.claim.fence_token). So the guard (pkg/coord, on the sanctioned
+-- RecordRunPhaseTransition write path) must compare the CURRENT fence against
+-- the fence the run's LAST JOURNALED EDGE carried — which the journal must
+-- therefore remember. This column is that memory: one bigint per row, the
+-- claim's fence_token at append time.
+--
+-- Nullable on purpose: rows appended without a resolvable claim (empty/malformed
+-- work_item_id, or no claim row yet) and pre-guard rows carry NULL — an honest
+-- "oracle unknown". The guard is fail-closed against NULL (a backward edge it
+-- cannot certify is suppressed); forward edges always journal regardless.
+--
+-- Forward-only (the 001 discipline): ADD COLUMN IF NOT EXISTS touches no
+-- existing row, so the append-only UPDATE/DELETE triggers from 0037 are not
+-- involved; there is no down migration, a mistake is corrected by a new file.
+ALTER TABLE coord.run_phase_transition
+    ADD COLUMN IF NOT EXISTS fence bigint;
