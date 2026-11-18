@@ -311,7 +311,7 @@ class FakeEventSource {
 
 function stubEventSource() {
   const instances: FakeEventSource[] = [];
-  const ctor = vi.fn((url: string) => {
+  const ctor = vi.fn(function (url: string) {
     const es = new FakeEventSource(url);
     instances.push(es);
     return es;
@@ -562,14 +562,18 @@ describe("useDispatchWatch — hook wiring", () => {
     expect(result.current?.comments).toEqual([]);
 
     act(() => {
-      es!.emit("ticket_comment", {
-        workItemId: "wi-1",
-        runId: "run-x",
-        author: "agent:alice",
-        body: "What I did: shipped it",
-        kind: "summary",
-        at: "2026-11-12T10:00:00.000Z",
-      }, "evt-2");
+      es!.emit(
+        "ticket_comment",
+        {
+          workItemId: "wi-1",
+          runId: "run-x",
+          author: "agent:alice",
+          body: "What I did: shipped it",
+          kind: "summary",
+          at: "2026-11-12T10:00:00.000Z",
+        },
+        "evt-2",
+      );
     });
     expect(result.current?.comments).toHaveLength(1);
     expect(result.current?.comments?.[0]).toMatchObject({
