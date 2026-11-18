@@ -51,7 +51,7 @@ class FakeEventSource {
 
 function stubEventSource() {
   const instances: FakeEventSource[] = [];
-  const ctor = vi.fn((url: string) => {
+  const ctor = vi.fn(function (url: string) {
     const es = new FakeEventSource(url);
     instances.push(es);
     return es;
@@ -90,7 +90,11 @@ describe("RunStream durable hydration (ISI-7484)", () => {
           {
             id: "5",
             type: "thinking",
-            data: { author: "sam", body: "hydrated first step", at: "2026-11-16T08:00:00Z" },
+            data: {
+              author: "sam",
+              body: "hydrated first step",
+              at: "2026-11-16T08:00:00Z",
+            },
             at: "2026-11-16T08:00:00Z",
           },
           {
@@ -108,7 +112,11 @@ describe("RunStream durable hydration (ISI-7484)", () => {
 
     // A live frame arrives BEFORE the hydration fetch resolves.
     await act(async () => {
-      instances[0].emit("thinking", { author: "sam", body: "live tail frame" }, "12");
+      instances[0].emit(
+        "thinking",
+        { author: "sam", body: "live tail frame" },
+        "12",
+      );
     });
 
     // Now let the hydration promise land.
@@ -132,7 +140,11 @@ describe("RunStream durable hydration (ISI-7484)", () => {
     await act(async () => {
       instances[0].emit(
         "thinking",
-        { author: "sam", body: "hydrated first step", at: "2026-11-16T08:00:00Z" },
+        {
+          author: "sam",
+          body: "hydrated first step",
+          at: "2026-11-16T08:00:00Z",
+        },
         "5",
       );
     });
@@ -152,7 +164,10 @@ describe("RunStream durable hydration (ISI-7484)", () => {
 
   it("survives a failed hydration fetch — the live tail still renders", async () => {
     const instances = stubEventSource();
-    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse({ error: "nope" }, false)));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse({ error: "nope" }, false)),
+    );
     render(<RunStream runId="intake-r3" />);
     await act(async () => {
       instances[0].emit("thinking", { author: "sam", body: "live only" }, "2");
@@ -163,4 +178,3 @@ describe("RunStream durable hydration (ISI-7484)", () => {
     expect(document.querySelectorAll(".run-event")).toHaveLength(1);
   });
 });
-

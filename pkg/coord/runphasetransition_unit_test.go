@@ -80,8 +80,6 @@ func TestValidRunPhases(t *testing.T) {
 	}
 }
 
-
-
 // ISI-7543: forward edges (including the first transition and both terminal
 // targets) must still pass the input guards — only the lattice regression is
 // new. The offline DB then fails on connect, never on validation.
@@ -100,5 +98,18 @@ func TestRecordRunPhaseTransitionForwardEdgesPassValidation(t *testing.T) {
 				t.Fatalf("forward edge must pass validation, got %v", err)
 			}
 		})
+	}
+}
+
+// The reclaim oracle (ISI-7539) shares the write seam's input discipline: nil db
+// is an infrastructure error, an empty runUID fails closed as invalid input
+// before any round-trip (the SQL itself is exercised by the operator adapter's
+// sqlmock lane over the real statement).
+func TestRetryReclaimSinceLastPhaseEdgeGuards(t *testing.T) {
+	if _, err := RetryReclaimSinceLastPhaseEdge(context.Background(), nil, "r"); err == nil || errors.Is(err, ErrInvalidRunPhaseTransition) {
+		t.Fatalf("nil db must be an infra error, got %v", err)
+	}
+	if _, err := RetryReclaimSinceLastPhaseEdge(context.Background(), offlineDB(), ""); !errors.Is(err, ErrInvalidRunPhaseTransition) {
+		t.Fatalf("empty runUID must fail closed as invalid input, got %v", err)
 	}
 }

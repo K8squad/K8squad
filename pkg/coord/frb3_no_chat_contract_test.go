@@ -497,6 +497,7 @@ var allowedSurface = map[string]string{
 	"ErrRunPhaseEdgeSuppressed":                "§6.5 journal guard (ISI-7541): uncertified backward phase edge suppressed — crash-path flap, not retry history",
 	"RunPhaseTransition":                       "§6.5 one observed Run phase edge — input to the append-only journal write (ISI-5744 WS-1)",
 	"RecordRunPhaseTransition":                 "§6.5 append-only Run phase-transition journal write (ADR-0032; derived from Run CR, not work_item; sanctioned, no update/delete path)",
+	"RetryReclaimSinceLastPhaseEdge":           "§6.3/§8 reclaim oracle for backward journal edges (ISI-7539): read-only EXISTS over audit_log retry_lap_entered vs the run's last journaled edge; custody verdict, no write)",
 	"BoardItem":                                "§13 one board card projection (state/holder/thread counts, read-only)",
 	"StatusChange":                             "§6.5 one state_transition audit row projected for the thread (read-only)",
 	"WorkItemThread":                           "§6.1/§6.5 ticket thread read: detail + recent status history (read-only)",

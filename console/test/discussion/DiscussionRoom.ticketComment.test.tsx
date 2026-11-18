@@ -50,7 +50,9 @@ function humanMsg(id: string, body: string): Message {
   };
 }
 
-function makeClient(overrides: Partial<DiscussionClient> = {}): DiscussionClient {
+function makeClient(
+  overrides: Partial<DiscussionClient> = {},
+): DiscussionClient {
   return {
     listThreads: vi.fn(),
     getThread: vi.fn().mockResolvedValue([]),
@@ -71,7 +73,7 @@ const roster: RosterAgent[] = [{ id: "john", name: "john", status: "idle" }];
 
 // Mount the room and dispatch @john through the real composer (seeds a working
 // watch), returning the bus emit seam.
-async function mountAndPost(getThread: ReturnType<typeof vi.fn>) {
+async function mountAndPost(getThread: DiscussionClient["getThread"]) {
   let emit: (e: RoomStreamEvent) => void = () => {};
   const subscribe = (onEvent: (e: RoomStreamEvent) => void) => {
     emit = onEvent;
@@ -166,10 +168,9 @@ describe("DiscussionRoom — bridged run_ended (ISI-7485)", () => {
 
     // The coalesced re-fetch materializes durable truth; the watch keeps
     // working until the reply/echo resolves it (settle commits AFTER ended).
-    await waitFor(
-      () => expect(getThread).toHaveBeenCalledTimes(2),
-      { timeout: 3000 },
-    );
+    await waitFor(() => expect(getThread).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
     await waitFor(() =>
       expect(
         screen.getByText("durable answer materialized by the refetch"),

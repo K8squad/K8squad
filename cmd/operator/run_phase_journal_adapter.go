@@ -46,6 +46,18 @@ import (
 // map is bounded to live runs: a terminal edge (complete/failed) records and then
 // evicts its run's entry, since the controller emits no further edge once a Run is
 // terminal (its phase stops changing).
+//
+// Backward-edge guard (ISI-7539, from the ISI-7538 ddf159d6 repro): a BACKWARD
+// folded-token edge (running→claiming, terminal→non-terminal —
+// runctrl.BackwardPhaseEdge) is recorded only when the durable fence was bumped
+// for the run since its last journaled edge (a §6.3 RetryEnter reclaim; see
+// coord.RetryReclaimSinceLastPhaseEdge). During the operator crash the
+// re-observed phase flapped claiming→running→claiming→running inside one second
+// and the journal's last edge ended up disagreeing with the projected CR phase;
+// under the guard a crash-path flap emits no backward row while a genuine
+// retry-lap regression still journals. A suppressed edge does not touch
+// lastEdge, so the flap's forward return to the last RECORDED band is the
+// same-edge drop above — the journal never sees the flap at all.
 type runPhaseJournalAdapter struct {
 	db *sql.DB
 
@@ -67,7 +79,8 @@ func newRunPhaseJournalAdapter(db *sql.DB) *runPhaseJournalAdapter {
 }
 
 // RecordRunPhaseTransition appends the observed edge to coord.run_phase_transition,
-// suppressing a consecutive identical edge for the same Run (see type doc).
+// suppressing a consecutive identical edge for the same Run and a backward edge
+// with no durable reclaim behind it (see type doc).
 func (a *runPhaseJournalAdapter) RecordRunPhaseTransition(ctx context.Context, edge runctrl.PhaseEdge) error {
 	key := edge.FromPhase + "\x00" + edge.ToPhase
 
@@ -77,6 +90,23 @@ func (a *runPhaseJournalAdapter) RecordRunPhaseTransition(ctx context.Context, e
 		return nil // same edge as last recorded for this run — storm-guard drop
 	}
 	a.mu.Unlock()
+
+	// Backward-edge guard (ISI-7539): a backward edge is honest only when the
+	// durable fence was bumped for the run since the last journaled edge — a
+	// §6.3 RetryEnter reclaim (its retry_lap_entered audit row), the single
+	// legitimate producer of a CR-level running→claiming regression. Anything
+	// else is a crash-path re-observation artifact: drop it silently and leave
+	// lastEdge untouched, so every re-presentation of the flap re-checks the
+	// oracle until a real reclaim legitimizes it. An oracle INFRA error fails
+	// OPEN — the journal is observability history and must not silently swallow
+	// an honest regression, and a genuinely dead DB surfaces through the insert
+	// error path right below anyway.
+	if runctrl.BackwardPhaseEdge(edge.FromPhase, edge.ToPhase) {
+		reclaimed, oerr := coord.RetryReclaimSinceLastPhaseEdge(ctx, a.db, edge.RunUID)
+		if oerr == nil && !reclaimed {
+			return nil // crash-path flap — no reclaim since the last journaled edge
+		}
+	}
 
 	if err := coord.RecordRunPhaseTransition(ctx, a.db, coord.RunPhaseTransition{
 		RunUID:     edge.RunUID,

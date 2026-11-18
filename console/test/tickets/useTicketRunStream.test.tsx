@@ -50,7 +50,7 @@ class FakeEventSource {
 
 function stubEventSource() {
   const instances: FakeEventSource[] = [];
-  const ctor = vi.fn((url: string) => {
+  const ctor = vi.fn(function (url: string) {
     const es = new FakeEventSource(url);
     instances.push(es);
     return es;
@@ -146,27 +146,39 @@ describe("useTicketRunStream — live tail + terminal resolve (ISI-5206)", () =>
       useTicketRunStream("run-7", "in_progress", undefined, () => {}),
     );
     act(() => {
-      instances[0].emit("thinking", {
-        runId: "run-7",
-        author: "agent:sam",
-        body: "final: the fix landed",
-        at: "2026-11-06T10:00:00.000Z",
-        kind: "deliverable",
-      }, "evt-1");
-      instances[0].emit("thinking", {
-        runId: "run-7",
-        author: "agent:sam",
-        body: "[run run-7] still working",
-        at: "2026-11-06T10:00:01.000Z",
-        kind: "thinking",
-      }, "evt-2");
+      instances[0].emit(
+        "thinking",
+        {
+          runId: "run-7",
+          author: "agent:sam",
+          body: "final: the fix landed",
+          at: "2026-11-06T10:00:00.000Z",
+          kind: "deliverable",
+        },
+        "evt-1",
+      );
+      instances[0].emit(
+        "thinking",
+        {
+          runId: "run-7",
+          author: "agent:sam",
+          body: "[run run-7] still working",
+          at: "2026-11-06T10:00:01.000Z",
+          kind: "thinking",
+        },
+        "evt-2",
+      );
       // A legacy envelope with no kind decodes as the thinking tier (no key).
-      instances[0].emit("thinking", {
-        runId: "run-7",
-        author: "agent:sam",
-        body: "[run run-7] legacy row",
-        at: "2026-11-06T10:00:02.000Z",
-      }, "evt-3");
+      instances[0].emit(
+        "thinking",
+        {
+          runId: "run-7",
+          author: "agent:sam",
+          body: "[run run-7] legacy row",
+          at: "2026-11-06T10:00:02.000Z",
+        },
+        "evt-3",
+      );
     });
     expect(result.current.map((r) => r.kind ?? "thinking")).toEqual([
       "deliverable",

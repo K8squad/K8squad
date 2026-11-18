@@ -245,6 +245,41 @@ func TestReconcileJournalWriteErrorNeverFailsReconcile(t *testing.T) {
 	}
 }
 
+// TestBackwardPhaseEdge pins the ISI-7539 backward predicate: only a real
+// run-life regression (running→claiming, terminal→non-terminal) is backward;
+// first-observed edges, forward progress, same-token edges and terminal flips
+// are not, and malformed tokens never suppress.
+func TestBackwardPhaseEdge(t *testing.T) {
+	cases := []struct {
+		from, to string
+		want     bool
+	}{
+		{"", "claiming", false}, // first observed transition — no from token
+		{"", "running", false},
+		{"claiming", "running", false}, // forward progress
+		{"claiming", "complete", false},
+		{"claiming", "failed", false},
+		{"running", "complete", false},
+		{"running", "failed", false},
+		{"claiming", "claiming", false}, // same token
+		{"running", "running", false},
+		{"complete", "failed", false}, // terminal flip shares the top rank
+		{"failed", "complete", false},
+		{"running", "claiming", true},  // the crash-path regression (ISI-7538 repro)
+		{"complete", "claiming", true}, // terminal→non-terminal
+		{"complete", "running", true},
+		{"failed", "claiming", true},
+		{"failed", "running", true},
+		{"bogus", "claiming", false}, // malformed tokens never count as backward
+		{"running", "bogus", false},
+	}
+	for _, c := range cases {
+		if got := BackwardPhaseEdge(c.from, c.to); got != c.want {
+			t.Fatalf("BackwardPhaseEdge(%q, %q) = %v, want %v", c.from, c.to, got, c.want)
+		}
+	}
+}
+
 // TestReconcileNilJournalNoop: the seam is optional — a nil PhaseJournal reconcile
 // projects status and does not panic (pre-WS-2 behaviour, strictly non-regressing).
 func TestReconcileNilJournalNoop(t *testing.T) {

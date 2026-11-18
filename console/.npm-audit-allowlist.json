@@ -9,9 +9,9 @@
     "An unfixable finding still needs an entry; a fix landing upstream turns a muted HIGH into a gating one, so track it here."
   ],
   "advisories": {
-    "GHSA-vfj7-8cjw-p6xm": {
+    "GHSA-fc5q-39xc-vjpf": {
       "expires": "2026-12-15",
-      "justification": "braces <=3.0.3 stack-exhaustion DoS; NO upstream fix (latest published braces is 3.0.3 and the advisory covers <=3.0.3; micromatch@4.0.8 still pins braces ^3.0.3). Dev-only: reaches solely via eslint-config-next -> @next/eslint-plugin-next -> fast-glob -> micromatch -> braces, never in the shipped console runtime. Remove when braces publishes a fixed release or eslint-config-next's chain drops it (npm's only 'fix' is a semver-major eslint-config-next@14 downgrade that breaks Next-15 parity)."
+      "justification": "picomatch ReDoS via single-branch repeated extglobs; NO upstream fix (advisory range is '*' — every published picomatch, incl. latest 4.0.7, is flagged; npm's only 'fix' is a bogus vitest downgrade). Dev-only: reaches solely via test/lint tooling (vite/vitest -> picomatch and eslint-config-next -> fast-glob/micromatch -> picomatch + @typescript-eslint/eslint-import-resolver-typescript -> tinyglobby/fdir -> picomatch), never in the shipped console runtime. Remove when picomatch publishes a patched release and the audit range narrows off '*'."
     }
   }
 }
