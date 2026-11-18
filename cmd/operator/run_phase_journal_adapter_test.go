@@ -54,6 +54,10 @@ func TestRunPhaseJournalAdapter_SuppressesConsecutiveSameEdge(t *testing.T) {
 	//   2. running→complete (a real, different, terminal edge → evicts the run)
 	//   3. claiming→running again (post-eviction, a fresh run life → records anew)
 	for i := 0; i < 3; i++ {
+		// ISI-7541 backward-edge guard: each journaled append is preceded by the
+		// last-edge read (empty rows ⇒ no journal history ⇒ forward ⇒ insert).
+		mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+			WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
 		mock.ExpectExec("INSERT INTO coord.run_phase_transition").
 			WillReturnResult(sqlmock.NewResult(0, 1))
 	}
@@ -98,7 +102,12 @@ func TestRunPhaseJournalAdapter_PerRunIsolation(t *testing.T) {
 
 	// Two inserts: one per distinct run. The second claiming→running for runA is
 	// the suppressed dup; runB's identical edge is a separate run and must land.
+	// (Each insert is preceded by the guard's last-edge read — no history rows.)
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
 	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
 	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	a := newRunPhaseJournalAdapter(db)
@@ -132,7 +141,12 @@ func TestRunPhaseJournalAdapter_WriteFailureDoesNotPoisonDedup(t *testing.T) {
 	run := uuid.NewString()
 	project := uuid.NewString()
 
+	// The guard's last-edge read precedes each attempt (fail and retry alike).
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
 	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnError(errors.New("boom"))
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
 	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
 
 	a := newRunPhaseJournalAdapter(db)
@@ -171,6 +185,10 @@ func TestRunPhaseJournalAdapter_ConcurrentSameEdge(t *testing.T) {
 	// Allow any number of concurrent inserts to land without an "unexpected call"
 	// error; we assert map consistency, not an exact row count (see doc above).
 	for i := 0; i < 32; i++ {
+		// Unordered, like the execs: whichever passes reach coord consume one
+		// last-edge read (empty ⇒ forward) plus one insert.
+		mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+			WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
 		mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
 	}
 

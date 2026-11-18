@@ -17,6 +17,14 @@
 // enum. Operator emission on each Run transition (WS-2 / ISI-5749), the
 // reconstruction read + prod wiring (WS-3 / ISI-5750), and the FE chart (WS-4 /
 // ISI-5752) are out of scope and tracked separately.
+//
+// BACKWARD-EDGE GUARD (ISI-7541 — the journal follow-up to the ISI-7538
+// crash-path flap, deliberately left out of PR #1047): RecordRunPhaseTransition
+// reads the run's LAST journaled edge and the claim's durable fence before
+// inserting, and suppresses a backward or same-band edge the fence cannot
+// certify. A blind monotonic guard would corrupt genuine retry history
+// (running→claiming IS the legitimate post-death retry-lap regression); the
+// fence bump is what separates the two — see ErrRunPhaseEdgeSuppressed.
 package coord
 
 import (
@@ -25,6 +33,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Run phase tokens — the four run-status CHIP TOKENS the FE renders, lowercased
@@ -55,6 +65,33 @@ var ValidRunPhases = map[string]bool{
 // treats it as a programming error (it owns the CR→token mapping).
 var ErrInvalidRunPhaseTransition = errors.New("coord: invalid run phase transition")
 
+// ErrRunPhaseEdgeSuppressed — the edge was REJECTED by the backward-edge guard
+// (ISI-7541): it moves the run BACKWARD (or re-enters the band the journal
+// already holds) and the durable claim fence was not bumped since the last
+// journaled edge — the ISI-7538 crash-path flap family (an operator restart
+// re-driving a still-live claim regresses the projected phase under the SAME
+// fence; RedriveClaim's no-op fast path). A bumped fence certifies a genuine
+// retry lap (§6.2 acquire, §6.4 re-acquire and cancel-release all bump it), and
+// only then does a backward edge journal. NOT an infrastructure failure:
+// adapters may log-and-swallow it (the operator adapter does).
+var ErrRunPhaseEdgeSuppressed = errors.New("coord: run phase edge suppressed by backward-edge guard")
+
+// runPhaseRank orders the chip tokens along the state machine's one-way flow
+// (claiming → running → terminal): 1 < 2 < 3. A token at a LOWER rank than the
+// last journaled row's is a backward edge; complete and failed SHARE the
+// terminal rank — a post-terminal token change is a settlement revision, not a
+// phase regression, and journals normally.
+func runPhaseRank(tok string) int {
+	switch tok {
+	case RunPhaseClaiming:
+		return 1
+	case RunPhaseRunning:
+		return 2
+	default:
+		return 3
+	}
+}
+
 // RunPhaseTransition is one observed Run phase edge — the input to the journal
 // write. It is a pure value; the caller (WS-2 operator emitter) has already
 // observed the transition on the Run CR.
@@ -68,6 +105,12 @@ type RunPhaseTransition struct {
 	// trusted fleet-admin path still sees it).
 	TeamID    string
 	ProjectID string
+	// WorkItemID is the Run's spec.workItemRef — the opaque coordination-DB
+	// pointer (ADR-001) the backward-edge guard resolves the durable claim fence
+	// through (coord.claim.fence_token, ISI-7541). NOT tenancy. Empty or
+	// non-uuid ⇒ the oracle is unknown: backward edges are suppressed
+	// fail-closed, forward edges always journal.
+	WorkItemID string
 	// FromPhase is the token the Run is LEAVING; empty ⇒ the Run's first observed
 	// transition (stored NULL, like audit_log.from_state). When non-empty it must
 	// be one of ValidRunPhases.
@@ -84,11 +127,20 @@ type RunPhaseTransition struct {
 // into the trigger-guarded table; there is deliberately no update/delete path.
 //
 // Semantics:
+//
 //   - (nil): the row was appended.
+//
 //   - (ErrInvalidRunPhaseTransition): empty runUID/projectID/toPhase, or a phase
 //     token outside ValidRunPhases (fail-closed, BEFORE any DB round-trip).
+//
 //   - (err): infrastructure failure (incl. a non-uuid id tripping 22P02);
 //     nothing was written.
+//
+//   - (ErrRunPhaseEdgeSuppressed): the backward-edge guard (ISI-7541) rejected
+//     the edge — it regresses the band, or re-enters the band the journal
+//     already holds, and the durable claim fence was NOT bumped since the last
+//     journaled edge. Nothing was written; this is NOT an infrastructure
+//     failure, and adapters may log-and-swallow it.
 //
 // Idempotency is the EMITTER's job (WS-2 emits only on an actual phase change) —
 // the journal is append-only and does not dedupe, exactly like audit_log.
@@ -119,14 +171,67 @@ func RecordRunPhaseTransition(ctx context.Context, db *sql.DB, row RunPhaseTrans
 		tsParam = sql.NullTime{Time: row.TS, Valid: true}
 	}
 
+	// ── Backward-edge guard (ISI-7541) ── the journal's own last edge is the
+	// authority, NOT the caller's FromPhase: the crash path corrupts the Run CR
+	// the projector derived that from (ISI-7538: the CR flapped
+	// claiming→running→claiming and ended Pending while the journal already held
+	// running). Both reads are plain SELECTs — this stays observability history,
+	// not a custody surface (the 0037 discipline).
+	var lastTo sql.NullString
+	var lastFence sql.NullInt64
+	switch err := db.QueryRowContext(ctx,
+		`SELECT to_phase, fence FROM coord.run_phase_transition
+			 WHERE run_uid = $1::uuid ORDER BY id DESC LIMIT 1`,
+		row.RunUID).Scan(&lastTo, &lastFence); {
+	case errors.Is(err, sql.ErrNoRows):
+		// No journal history for this run: the edge is forward by definition.
+	case err != nil:
+		return fmt.Errorf("coord.RecordRunPhaseTransition: read last edge of run %s: %w", row.RunUID, err)
+	}
+
+	// The legitimacy oracle: coord.claim.fence_token for the Run's work item.
+	// Every genuine retry lap re-acquires the claim and bumps it (§6.2 acquire,
+	// §6.4 re-acquire, cancel-release); the crash-path re-drive of a still-live
+	// claim keeps the SAME fence (RedriveClaim's no-op fast path). An unresolvable
+	// ref (empty, malformed, or no claim row yet) yields NULL — an honest "cannot
+	// certify", which the decision below treats fail-closed.
+	var fence sql.NullInt64
+	if id, err := uuid.Parse(row.WorkItemID); err == nil {
+		switch err := db.QueryRowContext(ctx,
+			`SELECT fence_token FROM coord.claim WHERE work_item_id = $1::uuid`,
+			id).Scan(&fence); {
+		case errors.Is(err, sql.ErrNoRows):
+		case err != nil:
+			return fmt.Errorf("coord.RecordRunPhaseTransition: read fence of work item %s: %w", row.WorkItemID, err)
+		}
+	}
+	if lastTo.Valid {
+		bumped := fence.Valid && lastFence.Valid && fence.Int64 > lastFence.Int64
+		if (runPhaseRank(row.ToPhase) < runPhaseRank(lastTo.String) || row.ToPhase == lastTo.String) && !bumped {
+			return fmt.Errorf("%w: run %s edge %q->%q vs last journaled %q (fence now %v, last %v)",
+				ErrRunPhaseEdgeSuppressed, row.RunUID, row.FromPhase, row.ToPhase, lastTo.String,
+				nullFence(fence), nullFence(lastFence))
+		}
+	}
+
 	// ts = COALESCE(param, now()): a zero TS defers to the DB default so the row
-	// still carries an honest observation time.
+	// still carries an honest observation time. fence stamps the oracle reading
+	// (0043) so the NEXT backward edge for this run can compare against it.
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO coord.run_phase_transition (run_uid, team_id, project_id, from_phase, to_phase, ts)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, COALESCE($6::timestamptz, now()))`,
-		row.RunUID, teamParam, row.ProjectID, fromParam, row.ToPhase, tsParam); err != nil {
+		INSERT INTO coord.run_phase_transition (run_uid, team_id, project_id, from_phase, to_phase, ts, fence)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, COALESCE($6::timestamptz, now()), $7::bigint)`,
+		row.RunUID, teamParam, row.ProjectID, fromParam, row.ToPhase, tsParam, fence); err != nil {
 		return fmt.Errorf("coord.RecordRunPhaseTransition: insert run %s edge %q->%q: %w",
 			row.RunUID, row.FromPhase, row.ToPhase, err)
 	}
 	return nil
+}
+
+// nullFence renders a nullable fence for the suppression message ("unknown"
+// reads better than "{0 false}" in operator logs).
+func nullFence(f sql.NullInt64) interface{} {
+	if f.Valid {
+		return f.Int64
+	}
+	return "unknown"
 }

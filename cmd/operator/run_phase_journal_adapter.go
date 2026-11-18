@@ -19,10 +19,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"sync"
 
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	"github.com/K8squad/K8squad/pkg/coord"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 // runPhaseJournalAdapter binds the Run controller's PhaseJournal seam (WS-2 /
@@ -77,13 +79,24 @@ func (a *runPhaseJournalAdapter) RecordRunPhaseTransition(ctx context.Context, e
 	a.mu.Unlock()
 
 	if err := coord.RecordRunPhaseTransition(ctx, a.db, coord.RunPhaseTransition{
-		RunUID:    edge.RunUID,
-		TeamID:    edge.TeamID,
-		ProjectID: edge.ProjectID,
-		FromPhase: edge.FromPhase,
-		ToPhase:   edge.ToPhase,
-		TS:        edge.TS,
+		RunUID:     edge.RunUID,
+		TeamID:     edge.TeamID,
+		ProjectID:  edge.ProjectID,
+		WorkItemID: edge.WorkItemID,
+		FromPhase:  edge.FromPhase,
+		ToPhase:    edge.ToPhase,
+		TS:         edge.TS,
 	}); err != nil {
+		if errors.Is(err, coord.ErrRunPhaseEdgeSuppressed) {
+			// ISI-7541 backward-edge guard: the edge regressed (or re-entered the
+			// band the journal already holds) without a durable fence bump — a
+			// crash-path flap, not retry history. Not a failure: swallow it, and
+			// leave lastEdge at the last RECORDED edge so the ISI-7502 storm guard
+			// above keeps dropping the flap's repeats without a DB round-trip.
+			ctrl.LoggerFrom(ctx).V(1).Info("run phase journal: suppressed crash-path backward edge",
+				"runUID", edge.RunUID, "from", edge.FromPhase, "to", edge.ToPhase)
+			return nil
+		}
 		// Leave lastEdge untouched on a write failure so a retry of the same edge is
 		// not suppressed — the row never landed, so it is not a duplicate.
 		return err
