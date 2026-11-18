@@ -12,6 +12,10 @@
     "GHSA-vfj7-8cjw-p6xm": {
       "expires": "2026-12-15",
       "justification": "braces <=3.0.3 stack-exhaustion DoS; NO upstream fix (latest published braces is 3.0.3 and the advisory covers <=3.0.3; micromatch@4.0.8 still pins braces ^3.0.3). Dev-only: reaches solely via eslint-config-next -> @next/eslint-plugin-next -> fast-glob -> micromatch -> braces, never in the shipped console runtime. Remove when braces publishes a fixed release or eslint-config-next's chain drops it (npm's only 'fix' is a semver-major eslint-config-next@14 downgrade that breaks Next-15 parity)."
+    },
+    "GHSA-fc5q-39xc-vjpf": {
+      "expires": "2026-12-15",
+      "justification": "picomatch ReDoS via single-branch repeated patterns; no direct picomatch fix reachable without a breaking parent bump (npm's only 'fix' is vitest@5 semver-major). Dev-only: both lockfile nodes (picomatch@4.0.5, micromatch/node_modules/picomatch@2.3.2) are dev:true, reaching solely via dev test/lint tooling (vitest -> vite/tinyglobby/fdir -> picomatch, and @typescript-eslint/eslint-config-next -> micromatch -> picomatch) — never in the shipped console runtime. The proper console-devDep bump (vitest 3->5) is tracked on ISI-7576 (PR #1056); remove this entry once that lands and the chain re-pins picomatch past the advisory."
     }
   }
 }
