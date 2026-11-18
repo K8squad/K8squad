@@ -687,11 +687,12 @@ func (s *HeartbeatSweeper) releaseZombie(ctx context.Context, hc heldClaim) erro
 
 // releaseDead is the shared custody-release transaction for a dead holder
 // (ISI-5184 orphan: Run CR gone; ISI-5438 zombie: Run CR present but pod gone).
-// It nulls the custody triple, forces reconcile_step to failed, co-commits a
-// §6.5 claim_released audit + outbox row carrying `reason`, and returns the lane
-// to todo (guarded on in_progress so a human-moved lane is never touched). The
-// release is idempotent: a re-sweep of an already-cleared row matches 0 rows and
-// commits a no-op without re-auditing.
+// It nulls the custody triple, forces reconcile_step to failed, durably settles
+// the dead a2a follow (ISI-7560 — else the projector's S3 hold pins the CR at
+// Collecting), co-commits a §6.5 claim_released audit + outbox row carrying
+// `reason`, and returns the lane to todo (guarded on in_progress so a human-moved
+// lane is never touched). The release is idempotent: a re-sweep of an
+// already-cleared row matches 0 rows and commits a no-op without re-auditing.
 func (s *HeartbeatSweeper) releaseDead(ctx context.Context, hc heldClaim, reason string) error {
 	if hc.holderRun == "" {
 		return nil // no run provenance to release under
@@ -736,6 +737,27 @@ func (s *HeartbeatSweeper) releaseDead(ctx context.Context, hc heldClaim, reason
 		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
 		hc.workItemID, hc.holderRun, hc.fence, reason); err != nil {
 		return fmt.Errorf("outbox: %w", err)
+	}
+
+	// ISI-7560: durably settle the dead follow. The holder died (e.g. the
+	// operator rolled) before its follow goroutine could mark the a2a lap, so no
+	// coord.a2a_dispatch row carries settled_at. Forcing reconcile_step='failed'
+	// above is NOT enough to terminalize the Run CR: the status projector's S3
+	// finalize-window hold (pkg/controller/run, ADR-0020 §2.4) re-derives the
+	// phase from (dispatched && !settled) and pins it at Collecting/Running
+	// forever — the observed orphan (Ready=Collecting on a claim that is terminal
+	// failed, surviving every re-LIST because the projection is deterministically
+	// wrong, not merely stale). Settle every unsettled lap of this run as
+	// follow_error in the SAME release txn so the projector reads settled=true and
+	// projects the terminal Failed phase without waiting for a full operator
+	// re-LIST. Idempotent via the settled_at IS NULL guard: a re-sweep, or a lap a
+	// racing settler (reattach / OnDone) already closed, matches nothing.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE coord.a2a_dispatch
+		   SET settled_at = now(), settle_outcome = $2
+		 WHERE run_id = $1::uuid AND settled_at IS NULL`,
+		hc.holderRun, coord.SettleOutcomeFollowError); err != nil {
+		return fmt.Errorf("settle dead follow: %w", err)
 	}
 
 	// The dead holder never committed a terminal step, so from the machine's
