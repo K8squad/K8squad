@@ -47,7 +47,7 @@ class FakeEventSource {
 
 function stubEventSource() {
   const instances: FakeEventSource[] = [];
-  const ctor = vi.fn((url: string) => {
+  const ctor = vi.fn(function (url: string) {
     const es = new FakeEventSource(url);
     instances.push(es);
     return es;
