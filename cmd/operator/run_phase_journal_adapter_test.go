@@ -34,6 +34,40 @@ func edge(runUID, project, from, to string) runctrl.PhaseEdge {
 	return runctrl.PhaseEdge{RunUID: runUID, ProjectID: project, FromPhase: from, ToPhase: to}
 }
 
+// edgeWithItem is edge plus a resolvable work-item ref, so the ISI-7541 seam
+// guard's claim-fence oracle read fires and can certify a backward edge.
+func edgeWithItem(runUID, project, item, from, to string) runctrl.PhaseEdge {
+	e := edge(runUID, project, from, to)
+	e.WorkItemID = item
+	return e
+}
+
+// noLastEdge wires the ISI-7541 seam guard's last-journaled-edge read for a run
+// with no history (empty rows ⇒ forward by definition ⇒ insert proceeds).
+func noLastEdge(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
+}
+
+// lastEdge wires the seam guard's last-journaled-edge read with one row.
+func lastEdge(mock sqlmock.Sqlmock, to string, fence int64) {
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}).AddRow(to, fence))
+}
+
+// claimFence wires the seam guard's claim-fence oracle read.
+func claimFence(mock sqlmock.Sqlmock, fence int64) {
+	mock.ExpectQuery("SELECT fence_token FROM coord.claim").
+		WillReturnRows(sqlmock.NewRows([]string{"fence_token"}).AddRow(fence))
+}
+
+// expectInsert wires one journal append (any args — the guard queries above pin
+// the reads; the insert itself is the assertion).
+func expectInsert(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("INSERT INTO coord.run_phase_transition").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
 // TestRunPhaseJournalAdapter_SuppressesConsecutiveSameEdge mirrors the 16:28Z
 // incident: run 97a0ddc9 re-presented claiming→running on every reconcile pass
 // (449 rows in 76s). The suppressor must collapse the storm to ONE insert, then
@@ -207,5 +241,151 @@ func TestRunPhaseJournalAdapter_ConcurrentSameEdge(t *testing.T) {
 
 	if got := a.lastEdge[run]; got != "claiming\x00running" {
 		t.Fatalf("dedup map inconsistent after concurrent passes: %q", got)
+	}
+}
+
+// boolRows is the single-column EXISTS result the reclaim oracle returns.
+func boolRows(v bool) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"exists"}).AddRow(v)
+}
+
+// TestRunPhaseJournalAdapter_SuppressesCrashPathBackwardEdge pins the ISI-7539
+// acceptance: during an operator crash-path flap the re-observed phase regresses
+// running→claiming with NO retry reclaim behind it (in the live 13:19:59Z flap
+// from the ISI-7538 repro, the racing forward row landed after the reclaim's
+// audit row, so the oracle window since the last journaled edge is empty). The
+// backward edge must be a silent drop — no insert, no error, no lastEdge
+// poisoning — and the flap's forward return then matches the last RECORDED
+// edge, so the whole flap contributes zero rows.
+func TestRunPhaseJournalAdapter_SuppressesCrashPathBackwardEdge(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	run := uuid.NewString()
+	project := uuid.NewString()
+
+	// The run's real start lands once (the ISI-7541 seam guard reads the empty
+	// last-edge first); each crash-path backward pass consults the reclaim oracle
+	// and is suppressed (two passes shown to prove re-presentation re-checks
+	// rather than being memoized as a drop).
+	noLastEdge(mock)
+	expectInsert(mock)
+	mock.ExpectQuery("retry_lap_entered").WillReturnRows(boolRows(false))
+	mock.ExpectQuery("retry_lap_entered").WillReturnRows(boolRows(false))
+
+	a := newRunPhaseJournalAdapter(db)
+	ctx := context.Background()
+
+	if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "claiming", "running")); err != nil {
+		t.Fatalf("forward start edge: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "running", "claiming")); err != nil {
+			t.Fatalf("crash-path backward pass %d must be a silent drop, got: %v", i, err)
+		}
+	}
+	// The flap's forward return is the same-edge drop against the last RECORDED
+	// edge — no row, no oracle query.
+	if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "claiming", "running")); err != nil {
+		t.Fatalf("flap return edge: %v", err)
+	}
+	if got := a.lastEdge[run]; got != "claiming\x00running" {
+		t.Fatalf("suppressed flap must not poison lastEdge, got %q", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected exactly 1 insert + 2 oracle queries: %v", err)
+	}
+}
+
+// TestRunPhaseJournalAdapter_JournalsGenuineRetryLapRegression pins the other
+// ISI-7539 acceptance leg: running→claiming IS honest when a §6.3 RetryEnter
+// reclaim was committed for the run since the last journaled edge (the oracle
+// answers true) — the genuine retry-lap regression journals, the retry's
+// forward re-advance records as a fresh edge, and lastEdge tracks it.
+func TestRunPhaseJournalAdapter_JournalsGenuineRetryLapRegression(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	run := uuid.NewString()
+	project := uuid.NewString()
+	item := uuid.NewString()
+
+	// In call order: the start edge journals (empty last-edge read + claim fence
+	// 5 stamped); the regression's reclaim oracle answers true AND the ISI-7541
+	// seam guard certifies it (last edge running@5, claim fence bumped to 6);
+	// the re-advance is forward against the journal's new last edge claiming@6.
+	noLastEdge(mock)
+	claimFence(mock, 5)
+	expectInsert(mock)
+	mock.ExpectQuery("retry_lap_entered").WillReturnRows(boolRows(true))
+	lastEdge(mock, "running", 5)
+	claimFence(mock, 6)
+	expectInsert(mock)
+	lastEdge(mock, "claiming", 6)
+	claimFence(mock, 6)
+	expectInsert(mock)
+
+	a := newRunPhaseJournalAdapter(db)
+	ctx := context.Background()
+
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "claiming", "running")); err != nil {
+		t.Fatalf("start edge: %v", err)
+	}
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "running", "claiming")); err != nil {
+		t.Fatalf("genuine retry-lap regression must journal, got: %v", err)
+	}
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "claiming", "running")); err != nil {
+		t.Fatalf("retry re-advance edge: %v", err)
+	}
+	if got := a.lastEdge[run]; got != "claiming\x00running" {
+		t.Fatalf("lastEdge must track the re-advance, got %q", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected 3 inserts + 1 oracle query: %v", err)
+	}
+}
+
+// TestRunPhaseJournalAdapter_OracleErrorFailsOpen: the oracle is a READ; an
+// infra error must not silently swallow an honest regression — the edge is
+// journaled anyway (a dead DB then surfaces through the insert's error path).
+func TestRunPhaseJournalAdapter_OracleErrorFailsOpen(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	run := uuid.NewString()
+	project := uuid.NewString()
+	item := uuid.NewString()
+
+	// Start edge journals with fence 5 stamped; the backward edge's reclaim
+	// oracle is DOWN, so the adapter fails open and hands the edge to the seam —
+	// whose ISI-7541 guard independently certifies it via the fence bump 5→6.
+	noLastEdge(mock)
+	claimFence(mock, 5)
+	expectInsert(mock)
+	mock.ExpectQuery("retry_lap_entered").WillReturnError(errors.New("oracle down"))
+	lastEdge(mock, "running", 5)
+	claimFence(mock, 6)
+	expectInsert(mock)
+
+	a := newRunPhaseJournalAdapter(db)
+	ctx := context.Background()
+
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "claiming", "running")); err != nil {
+		t.Fatalf("start edge: %v", err)
+	}
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "running", "claiming")); err != nil {
+		t.Fatalf("oracle outage must fail open (journal the edge), got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected 2 inserts + 1 failed oracle query: %v", err)
 	}
 }
