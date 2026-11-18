@@ -1405,12 +1405,31 @@ func main() {
 						reattachWindow = d
 					}
 				}
-				if err := mgr.Add(&rundrive.ReattachFollows{
+				// ISI-7540: bound how long a Submit-failing corpse lap is retried on
+				// leader-elects before it is terminally settled follow_error.
+				reattachFailTTL := rundrive.DefaultReattachFailTTL
+				if v := os.Getenv("KSQUAD_A2A_REATTACH_FAIL_TTL"); v != "" {
+					if d, derr := time.ParseDuration(v); derr != nil {
+						ctrl.Log.Error(derr, "invalid KSQUAD_A2A_REATTACH_FAIL_TTL; using default", "value", v, "default", reattachFailTTL.String())
+					} else {
+						reattachFailTTL = d
+					}
+				}
+				reattach := &rundrive.ReattachFollows{
 					Reader:     reader,
 					Dispatcher: a2aDispatcher,
 					Window:     reattachWindow,
+					FailTTL:    reattachFailTTL,
 					Log:        func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
-				}); err != nil {
+				}
+				if serr == nil {
+					// Same at-most-once settler OnDone writes: a corpse lap failing
+					// re-attach past FailTTL is terminally settled follow_error
+					// instead of re-Submitting on every leader-elect for the
+					// whole window (ISI-7538 repro-3 wedge).
+					reattach.Settler = settler
+				}
+				if err := mgr.Add(reattach); err != nil {
 					ctrl.Log.Error(err, "unable to register a2a follow re-attach")
 					os.Exit(1)
 				}
