@@ -34,6 +34,40 @@ func edge(runUID, project, from, to string) runctrl.PhaseEdge {
 	return runctrl.PhaseEdge{RunUID: runUID, ProjectID: project, FromPhase: from, ToPhase: to}
 }
 
+// edgeWithItem is edge plus a resolvable work-item ref, so the ISI-7541 seam
+// guard's claim-fence oracle read fires and can certify a backward edge.
+func edgeWithItem(runUID, project, item, from, to string) runctrl.PhaseEdge {
+	e := edge(runUID, project, from, to)
+	e.WorkItemID = item
+	return e
+}
+
+// noLastEdge wires the ISI-7541 seam guard's last-journaled-edge read for a run
+// with no history (empty rows ⇒ forward by definition ⇒ insert proceeds).
+func noLastEdge(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}))
+}
+
+// lastEdge wires the seam guard's last-journaled-edge read with one row.
+func lastEdge(mock sqlmock.Sqlmock, to string, fence int64) {
+	mock.ExpectQuery("SELECT to_phase, fence FROM coord.run_phase_transition").
+		WillReturnRows(sqlmock.NewRows([]string{"to_phase", "fence"}).AddRow(to, fence))
+}
+
+// claimFence wires the seam guard's claim-fence oracle read.
+func claimFence(mock sqlmock.Sqlmock, fence int64) {
+	mock.ExpectQuery("SELECT fence_token FROM coord.claim").
+		WillReturnRows(sqlmock.NewRows([]string{"fence_token"}).AddRow(fence))
+}
+
+// expectInsert wires one journal append (any args — the guard queries above pin
+// the reads; the insert itself is the assertion).
+func expectInsert(mock sqlmock.Sqlmock) {
+	mock.ExpectExec("INSERT INTO coord.run_phase_transition").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+}
+
 // TestRunPhaseJournalAdapter_SuppressesConsecutiveSameEdge mirrors the 16:28Z
 // incident: run 97a0ddc9 re-presented claiming→running on every reconcile pass
 // (449 rows in 76s). The suppressor must collapse the storm to ONE insert, then
@@ -233,10 +267,12 @@ func TestRunPhaseJournalAdapter_SuppressesCrashPathBackwardEdge(t *testing.T) {
 	run := uuid.NewString()
 	project := uuid.NewString()
 
-	// The run's real start lands once; each crash-path backward pass consults
-	// the oracle and is suppressed (two passes shown to prove re-presentation
-	// re-checks rather than being memoized as a drop).
-	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
+	// The run's real start lands once (the ISI-7541 seam guard reads the empty
+	// last-edge first); each crash-path backward pass consults the reclaim oracle
+	// and is suppressed (two passes shown to prove re-presentation re-checks
+	// rather than being memoized as a drop).
+	noLastEdge(mock)
+	expectInsert(mock)
 	mock.ExpectQuery("retry_lap_entered").WillReturnRows(boolRows(false))
 	mock.ExpectQuery("retry_lap_entered").WillReturnRows(boolRows(false))
 
@@ -278,24 +314,33 @@ func TestRunPhaseJournalAdapter_JournalsGenuineRetryLapRegression(t *testing.T) 
 
 	run := uuid.NewString()
 	project := uuid.NewString()
+	item := uuid.NewString()
 
-	// In call order: the start insert, the oracle query (a reclaim backs the
-	// regression), then the regression and re-advance inserts.
-	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
+	// In call order: the start edge journals (empty last-edge read + claim fence
+	// 5 stamped); the regression's reclaim oracle answers true AND the ISI-7541
+	// seam guard certifies it (last edge running@5, claim fence bumped to 6);
+	// the re-advance is forward against the journal's new last edge claiming@6.
+	noLastEdge(mock)
+	claimFence(mock, 5)
+	expectInsert(mock)
 	mock.ExpectQuery("retry_lap_entered").WillReturnRows(boolRows(true))
-	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
+	lastEdge(mock, "running", 5)
+	claimFence(mock, 6)
+	expectInsert(mock)
+	lastEdge(mock, "claiming", 6)
+	claimFence(mock, 6)
+	expectInsert(mock)
 
 	a := newRunPhaseJournalAdapter(db)
 	ctx := context.Background()
 
-	if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "claiming", "running")); err != nil {
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "claiming", "running")); err != nil {
 		t.Fatalf("start edge: %v", err)
 	}
-	if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "running", "claiming")); err != nil {
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "running", "claiming")); err != nil {
 		t.Fatalf("genuine retry-lap regression must journal, got: %v", err)
 	}
-	if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "claiming", "running")); err != nil {
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "claiming", "running")); err != nil {
 		t.Fatalf("retry re-advance edge: %v", err)
 	}
 	if got := a.lastEdge[run]; got != "claiming\x00running" {
@@ -318,18 +363,26 @@ func TestRunPhaseJournalAdapter_OracleErrorFailsOpen(t *testing.T) {
 
 	run := uuid.NewString()
 	project := uuid.NewString()
+	item := uuid.NewString()
 
-	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
+	// Start edge journals with fence 5 stamped; the backward edge's reclaim
+	// oracle is DOWN, so the adapter fails open and hands the edge to the seam —
+	// whose ISI-7541 guard independently certifies it via the fence bump 5→6.
+	noLastEdge(mock)
+	claimFence(mock, 5)
+	expectInsert(mock)
 	mock.ExpectQuery("retry_lap_entered").WillReturnError(errors.New("oracle down"))
-	mock.ExpectExec("INSERT INTO coord.run_phase_transition").WillReturnResult(sqlmock.NewResult(0, 1))
+	lastEdge(mock, "running", 5)
+	claimFence(mock, 6)
+	expectInsert(mock)
 
 	a := newRunPhaseJournalAdapter(db)
 	ctx := context.Background()
 
-	if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "claiming", "running")); err != nil {
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "claiming", "running")); err != nil {
 		t.Fatalf("start edge: %v", err)
 	}
-	if err := a.RecordRunPhaseTransition(ctx, edge(run, project, "running", "claiming")); err != nil {
+	if err := a.RecordRunPhaseTransition(ctx, edgeWithItem(run, project, item, "running", "claiming")); err != nil {
 		t.Fatalf("oracle outage must fail open (journal the edge), got: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
