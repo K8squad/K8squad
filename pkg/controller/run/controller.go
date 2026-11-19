@@ -420,7 +420,6 @@ func (r *Reconciler) recordPhaseTransition(ctx context.Context, run *api.Run, fr
 	if fromTok == toTok {
 		return
 	}
-
 	projectUID, teamUID, err := r.resolveRunTenancy(ctx, run)
 	if err != nil || projectUID == "" {
 		log.Error(err, "run phase-transition not journaled: unresolved Project tenancy",

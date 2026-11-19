@@ -1422,11 +1422,19 @@ func main() {
 					FailTTL:    reattachFailTTL,
 					Log:        func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 				}
-				if serr == nil {
-					// Same at-most-once settler OnDone writes: a corpse lap failing
-					// re-attach past FailTTL is terminally settled follow_error
-					// instead of re-Submitting on every leader-elect for the
-					// whole window (ISI-7538 repro-3 wedge).
+				// ISI-7543: never re-acquire the BYO EndpointGate slot for a
+				// dead sandbox. The liveness guard settles a sandbox-bound lap
+				// whose pod is gone (follow_error) BEFORE Submit can grant the
+				// permit; the settler is the same durable marker writer OnDone
+				// uses, so the drive loop's settled-non-success death path
+				// (ISI-7524) and the S2 reaper own the leftovers. Uncached API
+				// reader on both legs — a liveness verdict must not ride a
+				// stale cache.
+				reattach.Liveness = &rundrive.SandboxLiveness{
+					Runs: mgr.GetAPIReader(),
+					Pods: &rundrive.LiveRuns{Reader: mgr.GetAPIReader()},
+				}
+				if settler != nil {
 					reattach.Settler = settler
 				}
 				if err := mgr.Add(reattach); err != nil {

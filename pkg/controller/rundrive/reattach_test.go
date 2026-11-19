@@ -280,3 +280,104 @@ func TestReattachFollows_ZeroDispatchedAtNeverSettles(t *testing.T) {
 		t.Fatalf("zero DispatchedAt must never settle, got %+v", settler.gotCalls)
 	}
 }
+
+// --- ISI-7543: dead-sandbox liveness guard fakes ---
+
+type fakeLapLiveness struct {
+	dead map[string]bool
+	err  map[string]error
+}
+
+func (f *fakeLapLiveness) DeadSandbox(_ context.Context, runID string) (bool, error) {
+	if e, ok := f.err[runID]; ok {
+		return false, e
+	}
+	return f.dead[runID], nil
+}
+
+type settleCall struct {
+	a2aTaskID, runID, outcome, reason string
+}
+
+type fakeLapSettler struct {
+	got []settleCall
+}
+
+func (f *fakeLapSettler) Settle(_ context.Context, a2aTaskID, runID, outcome, reason string) error {
+	f.got = append(f.got, settleCall{a2aTaskID: a2aTaskID, runID: runID, outcome: outcome, reason: reason})
+	return nil
+}
+
+// ISI-7543: a provably dead-sandbox lap must NEVER reach Submit (Submit
+// rebuilds the task through the Builder and would re-acquire the BYO
+// EndpointGate slot for a corpse); with a settler wired it is terminalized
+// follow_error instead, and the remaining laps still re-attach.
+func TestReattachFollows_DeadSandboxLapSettledNotSubmitted(t *testing.T) {
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "dead#lap1", RunID: "run-dead"},
+		{A2ATaskID: "live", RunID: "run-live"},
+	}}
+	disp := &fakeReattacher{}
+	settler := &fakeLapSettler{}
+	r := &ReattachFollows{
+		Reader:     reader,
+		Dispatcher: disp,
+		Liveness:   &fakeLapLiveness{dead: map[string]bool{"run-dead": true}},
+		Settler:    settler,
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(disp.got) != 1 || disp.got[0].RunID != "run-live" {
+		t.Fatalf("submitted = %+v, want only the live lap (dead lap must not re-acquire the slot)", disp.got)
+	}
+	if len(settler.got) != 1 || settler.got[0].a2aTaskID != "dead#lap1" || settler.got[0].outcome != coord.SettleOutcomeFollowError {
+		t.Fatalf("settles = %+v, want the dead lap settled follow_error", settler.got)
+	}
+}
+
+// ISI-7543 without a settler: the dead lap is still never Submitted, it is
+// logged and left to the TTL backstop; the pass continues.
+func TestReattachFollows_DeadSandboxWithoutSettlerSkipsSubmit(t *testing.T) {
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "dead", RunID: "run-dead"},
+	}}
+	disp := &fakeReattacher{}
+	r := &ReattachFollows{
+		Reader:     reader,
+		Dispatcher: disp,
+		Liveness:   &fakeLapLiveness{dead: map[string]bool{"run-dead": true}},
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(disp.got) != 0 {
+		t.Fatalf("submitted = %+v, want none (dead lap must not re-acquire the slot)", disp.got)
+	}
+}
+
+// ISI-7543: an unanswerable liveness check defers the lap — never condemn on
+// a maybe, and never hand the slot to an unverified lap either.
+func TestReattachFollows_LivenessErrorDefersLap(t *testing.T) {
+	reader := &fakeReattachReader{targets: []coord.ReattachTarget{
+		{A2ATaskID: "unk", RunID: "run-unknown"},
+		{A2ATaskID: "live", RunID: "run-live"},
+	}}
+	disp := &fakeReattacher{}
+	settler := &fakeLapSettler{}
+	r := &ReattachFollows{
+		Reader:     reader,
+		Dispatcher: disp,
+		Liveness:   &fakeLapLiveness{err: map[string]error{"run-unknown": errors.New("list boom")}},
+		Settler:    settler,
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if len(disp.got) != 1 || disp.got[0].RunID != "run-live" {
+		t.Fatalf("submitted = %+v, want only the verified-live lap", disp.got)
+	}
+	if len(settler.got) != 0 {
+		t.Fatalf("settles = %+v, want none on a maybe", settler.got)
+	}
+}
