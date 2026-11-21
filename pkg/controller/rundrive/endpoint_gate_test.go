@@ -383,3 +383,117 @@ func TestEndpointGateNonPreemption(t *testing.T) {
 		t.Fatal("run-high must win the slot after the holder releases")
 	}
 }
+
+// TestEndpointGateEvictsUnconfirmedHolderAfterBringUpTTL pins the ISI-7672
+// bring-up eviction: a holder that never confirmed its dispatch (no a2a task
+// in flight — the zombie pattern from the live regression) is evicted once its
+// grant is older than holderBringUpTTL, and the waiting run takes the slot.
+func TestEndpointGateEvictsUnconfirmedHolderAfterBringUpTTL(t *testing.T) {
+	g := NewEndpointGate(1)
+	g.holderBringUpTTL = 10 * time.Minute
+	clock := time.Unix(0, 0)
+	g.now = func() time.Time { return clock }
+	const ep = "https://api.deepseek.com/v1"
+
+	if _, ok := g.Acquire(ep, "run-zombie", 0, PriorityKey{}); !ok {
+		t.Fatal("run-zombie must take the free slot")
+	}
+	if _, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); ok {
+		t.Fatal("run-2 must queue while the slot is held")
+	}
+
+	// Past the bring-up TTL, with nobody confirming: the next Acquire pass
+	// evicts the unconfirmed holder and admits the waiter.
+	clock = clock.Add(11 * time.Minute)
+	if holder, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); !ok {
+		t.Fatal("run-2 must be admitted after the unconfirmed holder is evicted")
+	} else if holder != "run-2" {
+		t.Fatalf("grant must name the new holder run-2, got %q", holder)
+	}
+
+	// The evicted zombie re-acquires: it is now only a waiter behind run-2.
+	if holder, ok := g.Acquire(ep, "run-zombie", 0, PriorityKey{}); ok {
+		t.Fatal("evicted holder must not reclaim the slot it lost")
+	} else if holder != "run-2" {
+		t.Fatalf("refusal must name the current holder run-2, got %q", holder)
+	}
+}
+
+// TestEndpointGateConfirmedHolderSurvivesBringUpTTL: once ConfirmHolder marks
+// the holder (a2a dispatch in flight), the bring-up TTL never evicts it —
+// non-preemption is preserved for genuinely running holders, however long they
+// stream.
+func TestEndpointGateConfirmedHolderSurvivesBringUpTTL(t *testing.T) {
+	g := NewEndpointGate(1)
+	g.holderBringUpTTL = 10 * time.Minute
+	clock := time.Unix(0, 0)
+	g.now = func() time.Time { return clock }
+	const ep = "https://api.deepseek.com/v1"
+
+	if _, ok := g.Acquire(ep, "run-1", 0, PriorityKey{}); !ok {
+		t.Fatal("run-1 must take the free slot")
+	}
+	g.ConfirmHolder("run-1")
+	if _, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); ok {
+		t.Fatal("run-2 must queue")
+	}
+
+	clock = clock.Add(2 * time.Hour)
+	if holder, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); ok {
+		t.Fatal("a confirmed holder must never be evicted by the bring-up TTL")
+	} else if holder != "run-1" {
+		t.Fatalf("refusal must still name run-1, got %q", holder)
+	}
+
+	// Only an explicit terminal release frees a confirmed holder.
+	g.ReleaseByRun("run-1")
+	if _, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); !ok {
+		t.Fatal("run-2 must win the slot after the confirmed holder releases")
+	}
+}
+
+// TestEndpointGateReacquireDoesNotRefreshBringUpClock: a wedged holder polls
+// Acquire on every drive pass (idempotent re-grant) but never confirms — the
+// re-acquire must NOT reset the bring-up clock, otherwise the zombie polls
+// forever and the slot is never freed.
+func TestEndpointGateReacquireDoesNotRefreshBringUpClock(t *testing.T) {
+	g := NewEndpointGate(1)
+	g.holderBringUpTTL = 10 * time.Minute
+	clock := time.Unix(0, 0)
+	g.now = func() time.Time { return clock }
+	const ep = "https://api.deepseek.com/v1"
+
+	if _, ok := g.Acquire(ep, "run-zombie", 0, PriorityKey{}); !ok {
+		t.Fatal("run-zombie must take the free slot")
+	}
+	// Poll at 6m — still inside the TTL: idempotent grant, clock NOT refreshed.
+	clock = clock.Add(6 * time.Minute)
+	if _, ok := g.Acquire(ep, "run-zombie", 0, PriorityKey{}); !ok {
+		t.Fatal("re-acquire inside the TTL must remain an idempotent grant")
+	}
+	if _, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); ok {
+		t.Fatal("run-2 must still queue at 6m")
+	}
+	// At 11m total (5m after the last poll) the holder is evicted.
+	clock = clock.Add(5 * time.Minute)
+	if _, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); !ok {
+		t.Fatal("run-2 must be admitted at 11m despite the 6m re-acquire poll")
+	}
+}
+
+// TestEndpointGateConfirmHolderIdempotentAndSafe: confirming a run that holds
+// nothing (or confirming twice) is a no-op, never a grant.
+func TestEndpointGateConfirmHolderIdempotentAndSafe(t *testing.T) {
+	g := NewEndpointGate(1)
+	const ep = "https://api.deepseek.com/v1"
+
+	g.ConfirmHolder("run-ghost") // holds nothing: no-op
+	if _, ok := g.Acquire(ep, "run-1", 0, PriorityKey{}); !ok {
+		t.Fatal("run-1 must take the free slot")
+	}
+	g.ConfirmHolder("run-1")
+	g.ConfirmHolder("run-1") // idempotent
+	if _, ok := g.Acquire(ep, "run-2", 0, PriorityKey{}); ok {
+		t.Fatal("run-2 must queue behind the confirmed holder")
+	}
+}

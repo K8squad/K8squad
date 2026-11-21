@@ -283,6 +283,7 @@ var allowedSurface = map[string]string{
 	// Run status. Custody-only, no agent-to-agent channel.
 	"SandboxRefObserver":                 "M1.2/ISI-4128 Bind-path sandbox_ref notification port (custody/execution, run-id + ref only)",
 	"ProdEffects.WithSandboxRefObserver": "M1.2/ISI-4128 opt-in the sandbox_ref surface at Bind (custody-only)",
+	"ProdEffects.WithDispatchConfirmer":  "ISI-7672 opt-in the endpoint-gate holder confirmation at Dispatch (custody-only, run-id callback only)",
 
 	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
 	// scheduled-resume surface — custody/schedule operations on the pause

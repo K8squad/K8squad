@@ -710,6 +710,10 @@ type ProdRunner struct {
 	dispatcher  coord.TaskDispatcher
 	credWriter  coord.RunCredentialWriter
 	refObserver coord.SandboxRefObserver
+	// dispatchConfirmer, when set, is carried onto every per-Run ProdEffects so
+	// each Dispatch pass confirms the run's endpoint-gate holder (ISI-7672).
+	// Nil leaves confirm-off mode.
+	dispatchConfirmer func(runID string)
 }
 
 // NewProdRunner binds the Runner seam. binder/dispatcher may be nil.
@@ -735,6 +739,15 @@ func (r *ProdRunner) WithCredentialWriter(w coord.RunCredentialWriter) *ProdRunn
 // value) leaves ref-silent mode. Returns r for chaining.
 func (r *ProdRunner) WithSandboxRefObserver(o coord.SandboxRefObserver) *ProdRunner {
 	r.refObserver = o
+	return r
+}
+
+// WithDispatchConfirmer opts every per-Run ProdEffects this runner builds into
+// the ISI-7672 endpoint-gate holder confirmation (called on each Dispatch pass
+// — reattach and first submit — so a dispatched run's slot is never evicted by
+// the bring-up TTL). Nil leaves confirm-off mode. Returns r for chaining.
+func (r *ProdRunner) WithDispatchConfirmer(f func(runID string)) *ProdRunner {
+	r.dispatchConfirmer = f
 	return r
 }
 
@@ -765,8 +778,10 @@ func (r *ProdRunner) Effects(ctx context.Context, run *api.Run) (machineEffects,
 		return nil, err
 	}
 	// Topology-2 opt-in: nil credWriter leaves credential-off mode;
-	// nil refObserver leaves ref-silent mode (M1.2).
-	return e.WithRunCredentialWriter(r.credWriter).WithSandboxRefObserver(r.refObserver), nil
+	// nil refObserver leaves ref-silent mode (M1.2); nil dispatchConfirmer
+	// leaves holder-confirm-off mode (ISI-7672).
+	return e.WithRunCredentialWriter(r.credWriter).WithSandboxRefObserver(r.refObserver).
+		WithDispatchConfirmer(r.dispatchConfirmer), nil
 }
 
 // SpecClassifier resolves a Run's warm-pool (key, class) from its CRD spec —

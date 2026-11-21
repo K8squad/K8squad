@@ -150,6 +150,12 @@ type ProdEffects struct {
 	snapshotter BuildSnapshotter    // 8.7c build-snapshot capture; nil = snapshot-off
 	credWriter  RunCredentialWriter // topology-2 Bind-path task-io Secret; nil = credential-off
 	refObserver SandboxRefObserver  // M1.2: surface Run.status.sandboxRef at Bind; nil = ref-silent
+	// dispatchConfirmer, when set, is invoked on every Dispatch pass for this
+	// run — both the reattach (marker already present) and the first-submit
+	// success. ISI-7672: it confirms the run's endpoint-gate holder, marking
+	// that an a2a task is genuinely in flight so the holder is exempt from
+	// the bring-up eviction. Nil leaves confirm-off mode.
+	dispatchConfirmer func(runID string)
 
 	err error // first infrastructure error; sticky (see the error-seam note above)
 }
@@ -205,6 +211,16 @@ func (e *ProdEffects) WithRunCredentialWriter(w RunCredentialWriter) *ProdEffect
 // seams. A nil observer leaves ref-silent mode.
 func (e *ProdEffects) WithSandboxRefObserver(o SandboxRefObserver) *ProdEffects {
 	e.refObserver = o
+	return e
+}
+
+// WithDispatchConfirmer opts into the ISI-7672 endpoint-gate holder
+// confirmation: every Dispatch pass (reattach or first submit) reports this
+// run as genuinely in flight. Option-style like the other With* seams; a nil
+// confirmer leaves confirm-off mode (the gate's bring-up eviction then applies
+// to every holder, so production wiring MUST set it when the gate is wired).
+func (e *ProdEffects) WithDispatchConfirmer(f func(runID string)) *ProdEffects {
+	e.dispatchConfirmer = f
 	return e
 }
 
@@ -352,7 +368,12 @@ func (e *ProdEffects) Dispatch(taskID string, dedup bool) {
 		`SELECT a2a_task_id FROM coord.a2a_dispatch WHERE a2a_task_id = $1`,
 		a2aTaskID).Scan(&existing); {
 	case err == nil:
-		return // reattach: the task is already in flight for this run/lap
+		// reattach: the task is already in flight for this run/lap — the run
+		// IS dispatching, so confirm its endpoint-gate holder (ISI-7672).
+		if e.dispatchConfirmer != nil {
+			e.dispatchConfirmer(e.runID)
+		}
+		return
 	case !errors.Is(err, sql.ErrNoRows):
 		e.fail(fmt.Errorf("coord.ProdEffects.Dispatch: lookup: %w", err))
 		return
@@ -386,6 +407,11 @@ func (e *ProdEffects) Dispatch(taskID string, dedup bool) {
 	}
 	if n == 1 {
 		e.audit("a2a_dispatched", reconcile.StepDispatching, nil)
+		// First submit succeeded: the task is now in flight for this run —
+		// confirm its endpoint-gate holder (ISI-7672).
+		if e.dispatchConfirmer != nil {
+			e.dispatchConfirmer(e.runID)
+		}
 	}
 }
 

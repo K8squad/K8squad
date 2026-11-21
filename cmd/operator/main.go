@@ -1398,6 +1398,10 @@ func main() {
 			runner = runner.WithCredentialWriter(credWriter)
 		}
 		runner = runner.WithSandboxRefObserver(rundrive.NewRunStatusSandboxWriter(mgr.GetClient()))
+		// ISI-7672: confirm endpoint-gate holders on every Dispatch pass, so a
+		// run whose a2a task is genuinely in flight is exempt from the gate's
+		// bring-up eviction and only a terminal release frees its BYO slot.
+		runner = runner.WithDispatchConfirmer(endpointGate.ConfirmHolder)
 
 		// §6.2 claimer (ISI-4183, M1.3 claim-back): the production caller
 		// ProdClaimer lacked — the drive loop acquired no checkout, so board

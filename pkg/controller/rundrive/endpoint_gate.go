@@ -91,6 +91,20 @@ const endpointSlotWaitDelay = 10 * time.Second
 // could wedge the slot indefinitely under FIFO admission.
 const endpointWaiterTTL = 90 * time.Second
 
+// endpointHolderBringUpTTL bounds how long an UNCONFIRMED holder may keep a
+// slot before the gate evicts it (ISI-7672). A holder is confirmed the moment
+// its a2a dispatch marker exists (ProdEffects.Dispatch → ConfirmHolder) — the
+// agent is then genuinely streaming on the endpoint. A run that acquired a
+// slot but never dispatched (sandbox never booted, shim wedged, follow never
+// attached) holds the single BYO slot forever under the non-preemption
+// invariant — the live regression where a pod-less Collecting run starved the
+// endpoint for days. The TTL must comfortably exceed a cold sandbox boot +
+// submit (minutes), so a healthy run confirms well inside it; unconfirmed
+// holders past it are demoted to waiters, and their run re-registers on its
+// next buildTask pass. Confirmed holders are NEVER evicted by this TTL —
+// only a terminal ReleaseByRun frees them (non-preemption preserved).
+const endpointHolderBringUpTTL = 15 * time.Minute
+
 // EndpointGate bounds how many runs may concurrently hold a given BYO
 // endpoint and admits waiters in FIFO wait-order (ISI-5594). The
 // zero-value-ready constructor takes the DEFAULT per-endpoint slot count
@@ -101,10 +115,12 @@ type EndpointGate struct {
 	// defaultMax is the fallback per-endpoint slot count used when a caller
 	// passes maxConcurrent <= 0 (>= 1; NewEndpointGate clamps).
 	defaultMax int
-	// holders maps a normalized endpoint BaseURL to the set of run uids
-	// currently holding a slot on it. A run appears at most once per
-	// endpoint; empty sets are deleted so the map does not grow unboundedly.
-	holders map[string]map[string]struct{}
+	// holders maps a normalized endpoint BaseURL to the runs currently
+	// holding a slot on it, tagged with the grant time and whether the run
+	// has confirmed its dispatch (a2a task in flight). A run appears at most
+	// once per endpoint; empty sets are deleted so the map does not grow
+	// unboundedly.
+	holders map[string]map[string]*endpointHolder
 	// waiters maps an endpoint to the runs queued behind a full slot, each
 	// tagged with a wait-start timestamp (FIFO key) and a last-seen poll time.
 	// A freed slot is granted to the earliest-`since` live waiter, making
@@ -117,6 +133,16 @@ type EndpointGate struct {
 	now func() time.Time
 	// waiterTTL is endpointWaiterTTL, overridable in tests.
 	waiterTTL time.Duration
+	// holderBringUpTTL is endpointHolderBringUpTTL, overridable in tests.
+	holderBringUpTTL time.Duration
+}
+
+// endpointHolder is one run's slot on an endpoint: when the slot was granted
+// and whether the run has confirmed its dispatch (an a2a task is in flight
+// for it). Unconfirmed holders past holderBringUpTTL are evicted (ISI-7672).
+type endpointHolder struct {
+	grantedAt time.Time
+	confirmed bool
 }
 
 // PriorityKey is the admission-ordering key for an endpoint waiter (ISI-7499 C3).
@@ -156,11 +182,12 @@ func NewEndpointGate(maxConcurrent int) *EndpointGate {
 		maxConcurrent = 1
 	}
 	return &EndpointGate{
-		defaultMax: maxConcurrent,
-		holders:    map[string]map[string]struct{}{},
-		waiters:    map[string]map[string]*endpointWaiter{},
-		now:        time.Now,
-		waiterTTL:  endpointWaiterTTL,
+		defaultMax:       maxConcurrent,
+		holders:          map[string]map[string]*endpointHolder{},
+		waiters:          map[string]map[string]*endpointWaiter{},
+		now:              time.Now,
+		waiterTTL:        endpointWaiterTTL,
+		holderBringUpTTL: endpointHolderBringUpTTL,
 	}
 }
 
@@ -169,7 +196,11 @@ func NewEndpointGate(maxConcurrent int) *EndpointGate {
 // to the gate's default. It is idempotent for a run that already holds a slot
 // (re-drive / retry lap / follow re-attach): the same run re-acquiring its own
 // permit is always granted. Holders are NEVER preempted — a higher-priority
-// waiter queues ahead but cannot evict a run that already holds a slot.
+// waiter queues ahead but cannot evict a run that already holds a slot — with
+// ONE liveness exception (ISI-7672): an UNCONFIRMED holder whose grant is
+// older than holderBringUpTTL is evicted on any Acquire pass, because it never
+// dispatched and would hold the slot forever. ConfirmHolder exempts a holder
+// from that eviction once its a2a task is in flight.
 //
 // Priority-ordered admission (ISI-7499 C3): waiters are ordered by
 // (key.Class, key.Priority, key.Since, runID) — class beats priority beats
@@ -190,24 +221,34 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, key Pr
 		max = g.defaultMax
 	}
 
+	now := g.now()
+	// ISI-7672: evict unconfirmed holders past the bring-up TTL BEFORE the
+	// capacity check — a zombie holder that polls Acquire on every drive pass
+	// but never dispatched must not keep the slot, so the eviction applies to
+	// the caller too (a stale unconfirmed caller falls through to the waiter
+	// path below instead of taking the idempotent-grant branch).
+	g.evictUnconfirmedHolders(endpoint, now)
+
 	holders := g.holders[endpoint]
-	if _, mine := holders[runID]; mine {
-		// Already holding: idempotent grant, and never also a waiter.
+	if h, mine := holders[runID]; mine {
+		// Already holding (and still live under the bring-up TTL): idempotent
+		// grant, and never also a waiter. The grant time is NOT refreshed —
+		// only ConfirmHolder marks a holder as genuinely dispatched.
+		_ = h
 		g.dropWaiter(endpoint, runID)
 		return runID, true
 	}
 
-	now := g.now()
 	g.evictStaleWaiters(endpoint, now)
 	g.registerWaiter(endpoint, runID, key, now)
 
 	if len(holders) < max && g.frontWaiter(endpoint) == runID {
 		g.dropWaiter(endpoint, runID)
 		if holders == nil {
-			holders = map[string]struct{}{}
+			holders = map[string]*endpointHolder{}
 			g.holders[endpoint] = holders
 		}
-		holders[runID] = struct{}{}
+		holders[runID] = &endpointHolder{grantedAt: now}
 		return runID, true
 	}
 
@@ -274,6 +315,41 @@ func (g *EndpointGate) evictStaleWaiters(endpoint string, now time.Time) {
 	}
 }
 
+// evictUnconfirmedHolders drops holders on endpoint whose grant is older than
+// holderBringUpTTL and whose dispatch was never confirmed (ISI-7672). A
+// holder whose a2a task never came in flight (sandbox never booted, shim
+// wedged) would otherwise hold the single-slot endpoint forever under the
+// non-preemption invariant. Evicted runs re-register as waiters on their next
+// Acquire pass, so they lose the slot but keep their queue place. Confirmed
+// holders are never touched here.
+func (g *EndpointGate) evictUnconfirmedHolders(endpoint string, now time.Time) {
+	holders := g.holders[endpoint]
+	for id, h := range holders {
+		if !h.confirmed && now.Sub(h.grantedAt) > g.holderBringUpTTL {
+			delete(holders, id)
+		}
+	}
+	if len(holders) == 0 {
+		delete(g.holders, endpoint)
+	}
+}
+
+// ConfirmHolder marks runID as a confirmed holder on every endpoint it holds:
+// an a2a dispatch marker exists for the run (ProdEffects.Dispatch, both the
+// reattach and the first-submit paths), so the agent is genuinely streaming
+// on the endpoint. Confirmed holders are exempt from the bring-up eviction
+// (ISI-7672) and keep their slot until a terminal ReleaseByRun. Idempotent and
+// safe for a run that holds nothing.
+func (g *EndpointGate) ConfirmHolder(runID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, holders := range g.holders {
+		if h, ok := holders[runID]; ok {
+			h.confirmed = true
+		}
+	}
+}
+
 // frontWaiter returns the highest-priority run uid queued on endpoint, or ""
 // when none are queued. Ordering: higher Class wins; ties break on higher
 // Priority; ties break on earlier Since; ties break lexicographically on runID.
@@ -304,7 +380,7 @@ func beats(a *endpointWaiter, aid string, b *endpointWaiter, bid string) bool {
 
 // anyKey returns one key from the set (deterministically unnecessary — the
 // wait message only needs a representative holder), or "" when empty.
-func anyKey(set map[string]struct{}) string {
+func anyKey(set map[string]*endpointHolder) string {
 	for k := range set {
 		return k
 	}
@@ -328,6 +404,7 @@ func (g *EndpointGate) ReleaseByRun(runID string) {
 			delete(g.holders, endpoint)
 		}
 	}
+	// The holder may also be confirmed — nothing to do: the entry is gone.
 	for endpoint := range g.waiters {
 		g.dropWaiter(endpoint, runID)
 	}
