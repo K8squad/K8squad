@@ -1,8 +1,8 @@
--- 0043_run_phase_transition_fence_test.sql — runnable self-check for the fence
+-- 0045_run_phase_transition_fence_test.sql — runnable self-check for the fence
 -- column (ISI-7541). Same discipline as 0037's companion: plain SQL, loud
 -- ASSERTs, wrapped in BEGIN/ROLLBACK so it leaves no residue.
 --
---     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/0001_coord_schema.sql --          ... -f db/migrations/0042_*.sql -f db/migrations/0043_run_phase_transition_fence.sql --          -f db/migrations/0043_run_phase_transition_fence_test.sql
+--     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/0001_coord_schema.sql --          ... -f db/migrations/0042_*.sql -f db/migrations/0045_run_phase_transition_fence.sql --          -f db/migrations/0045_run_phase_transition_fence_test.sql
 
 BEGIN;
 

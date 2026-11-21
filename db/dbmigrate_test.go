@@ -78,3 +78,32 @@ func TestHeadIsHighestVersion(t *testing.T) {
 		}
 	}
 }
+
+// TestHeadNumberUnique pins the allocation rule ISI-7677 restored: the numerically-highest
+// version prefix (the head slot) is owned by exactly ONE migration. The ledger keys by full
+// filename, so the frozen legacy same-number pairs (0008/0009/0010/0019/0035/0036/0042) apply
+// fine and stay untouched — but two live features claiming the same head slot is the accident
+// class this guards: whoever merges second renumbers to the next free slot (0017/0019/0045
+// precedent, README "Numbers are allocation slots").
+func TestHeadNumberUnique(t *testing.T) {
+	names, err := selectMigrations()
+	if err != nil {
+		t.Fatalf("selectMigrations: %v", err)
+	}
+	head := ""
+	for _, n := range names {
+		v := strings.SplitN(path.Base(n), "_", 2)[0]
+		if v > head {
+			head = v
+		}
+	}
+	count := 0
+	for _, n := range names {
+		if strings.HasPrefix(path.Base(n), head+"_") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("head version %s is claimed by %d migrations; the head slot must be unique — renumber the loser to the next free slot (db/migrations/README.md)", head, count)
+	}
+}
