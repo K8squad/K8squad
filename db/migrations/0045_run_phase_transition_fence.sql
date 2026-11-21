@@ -1,4 +1,4 @@
--- 0043_run_phase_transition_fence.sql — the DURABLE FENCE column of the run
+-- 0045_run_phase_transition_fence.sql — the DURABLE FENCE column of the run
 -- phase-transition journal's backward-edge guard (ISI-7541, the journal
 -- follow-up to the ISI-7538 crash-path flap that PR #1047 deliberately left
 -- out of scope).

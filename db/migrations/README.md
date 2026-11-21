@@ -7,6 +7,7 @@ SQL migrations** applied in filename order.
 ## Conventions
 
 - **Naming:** `NNNN_short_description.sql`, zero-padded, monotonically increasing (`0001_…`, `0002_…`).
+- **Numbers are allocation slots:** never share a number with an unrelated migration, and never take a number already claimed by a merged file; the head slot must be unique (enforced by TestHeadNumberUnique in db/dbmigrate_test.go). If your number was taken while you were in flight, renumber to the next free slot before merge (precedent: 0017, 0019, and 0045 renumbered off 0043 in ISI-7677).
 - **Forward-only:** there are **no down migrations**. A mistake is corrected by a new forward
   migration, never by rolling back a released one. The coordination spine (Story 2.1) is forward-only
   by contract.
