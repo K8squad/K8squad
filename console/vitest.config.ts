@@ -23,5 +23,16 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     include: ["test/**/*.test.{ts,tsx}"],
+    coverage: {
+      // ConsoleFloor (>=70%) enforced here so the L5 `Test with coverage` step fails
+      // closed instead of passing vacuously (ISI-7578 review F4). Measured at head:
+      // statements 76.0 / branches 84.0 / functions 81.7 / lines 76.0.
+      thresholds: {
+        statements: 70,
+        branches: 70,
+        functions: 70,
+        lines: 70,
+      },
+    },
   },
 });

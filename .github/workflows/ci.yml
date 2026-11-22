@@ -511,7 +511,15 @@ jobs:
       - name: Lint
         if: steps.guard.outputs.present == 'true'
         working-directory: console
-        run: npm run lint
+        # --max-warnings=0 makes a warning a build FAILURE, not advisory (matches l5-code-quality.yml).
+        run: npm run lint -- --max-warnings=0
+
+      - name: Prettier (format check)
+        if: steps.guard.outputs.present == 'true'
+        working-directory: console
+        # `prettier --check` fails closed on any unformatted file. PR-blocking here so
+        # formatting drift cannot merge (ISI-7578; previously only ran in the L5 nightly).
+        run: npx --no-install prettier --check .
 
       - name: Typecheck
         if: steps.guard.outputs.present == 'true'
