@@ -38,7 +38,10 @@ describe("applyAuthorReply (ISI-7485)", () => {
   });
 
   it("is a no-op with no working watches or an empty author", () => {
-    const replied = seed(["john"]).map((w) => ({ ...w, phase: "replied" as const }));
+    const replied = seed(["john"]).map((w) => ({
+      ...w,
+      phase: "replied" as const,
+    }));
     expect(applyAuthorReply(replied, "agent:john")).toEqual(replied);
     expect(applyAuthorReply(seed(["john"]), "")).toEqual(seed(["john"]));
   });

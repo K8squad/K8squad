@@ -413,7 +413,6 @@ export function DiscussionRoom({
     return () => clearInterval(t);
   }, [working, watchStillLive]);
 
-
   const threads = useMemo(() => nestMessages(messages), [messages]);
   const workingByMessageId = useMemo(() => groupByMessage(working), [working]);
   // The party_start opener in the transcript, if any (ISI-5589 WS-E). Its

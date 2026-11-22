@@ -25,4 +25,3 @@ export async function GET(
   const search = req.nextUrl.search;
   return proxyJson(req, `/api/runs/${runId}/events${search}`);
 }
-
