@@ -199,9 +199,10 @@ type EndpointGate struct {
 	// passes maxConcurrent <= 0 (>= 1; NewEndpointGate clamps).
 	defaultMax int
 	// holders maps a normalized endpoint BaseURL to the set of run uids
-	// currently holding a slot on it. A run appears at most once per
+	// currently holding a slot on it, each tagged with the moment it FIRST
+	// acquired (ISI-7687). A run appears at most once per
 	// endpoint; empty sets are deleted so the map does not grow unboundedly.
-	holders map[string]map[string]struct{}
+	holders map[string]map[string]*holderEntry
 	// waiters maps an endpoint to the runs queued behind a full slot, each
 	// tagged with a wait-start timestamp (FIFO key) and a last-seen poll time.
 	// A freed slot is granted to the earliest-`since` live waiter, making
@@ -209,6 +210,15 @@ type EndpointGate struct {
 	// timer happened to fire first (the pre-ISI-5594 starvation risk). Empty
 	// sets are deleted so the map does not grow unboundedly.
 	waiters map[string]map[string]*endpointWaiter
+	// demoted records runs evicted by a reclaim verdict (ISI-7687), keyed
+	// endpoint → runID → demotion time. An evicted holder must not win the
+	// freed slot straight back: its next Acquire re-registers it as a DEMOTED
+	// waiter that sorts strictly behind every non-demoted waiter, so the slot
+	// goes to the front of the real queue (the evict-then-re-grant loop the
+	// 116h hold would otherwise turn into). Cleared when the run is granted
+	// again (a fresh grant earns a fresh bring-up clock, same discipline as
+	// the claim-side re-claim) or fully released.
+	demoted map[string]map[string]time.Time
 	// now is the injectable clock (time.Now in production; overridden in
 	// tests to exercise TTL eviction and wait-order without real sleeps).
 	now func() time.Time
@@ -231,8 +241,25 @@ type endpointWaiter struct {
 	// every poll so a re-stamped priority takes effect at the next requeue.
 	key PriorityKey
 	// since is the durable FIFO key (ISI-7501), frozen at first sight.
-	since    time.Time
+	since time.Time
+	// demoted marks a waiter evicted by a reclaim verdict (ISI-7687): it
+	// sorts strictly behind every non-demoted waiter on this endpoint so an
+	// evicted holder cannot re-capture the slot it just lost.
+	demoted  bool
 	lastSeen time.Time
+}
+
+// holderEntry is one run's held slot on an endpoint (ISI-7687). since is
+// frozen at FIRST grant and deliberately NOT refreshed by the idempotent
+// re-acquire of a re-driven lap — a wedged holder re-driven every few
+// seconds must not reset its own bring-up clock (the observed 116h hold:
+// status.sandbox=null, never terminalized, re-acquiring its own permit as
+// a no-op on every pass). The sweep's reclaim hands since to its liveness
+// callback so it can apply a bring-up grace: within the grace the holder is
+// kept (cold-boot allowance); past it, a holder with no live sandbox pod is
+// a zombie however alive its Run CR looks.
+type holderEntry struct {
+	since time.Time
 }
 
 // NewEndpointGate returns a gate whose default per-endpoint slot count is
@@ -243,8 +270,9 @@ func NewEndpointGate(maxConcurrent int) *EndpointGate {
 	}
 	return &EndpointGate{
 		defaultMax: maxConcurrent,
-		holders:    map[string]map[string]struct{}{},
+		holders:    map[string]map[string]*holderEntry{},
 		waiters:    map[string]map[string]*endpointWaiter{},
+		demoted:    map[string]map[string]time.Time{},
 		now:        time.Now,
 		waiterTTL:  endpointWaiterTTL,
 	}
@@ -298,10 +326,18 @@ func (g *EndpointGate) Acquire(endpoint, runID string, maxConcurrent int, key Pr
 	if len(holders) < max && g.frontWaiter(endpoint) == runID {
 		g.dropWaiter(endpoint, runID)
 		if holders == nil {
-			holders = map[string]struct{}{}
+			holders = map[string]*holderEntry{}
 			g.holders[endpoint] = holders
 		}
-		holders[runID] = struct{}{}
+		// A (re-)grant clears any demotion: a fresh grant earns a fresh
+		// bring-up clock, exactly like a fresh claim-side re-claim.
+		if dm := g.demoted[endpoint]; dm != nil {
+			delete(dm, runID)
+			if len(dm) == 0 {
+				delete(g.demoted, endpoint)
+			}
+		}
+		holders[runID] = &holderEntry{since: now}
 		return runID, true
 	}
 
@@ -338,13 +374,31 @@ func (g *EndpointGate) registerWaiter(endpoint, runID string, key PriorityKey, n
 		if !key.WaitSince.IsZero() {
 			w.since = key.WaitSince
 		}
+		// ISI-7687: a demoted (reclaim-evicted) run keeps its demotion — the
+		// FIFO key is floored at the demotion time so the run's old durable
+		// wait-start (creationTimestamp once the wait condition was removed)
+		// cannot carry it back to the front of the queue.
+		if d, demoted := g.demoted[endpoint][runID]; demoted {
+			w.demoted = true
+			if d.After(w.since) {
+				w.since = d
+			}
+		}
 		return
 	}
 	since := key.WaitSince
 	if since.IsZero() {
 		since = now
 	}
-	ws[runID] = &endpointWaiter{key: key, since: since, lastSeen: now}
+	w := &endpointWaiter{key: key, since: since, lastSeen: now}
+	if d, demoted := g.demoted[endpoint][runID]; demoted {
+		w.demoted = true
+		if d.After(since) {
+			since = d
+			w.since = d
+		}
+	}
+	ws[runID] = w
 }
 
 // dropWaiter removes runID from endpoint's waiter queue (on grant or release),
@@ -379,22 +433,39 @@ func (g *EndpointGate) evictStaleWaiters(endpoint string, now time.Time) {
 // queued on endpoint — the run a freed slot is reserved for — or "" when
 // none are queued (ISI-7499 ordering on the ISI-7501 FIFO base). runID
 // breaks exact-timestamp ties so the choice is deterministic across
-// restarts and reconcile orderings.
+// restarts and reconcile orderings. ISI-7687: demoted (reclaim-evicted)
+// waiters sort strictly behind every non-demoted waiter, so a freed slot
+// goes to the front of the real queue, never straight back to the run that
+// just lost it.
 func (g *EndpointGate) frontWaiter(endpoint string) string {
+	ws := g.waiters[endpoint]
+	if front, _ := frontWaiterAmong(ws, false); front != "" {
+		return front
+	}
+	front, _ := frontWaiterAmong(ws, true)
+	return front
+}
+
+// frontWaiterAmong returns the (class, priority, wait-start, id)-minimal
+// waiter whose demoted flag equals wantDemoted.
+func frontWaiterAmong(ws map[string]*endpointWaiter, wantDemoted bool) (string, *endpointWaiter) {
 	front, frontW := "", (*endpointWaiter)(nil)
-	for id, w := range g.waiters[endpoint] {
+	for id, w := range ws {
+		if w.demoted != wantDemoted {
+			continue
+		}
 		if frontW == nil || w.key.before(frontW.key) ||
 			(!w.key.before(frontW.key) && !frontW.key.before(w.key) &&
 				(w.since.Before(frontW.since) || (w.since.Equal(frontW.since) && id < front))) {
 			front, frontW = id, w
 		}
 	}
-	return front
+	return front, frontW
 }
 
 // anyKey returns one key from the set (deterministically unnecessary — the
 // wait message only needs a representative holder), or "" when empty.
-func anyKey(set map[string]struct{}) string {
+func anyKey[V any](set map[string]V) string {
 	for k := range set {
 		return k
 	}
@@ -421,6 +492,12 @@ func (g *EndpointGate) ReleaseByRun(runID string) {
 	for endpoint := range g.waiters {
 		g.dropWaiter(endpoint, runID)
 	}
+	for endpoint, dm := range g.demoted {
+		delete(dm, runID)
+		if len(dm) == 0 {
+			delete(g.demoted, endpoint)
+		}
+	}
 }
 
 // EvictedHolder names one reclaimed slot: the endpoint whose slot was freed
@@ -430,7 +507,7 @@ type EvictedHolder struct {
 	RunID    string
 }
 
-// ReclaimHolders evicts every slot holder the caller reports as no longer live
+// ReclaimHoldersSince evicts every slot holder the caller reports as no longer live
 // (terminal Run or Run CR gone) and returns the evicted pairs. It is the
 // holder-side backstop of the ISI-5037 gate: every release site (the
 // dispatcher's clean OnDone, the driver's FailEnter / cancelFinish) fires from
@@ -444,23 +521,68 @@ type EvictedHolder struct {
 // this every tick with a liveness callback over the Run CRs. live is TRUE =
 // keep the slot; a checker ERROR also counts as live — a slot is never
 // reclaimed on a maybe, mirroring the reaper discipline (never reap on a
-// maybe).
-func (g *EndpointGate) ReclaimHolders(live func(runID string) (bool, error)) []EvictedHolder {
+// maybe). ISI-7687: the predicate also receives the holder's frozen
+// acquisition time (heldSince) so the sweep can apply a bring-up grace and,
+// past it, require a live sandbox pod — closing the liveness gap where a
+// Run CR wedged non-terminal with status.sandbox=null was "live" forever.
+//
+// The liveness callback runs OUTSIDE g.mu: it performs API-server reads
+// (Run/Pod lists), and holding the dispatch hot path's mutex across those
+// round trips stalls every Acquire on the operator (ISI-7687 review). The
+// gate snapshots its holders under the lock, evaluates, then re-locks and
+// evicts only entries still present with an UNCHANGED since — a concurrent
+// release/re-grant between the two phases is never clobbered. An eviction
+// also demotes the run (see g.demoted): it re-enters the queue strictly
+// behind every real waiter, so the freed slot is not granted straight back
+// to the evicted run on its next 2s drive pass while waiters poll at 10s.
+func (g *EndpointGate) ReclaimHoldersSince(live func(runID string, heldSince time.Time) (bool, error)) []EvictedHolder {
+	type snapshot struct {
+		endpoint string
+		runID    string
+		since    time.Time
+	}
+	g.mu.Lock()
+	var snap []snapshot
+	for endpoint, holders := range g.holders {
+		for id, entry := range holders {
+			snap = append(snap, snapshot{endpoint: endpoint, runID: id, since: entry.since})
+		}
+	}
+	g.mu.Unlock()
+
+	var dead []snapshot
+	for _, h := range snap {
+		isLive, err := live(h.runID, h.since)
+		if err != nil || isLive {
+			continue // fail-safe: never reclaim on a maybe
+		}
+		dead = append(dead, h)
+	}
+	if len(dead) == 0 {
+		return nil
+	}
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	now := g.now()
 	var evicted []EvictedHolder
-	for endpoint, holders := range g.holders {
-		for id := range holders {
-			isLive, err := live(id)
-			if err != nil || isLive {
-				continue // fail-safe: never reclaim on a maybe
-			}
-			delete(holders, id)
-			evicted = append(evicted, EvictedHolder{Endpoint: endpoint, RunID: id})
+	for _, h := range dead {
+		holders := g.holders[h.endpoint]
+		entry, ok := holders[h.runID]
+		if !ok || !entry.since.Equal(h.since) {
+			continue // released or re-granted while the check ran — leave it
 		}
+		delete(holders, h.runID)
 		if len(holders) == 0 {
-			delete(g.holders, endpoint)
+			delete(g.holders, h.endpoint)
 		}
+		dm := g.demoted[h.endpoint]
+		if dm == nil {
+			dm = map[string]time.Time{}
+			g.demoted[h.endpoint] = dm
+		}
+		dm[h.runID] = now
+		evicted = append(evicted, EvictedHolder{Endpoint: h.endpoint, RunID: h.runID})
 	}
 	return evicted
 }

@@ -300,7 +300,7 @@ func TestEndpointGateReclaimHoldersEvictsDeadHolder(t *testing.T) {
 	if _, ok := g.Acquire(ep, "waiter", 1, PriorityKey{}); ok {
 		t.Fatalf("waiter admitted into a full slot")
 	}
-	evicted := g.ReclaimHolders(func(runID string) (bool, error) {
+	evicted := g.ReclaimHoldersSince(func(runID string, _ time.Time) (bool, error) {
 		if runID != "holder" {
 			t.Fatalf("liveness asked about unknown run %q", runID)
 		}
@@ -320,7 +320,7 @@ func TestEndpointGateReclaimHoldersFailsSafeOnCheckerError(t *testing.T) {
 	const ep = "http://10.0.0.185:11434"
 	g.Acquire(ep, "holder", 1, PriorityKey{})
 	g.Acquire(ep, "waiter", 1, PriorityKey{})
-	if ev := g.ReclaimHolders(func(string) (bool, error) { return false, fmt.Errorf("list runs: boom") }); len(ev) != 0 {
+	if ev := g.ReclaimHoldersSince(func(string, time.Time) (bool, error) { return false, fmt.Errorf("list runs: boom") }); len(ev) != 0 {
 		t.Fatalf("checker error reclaimed %d slots; want fail-safe keep", len(ev))
 	}
 	if _, ok := g.Acquire(ep, "waiter", 1, PriorityKey{}); ok {
@@ -333,7 +333,7 @@ func TestEndpointGateReclaimHoldersKeepsLiveHolder(t *testing.T) {
 	g := NewEndpointGate(1)
 	g.Acquire("ep", "holder", 1, PriorityKey{})
 	g.Acquire("ep", "waiter", 1, PriorityKey{})
-	if ev := g.ReclaimHolders(func(string) (bool, error) { return true, nil }); len(ev) != 0 {
+	if ev := g.ReclaimHoldersSince(func(string, time.Time) (bool, error) { return true, nil }); len(ev) != 0 {
 		t.Fatalf("live holder reclaimed: %+v", ev)
 	}
 }
@@ -525,5 +525,106 @@ func TestEndpointGatePriorityOrderSurvivesRestart(t *testing.T) {
 	b := replay([]string{"issue-1", "disc-0", "issue-2"})
 	if fmt.Sprint(a) != fmt.Sprint(want) || fmt.Sprint(b) != fmt.Sprint(want) {
 		t.Fatalf("restart rebuild must be deterministic from keys: want %v, got %v and %v", want, a, b)
+	}
+}
+
+// ISI-7687: a holder's acquisition timestamp is frozen at FIRST grant — the
+// idempotent re-acquire of a re-driven lap must not reset the bring-up
+// clock (the 116h hold was exactly a wedged holder re-acquiring its own
+// permit as a no-op on every pass).
+func TestEndpointGateHolderSinceFrozenOnReacquire(t *testing.T) {
+	g := NewEndpointGate(1)
+	t0 := time.Now()
+	g.now = func() time.Time { return t0 }
+	if _, ok := g.Acquire("ep", "holder", 1, PriorityKey{}); !ok {
+		t.Fatalf("acquire refused on a free gate")
+	}
+	g.now = func() time.Time { return t0.Add(2 * time.Hour) }
+	if _, ok := g.Acquire("ep", "holder", 1, PriorityKey{}); !ok {
+		t.Fatalf("idempotent re-acquire refused")
+	}
+	var seen time.Time
+	if ev := g.ReclaimHoldersSince(func(_ string, heldSince time.Time) (bool, error) {
+		seen = heldSince
+		return true, nil
+	}); len(ev) != 0 {
+		t.Fatalf("live holder evicted")
+	}
+	if !seen.Equal(t0) {
+		t.Fatalf("heldSince = %v, want frozen first-grant %v", seen, t0)
+	}
+}
+
+// ISI-7687: ReclaimHoldersSince hands the caller the frozen acquisition
+// time so it can apply a bring-up/liveness grace — the pod-less-holder
+// eviction seam.
+func TestEndpointGateReclaimHoldersSinceEvictsDeadHolder(t *testing.T) {
+	g := NewEndpointGate(1)
+	t0 := time.Now().Add(-2 * time.Hour) // held long past any grace
+	g.now = func() time.Time { return t0 }
+	if _, ok := g.Acquire("ep", "holder", 1, PriorityKey{}); !ok {
+		t.Fatalf("acquire refused")
+	}
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
+		t.Fatalf("waiter admitted onto a full gate")
+	}
+	if ev := g.ReclaimHoldersSince(func(runID string, heldSince time.Time) (bool, error) {
+		if runID != "holder" {
+			return true, nil
+		}
+		if !heldSince.Equal(t0) {
+			t.Fatalf("heldSince = %v, want %v", heldSince, t0)
+		}
+		return false, nil // pod-less past grace
+	}); len(ev) != 1 || ev[0].RunID != "holder" || ev[0].Endpoint != "ep" {
+		t.Fatalf("evicted = %v, want [ep/holder]", ev)
+	}
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); !ok {
+		t.Fatalf("waiter still refused after pod-less holder reclaim")
+	}
+}
+
+// ISI-7687 (review blocker): an evicted holder must NOT win the freed slot
+// straight back. Production passes runPriorityKey(run) on every drive pass,
+// and once the run was granted its WaitingForEndpointSlot condition is gone,
+// so its key falls back to creationTimestamp — the EARLIEST wait-start of
+// every contender — while it re-drives at the 2s continueDelay against the
+// waiters' 10s poll. The reclaim therefore demotes the evicted run: its next
+// Acquire re-registers it as a waiter that sorts strictly behind every
+// non-demoted waiter, so the slot goes to the front of the real queue.
+func TestEndpointGateEvictedHolderCannotJumpQueue(t *testing.T) {
+	g := NewEndpointGate(1)
+	const ep = "http://10.0.0.185:11434"
+	t0 := time.Now()
+	g.now = func() time.Time { return t0 }
+
+	// The zombie holder acquired at t0; a waiter queued with an older
+	// durable wait-start (it queued first — the ISI-7685 shape).
+	holderKey := PriorityKey{Class: ClassIssue, Priority: UnsetPriority, WaitSince: t0.Add(-116 * time.Hour)}
+	if _, ok := g.Acquire(ep, "zombie", 1, holderKey); !ok {
+		t.Fatalf("holder acquire refused on a free gate")
+	}
+	waiterKey := PriorityKey{Class: ClassIssue, Priority: UnsetPriority, WaitSince: t0.Add(-116 * time.Hour).Add(time.Second)}
+	if _, ok := g.Acquire(ep, "waiter", 1, waiterKey); ok {
+		t.Fatalf("waiter admitted into a full slot")
+	}
+
+	// The sweep evicts the pod-less zombie past the grace.
+	if ev := g.ReclaimHoldersSince(func(runID string, _ time.Time) (bool, error) {
+		return runID != "zombie", nil // zombie dead, anything else live
+	}); len(ev) != 1 || ev[0].RunID != "zombie" {
+		t.Fatalf("evicted = %v, want [zombie]", ev)
+	}
+
+	// The zombie's own next drive pass (2s cadence, earliest creationTimestamp
+	// key) must NOT re-capture the slot over the queued waiter.
+	g.now = func() time.Time { return t0.Add(2 * time.Second) }
+	if _, ok := g.Acquire(ep, "zombie", 1, holderKey); ok {
+		t.Fatalf("evicted holder re-acquired the slot over a queued waiter (evict-then-re-grant)")
+	}
+	// The waiter's poll (10s cadence) is admitted.
+	g.now = func() time.Time { return t0.Add(10 * time.Second) }
+	if _, ok := g.Acquire(ep, "waiter", 1, waiterKey); !ok {
+		t.Fatalf("waiter still refused after the zombie was reclaimed")
 	}
 }

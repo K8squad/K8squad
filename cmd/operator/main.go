@@ -1606,7 +1606,13 @@ func main() {
 			// through a path the driver's release sites missed.
 			AgentGate:      agentGate,
 			HolderTerminal: liveRuns,
-			Log:            func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+			// ISI-7687: the holder-side liveness half of the reclaim — a
+			// holder whose Run CR is wedged non-terminal with no live
+			// sandbox pod past the stall grace (measured from the gate's
+			// frozen acquisition time) yields its slot instead of starving
+			// every waiter on a single-slot BYO endpoint for days.
+			HolderSandbox: liveRuns,
+			Log:           func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register claim hygiene sweep")
 			os.Exit(1)
