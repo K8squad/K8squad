@@ -143,6 +143,56 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 	}
 }
 
+// TestKubeProvisionerBootStampsPodEnvForEveryPurpose (ISI-7690 / ISI-7686
+// FQDN-BYO-proxy branch): the KSQUAD_SANDBOX_*_PROXY values are appended to the
+// one shared provisioner via WithPodEnv (cmd/operator/main.go), and Boot stamps
+// k.podEnv into the SINGLE container env assembly regardless of BootPurpose.
+// ISI-7695 live-verified that warm & Run pods therefore cannot diverge on the
+// proxy env; this test is the code-level regression guard for that invariant,
+// so a future per-purpose bind/cold-boot builder refactor (the ISI-7511 sticky
+// admission / ISI-7487 pre-bind queueing class) cannot silently reintroduce the
+// "Run cold-boot pods lack the proxy env" divergence that was hypothesized here.
+func TestKubeProvisionerBootStampsPodEnvForEveryPurpose(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	proxyEnv := []corev1.EnvVar{
+		{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: "http://egress-proxy.ksquad-egress.svc.cluster.local:3128"},
+		{Name: "KSQUAD_SANDBOX_HTTP_PROXY", Value: "http://egress-proxy.ksquad-egress.svc.cluster.local:3128"},
+		{Name: "KSQUAD_SANDBOX_NO_PROXY", Value: "10.0.0.0/8,.svc,.cluster.local"},
+	}
+	p := NewKubeProvisioner(c, "", "").WithPodEnv(proxyEnv...)
+
+	ctx := context.Background()
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-codex:m1"}
+
+	// Every BootPurpose must carry the podEnv — most critically BootRun, the
+	// cold-boot path a Run takes when no warm pod is available, since that is
+	// the path FQDN BYO model endpoints hit under ksquad-default-deny.
+	for _, purpose := range []BootPurpose{BootWarm, BootRun} {
+		id := fmt.Sprintf("sbx-%s", purpose)
+		if err := p.Boot(ctx, key, id, "run-"+id, purpose); err != nil {
+			t.Fatalf("boot %s: %v", purpose, err)
+		}
+		pod := &corev1.Pod{}
+		if err := c.Get(ctx, clientObjectKey(t, "bmad-squad", id), pod); err != nil {
+			t.Fatalf("get %s pod: %v", purpose, err)
+		}
+		env := map[string]string{}
+		for _, e := range pod.Spec.Containers[0].Env {
+			env[e.Name] = e.Value
+		}
+		for _, want := range proxyEnv {
+			if got := env[want.Name]; got != want.Value {
+				t.Errorf("purpose %s: pod env %s = %q, want %q (FQDN BYO endpoints egress DIRECT without it)", purpose, want.Name, got, want.Value)
+			}
+		}
+	}
+}
+
 // TestKubeProvisionerTearDownUsesKeyNamespace (ISI-4289): Boot creates the
 // sandbox pod in the key's team namespace, so TearDown must delete it THERE —
 // the adapter hardcoded `default`, and every team-namespace warm pod outlived
