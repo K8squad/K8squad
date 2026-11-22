@@ -1132,19 +1132,33 @@ func main() {
 			}
 			meshImage := images.ImageFor(string(ksquadv1alpha1.RuntimeTypeOpenCode))
 			ingressURL := os.Getenv("KSQUAD_SUPERVISOR_INGRESS_URL")
+			// meshNS is the LEGACY single-namespace fallback (KSQUAD_WARM_POOL_
+			// NAMESPACE) — kept only for single-team/dev operators and for the
+			// Team-CR-unresolved edge. ISI-7692: it must NOT be the pool pod's
+			// namespace for every team. A team's Runs cold-boot their sandbox
+			// into the team's OWN reconciled squad namespace (intake writes Runs
+			// to Team.Status.Namespace; kube.Boot places the sandbox there), so a
+			// standing pool pod parked in one shared ns (observed: all pools in
+			// the bmad team ns) is unclaimable by any OTHER team's Runs —
+			// cross-namespace NetworkPolicy/registry/dispatch all fail — and
+			// every such Run needlessly cold-boots. The per-team namespace is
+			// resolved below, at boot (after cache sync), from the Team CR.
 			meshNS := os.Getenv("KSQUAD_WARM_POOL_NAMESPACE")
 			// The boot-time spec table: one MeshPoolSpec per flagged (team,
 			// role) pool, keyed by pod name. The SAME specs drive the P1.4
 			// gateway-health loop's recreate leg (ISI-6010) — a drained pod is
-			// rebuilt from exactly the spec it was booted with.
+			// rebuilt from exactly the spec it was booted with. Namespace is
+			// left as the provisional fallback here and overwritten in place
+			// with the team-resolved namespace by the boot Runnable below, so
+			// the shared table the recreate loop reads targets the same ns.
 			meshSpecs := map[string]kubepool.MeshPoolSpec{}
 			for team := range meshTeams {
 				meshSpecs[kubepool.MeshPoolPodName(team, meshRole)] = kubepool.MeshPoolSpec{
 					Team:       team,
 					Role:       meshRole,
 					Image:      meshImage,
-					Namespace:  meshNS,
-					Min:        1, // P1.1: min:1 always-up
+					Namespace:  meshNS, // provisional; resolved per-team at boot (ISI-7692)
+					Min:        1,      // P1.1: min:1 always-up
 					IngressURL: ingressURL,
 					Model:      os.Getenv("KSQUAD_MESH_MODEL"),
 					Skills:     rundrive.MeshCSV(os.Getenv("KSQUAD_MESH_SKILLS")),
@@ -1153,15 +1167,28 @@ func main() {
 			}
 			_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
 				for team := range meshTeams {
-					spec := meshSpecs[kubepool.MeshPoolPodName(team, meshRole)]
+					podName := kubepool.MeshPoolPodName(team, meshRole)
+					spec := meshSpecs[podName]
+					// ISI-7692: resolve the team's OWN squad namespace so its
+					// Runs can CLAIM this standing pod instead of always
+					// cold-booting. Boot into a foreign namespace is the defect,
+					// so an unresolved namespace SKIPS the boot (dispatch stays
+					// on the legacy path) rather than guessing one.
+					ns, fromTeamCR, err := resolveMeshPoolNamespace(ctx, mgr.GetClient(), team, meshNS)
+					if err != nil {
+						ctrl.Log.Error(err, "AgentMesh pool namespace unresolved; pool NOT booted (dispatch stays on the legacy path)", "team", team, "role", meshRole)
+						continue
+					}
+					spec.Namespace = ns
+					meshSpecs[podName] = spec // share the resolved ns with the P1.4 recreate loop
 					if err := kubeProvisioner.BootMeshPool(ctx, spec); err != nil {
 						// Loud but non-fatal: a failed pool boot must not take
 						// the operator down — the canary's dispatch falls back
 						// to the legacy path while the pool is absent.
-						ctrl.Log.Error(err, "AgentMesh pool boot failed; dispatch falls back to the legacy path", "team", team, "role", meshRole)
+						ctrl.Log.Error(err, "AgentMesh pool boot failed; dispatch falls back to the legacy path", "team", team, "role", meshRole, "namespace", ns)
 						continue
 					}
-					ctrl.Log.Info("AgentMesh standing pool pod booted", "team", team, "role", meshRole, "image", meshImage)
+					ctrl.Log.Info("AgentMesh standing pool pod booted", "team", team, "role", meshRole, "image", meshImage, "namespace", ns, "namespaceFromTeamCR", fromTeamCR)
 				}
 				return nil
 			}))
