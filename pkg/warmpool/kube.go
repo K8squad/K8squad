@@ -36,6 +36,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/capability"
@@ -551,11 +552,62 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID, runI
 		}
 	}
 
+	// ISI-7691: fail-LOUD egress-proxy guard on the Run cold-boot path. A
+	// BootRun pod runs the agent against the Run's resolved model endpoint;
+	// when that endpoint is an external FQDN (BYO, e.g. api.deepseek.com) the
+	// team namespace's ksquad egress NetworkPolicy (default-deny +
+	// egress-proxy) black-holes a DIRECT dial, so the SYNs retry for ~134s and
+	// the run dies on an opaque a2a follow_error -> zombie_no_sandbox with a
+	// null audit payload (ISI-7686) instead of failing fast. The only way out
+	// of that namespace is the forward proxy, delivered to the pod as
+	// KSQUAD_SANDBOX_*_PROXY (ISI-5477). That stamp is gated on the operator's
+	// OWN env being non-empty at process construction (cmd/operator/main.go);
+	// if the operator Deployment carries no proxy values the stamp is silently
+	// skipped and the sandbox boots proxy-less into an egress-policed
+	// namespace — a silent trap that was previously only visible post-mortem
+	// in the dead pod's stderr (pkg/shim/runner.go). Mirror that symptom
+	// operator-side at boot so the condition shows up in coord telemetry at
+	// dispatch. BootRun is the discriminator: a Run cold-boot always lands in
+	// its team namespace (the egress-policed shape) and always dials an
+	// endpoint, whereas warm/mesh boots dial nothing. Kept a loud WARNING, not
+	// a hard boot failure: egress may be otherwise reachable (an in-cluster
+	// endpoint, or a temporary ipBlock netpol hole), and failing the boot
+	// would convert a recoverable config gap into an outage.
+	if purpose == BootRun && !hasSandboxProxyEnv(pod) {
+		log.FromContext(ctx).Info(
+			"WARNING: Run cold-boot sandbox has NO KSQUAD_SANDBOX_*_PROXY — agent egress is DIRECT; "+
+				"an external model FQDN behind the team-namespace egress NetworkPolicy will hang on a TCP "+
+				"SYN-retry timeout (ISI-7686), not fail fast. Ensure the operator Deployment carries "+
+				"non-empty KSQUAD_SANDBOX_HTTPS_PROXY/HTTP_PROXY/NO_PROXY (helm operator.yaml / ISI-5477).",
+			"sandbox", sandboxID, "run", runID, "namespace", namespace,
+		)
+	}
+
 	if err := k.client.Create(ctx, pod); err != nil {
 		return fmt.Errorf("kubeProvisioner.Boot: failed to create sandbox pod %s: %w", sandboxID, err)
 	}
 
 	return nil
+}
+
+// hasSandboxProxyEnv reports whether the sandbox's agent container carries a
+// non-empty KSQUAD_SANDBOX_HTTPS_PROXY or KSQUAD_SANDBOX_HTTP_PROXY — the env
+// the in-pod supervisor reads to inject HTTPS_PROXY/HTTP_PROXY onto the agent
+// child (pkg/shim.agentProxyEnv). KSQUAD_SANDBOX_NO_PROXY alone does not make
+// an external endpoint reachable, so only the forward-proxy endpoints count as
+// proxied egress for the ISI-7691 boot guard.
+func hasSandboxProxyEnv(pod *corev1.Pod) bool {
+	for i := range pod.Spec.Containers {
+		for _, e := range pod.Spec.Containers[i].Env {
+			switch e.Name {
+			case "KSQUAD_SANDBOX_HTTPS_PROXY", "KSQUAD_SANDBOX_HTTP_PROXY":
+				if e.Value != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // attachToolchainInitPacks resolves the Run's recorded toolchains and merges the

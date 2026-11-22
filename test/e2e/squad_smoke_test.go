@@ -219,6 +219,45 @@ func TestSquadSmoke(t *testing.T) {
 		t.Logf("egress honored: %s:80 refused, %s:%d reachable via proxy", arb, proxyHost, egressProxyPort)
 	})
 
+	// ISI-7691 (regression guard for ISI-7686): the Run cold-boot sandbox pod
+	// in an egress-policed team namespace MUST carry the forward-proxy env
+	// (KSQUAD_SANDBOX_HTTPS_PROXY / ...HTTP_PROXY) — the in-pod supervisor reads
+	// it to proxy the agent child's egress (pkg/shim.agentProxyEnv). Without it
+	// a BYO model endpoint on an external FQDN hangs on a TCP SYN-retry timeout
+	// behind the default-deny NetworkPolicy and the run dies on an a2a
+	// follow_error -> zombie_no_sandbox. The egress_honored block above proves
+	// the proxy Service is REACHABLE; this block proves the pod is actually
+	// CONFIGURED to use it. Skip-with-reason when the cluster/operator ran with
+	// no proxy env (the operator stamps only what its own env carries, ISI-5477)
+	// so a bare dev cluster stays green-and-partial rather than red.
+	t.Run("sandbox/proxy_env_present_for_egress_policed_run", func(t *testing.T) {
+		if pod == nil {
+			t.Skip("Run sandbox pod not scheduled yet — proxy-env probe deferred")
+		}
+		cname := primaryContainer(pod)
+		var httpsProxy, httpProxy string
+		for _, cont := range pod.Spec.Containers {
+			if cont.Name != cname {
+				continue
+			}
+			for _, e := range cont.Env {
+				switch e.Name {
+				case "KSQUAD_SANDBOX_HTTPS_PROXY":
+					httpsProxy = e.Value
+				case "KSQUAD_SANDBOX_HTTP_PROXY":
+					httpProxy = e.Value
+				}
+			}
+		}
+		if httpsProxy == "" && httpProxy == "" {
+			t.Skipf("Run cold-boot pod %s/%s carries no KSQUAD_SANDBOX_*_PROXY — operator ran without proxy env "+
+				"(no egress proxy configured on this cluster, ISI-5477); on an egress-policed cluster this is the "+
+				"ISI-7686 trap, and the operator log carries the fail-loud boot warning", pod.Namespace, pod.Name)
+		}
+		t.Logf("Run cold-boot pod carries egress proxy env (HTTPS_PROXY=%q HTTP_PROXY=%q) — ISI-7686 regression guarded",
+			httpsProxy, httpProxy)
+	})
+
 	t.Run("telemetry/tool_mcp_skill_spans_and_metrics", func(t *testing.T) {
 		exposition := h.scrapeOTelSink(ctx, t)
 		if exposition == "" {

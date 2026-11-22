@@ -724,6 +724,7 @@ func main() {
 		// `shim run` topology is covered by the same getenv the shim reads;
 		// this block extends that to the in-sandbox topology. Values only —
 		// proxy endpoints are not secrets (minimal-env invariant holds).
+		sandboxProxyStamped := false
 		for _, name := range []string{
 			"KSQUAD_SANDBOX_HTTPS_PROXY",
 			"KSQUAD_SANDBOX_HTTP_PROXY",
@@ -733,7 +734,27 @@ func main() {
 				kubeProvisioner = kubeProvisioner.WithPodEnv(
 					corev1.EnvVar{Name: name, Value: v},
 				)
+				if name != "KSQUAD_SANDBOX_NO_PROXY" {
+					sandboxProxyStamped = true
+				}
 			}
+		}
+		// ISI-7691: make the empty-proxy-env config gap LOUD at operator
+		// startup instead of a silent skip. If no forward-proxy endpoint rode
+		// this operator's env at process construction, the block above stamped
+		// nothing and EVERY sandbox this operator boots (warm AND Run
+		// cold-boot) egresses DIRECT. For a Run whose BYO model endpoint is an
+		// external FQDN, a team-namespace egress NetworkPolicy then black-holes
+		// the dial into a ~134s SYN-retry hang -> follow_error ->
+		// zombie_no_sandbox (ISI-7686). Surface it once at boot so the gap is
+		// diagnosable from the operator log, not only from a dead sandbox's
+		// post-mortem; the per-boot guard (warmpool.KubeProvisioner.Boot)
+		// repeats it per Run cold-boot.
+		if !sandboxProxyStamped {
+			ctrl.Log.Info("WARNING: no KSQUAD_SANDBOX_HTTPS_PROXY/HTTP_PROXY on the operator env — " +
+				"sandbox pods will boot with DIRECT egress; a Run with an external model FQDN behind the " +
+				"team-namespace egress NetworkPolicy will hang on a TCP SYN-retry timeout (ISI-7686), not " +
+				"fail fast. Configure the operator Deployment proxy env (helm operator.yaml / ISI-5477).")
 		}
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
 		// M1.2: the pod watch that reports sandbox pod readiness into the pool
