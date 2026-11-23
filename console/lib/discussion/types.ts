@@ -364,3 +364,42 @@ export interface PartySession {
   openedAt: string;
   closedAt?: string | null;
 }
+
+
+// ── Thread → work-items (ISI-7708 / ISI-7710) ──────────────────────────────
+// Wire shapes for the human-initiated thread→tickets endpoint. Field names
+// match the Go JSON tags on internal/apiserver/threadworkitems.go (PR #1067).
+
+/**
+ * One ticket draft posted to the thread-scoped work-items endpoint. Title is
+ * required; body/priority stay ABSENT when untouched; sourceMessageIds are
+ * the thread messages the ticket cites — the backend stamps the
+ * ksquad.discussion.thread/message provenance backlink labels from them.
+ * Bounds (enforced server-side): 1-20 drafts per call, ≤19 ids each.
+ */
+export interface ThreadTicketDraft {
+  title: string;
+  body?: string;
+  priority?: string;
+  sourceMessageIds?: string[];
+}
+
+/** One created work item in the 201 response (state is always "backlog"). */
+export interface CreatedThreadTicket {
+  id: string;
+  title: string;
+  state: string;
+  priority: string | null;
+  /** Project-relative console path to the created item. */
+  url: string;
+  /** Provenance backlink labels stamped by the backend. */
+  labels: string[];
+}
+
+/** The 201 envelope; on a mid-batch 500, created lists what already landed. */
+export interface ThreadTicketsResponse {
+  status: string;
+  threadId: string;
+  count: number;
+  created: CreatedThreadTicket[];
+}

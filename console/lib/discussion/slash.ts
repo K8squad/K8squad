@@ -7,8 +7,9 @@
 // helpers — no React, no fetch — so the parse/intercept semantics are unit-tested
 // on their own, exactly as `lib/mentions` factored the `@`/`#` trigger matcher.
 //
-// Scope fence (plan §WS-D.4): `/reset` is the ONLY command this phase. The
-// registry is a list so a future command is a data addition, not new parsing.
+// Scope fence (plan §WS-D.4): commands are a closed registry — `/reset` (WS-D) and
+// `/tickets` (ISI-7710). The registry is a list so a further command is a data
+// addition, not new parsing.
 
 /** A composer slash command surfaced in the command menu. */
 export interface SlashCommand {
@@ -21,14 +22,20 @@ export interface SlashCommand {
 }
 
 /**
- * The slash commands offered this phase — `/reset` only (plan §WS-D.4). Copy is
- * verbatim from the ISI-5605 mocks spec §3.
+ * The slash commands offered: `/reset` (WS-D, copy verbatim from the ISI-5605 mocks spec §3) and `/tickets`
+ * (ISI-7710, UX spec ISI-7709 §1 — the thread→tickets entry).
  */
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     name: "reset",
     title: "Clear this discussion",
     subtitle: "Starts a fresh transcript · history preserved",
+  },
+  {
+    // ISI-7710 (UX spec §1): the thread→tickets entry, parallel to /reset.
+    name: "tickets",
+    title: "Create tickets from this thread",
+    subtitle: "Files the discussion as backlog tickets · linked back here",
   },
 ];
 

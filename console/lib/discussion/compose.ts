@@ -7,6 +7,7 @@
 // and can be asserted by test.
 
 import { audienceWire, type AudienceLike } from "./audience";
+import type { CreatedThreadTicket } from "./types";
 
 /**
  * One structured ticket reference the composer's `#` picker collected
@@ -124,4 +125,28 @@ export function buildOpenThreadBody(input: OpenThreadInput): OpenThreadBody {
 /** True when an open-thread input is submittable (title AND body non-empty). */
 export function canOpenThread(input: OpenThreadInput): boolean {
   return input.title.trim().length > 0 && input.body.trim().length > 0;
+}
+
+
+/**
+ * Build the post-back body for ticket(s) created from this thread (ISI-7710 /
+ * UX spec ISI-7709 §4): a short human confirmation whose references carry the
+ * created items through the SAME TicketReference plumbing as the composer's
+ * # picker (ISI-5167). The server resolves each ref against the thread's
+ * project and stamps it onto the message payload (ISI-5165), so the
+ * linked-ticket chips render beneath the note and survive a reload.
+ * Provenance stays server-stamped — this body never carries author fields.
+ */
+export function buildThreadTicketPostBack(
+  tickets: readonly CreatedThreadTicket[],
+): PostMessageBody {
+  const references: TicketReference[] = tickets.map((t) => ({
+    workItemId: t.id,
+    title: t.title,
+  }));
+  const list = tickets.map((t) => "#" + t.title).join(", ");
+  return buildPostBody({
+    body: "✓ Ticket created from this thread — " + list,
+    references,
+  });
 }

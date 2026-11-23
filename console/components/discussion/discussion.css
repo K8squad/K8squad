@@ -1586,3 +1586,32 @@ a.ksq-ticket-chip:hover {
     bottom: calc(var(--ksq-dock-h, 96px) + 16px);
   }
 }
+
+/* ISI-7710 (UX spec §1) — create-tickets-from-thread entry strip. Sits inside
+   .ksq-room__main ABOVE the history column, which stays the only internally
+   scrolling region (ISI-5741 scroll contract untouched). */
+.ksq-room__ticketsbar {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.ksq-room__ticketsbar .ksq-btn {
+  flex: none;
+}
+
+.ksq-room__linked {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 0.85rem;
+  min-width: 0;
+}
+
+.ksq-room__linked a {
+  text-decoration: underline;
+}

@@ -42,10 +42,15 @@ import {
 } from "@/lib/discussion/working";
 import type { DiscussionClient } from "@/lib/discussion/api";
 import { DiscussionApiError } from "@/lib/discussion/api";
-import { MessageItem } from "./MessageItem";
+import { MessageItem, parseReferences } from "./MessageItem";
 import { PartySessionCard } from "./PartySessionCard";
 import { Composer } from "./Composer";
 import { ResetConfirmDialog } from "./ResetConfirmDialog";
+import { CreateTicketsFromThread } from "./CreateTicketsFromThread";
+import { buildThreadTicketPostBack } from "@/lib/discussion/compose";
+import { buildThreadDigest } from "@/lib/discussion/threadDigest";
+import { fetchViewerRole } from "@/lib/tickets/api";
+import type { CreatedThreadTicket } from "@/lib/discussion/types";
 import { Roster, type RosterAgent } from "./Roster";
 import { RunEndedWatch } from "./RunEndedWatch";
 import type { AgentRunPresence } from "@/lib/overview/liveRuns";
@@ -160,6 +165,14 @@ export function DiscussionRoom({
   );
   const [resetOpen, setResetOpen] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
+  // Create-tickets-from-thread (ISI-7710 / ISI-7681 P1, UX spec ISI-7709):
+  // the sheet, the viewer role for the fail-closed entry gate (viewer ⇒ no
+  // entry, mirroring TicketsScreen), the thread title (digest pre-seed), and
+  // the tickets created from this thread this session.
+  const [ticketsOpen, setTicketsOpen] = useState(false);
+  const [viewerRole, setViewerRole] = useState("viewer"); // fail-closed default
+  const [threadTitle, setThreadTitle] = useState("");
+  const [threadTickets, setThreadTickets] = useState<CreatedThreadTicket[]>([]);
   // The roster the post callback reads to resolve dispatch targets, held in a
   // ref so `post` is not re-created on every roster refresh (and never dispatches
   // against a stale closure).
@@ -207,6 +220,7 @@ export function DiscussionRoom({
       try {
         if (typeof client.getThreadInfo === "function") {
           const info = await client.getThreadInfo(projectId, threadId);
+          setThreadTitle(info.title);
           setResetInfo(
             info.resetAt && info.resetBy
               ? { at: info.resetAt, by: info.resetBy }
@@ -288,6 +302,24 @@ export function DiscussionRoom({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Fail-closed entry gate (UX spec §1): resolve the viewer role once. A
+  // viewer never sees the "Create tickets" entry; the apiserver's human-only
+  // Contributor wall (ISI-7708) stays the real authority either way.
+  useEffect(() => {
+    let alive = true;
+    void fetchViewerRole().then(
+      (role) => {
+        if (alive) setViewerRole(role);
+      },
+      () => {
+        /* stay fail-closed on a role-read failure */
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Run-ended re-fetch fallback (ISI-7273, WS-3 of parent ISI-7262): run ids
   // whose terminal ended milestone this room watches for, learned from the
@@ -423,6 +455,44 @@ export function DiscussionRoom({
     [messages],
   );
 
+  // Linked tickets (ISI-7710): ticket references stamped onto this thread's
+  // messages (ISI-5165) are the DURABLE record of tickets created from it;
+  // tickets created this session join them for the room-level affordance and
+  // the duplicate heads-up (non-blocking — a thread may yield several).
+  const linkedFromPayload = useMemo(() => {
+    const out: { workItemId: string; title?: string }[] = [];
+    for (const m of messages) {
+      if (m.invalidatedAt) continue;
+      for (const r of parseReferences(m.payload)) {
+        if (!out.some((x) => x.workItemId === r.workItemId)) out.push(r);
+      }
+    }
+    return out;
+  }, [messages]);
+
+  const linkedTickets = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { id: string; title: string; url?: string }[] = [];
+    for (const r of linkedFromPayload) {
+      if (seen.has(r.workItemId)) continue;
+      seen.add(r.workItemId);
+      out.push({ id: r.workItemId, title: r.title ?? "" });
+    }
+    for (const t of threadTickets) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push({ id: t.id, title: t.title, url: t.url });
+    }
+    return out;
+  }, [linkedFromPayload, threadTickets]);
+
+  // Pre-seed for the sheet (UX spec §3): a pure client-side digest of the
+  // already-loaded transcript — no refetch, no in-transcript selection UI.
+  const ticketSeed = useMemo(
+    () => buildThreadDigest(threadTitle, messages),
+    [threadTitle, messages],
+  );
+
   // Re-poll the live party session while a debate is present (ISI-5589 WS-E).
   // WS-B emits no session-state SSE, so the meter is refreshed by re-GET. The
   // poll stops when the thread has no party_start opener (no debate to track) or
@@ -518,10 +588,48 @@ export function DiscussionRoom({
   }, [client, projectId, threadId]);
 
   // Composer slash command (ISI-5674 WS-D): `/reset` opens the confirm dialog.
-  // `/reset` is the only command this phase, so an unknown name is ignored.
-  const onCommand = useCallback((name: string) => {
-    if (name === "reset") setResetOpen(true);
-  }, []);
+  // `/tickets` (ISI-7710, UX spec §1) opens the create-from-thread sheet under the
+  // same fail-closed viewer gate as the header button; unknown names are
+  // ignored.
+  const onCommand = useCallback(
+    (name: string) => {
+      if (name === "reset") setResetOpen(true);
+      if (name === "tickets" && viewerRole !== "viewer") {
+        setTicketsOpen(true);
+      }
+    },
+    [viewerRole],
+  );
+
+  // Tickets were created from this thread (ISI-7710): record them for the
+  // room's Linked-tickets affordance, then post the human confirmation note
+  // carrying the created items as ticket REFERENCES (the compose.ts
+  // TicketReference plumbing, same wire as the composer's # picker) — the
+  // server resolves and stamps them onto the message payload (ISI-5165), so
+  // the linked chips render beneath the note and survive a reload (UX §4).
+  // Posted directly through the client (not post()): the note is a record,
+  // not a discussion turn, so it seeds no working watches.
+  const ticketsCreated = useCallback(
+    (created: CreatedThreadTicket[]) => {
+      setThreadTickets((cur) => [...cur, ...created]);
+      void client
+        .postMessage(
+          projectId,
+          threadId,
+          buildThreadTicketPostBack(created),
+        )
+        .then((message) => {
+          setMessages((cur) =>
+            applyRoomEvent(cur, { type: "message.created", message }),
+          );
+        })
+        .catch(() => {
+          /* best-effort record: the sheet's success view and the local
+             affordance already carry the outcome */
+        });
+    },
+    [client, projectId, threadId],
+  );
 
   // Human confirm (plan §4.4): fan into the authoring seams, then advance the
   // card to executed and append the result post-back message under it.
@@ -672,6 +780,50 @@ export function DiscussionRoom({
   return (
     <section className="ksq-room" data-testid="discussion-room">
       <div className="ksq-room__main">
+        {/* ISI-7710 (UX spec §1) — the create-tickets entry: a slim room
+            header strip, the only net-new chrome, inside .ksq-room__main and
+            ABOVE the history column so the ISI-5741 scroll contract (only
+            .ksq-room__history scrolls internally) holds. Contributor+-gated
+            fail-closed via the viewer role; disabled on an empty/reset thread
+            (nothing to convert yet). */}
+        {viewerRole !== "viewer" ? (
+          <div
+            className="ksq-room__ticketsbar"
+            data-testid="room-tickets-bar"
+          >
+            <button
+              type="button"
+              className="ksq-btn"
+              data-testid="room-create-tickets"
+              disabled={messages.length === 0}
+              onClick={() => setTicketsOpen(true)}
+            >
+              Create tickets
+            </button>
+            {linkedTickets.length > 0 ? (
+              <span
+                className="ksq-room__linked"
+                data-testid="room-linked-tickets"
+              >
+                Linked tickets:{" "}
+                {linkedTickets.map((r) => (
+                  <a
+                    key={r.id}
+                    href={
+                      r.url ??
+                      "/projects/" +
+                        encodeURIComponent(projectId) +
+                        "/issues/" +
+                        r.id
+                    }
+                  >
+                    {r.title || r.id}
+                  </a>
+                ))}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         {/* ISI-5741 — the history column: the ONLY internally-scrolling region.
             The party card, reset empty state, and the transcript scroll within
             this bounded box; the dock + roster frames stay put (AC2/AC4). */}
@@ -809,6 +961,23 @@ export function DiscussionRoom({
           busy={resetBusy}
           onCancel={() => setResetOpen(false)}
           onConfirm={() => void doReset()}
+        />
+      ) : null}
+
+      {/* ISI-7710 — the create-tickets-from-thread sheet (UX spec §2-§5):
+          single ticket per pass, pre-seeded from the digest, human-confirmed.
+          Rendered at the room root so it overlays the whole surface. */}
+      {ticketsOpen ? (
+        <CreateTicketsFromThread
+          projectId={projectId}
+          threadId={threadId}
+          client={client}
+          seed={ticketSeed}
+          existingTitles={linkedTickets
+            .map((r) => r.title)
+            .filter((t) => t.length > 0)}
+          onCreated={ticketsCreated}
+          onClose={() => setTicketsOpen(false)}
         />
       ) : null}
     </section>
