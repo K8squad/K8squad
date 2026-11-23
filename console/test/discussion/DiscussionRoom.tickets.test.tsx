@@ -51,7 +51,10 @@ function makeClient(overrides: Record<string, unknown> = {}): DiscussionClient {
   return {
     getThread: vi
       .fn()
-      .mockResolvedValue([humanMsg("m1", "hello room"), humanMsg("m2", "login flakes on reload")]),
+      .mockResolvedValue([
+        humanMsg("m1", "hello room"),
+        humanMsg("m2", "login flakes on reload"),
+      ]),
     getThreadInfo: vi.fn().mockResolvedValue(threadInfo),
     listProposals: vi.fn().mockResolvedValue([]),
     getActivePartySession: vi.fn().mockResolvedValue(null),
@@ -73,9 +76,7 @@ describe("DiscussionRoom — create tickets from thread (ISI-7710)", () => {
     render(
       <DiscussionRoom projectId="p1" threadId="th-1" client={makeClient()} />,
     );
-    await waitFor(() =>
-      expect(screen.getByTestId("threads")).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByTestId("threads")).toBeTruthy());
     expect(screen.queryByTestId("room-tickets-bar")).toBeNull();
   });
 
@@ -128,7 +129,12 @@ describe("DiscussionRoom — create tickets from thread (ISI-7710)", () => {
     };
     const create = vi
       .fn()
-      .mockResolvedValue({ status: "created", threadId: "th-1", count: 1, created: [created] });
+      .mockResolvedValue({
+        status: "created",
+        threadId: "th-1",
+        count: 1,
+        created: [created],
+      });
     const postMessage = vi.fn().mockResolvedValue(humanMsg("pb1", "post-back"));
     const client = makeClient({
       createThreadTickets: create,
@@ -159,8 +165,8 @@ describe("DiscussionRoom — create tickets from thread (ISI-7710)", () => {
     await waitFor(() =>
       expect(screen.getByTestId("room-linked-tickets")).toBeTruthy(),
     );
-    expect(
-      screen.getByTestId("room-linked-tickets").textContent,
-    ).toContain("Fix the login flake");
+    expect(screen.getByTestId("room-linked-tickets").textContent).toContain(
+      "Fix the login flake",
+    );
   });
 });

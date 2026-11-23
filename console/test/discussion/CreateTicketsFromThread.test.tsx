@@ -42,7 +42,12 @@ function ticket(id: string, title: string): CreatedThreadTicket {
 }
 
 function ok(created: CreatedThreadTicket[]): ThreadTicketsResponse {
-  return { status: "created", threadId: "th-1", count: created.length, created };
+  return {
+    status: "created",
+    threadId: "th-1",
+    count: created.length,
+    created,
+  };
 }
 
 describe("CreateTicketsFromThread (ISI-7710)", () => {
@@ -67,7 +72,9 @@ describe("CreateTicketsFromThread (ISI-7710)", () => {
   });
 
   it("submits ONE draft carrying the provenance ids and hands back the created item", async () => {
-    const fn = vi.fn().mockResolvedValue(ok([ticket("w1", "Fix the login flake")]));
+    const fn = vi
+      .fn()
+      .mockResolvedValue(ok([ticket("w1", "Fix the login flake")]));
     const onCreated = vi.fn();
     render(
       <CreateTicketsFromThread
@@ -91,7 +98,9 @@ describe("CreateTicketsFromThread (ISI-7710)", () => {
         sourceMessageIds: ["m1", "m2"],
       },
     ]);
-    expect(onCreated).toHaveBeenCalledWith([ticket("w1", "Fix the login flake")]);
+    expect(onCreated).toHaveBeenCalledWith([
+      ticket("w1", "Fix the login flake"),
+    ]);
     const link = screen.getByTestId("thread-tickets-created-link");
     expect(link.getAttribute("href")).toBe("/projects/p/issues/w1");
     expect(link.textContent).toBe("Fix the login flake");

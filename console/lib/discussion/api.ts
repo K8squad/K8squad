@@ -24,7 +24,7 @@ import type {
   RosterAgentDTO,
   Thread,
   ThreadTicketDraft,
-  ThreadTicketsResponse
+  ThreadTicketsResponse,
 } from "./types";
 import {
   buildOpenThreadBody,

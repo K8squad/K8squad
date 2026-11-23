@@ -68,7 +68,6 @@ describe("resolveSlashCommand — exact intercept on submit", () => {
   });
 });
 
-
 describe("ISI-7710 — /tickets command", () => {
   it("resolves /tickets exactly", () => {
     expect(resolveSlashCommand("/tickets")?.name).toBe("tickets");

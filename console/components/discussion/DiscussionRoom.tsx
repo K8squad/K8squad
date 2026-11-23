@@ -613,11 +613,7 @@ export function DiscussionRoom({
     (created: CreatedThreadTicket[]) => {
       setThreadTickets((cur) => [...cur, ...created]);
       void client
-        .postMessage(
-          projectId,
-          threadId,
-          buildThreadTicketPostBack(created),
-        )
+        .postMessage(projectId, threadId, buildThreadTicketPostBack(created))
         .then((message) => {
           setMessages((cur) =>
             applyRoomEvent(cur, { type: "message.created", message }),
@@ -787,10 +783,7 @@ export function DiscussionRoom({
             fail-closed via the viewer role; disabled on an empty/reset thread
             (nothing to convert yet). */}
         {viewerRole !== "viewer" ? (
-          <div
-            className="ksq-room__ticketsbar"
-            data-testid="room-tickets-bar"
-          >
+          <div className="ksq-room__ticketsbar" data-testid="room-tickets-bar">
             <button
               type="button"
               className="ksq-btn"

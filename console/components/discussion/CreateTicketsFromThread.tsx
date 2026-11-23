@@ -32,10 +32,7 @@ import type {
   ThreadTicketDraft,
 } from "@/lib/discussion/types";
 import type { ThreadDigest } from "@/lib/discussion/threadDigest";
-import {
-  PRIORITY_LABELS,
-  WORK_ITEM_PRIORITIES,
-} from "@/lib/tickets/types";
+import { PRIORITY_LABELS, WORK_ITEM_PRIORITIES } from "@/lib/tickets/types";
 
 export interface CreateTicketsFromThreadProps {
   projectId: string;
@@ -182,10 +179,7 @@ export function CreateTicketsFromThread({
                 <ul>
                   {created.map((t) => (
                     <li key={t.id}>
-                      <a
-                        href={t.url}
-                        data-testid="thread-tickets-created-link"
-                      >
+                      <a href={t.url} data-testid="thread-tickets-created-link">
                         {t.title}
                       </a>
                       {t.labels.length > 0 ? (
@@ -224,7 +218,8 @@ export function CreateTicketsFromThread({
                     onChange={(e) => setBody(e.target.value)}
                   />
                   <span className="ksq-field__hint muted">
-                    Pre-filled from this thread&#39;s recent messages — edit freely.
+                    Pre-filled from this thread&#39;s recent messages — edit
+                    freely.
                   </span>
                 </label>
 

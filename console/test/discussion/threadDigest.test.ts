@@ -62,9 +62,7 @@ describe("buildThreadDigest", () => {
       body: "",
       sourceMessageIds: [],
     });
-    const d = buildThreadDigest("T", [
-      msg("m1", "x", { kind: KIND_RESET }),
-    ]);
+    const d = buildThreadDigest("T", [msg("m1", "x", { kind: KIND_RESET })]);
     expect(d.body).toBe("");
     expect(d.sourceMessageIds).toEqual([]);
   });

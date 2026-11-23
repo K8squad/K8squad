@@ -127,7 +127,6 @@ export function canOpenThread(input: OpenThreadInput): boolean {
   return input.title.trim().length > 0 && input.body.trim().length > 0;
 }
 
-
 /**
  * Build the post-back body for ticket(s) created from this thread (ISI-7710 /
  * UX spec ISI-7709 §4): a short human confirmation whose references carry the

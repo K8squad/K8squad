@@ -158,7 +158,6 @@ describe("canSubmit", () => {
   });
 });
 
-
 describe("buildThreadTicketPostBack — ISI-7710 linked post-back", () => {
   const t1 = {
     id: "w1",

@@ -365,7 +365,6 @@ export interface PartySession {
   closedAt?: string | null;
 }
 
-
 // ── Thread → work-items (ISI-7708 / ISI-7710) ──────────────────────────────
 // Wire shapes for the human-initiated thread→tickets endpoint. Field names
 // match the Go JSON tags on internal/apiserver/threadworkitems.go (PR #1067).
