@@ -58,7 +58,7 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         run: rm -rf "$HOME/go/pkg/mod" 2>/dev/null || true
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: steps.guard.outputs.present == 'true'
         with:
           # Pin the toolchain to the module's declared Go version (go.mod) instead of
@@ -180,7 +180,7 @@ jobs:
       - name: Pre-clean persistent GOMODCACHE (cache-restore tar cannot overwrite read-only module files)
         run: rm -rf "$HOME/go/pkg/mod" 2>/dev/null || true
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
           # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
@@ -292,7 +292,7 @@ jobs:
       # dbmigrate.Verify + the shipped 0041 through a live drift matrix on a scratch database:
       # inverted drift (peer drifted, table healthy — must NOT move the healthy table), the
       # incident shape (proposal alone drifted), and both-sides-drifted (parity-blind spot).
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -338,7 +338,7 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         run: rm -rf "$HOME/go/pkg/mod" 2>/dev/null || true
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
