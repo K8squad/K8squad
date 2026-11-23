@@ -127,14 +127,12 @@ describe("DiscussionRoom — create tickets from thread (ISI-7710)", () => {
       url: "/projects/p/issues/w1",
       labels: ["ksquad.discussion.thread=th-1"],
     };
-    const create = vi
-      .fn()
-      .mockResolvedValue({
-        status: "created",
-        threadId: "th-1",
-        count: 1,
-        created: [created],
-      });
+    const create = vi.fn().mockResolvedValue({
+      status: "created",
+      threadId: "th-1",
+      count: 1,
+      created: [created],
+    });
     const postMessage = vi.fn().mockResolvedValue(humanMsg("pb1", "post-back"));
     const client = makeClient({
       createThreadTickets: create,
