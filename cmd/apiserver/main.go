@@ -915,6 +915,7 @@ func main() {
 		Discussion:          discussionHandler,
 		DiscussionProposals: discussionStore,
 		DiscussionDecisions: discussionStore,
+		DiscussionThreads:   discussionStore,
 		Ready:               dbReady{db},
 		Overview:            overview,
 		ProjectOverview:     projectOverview,

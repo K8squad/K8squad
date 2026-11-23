@@ -233,6 +233,12 @@ type Options struct {
 	// resume the raising agent. Set together with WorkItemDispatch; nil (or a missing seam) ⇒ the
 	// decision-request answer/reject routes keep the documented 501.
 	DiscussionDecisions DecisionLifecycle
+	// DiscussionThreads is the ISI-7708 thread-existence seam the human thread →
+	// work-items mint rides (implemented by *discussion.Store): it proves the
+	// addressed thread exists in the caller's scope before any ticket is created
+	// from it. Set together with WorkItemWrites; nil (or a missing seam) ⇒ the
+	// thread work-items route keeps the documented 501.
+	DiscussionThreads DiscussionThreadReader
 	// WorkItemReads is the M1.5 board read surface (coord.WorkItemReadStore,
 	// ISI-4131): GET /api/projects/{projectId}/work-items (card list) and GET
 	// /api/work-items/{id} (ticket thread — comments, status history, change
@@ -1288,6 +1294,37 @@ func (s *Server) routes(opts Options) {
 		} else {
 			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
 				Methods(http.MethodPatch)
+		}
+
+		// ISI-7708 (parent ISI-7681 P1): POST
+		// /api/projects/{projectId}/discussion/threads/{threadId}/work-items — human-initiated
+		// ticket creation from a discussion thread (the console "Create tickets from thread"
+		// sheet, ISI-7710, posts here). Same wall as the proposal confirm/dismiss verbs:
+		// BFFAuthz + sameOrigin + bounded body + requireProjectRole(Contributor); the handler
+		// adds the human-only gate and stamps the provenance backlink labels on every minted
+		// item (ksquad.discussion.thread=<id> / ksquad.discussion.message=<id>). Needs the
+		// thread seam AND the writer; otherwise the documented 501.
+		//
+		// ROUTE ORDER MATTERS: this MUST be registered BEFORE the board create route below —
+		// {projectId:.+} is greedy ACROSS segments, so .../work-items also matches
+		// /api/projects/{projectId:.+}/work-items, and gorilla mux dispatches to the
+		// FIRST matching route, not the most specific one. A plain board create URL never
+		// carries /discussion/threads/, so it keeps falling through to the route below.
+		if opts.DiscussionThreads != nil && opts.WorkItemWrites != nil {
+			threadWI := s.router.Path("/api/projects/{projectId:.+}/discussion/threads/{threadId}/work-items").Subrouter()
+			threadWI.Use(authz)
+			threadWI.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+			threadWI.Use(maxBytesBody(128 << 10))
+			if opts.ProjectRoles != nil {
+				threadWI.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
+			}
+			threadWI.HandleFunc("", threadWorkItemsHandler(opts.DiscussionThreads, opts.WorkItemWrites, opts.ProjectRefs)).Methods(http.MethodPost)
+		} else {
+			threadWI := s.router.Path("/api/projects/{projectId:.+}/discussion/threads/{threadId}/work-items").Subrouter()
+			threadWI.Use(authz)
+			threadWI.HandleFunc("", notImplemented("thread work-items mint",
+				"ISI-7708: wire the discussion Store + coord.WorkItemWriteStore to enable")).
+				Methods(http.MethodPost)
 		}
 
 		// S3 human work-item CREATE (ISI-3959): POST /api/projects/{projectId}/work-items,
