@@ -23,6 +23,8 @@ import type {
   ResetResponse,
   RosterAgentDTO,
   Thread,
+  ThreadTicketDraft,
+  ThreadTicketsResponse,
 } from "./types";
 import {
   buildOpenThreadBody,
@@ -129,6 +131,19 @@ export interface DiscussionClient {
     threadId: string,
     reason?: string,
   ): Promise<ResetResponse>;
+  /**
+   * Human-initiated ticket creation from a discussion thread (ISI-7708 /
+   * ISI-7710): POSTs the drafts to the thread-scoped work-items endpoint.
+   * Optional capability — an older stub client surfaces the documented
+   * not-hosted degrade instead of failing the room. Human-only + project
+   * Contributor RBAC live on the apiserver; items land in the backlog with
+   * provenance backlink labels; nothing auto-dispatches.
+   */
+  createThreadTickets?(
+    projectId: string,
+    threadId: string,
+    tickets: ThreadTicketDraft[],
+  ): Promise<ThreadTicketsResponse>;
   /**
    * List the thread's proposal cards joined with their lifecycle phase
    * (ISI-4930 story-6 read side). The transcript read stays phase-less; the
@@ -254,6 +269,22 @@ export function createDiscussionClient(
   fetchImpl: FetchLike = fetch as unknown as FetchLike,
 ): DiscussionClient {
   return {
+    async createThreadTickets(projectId, threadId, tickets) {
+      // ISI-7708 contract: the wire body is { tickets: [...] } — the apiserver
+      // validates the WHOLE batch before minting anything.
+      const url =
+        threadsBase(projectId) +
+        "/" +
+        encodeURIComponent(threadId) +
+        "/work-items";
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tickets }),
+      });
+      return readJson<ThreadTicketsResponse>(res);
+    },
+
     async listThreads(projectId, opts) {
       const p = new URLSearchParams();
       if (opts?.limit != null) p.set("limit", String(opts.limit));

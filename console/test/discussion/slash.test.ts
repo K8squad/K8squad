@@ -6,8 +6,8 @@ import {
   slashFragment,
 } from "@/lib/discussion/slash";
 
-// ISI-5674 WS-D — the pure slash-command parse/intercept primitives. `/reset` is
-// the only command this phase (plan §WS-D.4).
+// ISI-5674 WS-D — the pure slash-command parse/intercept primitives. The
+// registry carries `/reset` (WS-D) and `/tickets` (ISI-7710).
 
 describe("slashFragment — leading-`/` command context", () => {
   it("opens on a bare slash", () => {
@@ -65,5 +65,20 @@ describe("resolveSlashCommand — exact intercept on submit", () => {
     expect(resolveSlashCommand("/reset the room")).toBeNull();
     expect(resolveSlashCommand("reset")).toBeNull();
     expect(resolveSlashCommand("")).toBeNull();
+  });
+});
+
+describe("ISI-7710 — /tickets command", () => {
+  it("resolves /tickets exactly", () => {
+    expect(resolveSlashCommand("/tickets")?.name).toBe("tickets");
+  });
+
+  it("prefix-matches t → tickets", () => {
+    expect(matchSlashCommands("t").map((c) => c.name)).toEqual(["tickets"]);
+  });
+
+  it("carries the thread→tickets copy (UX spec §1)", () => {
+    const t = SLASH_COMMANDS.find((c) => c.name === "tickets");
+    expect(t?.title).toBe("Create tickets from this thread");
   });
 });

@@ -22,8 +22,10 @@ describe("<Composer> — /reset slash command", () => {
     });
     expect(screen.getByTestId("slash-popover")).toBeTruthy();
     const opts = screen.getAllByTestId("slash-option");
-    expect(opts).toHaveLength(1);
+    // ISI-7710: the registry now carries /reset + /tickets (registry order).
+    expect(opts).toHaveLength(2);
     expect(opts[0].getAttribute("data-command")).toBe("reset");
+    expect(opts[1].getAttribute("data-command")).toBe("tickets");
     expect(screen.getByText("Clear this discussion")).toBeTruthy();
   });
 

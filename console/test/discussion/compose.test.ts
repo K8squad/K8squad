@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildPostBody, canSubmit } from "@/lib/discussion/compose";
+import {
+  buildPostBody,
+  buildThreadTicketPostBack,
+  canSubmit,
+} from "@/lib/discussion/compose";
 
 // AC3 (server-stamp boundary): the outbound body is ONLY { body, parentId? }.
 // A console that sends any author field is a defect.
@@ -151,5 +155,48 @@ describe("canSubmit", () => {
     expect(canSubmit({ body: "" })).toBe(false);
     expect(canSubmit({ body: "   " })).toBe(false);
     expect(canSubmit({ body: "ok" })).toBe(true);
+  });
+});
+
+describe("buildThreadTicketPostBack — ISI-7710 linked post-back", () => {
+  const t1 = {
+    id: "w1",
+    title: "Fix login",
+    state: "backlog",
+    priority: null,
+    url: "/projects/p/issues/w1",
+    labels: [],
+  };
+  const t2 = {
+    id: "w2",
+    title: "Harden session",
+    state: "backlog",
+    priority: null,
+    url: "/projects/p/issues/w2",
+    labels: [],
+  };
+
+  it("carries the created items as ticket references and cites them in the body", () => {
+    const out = buildThreadTicketPostBack([t1, t2]);
+    expect(out.references).toEqual([
+      { workItemId: "w1", title: "Fix login" },
+      { workItemId: "w2", title: "Harden session" },
+    ]);
+    expect(out.body).toContain("Fix login");
+    expect(out.body).toContain("Harden session");
+  });
+
+  it("NEVER emits any author/provenance field (server-stamp boundary)", () => {
+    const out = buildThreadTicketPostBack([t1]) as unknown as Record<
+      string,
+      unknown
+    >;
+    for (const k of FORBIDDEN) expect(out).not.toHaveProperty(k);
+  });
+
+  it("is a room-level note — no parentId, no audience", () => {
+    const out = buildThreadTicketPostBack([t1]);
+    expect(out).not.toHaveProperty("parentId");
+    expect(out).not.toHaveProperty("audience");
   });
 });
