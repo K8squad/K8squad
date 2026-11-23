@@ -352,6 +352,40 @@ func MeshPoolPodName(team, role string) string {
 	return "mesh-" + team + "-" + role
 }
 
+// DeleteMislocatedMeshPool deletes the standing pool pod mesh-<team>-<role> in
+// ns IFF it exists AND carries the mesh-pool label — the ISI-7692 migration
+// cleanup. The pod name is namespace-free (MeshPoolPodName) and coord.mesh_
+// endpoint has no namespace column: a pod an earlier operator booted into the
+// wrong (shared/fallback) namespace survives create-if-missing boot in the
+// correct namespace and keeps heartbeating under the same (team, role) key, so
+// dispatch (LRU over all live endpoints) can still route a Run to it. Deleting
+// it lets its registry row TTL-expire so only the co-located pod serves the
+// pool. Idempotent: a missing pod (already gone, or never mis-located) is
+// success. The label guard makes a name collision with a non-mesh pod a no-op
+// rather than a wrongful delete.
+func (k *KubeProvisioner) DeleteMislocatedMeshPool(ctx context.Context, ns, team, role string) error {
+	if ns == "" || team == "" || role == "" {
+		return nil
+	}
+	name := MeshPoolPodName(team, role)
+	var pod corev1.Pod
+	err := k.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pod)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("warmpool.DeleteMislocatedMeshPool: read %s/%s: %w", ns, name, err)
+	}
+	if pod.Labels[MeshAppLabel] != MeshAppValue {
+		// Not a mesh pool pod — never delete a name-colliding foreign pod.
+		return nil
+	}
+	if err := k.client.Delete(ctx, &pod); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("warmpool.DeleteMislocatedMeshPool: delete %s/%s: %w", ns, name, err)
+	}
+	return nil
+}
+
 // recreateMeshPoolWait bounds how long RecreateMeshPool waits for the old pod
 // object to disappear before booting the fresh one.
 const recreateMeshPoolWait = 2 * time.Minute
