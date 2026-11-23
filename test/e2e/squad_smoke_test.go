@@ -20,17 +20,32 @@ package e2e
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	netv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/apiserver"
 )
+
+// redactProxyURL masks userinfo in a proxy URL (http://user:pass@host:8888 ->
+// http://user:xxxxx@host:8888): forward proxies legitimately carry basic-auth
+// credentials and CI output must not leak them (ISI-7691 review). Non-URL
+// values pass through unchanged.
+func redactProxyURL(v string) string {
+	if strings.Contains(v, "://") {
+		if u, err := url.Parse(v); err == nil && u.User != nil {
+			return u.Redacted()
+		}
+	}
+	return v
+}
 
 // e2eNamespace is the working namespace the smoke provisions its CR graph in.
 const e2eNamespace = "e2e-squad-smoke"
@@ -217,6 +232,72 @@ func TestSquadSmoke(t *testing.T) {
 				proxyHost, egressProxyPort)
 		}
 		t.Logf("egress honored: %s:80 refused, %s:%d reachable via proxy", arb, proxyHost, egressProxyPort)
+	})
+
+	// ISI-7691 (regression guard for ISI-7686): the Run cold-boot sandbox pod
+	// in an egress-policed team namespace MUST carry the forward-proxy env
+	// (KSQUAD_SANDBOX_HTTPS_PROXY / ...HTTP_PROXY) — the in-pod supervisor reads
+	// it to proxy the agent child's egress (pkg/shim.agentProxyEnv). Without it
+	// a BYO model endpoint on an external FQDN hangs on a TCP SYN-retry timeout
+	// behind the default-deny NetworkPolicy and the run dies on an a2a
+	// follow_error -> zombie_no_sandbox. The egress_honored block above proves
+	// the proxy Service is REACHABLE; this block proves the pod is actually
+	// CONFIGURED to use it.
+	//
+	// The guard must be able to FAIL on the regression (ISI-7691 review #5): a
+	// blanket skip when the pod carries no proxy env would render the ISI-7686
+	// condition green-and-partial on an egress-policed cluster. So: list the
+	// NetworkPolicies in the pod's namespace — when an egress policy is present
+	// AND both proxy vars are blank, this is the trap, hard-fail. Keep the skip
+	// only for a genuinely proxy-less dev cluster (no egress policy at all).
+	t.Run("sandbox/proxy_env_present_for_egress_policed_run", func(t *testing.T) {
+		if pod == nil {
+			t.Skip("Run sandbox pod not scheduled yet — proxy-env probe deferred")
+		}
+		cname := primaryContainer(pod)
+		var httpsProxy, httpProxy string
+		for _, cont := range pod.Spec.Containers {
+			if cont.Name != cname {
+				continue
+			}
+			for _, e := range cont.Env {
+				switch e.Name {
+				case "KSQUAD_SANDBOX_HTTPS_PROXY":
+					httpsProxy = e.Value
+				case "KSQUAD_SANDBOX_HTTP_PROXY":
+					httpProxy = e.Value
+				}
+			}
+		}
+		if strings.TrimSpace(httpsProxy) != "" || strings.TrimSpace(httpProxy) != "" {
+			t.Logf("Run cold-boot pod carries egress proxy env (HTTPS_PROXY=%q HTTP_PROXY=%q) — ISI-7686 regression guarded",
+				redactProxyURL(httpsProxy), redactProxyURL(httpProxy))
+			return
+		}
+		var nps netv1.NetworkPolicyList
+		if err := h.cl.List(ctx, &nps, client.InNamespace(pod.Namespace)); err != nil {
+			t.Skipf("cannot list NetworkPolicies in %s: %v — egress posture undecidable, probe deferred", pod.Namespace, err)
+		}
+		egressPoliced := false
+		for i := range nps.Items {
+			for _, pt := range nps.Items[i].Spec.PolicyTypes {
+				if pt == netv1.PolicyTypeEgress {
+					egressPoliced = true
+				}
+			}
+			if len(nps.Items[i].Spec.Egress) > 0 {
+				egressPoliced = true
+			}
+		}
+		if egressPoliced {
+			t.Fatalf("Run cold-boot pod %s/%s carries no KSQUAD_SANDBOX_*_PROXY while namespace %s carries an "+
+				"egress NetworkPolicy — this is exactly the ISI-7686 trap (SYN-retry hang -> a2a follow_error -> "+
+				"zombie_no_sandbox); the operator log should carry the fail-loud boot warning",
+				pod.Namespace, pod.Name, pod.Namespace)
+		}
+		t.Skipf("Run cold-boot pod %s/%s carries no KSQUAD_SANDBOX_*_PROXY and namespace %s has no egress "+
+			"NetworkPolicy — proxy-less dev cluster (direct egress legitimate, ISI-5477); probe deferred",
+			pod.Namespace, pod.Name, pod.Namespace)
 	})
 
 	t.Run("telemetry/tool_mcp_skill_spans_and_metrics", func(t *testing.T) {

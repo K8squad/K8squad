@@ -19,11 +19,14 @@ package warmpool
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -31,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/taskio"
@@ -805,5 +809,221 @@ func TestKubeProvisionerFailsClosedOnResolverError(t *testing.T) {
 	// The pod must not have been created.
 	if getErr := c.Get(ctx, clientObjectKey(t, "bmad-squad", "sbx-fail"), &corev1.Pod{}); !apierrors.IsNotFound(getErr) {
 		t.Errorf("pod was created despite resolver error (get err = %v)", getErr)
+	}
+}
+
+// bootCapturingCtx builds a context carrying a capturing logr sink so a test
+// can assert on what KubeProvisioner.Boot logs via log.FromContext. Injecting
+// the logger into the context (not the package global) is the deterministic
+// path — earlier harness calls in the suite may already have bound the global.
+func bootCapturingCtx(lines *[]string) context.Context {
+	return crlog.IntoContext(context.Background(), funcr.New(func(_, msg string) {
+		*lines = append(*lines, msg)
+	}, funcr.Options{}))
+}
+
+func bootProxyGuardScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	return s
+}
+
+// TestKubeProvisionerBootRunProxyGuard (ISI-7691): the fail-loud boot guard's
+// acceptance rule must match the consumer's (pkg/shim.agentProxyEnv trims and
+// drops whitespace-only values). Every row here pins a mutation that Cursor's
+// review of PR #1062 showed surviving the suite: NO_PROXY-only counting as
+// proxied, an empty value counting as proxied, a whitespace value counting as
+// proxied, and NO_PROXY=* bypassing the proxy for every host — each MUST warn.
+func TestKubeProvisionerBootRunProxyGuard(t *testing.T) {
+	rows := []struct {
+		name     string
+		podEnv   []corev1.EnvVar
+		wantWarn bool
+	}{
+		{"no env at all warns", nil, true},
+		{"NO_PROXY only is not proxied", []corev1.EnvVar{{Name: "KSQUAD_SANDBOX_NO_PROXY", Value: ".svc,.cluster.local"}}, true},
+		{"empty HTTPS_PROXY is not proxied", []corev1.EnvVar{{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: ""}}, true},
+		{"whitespace HTTPS_PROXY is not proxied (consumer trims)", []corev1.EnvVar{{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: "  \t\n "}}, true},
+		{"NO_PROXY=* bypasses the proxy for all hosts", []corev1.EnvVar{
+			{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: "http://ksquad-egress.ksquad-system.svc:8888"},
+			{Name: "KSQUAD_SANDBOX_NO_PROXY", Value: "*"},
+		}, true},
+		{"HTTPS_PROXY set stays silent", []corev1.EnvVar{{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: "http://ksquad-egress.ksquad-system.svc:8888"}}, false},
+		{"HTTP_PROXY set stays silent", []corev1.EnvVar{{Name: "KSQUAD_SANDBOX_HTTP_PROXY", Value: "http://ksquad-egress.ksquad-system.svc:8888"}}, false},
+		{"HTTPS_PROXY plus scoped NO_PROXY stays silent", []corev1.EnvVar{
+			{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: "http://ksquad-egress.ksquad-system.svc:8888"},
+			{Name: "KSQUAD_SANDBOX_NO_PROXY", Value: ".svc,.cluster.local,10.0.0.185"},
+		}, false},
+	}
+	for i, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(bootProxyGuardScheme(t)).Build()
+			p := NewKubeProvisioner(c, "", "").WithPodEnv(row.podEnv...)
+
+			var lines []string
+			ctx := bootCapturingCtx(&lines)
+			key := PoolKey{RuntimeClass: "gvisor", Namespace: "ksquad-team-squad", CapabilityHash: "abc", Image: "reg.example/ksquad-shim-codex:m1"}
+			if err := p.Boot(ctx, key, fmt.Sprintf("sbx-guard-%d", i), "run-uid-guard", BootRun); err != nil {
+				t.Fatalf("boot: %v", err)
+			}
+			warned := false
+			for _, l := range lines {
+				if strings.Contains(l, "NO effective KSQUAD_SANDBOX_*_PROXY") {
+					warned = true
+				}
+			}
+			if warned != row.wantWarn {
+				t.Fatalf("wantWarn=%v got warned=%v; log lines=%v", row.wantWarn, warned, lines)
+			}
+			if p.SandboxEgressProxied() == row.wantWarn {
+				t.Fatalf("SandboxEgressProxied()=%v inconsistent with wantWarn=%v", p.SandboxEgressProxied(), row.wantWarn)
+			}
+		})
+	}
+}
+
+// TestKubeProvisionerBootRunProxyGuardSpanAttr (ISI-7691 review #3): the
+// guard stamps ksquad.sandbox.egress.proxied onto the boot's trace span so the
+// posture is queryable in coord telemetry, not just in the operator log.
+func TestKubeProvisionerBootRunProxyGuardSpanAttr(t *testing.T) {
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+
+	c := fake.NewClientBuilder().WithScheme(bootProxyGuardScheme(t)).Build()
+	p := NewKubeProvisioner(c, "", "")
+
+	var lines []string
+	ctx, span := tp.Tracer("test").Start(bootCapturingCtx(&lines), "run.reconcile")
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "ksquad-team-squad", CapabilityHash: "abc", Image: "reg.example/ksquad-shim-codex:m1"}
+	if err := p.Boot(ctx, key, "sbx-span", "run-uid-span", BootRun); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	span.End()
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("want 1 ended span, got %d", len(spans))
+	}
+	var got *bool
+	for _, a := range spans[0].Attributes() {
+		if a.Key == "ksquad.sandbox.egress.proxied" {
+			v := a.Value.AsBool()
+			got = &v
+		}
+	}
+	if got == nil {
+		t.Fatalf("span %q missing ksquad.sandbox.egress.proxied attribute; attrs=%v", spans[0].Name(), spans[0].Attributes())
+	}
+	if *got != false {
+		t.Fatalf("ksquad.sandbox.egress.proxied = %v, want false for a proxy-less cold boot", *got)
+	}
+}
+
+// TestBootMeshPoolProxyGuard (ISI-7691 review #2): a mesh pool pod dials the
+// model endpoint through its standing shim-supervisor children, so BootMeshPool
+// must fail loud when the pod carries no effective proxy env — and stay quiet
+// when it does.
+func TestBootMeshPoolProxyGuard(t *testing.T) {
+	spec := MeshPoolSpec{
+		Team: "squad", Role: "coder", Image: "reg.example/ksquad-mesh:m1",
+		Namespace: "ksquad-team-squad", Model: "https://api.deepseek.com/v1/chat/completions",
+	}
+
+	t.Run("proxy-less mesh pod warns", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(bootProxyGuardScheme(t)).Build()
+		p := NewKubeProvisioner(c, "", "")
+		var lines []string
+		if err := p.BootMeshPool(bootCapturingCtx(&lines), spec); err != nil {
+			t.Fatalf("BootMeshPool: %v", err)
+		}
+		warned := false
+		for _, l := range lines {
+			if strings.Contains(l, "mesh pool pod has NO effective KSQUAD_SANDBOX_*_PROXY") {
+				warned = true
+			}
+		}
+		if !warned {
+			t.Fatalf("proxy-less mesh boot emitted no fail-loud warning; lines=%v", lines)
+		}
+	})
+
+	t.Run("proxied mesh pod stays silent", func(t *testing.T) {
+		c := fake.NewClientBuilder().WithScheme(bootProxyGuardScheme(t)).Build()
+		p := NewKubeProvisioner(c, "", "").WithPodEnv(
+			corev1.EnvVar{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: "http://ksquad-egress.ksquad-system.svc:8888"},
+		)
+		var lines []string
+		if err := p.BootMeshPool(bootCapturingCtx(&lines), spec); err != nil {
+			t.Fatalf("BootMeshPool: %v", err)
+		}
+		for _, l := range lines {
+			if strings.Contains(l, "NO effective KSQUAD_SANDBOX_*_PROXY") {
+				t.Fatalf("proxied mesh boot still warned: %q", l)
+			}
+		}
+	})
+}
+
+// TestKubeProvisionerBootRunSilentWithProxy (ISI-7691): when the operator
+// stamped a forward-proxy endpoint (WithPodEnv, the ISI-5477 path), that env
+// reaches the Run cold-boot pod spec end-to-end AND the fail-loud guard stays
+// quiet — proxied egress is the healthy case.
+func TestKubeProvisionerBootRunSilentWithProxy(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(bootProxyGuardScheme(t)).Build()
+	p := NewKubeProvisioner(c, "", "").WithPodEnv(
+		corev1.EnvVar{Name: "KSQUAD_SANDBOX_HTTPS_PROXY", Value: "http://ksquad-egress.ksquad-system.svc:8888"},
+		corev1.EnvVar{Name: "KSQUAD_SANDBOX_NO_PROXY", Value: ".svc,.cluster.local"},
+	)
+
+	var lines []string
+	ctx := bootCapturingCtx(&lines)
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "ksquad-team-squad", CapabilityHash: "abc", Image: "reg.example/ksquad-shim-codex:m1"}
+	if err := p.Boot(ctx, key, "sbx-proxied", "run-uid-2", BootRun); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+
+	for _, l := range lines {
+		if strings.Contains(l, "NO effective KSQUAD_SANDBOX_*_PROXY") {
+			t.Fatalf("proxied Run cold-boot still emitted the missing-proxy warning: %q", l)
+		}
+	}
+
+	// End-to-end: the proxy env must actually reach the Run cold-boot pod spec
+	// (pool.go BootRun -> kube.go env append), the gap ISI-7686 was chasing.
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "ksquad-team-squad", "sbx-proxied"), pod); err != nil {
+		t.Fatalf("get run pod: %v", err)
+	}
+	var gotProxy string
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == "KSQUAD_SANDBOX_HTTPS_PROXY" {
+			gotProxy = e.Value
+		}
+	}
+	if gotProxy != "http://ksquad-egress.ksquad-system.svc:8888" {
+		t.Fatalf("KSQUAD_SANDBOX_HTTPS_PROXY on run pod = %q, want the stamped egress proxy", gotProxy)
+	}
+}
+
+// TestKubeProvisionerBootWarmNeverWarnsProxy (ISI-7691): a warm (idle) boot
+// dials nothing and must not trip the Run-cold-boot proxy guard — the guard is
+// BootRun-scoped so steady-state warm replenishment stays quiet.
+func TestKubeProvisionerBootWarmNeverWarnsProxy(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(bootProxyGuardScheme(t)).Build()
+	p := NewKubeProvisioner(c, "", "")
+
+	var lines []string
+	ctx := bootCapturingCtx(&lines)
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "ksquad-team-squad", CapabilityHash: "abc", Image: "reg.example/ksquad-shim-codex:m1"}
+	if err := p.Boot(ctx, key, "sbx-warm", "", BootWarm); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "NO effective KSQUAD_SANDBOX_*_PROXY") {
+			t.Fatalf("warm boot tripped the Run-cold-boot proxy guard: %q", l)
+		}
 	}
 }

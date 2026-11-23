@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -396,7 +397,7 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	if len(proxyEnv) == 0 {
 		fmt.Fprintf(os.Stderr, "shim: agent egress is DIRECT (no KSQUAD_SANDBOX_*_PROXY on the shim/operator env); an external model FQDN blocked by the egress NetworkPolicy will hang on a TCP SYN-retry timeout, not fail fast\n")
 	} else {
-		fmt.Fprintf(os.Stderr, "shim: agent egress proxy injected: %s\n", strings.Join(proxyEnv, " "))
+		fmt.Fprintf(os.Stderr, "shim: agent egress proxy injected: %s\n", strings.Join(redactProxyEnv(proxyEnv), " "))
 	}
 	// ISI-4188 gap 5: an adapter-set Stdin is the prompt channel for CLIs that
 	// read their message from stdin (opencode `run`). The reader is handed to
@@ -783,6 +784,28 @@ func writeWorkDirFile(path string, content []byte) error {
 // ksquad-system, OTLP gateway, cluster DNS) AND any LAN BYO endpoint (e.g.
 // Ollama 10.0.0.185) so ONLY the external model FQDN egresses via the proxy;
 // that contract is owned by the operator config (Helm) that sets the source.
+// redactProxyEnv masks userinfo in each NAME=value proxy entry before it is
+// logged: forward-proxy URLs legitimately carry basic-auth credentials
+// (http://user:pass@proxy:8888) and pod stderr must not leak them
+// (ISI-7691 review — the endpoint is non-secret, embedded credentials are).
+func redactProxyEnv(env []string) []string {
+	out := make([]string, len(env))
+	for i, kv := range env {
+		name, val, ok := strings.Cut(kv, "=")
+		if !ok {
+			out[i] = kv
+			continue
+		}
+		if strings.Contains(val, "://") {
+			if u, err := url.Parse(val); err == nil && u.User != nil {
+				val = u.Redacted()
+			}
+		}
+		out[i] = name + "=" + val
+	}
+	return out
+}
+
 func agentProxyEnv(getenv func(string) string) []string {
 	var env []string
 	for _, m := range []struct {

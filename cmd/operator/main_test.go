@@ -114,3 +114,59 @@ func TestApplyEnvOTLPFallback(t *testing.T) {
 		}
 	})
 }
+
+// TestStampSandboxProxyEnv (ISI-7691 review #1/#6): the startup stamp must
+// treat whitespace-only operator env values as ABSENT — the in-pod consumer
+// (pkg/shim.agentProxyEnv) trims and drops them, so stamping them would
+// suppress the fail-loud warning while the child still egresses DIRECT.
+// NO_PROXY alone must not count as a stamped forward proxy either.
+func TestStampSandboxProxyEnv(t *testing.T) {
+	t.Run("all unset stamps nothing and reports unproxied", func(t *testing.T) {
+		vars, proxied := stampSandboxProxyEnv(envFrom(nil))
+		if proxied || len(vars) != 0 {
+			t.Fatalf("want no vars + unproxied, got vars=%v proxied=%v", vars, proxied)
+		}
+	})
+
+	t.Run("whitespace-only HTTPS_PROXY is NOT a stamped proxy", func(t *testing.T) {
+		vars, proxied := stampSandboxProxyEnv(envFrom(map[string]string{"KSQUAD_SANDBOX_HTTPS_PROXY": "  \n "}))
+		if proxied || len(vars) != 0 {
+			t.Fatalf("want no vars + unproxied, got vars=%v proxied=%v", vars, proxied)
+		}
+	})
+
+	t.Run("NO_PROXY alone does not count as proxied", func(t *testing.T) {
+		vars, proxied := stampSandboxProxyEnv(envFrom(map[string]string{"KSQUAD_SANDBOX_NO_PROXY": ".svc,.cluster.local"}))
+		if proxied {
+			t.Fatalf("NO_PROXY-only must report unproxied, got vars=%v", vars)
+		}
+		if len(vars) != 1 || vars[0].Name != "KSQUAD_SANDBOX_NO_PROXY" {
+			t.Fatalf("NO_PROXY should still be stamped onto the pod, got %v", vars)
+		}
+	})
+
+	t.Run("HTTPS_PROXY set stamps trimmed value and reports proxied", func(t *testing.T) {
+		vars, proxied := stampSandboxProxyEnv(envFrom(map[string]string{
+			"KSQUAD_SANDBOX_HTTPS_PROXY": " http://ksquad-egress.ksquad-system.svc:8888 \n",
+			"KSQUAD_SANDBOX_NO_PROXY":    ".svc,.cluster.local,10.0.0.185",
+		}))
+		if !proxied {
+			t.Fatalf("want proxied, got vars=%v", vars)
+		}
+		if len(vars) != 2 {
+			t.Fatalf("want 2 stamped vars, got %v", vars)
+		}
+		for _, v := range vars {
+			if v.Name == "KSQUAD_SANDBOX_HTTPS_PROXY" && v.Value != "http://ksquad-egress.ksquad-system.svc:8888" {
+				t.Fatalf("stamped value must be trimmed, got %q", v.Value)
+			}
+		}
+	})
+
+	t.Run("HTTP_PROXY alone counts as proxied", func(t *testing.T) {
+		vars, proxied := stampSandboxProxyEnv(envFrom(map[string]string{"KSQUAD_SANDBOX_HTTP_PROXY": "http://proxy:8888"}))
+		if !proxied || len(vars) != 1 {
+			t.Fatalf("want 1 var + proxied, got vars=%v proxied=%v", vars, proxied)
+		}
+	})
+}

@@ -173,6 +173,31 @@ func resolveTelemetryOptions(ctx context.Context, cfg *rest.Config, opts *teleme
 // gateway's OTLP port) when unset. The endpoint is passed through verbatim: the
 // spine's parseGRPCEndpoint strips an http:// scheme and dials the in-cluster
 // gateway insecurely.
+// stampSandboxProxyEnv reads the NAMESPACED KSQUAD_SANDBOX_*_PROXY vars from
+// the operator's own env and returns the pod-env entries to stamp on every
+// sandbox pod plus whether a forward-proxy endpoint was stamped. Values are
+// TRIMMED before both the emptiness check and the stamp: the in-pod consumer
+// (pkg/shim.agentProxyEnv) trims values and drops anything that trims empty,
+// so a whitespace-only operator env value is NOT a stamped proxy and must not
+// silence the ISI-7691 startup warning (ISI-7691 review H1).
+func stampSandboxProxyEnv(getenv func(string) string) (vars []corev1.EnvVar, proxied bool) {
+	for _, name := range []string{
+		"KSQUAD_SANDBOX_HTTPS_PROXY",
+		"KSQUAD_SANDBOX_HTTP_PROXY",
+		"KSQUAD_SANDBOX_NO_PROXY",
+	} {
+		v := strings.TrimSpace(getenv(name))
+		if v == "" {
+			continue
+		}
+		vars = append(vars, corev1.EnvVar{Name: name, Value: v})
+		if name != "KSQUAD_SANDBOX_NO_PROXY" {
+			proxied = true
+		}
+	}
+	return vars, proxied
+}
+
 func envOTLPSignalExport(getenv func(string) string) *telemetry.SignalExport {
 	endpoint := strings.TrimSpace(getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 	if endpoint == "" {
@@ -720,20 +745,31 @@ func main() {
 		// We pass through the NAMESPACED KSQUAD_SANDBOX_*_PROXY values, NOT the
 		// conventional names — stamping HTTPS_PROXY directly on the pod would
 		// also proxy the supervisor's own in-cluster egress. The same env also
-		// rides THIS operator pod (Helm operator.yaml), so the operator-spawned
-		// `shim run` topology is covered by the same getenv the shim reads;
-		// this block extends that to the in-sandbox topology. Values only —
-		// proxy endpoints are not secrets (minimal-env invariant holds).
-		for _, name := range []string{
-			"KSQUAD_SANDBOX_HTTPS_PROXY",
-			"KSQUAD_SANDBOX_HTTP_PROXY",
-			"KSQUAD_SANDBOX_NO_PROXY",
-		} {
-			if v := os.Getenv(name); v != "" {
-				kubeProvisioner = kubeProvisioner.WithPodEnv(
-					corev1.EnvVar{Name: name, Value: v},
-				)
-			}
+		// rides THIS operator pod (deploy/helm/ksquad/templates/operator.yaml —
+		// the config/helm control-plane chart carries no KSQUAD_SANDBOX_* env),
+		// so the operator-spawned `shim run` topology is covered by the same
+		// getenv the shim reads; this block extends that to the in-sandbox
+		// topology. Values only — proxy endpoints are not secrets
+		// (minimal-env invariant holds).
+		proxyVars, sandboxProxyStamped := stampSandboxProxyEnv(os.Getenv)
+		kubeProvisioner = kubeProvisioner.WithPodEnv(proxyVars...)
+		// ISI-7691: make the empty-proxy-env config gap LOUD at operator
+		// startup instead of a silent skip. If no forward-proxy endpoint rode
+		// this operator's env at process construction, the block above stamped
+		// nothing and EVERY sandbox this operator boots (warm AND Run
+		// cold-boot) egresses DIRECT. For a Run whose BYO model endpoint is an
+		// external FQDN, a team-namespace egress NetworkPolicy then black-holes
+		// the dial into a ~134s SYN-retry hang -> follow_error ->
+		// zombie_no_sandbox (ISI-7686). Surface it once at boot so the gap is
+		// diagnosable from the operator log, not only from a dead sandbox's
+		// post-mortem; the per-boot guard (warmpool.KubeProvisioner.Boot)
+		// repeats it per Run cold-boot.
+		if !sandboxProxyStamped {
+			ctrl.Log.Info("WARNING: no effective KSQUAD_SANDBOX_HTTPS_PROXY/HTTP_PROXY on the operator env — " +
+				"sandbox pods will boot with DIRECT egress; a Run with an external model FQDN behind the " +
+				"team-namespace egress NetworkPolicy will hang on a TCP SYN-retry timeout (ISI-7686), not " +
+				"fail fast. Configure the operator Deployment proxy env " +
+				"(deploy/helm/ksquad/templates/operator.yaml / ISI-5477).")
 		}
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
 		// M1.2: the pod watch that reports sandbox pod readiness into the pool
