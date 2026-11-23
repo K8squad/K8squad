@@ -9,7 +9,7 @@ toolchain go1.26.11
 // pairs with k8s.io/* v0.31.x and controller-tools (controller-gen) v0.16.x.
 require (
 	k8s.io/apimachinery v0.37.2
-	sigs.k8s.io/controller-runtime v0.25.2
+	sigs.k8s.io/controller-runtime v0.25.3
 )
 
 require (
@@ -21,7 +21,7 @@ require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/lib/pq v1.12.3
-	github.com/nats-io/nats.go v1.55.0
+	github.com/nats-io/nats.go v1.56.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/common v0.74.0
 	github.com/stretchr/testify v1.12.1
