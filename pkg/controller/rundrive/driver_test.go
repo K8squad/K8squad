@@ -1587,3 +1587,42 @@ func TestGoneSandboxSlotWaiterRequeuesNotFails(t *testing.T) {
 		t.Fatalf("the regressed waiter must release its slot (holders=%v)", gate.holders)
 	}
 }
+
+// ISI-7687: a Run being deleted (DeletionTimestamp set) releases its endpoint
+// AND agent gate permits on the deletion exit — the in-memory gate must not
+// outlive the CR. The ISI-7685 incident wedged dispatch for hours because the
+// projector's "patch run status ... not found" aborted the pass before any
+// ReleaseByRun and only an operator restart reset the gate. A Run carries no
+// finalizer in production today (the CR vanishes immediately), so this branch
+// is defensive — pinned here with a finalizer-held Terminating CR.
+func TestDriveDeletingRunReleasesGatePermits(t *testing.T) {
+	uid := "22222222-2222-2222-2222-222222222222"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	now := metav1.Now()
+	run.Finalizers = []string{"ksquad.io/test-hold"} // fake client requires one to hold a deletionTimestamp
+	run.DeletionTimestamp = &now
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	d := newDriver(cl, &fakeClaims{found: false}, &fakePauses{}, &fakeRunner{})
+
+	const ep = "http://10.0.0.185:11434"
+	eg := NewEndpointGate(1)
+	if _, ok := eg.Acquire(ep, uid, 1, PriorityKey{}); !ok {
+		t.Fatal("endpoint acquire refused on a free gate")
+	}
+	ag := NewAgentGate()
+	if _, ok := ag.Acquire("t", "sam", uid, DispatchPriorityKey{}); !ok {
+		t.Fatal("agent acquire refused on a free gate")
+	}
+	d.EndpointGate = eg
+	d.AgentGate = ag
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("deletion drive: %v", err)
+	}
+	if _, ok := eg.Acquire(ep, "other-run", 1, PriorityKey{}); !ok {
+		t.Fatal("endpoint slot still held after the holder CR entered deletion")
+	}
+	if _, ok := ag.Acquire("t", "sam", "other-run", DispatchPriorityKey{}); !ok {
+		t.Fatal("agent slot still held after the holder CR entered deletion")
+	}
+}

@@ -169,7 +169,7 @@ func (l *LiveRuns) IsWaitingForEndpointSlot(ctx context.Context, runID string) (
 // endpointSlotGate is the sweep-facing subset of *EndpointGate (ISI-7483):
 // reclaim the permits of dead holders and release a run's slots outright.
 type endpointSlotGate interface {
-	ReclaimHolders(live func(runID string) (bool, error)) []EvictedHolder
+	ReclaimHoldersSince(live func(runID string, heldSince time.Time) (bool, error)) []EvictedHolder
 	ReleaseByRun(runID string)
 }
 
@@ -184,6 +184,14 @@ type agentReclaimGate interface {
 // ISI-7483 holder reclaim (satisfied by *LiveRuns.TerminalOrGone).
 type runTerminalChecker interface {
 	TerminalOrGone(ctx context.Context, runID string) (bool, error)
+}
+
+// runTerminalBatchChecker is the batched form of runTerminalChecker
+// (*LiveRuns.TerminalOrGoneAll): one unselected RunList per sweep pass,
+// verdicts indexed by UID, instead of one full list PER HOLDER — the sweep
+// checks many holders every 10s through the uncached API reader.
+type runTerminalBatchChecker interface {
+	TerminalOrGoneAll(ctx context.Context) (map[string]bool, error)
 }
 
 // agentSlotWaitChecker answers "is this Run queued behind its busy agent?"
@@ -264,6 +272,30 @@ func (l *LiveRuns) IsQueuedAtSupervisor(ctx context.Context, runID string) (bool
 	return false, nil
 }
 
+// terminalOrGoneVerdict is the per-Run verdict behind TerminalOrGone and
+// TerminalOrGoneAll. ISI-7687: a Terminating CR (DeletionTimestamp set) counts
+// as gone — a deleting Run can hold nothing — instead of waiting for it to
+// vanish from the list (a deletion held up past the projector's status-patch
+// error kept the holder "live" otherwise). NOTE: this predicate is SHARED —
+// cmd/operator/main.go also wires it as the warm-pool terminal reaper's
+// oracle (warmpool.SweepTerminalRunOwned DELETES the pod on a true verdict),
+// so the Terminating case additionally tears down a deleting Run's sandbox;
+// and between the verdict and the pod's actual termination the gate may admit
+// a second run onto a 1-slot endpoint while the first is still streaming.
+func terminalOrGoneVerdict(run *ksquadv1alpha1.Run) bool {
+	if run.DeletionTimestamp != nil {
+		return true
+	}
+	switch run.Status.Phase {
+	case ksquadv1alpha1.RunPhaseSucceeded,
+		ksquadv1alpha1.RunPhaseFailed,
+		ksquadv1alpha1.RunPhaseCancelled:
+		return true // terminal: its sandbox is leaked
+	default:
+		return false // Pending/Claiming/Running/Paused/Canceling: keep
+	}
+}
+
 // TerminalOrGone reports whether the Run owning a sandbox pod has reached a
 // terminal phase (Succeeded/Failed/Cancelled) or no longer exists (ISI-5438).
 // A sandbox whose Run is terminal is LEAKED — the a2a-settlement reaper
@@ -286,16 +318,30 @@ func (l *LiveRuns) TerminalOrGone(ctx context.Context, runID string) (bool, erro
 		if string(runs.Items[i].UID) != runID {
 			continue
 		}
-		switch runs.Items[i].Status.Phase {
-		case ksquadv1alpha1.RunPhaseSucceeded,
-			ksquadv1alpha1.RunPhaseFailed,
-			ksquadv1alpha1.RunPhaseCancelled:
-			return true, nil // terminal: its sandbox is leaked
-		default:
-			return false, nil // Pending/Claiming/Running/Paused/Canceling: keep
-		}
+		return terminalOrGoneVerdict(&runs.Items[i]), nil
 	}
 	return true, nil // Run CR with this UID is gone: the sandbox is orphaned
+}
+
+// TerminalOrGoneAll is the batched form of TerminalOrGone (ISI-7687): ONE
+// unselected RunList per call, returning the terminal-or-gone verdict per Run
+// UID. The holder-reclaim sweep checks many holders per 10s tick through the
+// uncached API reader, so per-holder lists made the sweep O(holders x all
+// Runs) in API round trips; a UID missing from the map is gone (same verdict
+// TerminalOrGone returns for an absent CR).
+func (l *LiveRuns) TerminalOrGoneAll(ctx context.Context) (map[string]bool, error) {
+	if l == nil || l.Reader == nil {
+		return nil, nil
+	}
+	runs := &ksquadv1alpha1.RunList{}
+	if err := l.Reader.List(ctx, runs); err != nil {
+		return nil, fmt.Errorf("rundrive.heartbeat: list runs: %w", err)
+	}
+	out := make(map[string]bool, len(runs.Items))
+	for i := range runs.Items {
+		out[string(runs.Items[i].UID)] = terminalOrGoneVerdict(&runs.Items[i])
+	}
+	return out, nil
 }
 
 // HeartbeatInterval is the keepalive tick. It is comfortably inside the 30s
@@ -363,6 +409,14 @@ type HeartbeatSweeper struct {
 	// HolderTerminal reports whether a run uid is terminal or its Run CR is
 	// gone (*LiveRuns.TerminalOrGone). Nil disables the reclaim.
 	HolderTerminal runTerminalChecker
+	// HolderSandbox answers whether a holder run still has a live sandbox
+	// pod (ISI-7687 — *LiveRuns.HasLiveSandbox). A holder whose Run CR is
+	// non-terminal but whose sandbox has been absent past the stall grace
+	// (anchored on the gate's frozen acquisition time) is a zombie holder:
+	// its slot is reclaimed so queued waiters proceed. Nil disables the
+	// pod-liveness half (terminal-or-gone reclaim only — pre-ISI-7687
+	// behavior).
+	HolderSandbox runLivenessChecker
 	// ZombieStallGrace overrides DefaultZombieStallGrace when > 0 (tests shrink
 	// it). A pod-less in-flight claim older than this is released as a zombie.
 	ZombieStallGrace time.Duration
@@ -507,27 +561,100 @@ func (s *HeartbeatSweeper) reclaimDeadHolders(ctx context.Context) {
 	if s.HolderTerminal == nil || (s.EndpointGate == nil && s.AgentGate == nil) {
 		return
 	}
-	live := func(runID string) (bool, error) {
-		dead, err := s.HolderTerminal.TerminalOrGone(ctx, runID)
-		if err != nil {
-			return true, err // fail-safe: never reclaim on a maybe
+	// ISI-7687 review: hoist the RunList to ONCE per sweep pass (indexed by
+	// UID) instead of one unselected list per holder — the gate now calls
+	// this predicate outside its mutex, but the per-holder list was still
+	// O(holders x all Runs) in API round trips every 10s.
+	verdicts, verdictErr := s.terminalVerdicts(ctx)
+	live := func(runID string, heldSince time.Time) (bool, error) {
+		var dead bool
+		if verdicts != nil {
+			if verdictErr != nil {
+				return true, verdictErr // fail-safe: never reclaim on a maybe
+			}
+			var ok bool
+			dead, ok = verdicts[runID]
+			if !ok {
+				dead = true // Run CR gone
+			}
+		} else {
+			d, err := s.HolderTerminal.TerminalOrGone(ctx, runID)
+			if err != nil {
+				return true, err // fail-safe: never reclaim on a maybe
+			}
+			dead = d
 		}
-		return !dead, nil
+		if dead {
+			return false, nil
+		}
+		// ISI-7687 liveness gap: terminal-or-gone alone reports a wedged
+		// non-terminal holder (status.sandbox=null, never terminalized) as
+		// live forever — the 116h single-slot BYO hold. Past the bring-up
+		// grace, also require a live sandbox pod.
+		return s.holderSandboxLive(ctx, runID, heldSince)
 	}
 	if s.EndpointGate != nil {
-		evicted := s.EndpointGate.ReclaimHolders(live)
+		evicted := s.EndpointGate.ReclaimHoldersSince(live)
 		for _, e := range evicted {
 			s.logf("rundrive.heartbeat: reclaimed BYO endpoint slot on %s from dead holder run %s — queued waiters proceed (ISI-7483)",
 				e.Endpoint, e.RunID)
 		}
 	}
 	if s.AgentGate != nil {
-		agentEvicted := s.AgentGate.ReclaimInflight(live)
+		// Age-blind for the agent axis (ISI-7499 C4 shape): the zero
+		// heldSince disables the ISI-7687 sandbox half — the agent slot
+		// reclaims on terminal-or-gone only.
+		agentEvicted := s.AgentGate.ReclaimInflight(func(id string) (bool, error) {
+			return live(id, time.Time{})
+		})
 		for _, e := range agentEvicted {
 			s.logf("rundrive.heartbeat: reclaimed agent dispatch slot %s from dead holder run %s — queued runs proceed (ISI-7499 C4)",
 				e.Endpoint, e.RunID)
 		}
 	}
+}
+
+// terminalVerdicts returns the terminal-or-gone verdict for every Run UID in
+// ONE RunList when the checker supports the batch form, else falls back to
+// per-run TerminalOrGone calls (verdicts stays nil and verdictErr nil, and
+// the caller re-checks per run). A list error is returned so the reclaim
+// fails SAFE (never reclaim on a maybe).
+func (s *HeartbeatSweeper) terminalVerdicts(ctx context.Context) (map[string]bool, error) {
+	if b, ok := s.HolderTerminal.(runTerminalBatchChecker); ok {
+		return b.TerminalOrGoneAll(ctx)
+	}
+	return nil, nil // no batch form: per-run fallback in the live closure
+}
+
+// holderSandboxLive is the ISI-7687 holder half of the reclaim predicate:
+// a holder that has held its slot longer than the stall grace (the same
+// DefaultZombieStallGrace the claim-side zombie gate uses, measured from
+// the gate's frozen acquisition time) must prove a live sandbox pod or
+// yield the slot — a sandbox that never became Ready must not hold a
+// single-slot BYO endpoint unbounded. Within the grace the holder is kept
+// without the pod check (cold-boot allowance). A checker error fails SAFE
+// (keep — never reclaim on a maybe); a nil checker or a zero heldSince
+// (pre-ISI-7687 gate state) also keeps. NOTE the deliberate asymmetry with
+// the claim-side zombie gate above: that gate skips paused steps
+// (isPausedStep) because park() keeps the pod during an intentional
+// credential/rate-limit wait, while THIS holder-side predicate has no paused
+// exemption — park() neither releases the endpoint permit nor touches the
+// pod, so a paused holder whose pod vanished is evicted here while the
+// claim-side gate keeps the claim. Today a parked run's pod normally survives
+// the pause, so the two gates agree in practice; the asymmetry is documented
+// here so a later refactor does not "fix" it by accident.
+func (s *HeartbeatSweeper) holderSandboxLive(ctx context.Context, runID string, heldSince time.Time) (bool, error) {
+	if s.HolderSandbox == nil || heldSince.IsZero() {
+		return true, nil
+	}
+	grace := s.ZombieStallGrace
+	if grace <= 0 {
+		grace = DefaultZombieStallGrace
+	}
+	if s.clock().Sub(heldSince) <= grace {
+		return true, nil // bring-up window: the sandbox may not exist yet
+	}
+	return s.HolderSandbox.HasLiveSandbox(ctx, runID)
 }
 
 // releaseGateSlot drops a dead/terminal run's endpoint-gate presence (slots

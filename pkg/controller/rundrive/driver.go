@@ -397,6 +397,23 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if run.DeletionTimestamp != nil || run.Spec.WorkItemRef == "" {
+		// ISI-7687: a deleted holder must not drag its BYO endpoint slot
+		// (and agent dispatch slot) with it. Before this the deletion exit
+		// returned HERE with the in-process permit still held — the projector
+		// aborted on "patch run status ... not found" before any
+		// ReleaseByRun, and the only release was the sweep backstop (or an
+		// operator restart when that did not fire in time). ReleaseByRun and
+		// Release are idempotent and nil-safe; a WorkItemRef-less run never
+		// acquired a slot (buildTask needs the ref), so only the deletion
+		// case pays.
+		if run.DeletionTimestamp != nil {
+			if r.EndpointGate != nil {
+				r.EndpointGate.ReleaseByRun(string(run.UID))
+			}
+			if r.AgentGate != nil {
+				r.AgentGate.Release(string(run.UID))
+			}
+		}
 		return ctrl.Result{}, nil
 	}
 	runID := string(run.UID)

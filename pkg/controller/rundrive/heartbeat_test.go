@@ -1019,3 +1019,191 @@ func TestHeartbeatReleaseGateSlot(t *testing.T) {
 		t.Fatalf("slot not freed by releaseGateSlot")
 	}
 }
+
+// ---- ISI-7687: holder-side liveness gap (the 116h BYO hold) --------------
+
+// ISI-7687: a holder whose Run CR is non-terminal (alive to TerminalOrGone)
+// but whose sandbox has been absent past the grace is reclaimed — the
+// sympozium hold (status.sandbox=null, never terminalized, 116h).
+func TestHeartbeatSweepReclaimsPodlessHolderPastGrace(t *testing.T) {
+	g := NewEndpointGate(1)
+	then := time.Now().Add(-2 * time.Hour)
+	g.now = func() time.Time { return then }
+	if _, ok := g.Acquire("ep", "holder", 1, PriorityKey{}); !ok {
+		t.Fatalf("acquire refused on a free gate")
+	}
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
+		t.Fatalf("waiter admitted onto a full gate")
+	}
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{} // CR exists, non-terminal: live
+	s.HolderSandbox = &fakeLive{live: map[string]bool{"holder": false}}
+	s.ZombieStallGrace = time.Minute
+	s.Now = func() time.Time { return then.Add(2 * time.Hour) }
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); !ok {
+		t.Fatalf("waiter still refused after the pod-less holder was reclaimed")
+	}
+}
+
+// ISI-7687: a streaming holder keeps its slot however long the hold — a
+// live sandbox pod is proof of use, not of a leak.
+func TestHeartbeatSweepKeepsHolderWithLiveSandbox(t *testing.T) {
+	g := NewEndpointGate(1)
+	then := time.Now().Add(-2 * time.Hour)
+	g.now = func() time.Time { return then }
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	g.Acquire("ep", "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{}
+	s.HolderSandbox = &fakeLive{live: map[string]bool{"holder": true}}
+	s.ZombieStallGrace = time.Minute
+	s.Now = func() time.Time { return then.Add(2 * time.Hour) }
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
+		t.Fatalf("live-sandbox holder evicted")
+	}
+}
+
+// ISI-7687: within the bring-up grace a pod-less holder is kept — the cold
+// sandbox boot allowance, identical discipline to the claim-side zombie
+// gate.
+func TestHeartbeatSweepKeepsPodlessHolderWithinGrace(t *testing.T) {
+	g := NewEndpointGate(1)
+	t0 := time.Now()
+	g.now = func() time.Time { return t0 }
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	g.Acquire("ep", "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{}
+	s.HolderSandbox = &fakeLive{live: map[string]bool{}} // pod-less if asked
+	s.ZombieStallGrace = time.Hour
+	s.Now = func() time.Time { return t0.Add(time.Minute) }
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
+		t.Fatalf("holder evicted inside the bring-up grace")
+	}
+}
+
+// ISI-7687: a checker error on the holder's sandbox liveness fails SAFE —
+// the slot is kept (never reclaim on a maybe).
+func TestHeartbeatSweepHolderReclaimFailsSafeOnSandboxError(t *testing.T) {
+	g := NewEndpointGate(1)
+	then := time.Now().Add(-2 * time.Hour)
+	g.now = func() time.Time { return then }
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	g.Acquire("ep", "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{}
+	s.HolderSandbox = &fakeLive{err: fmt.Errorf("list pods: boom")}
+	s.ZombieStallGrace = time.Minute
+	s.Now = func() time.Time { return then.Add(2 * time.Hour) }
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
+		t.Fatalf("holder evicted on a sandbox-check maybe")
+	}
+}
+
+// ISI-7687: a Terminating Run CR counts as gone — a deleted holder must not
+// stay "live" while its deletion is in flight.
+func TestLiveRunsTerminalOrGoneDeletionTimestampIsGone(t *testing.T) {
+	doomed := &api.Run{}
+	doomed.Name = "doomed"
+	doomed.Namespace = "ns"
+	doomed.UID = "uid-doomed"
+	doomed.Finalizers = []string{"ksquad.io/test-hold"} // fake client requires one for deletionTimestamp
+	doomed.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(doomed).Build()
+	lr := &LiveRuns{Reader: cl}
+	got, err := lr.TerminalOrGone(context.Background(), "uid-doomed")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got {
+		t.Fatalf("Terminating run reported not gone")
+	}
+}
+
+// fakeAgentReclaimGate fakes the agentReclaimGate seam and records whether
+// the sweep's predicate was consulted.
+type fakeAgentReclaimGate struct {
+	inflight []EvictedHolder
+	evicted  []EvictedHolder
+	released []string
+}
+
+func (f *fakeAgentReclaimGate) ReclaimInflight(live func(runID string) (bool, error)) []EvictedHolder {
+	var ev []EvictedHolder
+	for _, e := range f.inflight {
+		ok, err := live(e.RunID)
+		if err != nil || ok {
+			continue
+		}
+		ev = append(ev, e)
+	}
+	f.evicted = ev
+	return ev
+}
+
+func (f *fakeAgentReclaimGate) Release(runID string) { f.released = append(f.released, runID) }
+
+// ISI-7687 (review): the agent axis stays AGE-BLIND — the sweep passes a zero
+// heldSince so the sandbox-liveness half never applies there (ISI-7499 C4
+// waiters are pod-less BY DESIGN). A non-terminal agent-slot holder with no
+// live sandbox pod must therefore NOT be reclaimed: if the adapter ever
+// forwarded the real acquisition time, the past-grace pod check would evict
+// it. Pins the zero-heldSince contract.
+func TestHeartbeatSweepAgentAxisStaysAgeBlind(t *testing.T) {
+	ag := &fakeAgentReclaimGate{inflight: []EvictedHolder{{Endpoint: "team/sam", RunID: "holder"}}}
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.AgentGate = ag
+	s.HolderTerminal = fakeRunTerminalChecker{} // CR exists, non-terminal
+	s.HolderSandbox = &fakeLive{live: map[string]bool{}} // pod-less if ever asked
+	s.ZombieStallGrace = time.Minute
+	then := time.Now().Add(-2 * time.Hour)
+	s.Now = func() time.Time { return then.Add(2 * time.Hour) } // far past any grace
+	s.reclaimDeadHolders(context.Background())
+	if len(ag.evicted) != 0 {
+		t.Fatalf("agent gate evicted a non-terminal age-blind holder: %v", ag.evicted)
+	}
+	// And the endpoint axis, same clock, IS evicted — the asymmetry is the point.
+	g := NewEndpointGate(1)
+	g.now = func() time.Time { return then }
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	s.EndpointGate = g
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); !ok {
+		t.Fatalf("pod-less endpoint holder past grace was not reclaimed")
+	}
+}
+
+// ISI-7687 (review coverage): with ZombieStallGrace unset the holder reclaim
+// falls back to DefaultZombieStallGrace (10m) — a pod-less holder 5m in is
+// still inside the cold-boot allowance and is kept.
+func TestHeartbeatSweepHolderDefaultGraceFallback(t *testing.T) {
+	g := NewEndpointGate(1)
+	t0 := time.Now()
+	g.now = func() time.Time { return t0 }
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	g.Acquire("ep", "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{}
+	s.HolderSandbox = &fakeLive{live: map[string]bool{}} // pod-less if asked
+	// no ZombieStallGrace override: DefaultZombieStallGrace applies
+	s.Now = func() time.Time { return t0.Add(5 * time.Minute) } // < 10m default
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
+		t.Fatalf("holder evicted inside the DEFAULT bring-up grace (10m)")
+	}
+	// past the default grace, same setup, the holder is reclaimed
+	s.Now = func() time.Time { return t0.Add(11 * time.Minute) }
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); !ok {
+		t.Fatalf("pod-less holder past the DEFAULT grace was not reclaimed")
+	}
+}
