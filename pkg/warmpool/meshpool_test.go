@@ -384,3 +384,48 @@ func TestBootMeshPool_AuthTokenSecret(t *testing.T) {
 		}
 	})
 }
+
+// DeleteMislocatedMeshPool deletes a mesh-labelled pool pod in the given ns
+// (the ISI-7692 orphan-cleanup), is a no-op when the pod is absent, and refuses
+// to delete a name-colliding pod that lacks the mesh-pool label.
+func TestDeleteMislocatedMeshPool(t *testing.T) {
+	k, cl := newMeshProvisioner(t)
+	ctx := context.Background()
+	name := warmpool.MeshPoolPodName("team-acme", "coder")
+
+	// Absent → no-op, no error.
+	if err := k.DeleteMislocatedMeshPool(ctx, "stale-ns", "team-acme", "coder"); err != nil {
+		t.Fatalf("absent pod should be a no-op: %v", err)
+	}
+
+	// A mesh pool pod in the stale ns → deleted.
+	mesh := &corev1.Pod{}
+	mesh.Name = name
+	mesh.Namespace = "stale-ns"
+	mesh.Labels = map[string]string{warmpool.MeshAppLabel: warmpool.MeshAppValue}
+	if err := cl.Create(ctx, mesh); err != nil {
+		t.Fatalf("seed mesh pod: %v", err)
+	}
+	if err := k.DeleteMislocatedMeshPool(ctx, "stale-ns", "team-acme", "coder"); err != nil {
+		t.Fatalf("delete mislocated: %v", err)
+	}
+	var got corev1.Pod
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "stale-ns", Name: name}, &got); err == nil {
+		t.Fatalf("mesh pod should have been deleted")
+	}
+
+	// A name-colliding NON-mesh pod → never deleted (label guard).
+	foreign := &corev1.Pod{}
+	foreign.Name = name
+	foreign.Namespace = "other-ns"
+	foreign.Labels = map[string]string{"app": "something-else"}
+	if err := cl.Create(ctx, foreign); err != nil {
+		t.Fatalf("seed foreign pod: %v", err)
+	}
+	if err := k.DeleteMislocatedMeshPool(ctx, "other-ns", "team-acme", "coder"); err != nil {
+		t.Fatalf("label-guarded delete should be a no-op: %v", err)
+	}
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: "other-ns", Name: name}, &got); err != nil {
+		t.Fatalf("foreign pod must NOT be deleted: %v", err)
+	}
+}

@@ -1144,53 +1144,67 @@ func main() {
 			// every such Run needlessly cold-boots. The per-team namespace is
 			// resolved below, at boot (after cache sync), from the Team CR.
 			meshNS := os.Getenv("KSQUAD_WARM_POOL_NAMESPACE")
-			// The boot-time spec table: one MeshPoolSpec per flagged (team,
-			// role) pool, keyed by pod name. The SAME specs drive the P1.4
-			// gateway-health loop's recreate leg (ISI-6010) — a drained pod is
-			// rebuilt from exactly the spec it was booted with. Namespace is
-			// left as the provisional fallback here and overwritten in place
-			// with the team-resolved namespace by the boot Runnable below, so
-			// the shared table the recreate loop reads targets the same ns.
+			// ISI-7692 finding 3: the KSQUAD_WARM_POOL_NAMESPACE fallback is a
+			// SINGLE shared namespace, so honoring it for a multi-team operator
+			// re-introduces the very defect this fixes (all pools in one ns), and
+			// a pool booted there can never be claimed anyway (Runs are never
+			// written to it — intake hard-skips an unreconciled Team). So the
+			// fallback is allowed ONLY in the single-team case; otherwise an
+			// unresolved team is retried, never guessed into the fallback.
+			meshAllowFallback := len(meshTeams) == 1
+			// The boot-time spec table: one MeshPoolSpec per flagged (team, role)
+			// pool, keyed by pod name. It is READ-ONLY after construction (the
+			// namespace on it is a placeholder — placement is resolved per-team
+			// at boot and, independently, at recreate time), so the boot leg and
+			// the P1.4 recreate leg share it with concurrent reads only — no
+			// write-back race (ISI-7692 finding 1).
 			meshSpecs := map[string]kubepool.MeshPoolSpec{}
+			meshTeamList := make([]string, 0, len(meshTeams))
 			for team := range meshTeams {
+				meshTeamList = append(meshTeamList, team)
 				meshSpecs[kubepool.MeshPoolPodName(team, meshRole)] = kubepool.MeshPoolSpec{
-					Team:       team,
-					Role:       meshRole,
-					Image:      meshImage,
-					Namespace:  meshNS, // provisional; resolved per-team at boot (ISI-7692)
-					Min:        1,      // P1.1: min:1 always-up
+					Team:  team,
+					Role:  meshRole,
+					Image: meshImage,
+					// Namespace intentionally left empty: resolved per-team at
+					// boot (bootMeshPools) and at recreate (meshPodRecreator).
+					Min:        1, // P1.1: min:1 always-up
 					IngressURL: ingressURL,
 					Model:      os.Getenv("KSQUAD_MESH_MODEL"),
 					Skills:     rundrive.MeshCSV(os.Getenv("KSQUAD_MESH_SKILLS")),
 					ProjectPVC: os.Getenv("KSQUAD_MESH_PROJECT_PVC"),
 				}
 			}
-			_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-				for team := range meshTeams {
-					podName := kubepool.MeshPoolPodName(team, meshRole)
-					spec := meshSpecs[podName]
-					// ISI-7692: resolve the team's OWN squad namespace so its
-					// Runs can CLAIM this standing pod instead of always
-					// cold-booting. Boot into a foreign namespace is the defect,
-					// so an unresolved namespace SKIPS the boot (dispatch stays
-					// on the legacy path) rather than guessing one.
-					ns, fromTeamCR, err := resolveMeshPoolNamespace(ctx, mgr.GetClient(), team, meshNS)
-					if err != nil {
-						ctrl.Log.Error(err, "AgentMesh pool namespace unresolved; pool NOT booted (dispatch stays on the legacy path)", "team", team, "role", meshRole)
-						continue
-					}
-					spec.Namespace = ns
-					meshSpecs[podName] = spec // share the resolved ns with the P1.4 recreate loop
-					if err := kubeProvisioner.BootMeshPool(ctx, spec); err != nil {
-						// Loud but non-fatal: a failed pool boot must not take
-						// the operator down — the canary's dispatch falls back
-						// to the legacy path while the pool is absent.
-						ctrl.Log.Error(err, "AgentMesh pool boot failed; dispatch falls back to the legacy path", "team", team, "role", meshRole, "namespace", ns)
-						continue
-					}
-					ctrl.Log.Info("AgentMesh standing pool pod booted", "team", team, "role", meshRole, "image", meshImage, "namespace", ns, "namespaceFromTeamCR", fromTeamCR)
+			// The boot Runnable RETRIES until every flagged team resolves its own
+			// namespace (ISI-7692 finding 3: a one-shot pass loses the cold-boot
+			// race against the Team reconciler in this same process, so a fresh
+			// install would otherwise never place its pools). bootMeshPools is
+			// idempotent over its seams; each pass boots the teams that now
+			// resolve and returns the rest to retry.
+			meshBootTick := 15 * time.Second
+			if v := os.Getenv("KSQUAD_MESH_BOOT_RETRY_INTERVAL"); v != "" {
+				if d, derr := time.ParseDuration(v); derr == nil && d > 0 {
+					meshBootTick = d
 				}
-				return nil
+			}
+			_ = mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				pending := bootMeshPools(ctx, mgr.GetClient(), kubeProvisioner, kubeProvisioner, meshSpecs, meshTeamList, meshRole, meshNS, meshAllowFallback, ctrl.Log)
+				if len(pending) == 0 {
+					return nil
+				}
+				ticker := time.NewTicker(meshBootTick)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-ticker.C:
+						pending = bootMeshPools(ctx, mgr.GetClient(), kubeProvisioner, kubeProvisioner, meshSpecs, pending, meshRole, meshNS, meshAllowFallback, ctrl.Log)
+						if len(pending) == 0 {
+							return nil
+						}
+					}
+				}
 			}))
 
 			// AgentMesh P1.4 gateway-health loop (ISI-6010, chapter §2.4,
@@ -1203,7 +1217,7 @@ func main() {
 			if registry, err := coord.NewMeshRegistry(db); err == nil {
 				sup, serr := mesh.NewSupervisorHealth(mesh.SupervisorHealthConfig{
 					Store:    meshHealthStore{registry: registry},
-					Recreate: meshPodRecreator{provisioner: kubeProvisioner, specs: meshSpecs},
+					Recreate: meshPodRecreator{provisioner: kubeProvisioner, specs: meshSpecs, reader: mgr.GetClient(), fallbackNS: meshNS, allowFallback: meshAllowFallback},
 					Health:   func(ctx context.Context, endpoint string) bool { return mesh.ProbeReady(ctx, nil, endpoint) },
 					TTL:      coord.MeshEndpointTTL,
 					Sink:     meshSupervisorLogSink{},

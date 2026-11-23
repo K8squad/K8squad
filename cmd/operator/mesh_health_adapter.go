@@ -29,6 +29,7 @@ import (
 	"fmt"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/mesh"
@@ -69,10 +70,27 @@ func (s meshHealthStore) DrainPod(ctx context.Context, pod string) error {
 // meshPodRecreator adapts the KubeProvisioner plus the boot-time spec table to
 // mesh.PodRecreator: a drained pod is rebuilt from the SAME MeshPoolSpec the
 // operator booted it with (the spec carries the envelope via env, D2.3).
+//
+// ISI-7692: the namespace is RE-RESOLVED here at recreate time (reader +
+// resolveTeamNamespaces), NOT read from a namespace stamped on the shared spec
+// table. The spec table is therefore read-only and shared safely with the boot
+// Runnable (concurrent map reads are fine; a write-back would race the P1.4
+// health sweep that runs this, which starts in its own goroutine and sweeps
+// once immediately at boot). Re-resolving also means a recreate always targets
+// the team's current namespace, never a stale one.
 type meshPodRecreator struct {
 	provisioner *kubepool.KubeProvisioner
-	// specs maps pod name → the MeshPoolSpec the pool was booted with.
+	// specs maps pod name → the MeshPoolSpec the pool was booted with
+	// (read-only — the namespace on it is ignored; see reader below).
 	specs map[string]kubepool.MeshPoolSpec
+	// reader resolves the team's current Team.Status.Namespace.
+	reader client.Reader
+	// fallbackNS / allowFallback mirror the boot leg's placement policy: the
+	// single-team KSQUAD_WARM_POOL_NAMESPACE fallback is honored only when
+	// allowFallback is set; otherwise an unresolved team is NOT recreated into
+	// a guessed namespace.
+	fallbackNS    string
+	allowFallback bool
 }
 
 // RecreatePod implements mesh.PodRecreator.
@@ -81,6 +99,19 @@ func (r meshPodRecreator) RecreatePod(ctx context.Context, pod string) error {
 	if !ok {
 		return fmt.Errorf("meshPodRecreator: no pool spec for pod %q (booted before the spec table existed?)", pod)
 	}
+	nsByTeam, err := resolveTeamNamespaces(ctx, r.reader)
+	if err != nil {
+		return fmt.Errorf("meshPodRecreator: resolve namespace for pod %q: %w", pod, err)
+	}
+	ns, resolved := nsByTeam[spec.Team]
+	if !resolved {
+		if r.allowFallback && r.fallbackNS != "" {
+			ns = r.fallbackNS
+		} else {
+			return fmt.Errorf("meshPodRecreator: team %q namespace unresolved; refusing to recreate pool pod %q in a guessed namespace", spec.Team, pod)
+		}
+	}
+	spec.Namespace = ns
 	return r.provisioner.RecreateMeshPool(ctx, spec)
 }
 
