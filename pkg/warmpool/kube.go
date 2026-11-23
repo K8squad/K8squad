@@ -30,7 +30,10 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -567,20 +570,23 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID, runI
 	// namespace — a silent trap that was previously only visible post-mortem
 	// in the dead pod's stderr (pkg/shim/runner.go). Mirror that symptom
 	// operator-side at boot so the condition shows up in coord telemetry at
-	// dispatch. BootRun is the discriminator: a Run cold-boot always lands in
-	// its team namespace (the egress-policed shape) and always dials an
-	// endpoint, whereas warm/mesh boots dial nothing. Kept a loud WARNING, not
-	// a hard boot failure: egress may be otherwise reachable (an in-cluster
-	// endpoint, or a temporary ipBlock netpol hole), and failing the boot
-	// would convert a recoverable config gap into an outage.
-	if purpose == BootRun && !hasSandboxProxyEnv(pod) {
-		log.FromContext(ctx).Info(
-			"WARNING: Run cold-boot sandbox has NO KSQUAD_SANDBOX_*_PROXY — agent egress is DIRECT; "+
-				"an external model FQDN behind the team-namespace egress NetworkPolicy will hang on a TCP "+
-				"SYN-retry timeout (ISI-7686), not fail fast. Ensure the operator Deployment carries "+
-				"non-empty KSQUAD_SANDBOX_HTTPS_PROXY/HTTP_PROXY/NO_PROXY (helm operator.yaml / ISI-5477).",
-			"sandbox", sandboxID, "run", runID, "namespace", namespace,
-		)
+	// dispatch. Scope note (ISI-7691 review): BootRun is NOT the only path
+	// that dials a model endpoint — mesh pool pods run standing
+	// `shim supervisor` children against KSQUAD_MESH_MODEL (guarded in
+	// BootMeshPool), and a Run that BINDS a warm pod never cold-boots (the
+	// bind-time signal in Pool.Bind covers it). Whether the dial is actually
+	// harmful is endpoint-dependent (external FQDN vs in-cluster/LAN BYO,
+	// the latter a supported proxy-less config) and is decidable only at
+	// dispatch — rundrive's resolveEffectiveEndpoint already resolves
+	// endpoint.BaseURL before gating; the endpoint-aware fail-fast + Run
+	// condition/audit row there is tracked as follow-up child ISI-7705.
+	// Kept a loud WARNING, not a hard boot failure: egress may be otherwise
+	// reachable (an in-cluster endpoint, or a temporary ipBlock netpol
+	// hole), and failing the boot would convert a recoverable config gap
+	// into an outage.
+	if purpose == BootRun {
+		k.guardSandboxEgress(ctx, pod, "Run cold-boot sandbox",
+			"sandbox", sandboxID, "run", runID, "namespace", namespace)
 	}
 
 	if err := k.client.Create(ctx, pod); err != nil {
@@ -590,24 +596,72 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID, runI
 	return nil
 }
 
-// hasSandboxProxyEnv reports whether the sandbox's agent container carries a
-// non-empty KSQUAD_SANDBOX_HTTPS_PROXY or KSQUAD_SANDBOX_HTTP_PROXY — the env
-// the in-pod supervisor reads to inject HTTPS_PROXY/HTTP_PROXY onto the agent
-// child (pkg/shim.agentProxyEnv). KSQUAD_SANDBOX_NO_PROXY alone does not make
-// an external endpoint reachable, so only the forward-proxy endpoints count as
-// proxied egress for the ISI-7691 boot guard.
+// guardSandboxEgress is the ISI-7691 fail-LOUD guard shared by every boot
+// path that dials a model endpoint (BootRun in Boot, BootMeshPool). It stamps
+// the egress posture onto the boot's trace span — Boot rides the run.reconcile
+// span when dispatched — so the condition is queryable in coord telemetry,
+// not just in the operator log, and logs a hard WARNING when the pod carries
+// no effective forward proxy.
+func (k *KubeProvisioner) guardSandboxEgress(ctx context.Context, pod *corev1.Pod, what string, kv ...any) {
+	proxied := hasSandboxProxyEnv(pod)
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Bool("ksquad.sandbox.egress.proxied", proxied))
+	if proxied {
+		return
+	}
+	log.FromContext(ctx).Info(
+		"WARNING: "+what+" has NO effective KSQUAD_SANDBOX_*_PROXY — agent egress is DIRECT; "+
+			"an external model FQDN behind the team-namespace egress NetworkPolicy will hang on a TCP "+
+			"SYN-retry timeout (ISI-7686), not fail fast. Ensure the operator Deployment carries "+
+			"non-empty KSQUAD_SANDBOX_HTTPS_PROXY/HTTP_PROXY (deploy/helm/ksquad/templates/operator.yaml / "+
+			"ISI-5477); note KSQUAD_SANDBOX_NO_PROXY=* bypasses the proxy for every host.",
+		kv...,
+	)
+}
+
+// SandboxEgressProxied reports whether every sandbox pod this provisioner
+// boots carries an effective forward-proxy env. It is a pure function of the
+// stamped podEnv (identical for every boot), computed once per call so
+// Pool.Bind can raise the per-Run signal on the warm path, where no Boot runs.
+// It is the optional Provisioner capability EgressProxier.
+func (k *KubeProvisioner) SandboxEgressProxied() bool {
+	return envHasForwardProxy(k.podEnv)
+}
+
+// hasSandboxProxyEnv reports whether any container of the pod carries an
+// effective forward-proxy env (see envHasForwardProxy).
 func hasSandboxProxyEnv(pod *corev1.Pod) bool {
 	for i := range pod.Spec.Containers {
-		for _, e := range pod.Spec.Containers[i].Env {
-			switch e.Name {
-			case "KSQUAD_SANDBOX_HTTPS_PROXY", "KSQUAD_SANDBOX_HTTP_PROXY":
-				if e.Value != "" {
-					return true
-				}
-			}
+		if envHasForwardProxy(pod.Spec.Containers[i].Env) {
+			return true
 		}
 	}
 	return false
+}
+
+// envHasForwardProxy reports whether env carries a KSQUAD_SANDBOX_HTTPS_PROXY
+// or KSQUAD_SANDBOX_HTTP_PROXY that is proxied egress — the env the in-pod
+// supervisor reads to inject HTTPS_PROXY/HTTP_PROXY onto the agent child
+// (pkg/shim.agentProxyEnv). The consumer TRIMS values and drops anything that
+// trims empty, so the guard must trim too: a whitespace-only value is NOT a
+// proxied endpoint (ISI-7691 review H1 — " " must not silence the guard).
+// KSQUAD_SANDBOX_NO_PROXY alone does not make an external endpoint reachable,
+// and NO_PROXY=* bypasses the proxy for every host, so both count as
+// unproxied. Only the forward-proxy endpoints count as proxied egress.
+func envHasForwardProxy(env []corev1.EnvVar) bool {
+	proxied := false
+	for _, e := range env {
+		switch e.Name {
+		case "KSQUAD_SANDBOX_HTTPS_PROXY", "KSQUAD_SANDBOX_HTTP_PROXY":
+			if strings.TrimSpace(e.Value) != "" {
+				proxied = true
+			}
+		case "KSQUAD_SANDBOX_NO_PROXY":
+			if strings.TrimSpace(e.Value) == "*" {
+				return false
+			}
+		}
+	}
+	return proxied
 }
 
 // attachToolchainInitPacks resolves the Run's recorded toolchains and merges the

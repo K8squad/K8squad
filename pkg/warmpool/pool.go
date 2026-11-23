@@ -63,6 +63,10 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // SandboxState is the §9.2/§9.3 lifecycle of one physical warm-pool sandbox.
@@ -175,6 +179,15 @@ type Provisioner interface {
 	// hardcoded `default` and could never tear down team-namespace pods,
 	// leaking them as permanent CPU-request orphans).
 	TearDown(ctx context.Context, key PoolKey, sandboxID string) error
+}
+
+// EgressProxier is an OPTIONAL Provisioner capability (ISI-7691): the
+// adapter reports whether every pod it boots carries an effective
+// KSQUAD_SANDBOX_*_PROXY forward-proxy env. The pool consults it at Bind so
+// a Run served from the WARM path (no cold boot, so the Boot guard never
+// runs) still gets a per-Run fail-loud signal when egress is DIRECT.
+type EgressProxier interface {
+	SandboxEgressProxied() bool
 }
 
 // BindMissFunc is the scale-up trigger the controller registers (Story 3.4
@@ -311,6 +324,9 @@ func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunCla
 		p.byRun[runID] = sb
 		ref := sb.ID
 		p.mu.Unlock()
+		// ISI-7691: the warm path never cold-boots, so the Boot guard never
+		// runs for this Run — raise the per-Run signal here instead.
+		p.warnIfProxyless(ctx, runID, ref)
 		return ref, nil // claim-time: no cluster call on this path
 	}
 
@@ -387,6 +403,29 @@ func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunCla
 	p.mu.Unlock()
 	fireMiss()
 	return id, nil
+}
+
+// warnIfProxyless is the ISI-7691 per-Run fail-loud signal on the warm bind
+// path: when the provisioner reports every pod it boots is proxy-less
+// (EgressProxier), a Run that claimed a warm sandbox — and therefore never
+// hit the Boot guard — still gets a hard WARNING plus a trace-span attribute
+// on the dispatch context. Whether the DIRECT egress is actually harmful is
+// endpoint-dependent (external FQDN vs in-cluster/LAN BYO) and is decided at
+// dispatch (rundrive resolveEffectiveEndpoint) — tracked as follow-up
+// child ISI-7705.
+func (p *Pool) warnIfProxyless(ctx context.Context, runID, ref string) {
+	ep, ok := p.provisioner.(EgressProxier)
+	if !ok || ep.SandboxEgressProxied() {
+		return
+	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Bool("ksquad.sandbox.egress.proxied", false))
+	log.FromContext(ctx).Info(
+		"WARNING: Run bound to a warm sandbox with NO effective KSQUAD_SANDBOX_*_PROXY — agent egress is "+
+			"DIRECT; an external model FQDN behind the team-namespace egress NetworkPolicy will hang on a "+
+			"TCP SYN-retry timeout (ISI-7686), not fail fast. A warm-bound Run never cold-boots, so the "+
+			"Boot guard does not cover it; this bind-time signal does.",
+		"run", runID, "sandbox", ref,
+	)
 }
 
 // NotifyReady reports that a Warming sandbox finished booting (the kube

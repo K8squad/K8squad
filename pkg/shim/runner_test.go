@@ -844,3 +844,31 @@ func TestMaterializeWorkDirFilesRejectsTraversal(t *testing.T) {
 		t.Errorf("traversal escaped the workdir")
 	}
 }
+
+// TestRedactProxyEnv (ISI-7691 review): the shim logs the injected proxy env
+// to pod stderr; forward-proxy URLs may carry basic-auth userinfo
+// (http://user:pass@proxy:8888) and that MUST be masked, while plain
+// endpoints and non-URL values pass through unchanged.
+func TestRedactProxyEnv(t *testing.T) {
+	in := []string{
+		"HTTPS_PROXY=http://user:secretpw@egress.k8squad-system.svc:8888",
+		"https_proxy=http://egress.k8squad-system.svc:8888",
+		"NO_PROXY=localhost,.svc,10.0.0.185",
+	}
+	got := redactProxyEnv(in)
+	if len(got) != len(in) {
+		t.Fatalf("want %d entries, got %v", len(in), got)
+	}
+	if got[0] != "HTTPS_PROXY=http://user:xxxxx@egress.k8squad-system.svc:8888" {
+		t.Fatalf("userinfo not redacted: %q", got[0])
+	}
+	if strings.Contains(got[0], "secretpw") {
+		t.Fatalf("password leaked into redacted output: %q", got[0])
+	}
+	if got[1] != in[1] {
+		t.Fatalf("credential-less URL must pass through unchanged: %q", got[1])
+	}
+	if got[2] != in[2] {
+		t.Fatalf("non-URL value must pass through unchanged: %q", got[2])
+	}
+}

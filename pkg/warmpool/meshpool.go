@@ -340,6 +340,14 @@ func (k *KubeProvisioner) BootMeshPool(ctx context.Context, spec MeshPoolSpec) e
 		},
 	}
 
+	// ISI-7691: the mesh pool pod dials a model endpoint too — its gateway PID 1
+	// spawns standing `shim supervisor` children that inherit the pod env and go
+	// through the same agentProxyEnv injection (KSQUAD_MESH_MODEL), so a proxy-less
+	// mesh pod egresses DIRECT to an external BYO FQDN exactly like a Run sandbox,
+	// and being long-lived it fails repeatedly rather than once. The pod carries
+	// the same k.podEnv, so the same fail-loud guard applies.
+	k.guardSandboxEgress(ctx, pod, "mesh pool pod", "meshPod", name, "namespace", ns, "team", spec.Team, "role", spec.Role)
+
 	if err := k.client.Create(ctx, pod); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("warmpool.BootMeshPool: create %s/%s: %w", ns, name, err)
 	}

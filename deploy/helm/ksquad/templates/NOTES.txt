@@ -38,3 +38,17 @@ Event bus (plugin seam, §17.4 / ADR-023 — data in Postgres, events on NATS):
 Event bus: DISABLED (nats.enabled=false). The apiserver outbox relay still runs
 and buffers events durably in Postgres — the core is unaffected (§17.4).
 {{- end }}
+
+{{- with .Values.operator.sandbox.proxy }}
+{{- if and (not .httpsProxy) (not .httpProxy) }}
+Egress posture (ISI-7686/ISI-7691): operator.sandbox.proxy.httpsProxy and
+  httpProxy are BOTH EMPTY, so this operator stamps no KSQUAD_SANDBOX_*_PROXY
+  and every sandbox pod boots with DIRECT egress. Team namespaces carry the
+  operator-stamped default-deny egress NetworkPolicy, so a Run whose BYO model
+  endpoint is an EXTERNAL FQDN will hang on a TCP SYN-retry timeout and die
+  follow_error (ISI-7686) instead of failing fast. Set
+  operator.sandbox.proxy.httpsProxy (+ httpProxy) and the REQUIRED noProxy
+  (ISI-5477) — unless ALL model endpoints are in-cluster/LAN, where direct
+  egress is the intended posture (e.g. the shared Ollama 10.0.0.185).
+{{- end }}
+{{- end }}

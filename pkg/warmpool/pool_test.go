@@ -24,6 +24,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr/funcr"
+	crlog "sigs.k8s.io/controller-runtime/pkg/log"
+
 	"github.com/K8squad/K8squad/pkg/warmpool"
 )
 
@@ -59,6 +62,10 @@ type fakeProvisioner struct {
 	teardownAttempts map[string]int
 	teardownGate     chan struct{}
 	blockOnBoot      chan struct{}
+	// proxied implements warmpool.EgressProxier (ISI-7691): whether the pods
+	// this fake boots carry an effective forward proxy. Defaults to true so
+	// pre-existing tests stay quiet; the proxy-less bind test flips it.
+	proxied bool
 }
 
 func newFakeProvisioner() *fakeProvisioner {
@@ -72,8 +79,12 @@ func newFakeProvisioner() *fakeProvisioner {
 		blockOnTeardown:  map[string]int{},
 		teardownAttempts: map[string]int{},
 		teardownGate:     make(chan struct{}),
+		proxied:          true,
 	}
 }
+
+// SandboxEgressProxied implements warmpool.EgressProxier (ISI-7691).
+func (f *fakeProvisioner) SandboxEgressProxied() bool { return f.proxied }
 
 func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id, runID string, purpose warmpool.BootPurpose) error {
 	f.mu.Lock()
@@ -262,6 +273,57 @@ func TestPoolWarmBindIsClaimTime(t *testing.T) {
 	if c := pool.Inventory()[key]; c.Ready != 1 || c.Bound != 1 {
 		t.Fatalf("post-bind inventory = %+v, want ready=1 bound=1", c)
 	}
+}
+
+// ISI-7691 review #2 (H3): a Run that BINDS a warm pod never cold-boots, so
+// the Boot guard never runs for it — the pool must raise the per-Run fail-loud
+// signal at bind time when the provisioner reports proxy-less pods.
+func TestPoolWarmBindWarnsWhenProxyless(t *testing.T) {
+	key := gvisorKey
+
+	t.Run("proxy-less warm bind warns for the run", func(t *testing.T) {
+		pool, fp := newTestPool()
+		fp.proxied = false
+		prewarm(t, pool, key, 1)
+
+		var lines []string
+		ctx := crlog.IntoContext(context.Background(), funcr.New(func(_, msg string) {
+			lines = append(lines, msg)
+		}, funcr.Options{}))
+
+		ref, err := pool.Bind(ctx, "run-noproxy", key, warmpool.ClassInteractive)
+		if err != nil {
+			t.Fatalf("warm bind: %v", err)
+		}
+		warned := false
+		for _, l := range lines {
+			if strings.Contains(l, "warm sandbox with NO effective KSQUAD_SANDBOX_*_PROXY") {
+				warned = true
+			}
+		}
+		if !warned {
+			t.Fatalf("warm bind of run-noproxy to ref %q emitted no fail-loud proxy warning; lines=%v", ref, lines)
+		}
+	})
+
+	t.Run("proxied warm bind stays silent", func(t *testing.T) {
+		pool, _ := newTestPool()
+		prewarm(t, pool, key, 1)
+
+		var lines []string
+		ctx := crlog.IntoContext(context.Background(), funcr.New(func(_, msg string) {
+			lines = append(lines, msg)
+		}, funcr.Options{}))
+
+		if _, err := pool.Bind(ctx, "run-proxied", key, warmpool.ClassInteractive); err != nil {
+			t.Fatalf("warm bind: %v", err)
+		}
+		for _, l := range lines {
+			if strings.Contains(l, "NO effective KSQUAD_SANDBOX_*_PROXY") {
+				t.Fatalf("proxied warm bind still warned: %q", l)
+			}
+		}
+	})
 }
 
 // AC: "or triggers scale-up if the pool is empty" — the empty-pool bind
