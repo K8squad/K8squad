@@ -49,6 +49,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -635,23 +636,110 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	flusher, _ := w.(http.Flusher)
-	enc := json.NewEncoder(w)
 
 	// Mark task as successfully submitted
 	taskHandleSpan.SetStatus(codes.Ok, "")
 
-	for ev := range events {
-		if err := enc.Encode(ev); err != nil {
-			streamSpan.SetStatus(codes.Error, fmt.Sprintf("encode event: %v", err))
-			return
-		}
+	if err := streamRunEvents(r.Context(), w, events, supervisorStreamKeepalive()); err != nil {
+		streamSpan.SetStatus(codes.Error, err.Error())
+		return
+	}
+
+	streamSpan.SetStatus(codes.Ok, "")
+}
+
+// defaultSupervisorStreamKeepalive is the silence interval after which the
+// task stream emits a keepalive byte (ISI-7694). It is well under any plausible
+// network idle timeout between the operator and the pod's :8080, and under the
+// operator's default response-header wait (ISI-5524, 90s), so a reasoning model
+// whose whole first thinking phase is run-event-silent never idles the follow.
+const defaultSupervisorStreamKeepalive = 10 * time.Second
+
+// supervisorStreamKeepalive resolves the task-stream keepalive interval from the
+// pod env. An unset/unparseable value uses the default; an explicit
+// non-positive value disables the keepalive (the immediate header flush still
+// happens). Env-tunable so a cluster with a tighter idle timeout can shorten it
+// without a rebuild.
+func supervisorStreamKeepalive() time.Duration {
+	v := os.Getenv("KSQUAD_SANDBOX_STREAM_KEEPALIVE")
+	if v == "" {
+		return defaultSupervisorStreamKeepalive
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return defaultSupervisorStreamKeepalive
+	}
+	if d <= 0 {
+		return 0 // explicit disable
+	}
+	return d
+}
+
+// streamRunEvents writes the engine's run-event channel to the client as
+// flushed NDJSON and keeps the connection live during event silence (ISI-7694,
+// parent root cause ISI-7686). Two runtime-agnostic properties it guarantees,
+// neither of which the prior `for ev := range events` loop did:
+//
+//  1. It flushes the already-written 200 + headers BEFORE the first event. The
+//     operator bounds the POST's response-HEADER wait (ResponseHeaderTimeout,
+//     ISI-5524); a reasoning model whose first delta is `reasoning_content`
+//     (delta.content=null) emits NO run_event for its entire thinking phase, so
+//     with the old lazy-flush the 200 sat in net/http's buffer until the first
+//     event and the operator aborted the POST before the stream ever opened —
+//     surfacing downstream as a follow_error → releaseDead zombie_no_sandbox.
+//     Flushing here opens the follow the moment the task is accepted.
+//
+//  2. It emits a whitespace keepalive every `keepalive` of silence so a long
+//     reasoning phase — which streams only delta.reasoning_content and thus
+//     produces zero run_events for EVERY runtime — never idles the NDJSON body
+//     into a torn connection. A bare newline is inter-value whitespace the
+//     operator's json.Decoder skips, so it advances no decode and injects no
+//     spurious event; it only keeps bytes moving. This lives in the supervisor's
+//     HTTP stream layer, so it is runtime-agnostic — unlike the opencode-only
+//     `--print-logs` stderr watchdog re-arm (ISI-5761/5763), which keeps only
+//     the shim startup watchdog alive and never touched the operator follow.
+//
+// It returns nil when the engine closes the channel at the task's terminal
+// state, ctx.Err() if the client disconnects, or a write error. keepalive <= 0
+// disables the keepalive but keeps the immediate header flush.
+func streamRunEvents(ctx context.Context, w http.ResponseWriter, events <-chan a2a.Event, keepalive time.Duration) error {
+	flusher, _ := w.(http.Flusher)
+	flush := func() {
 		if flusher != nil {
 			flusher.Flush()
 		}
 	}
+	// Open the stream: push the status line + headers to the socket before the
+	// first event so the operator's bounded header wait sees 200 immediately.
+	flush()
+	enc := json.NewEncoder(w)
 
-	streamSpan.SetStatus(codes.Ok, "")
+	var keepaliveC <-chan time.Time
+	if keepalive > 0 {
+		ticker := time.NewTicker(keepalive)
+		defer ticker.Stop()
+		keepaliveC = ticker.C
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev, ok := <-events:
+			if !ok {
+				return nil
+			}
+			if err := enc.Encode(ev); err != nil {
+				return fmt.Errorf("encode event: %w", err)
+			}
+			flush()
+		case <-keepaliveC:
+			if _, err := io.WriteString(w, "\n"); err != nil {
+				return fmt.Errorf("keepalive write: %w", err)
+			}
+			flush()
+		}
+	}
 }
 
 // runtime lazily constructs the engine from the image's baked-in flavor
