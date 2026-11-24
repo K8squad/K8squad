@@ -412,7 +412,8 @@ func TestDriveTerminalStepIsAbsorbing(t *testing.T) {
 }
 
 // TestDriveLapThreading: retry laps used ⇒ the machine dispatches a FRESH
-// task id (run#lapN+1), never the first-attempt id.
+// task id (run#lapN — laps counts ACCEPTED retry enters, ISI-7763), never
+// the first-attempt id.
 func TestDriveLapThreading(t *testing.T) {
 	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
@@ -425,7 +426,7 @@ func TestDriveLapThreading(t *testing.T) {
 	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
 		t.Fatalf("drive: %v", err)
 	}
-	want := fmt.Sprintf("%s#lap%d", reconcile.RunID, 3)
+	want := fmt.Sprintf("%s#lap%d", reconcile.RunID, 2)
 	if len(eff.dispatches) == 0 || eff.dispatches[0] != want {
 		t.Fatalf("dispatch id = %v, want [%s] (fresh retry lap)", eff.dispatches, want)
 	}

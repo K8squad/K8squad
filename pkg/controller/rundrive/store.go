@@ -165,15 +165,25 @@ func (c *ProdClaims) Renew(ctx context.Context, workItemID, runID string, fence 
 	return n == 1, nil
 }
 
-// LapsUsed counts completed retry-lap dispatch markers (run_id#lapN rows in
-// coord.a2a_dispatch) — the durable retry budget ledger: no separate counter,
-// the at-most-once dispatch markers ARE the lap history.
-// Enhanced to count only proper retry lap markers and avoid false positives.
+// LapsUsed counts the run's ACCEPTED retry laps from the durable
+// retry_lap_entered audit rows enter() co-commits with each accepted
+// RetryEnter (exactly one row per lap, in the same transaction as the fence
+// bump — a crash-safe, monotonic lap ledger; idx_audit_log_run covers the
+// lookup). ISI-7763: the previous source, '#lap'-suffixed coord.a2a_dispatch
+// rows, was self-defeating — the lap NUMBER a retry dispatch carries is
+// derived from this very count (driver drive pass: laps>0 ⇒ run_id#lapN), so
+// while the counter read zero the first retry lap re-dispatched under the
+// bare run_id, hit its existing at-most-once marker (reattach: no new row,
+// no fresh agent attempt), and the counter could never leave zero. The
+// retry budget then never exhausted (defaultInfraRetries vs laps=0 forever)
+// and a follow_error-settled run re-entered retry laps indefinitely — the
+// live ISI-7763 retry-storm (~17 laps/sec, 6k+ laps/run) that starved
+// queued runs behind never-released agent slots and BYO endpoint permits.
 func (c *ProdClaims) LapsUsed(ctx context.Context, runID string) (int, error) {
 	var laps int
 	if err := c.db.QueryRowContext(ctx, `
-		SELECT count(*) FROM coord.a2a_dispatch
-		 WHERE run_id = $1::uuid AND POSITION('#lap' IN a2a_task_id) > 0`, runID).
+		SELECT count(*) FROM coord.audit_log
+		 WHERE run_id = $1::uuid AND event_type = 'retry_lap_entered'`, runID).
 		Scan(&laps); err != nil {
 		return 0, fmt.Errorf("rundrive.ProdClaims.LapsUsed: %w", err)
 	}
