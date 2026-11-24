@@ -43,6 +43,7 @@ describe("navTree — item-set + order match the ISI-3641 mock (ISI-3725), conso
       "agents-team",
       "projects",
       "runs",
+      "instscore",
       "settings",
     ]);
     const settings = navTree().find((n) => n.id === "settings");

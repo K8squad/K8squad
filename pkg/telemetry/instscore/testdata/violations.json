@@ -1,0 +1,715 @@
+{
+ "traces": [
+  {
+   "resourceSpans": [
+    {
+     "resource": {
+      "attributes": [
+       {
+        "key": "service.name",
+        "value": {
+         "stringValue": "broken"
+        }
+       },
+       {
+        "key": "service.instance.id",
+        "value": {
+         "stringValue": "shared-1"
+        }
+       },
+       {
+        "key": "service.criticality",
+        "value": {
+         "stringValue": "HIGH"
+        }
+       },
+       {
+        "key": "deployment.environment.name",
+        "value": {
+         "stringValue": "production"
+        }
+       },
+       {
+        "key": "k8s.namespace.name",
+        "value": {
+         "stringValue": "broken"
+        }
+       },
+       {
+        "key": "k8s.pod.name",
+        "value": {
+         "stringValue": "broken-aaa111"
+        }
+       }
+      ]
+     },
+     "scopeSpans": [
+      {
+       "scope": {
+        "name": "github.com/k8squad/payments",
+        "version": "v1.2.3"
+       },
+       "spans": [
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "QEBAQEBAQEA=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "QUFBQUFBQUE=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "QkJCQkJCQkI=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "Q0NDQ0NDQ0M=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "REREREREREQ=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "RUVFRUVFRUU=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "RkZGRkZGRkY=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "R0dHR0dHR0c=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "SEhISEhISEg=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "SUlJSUlJSUk=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "SkpKSkpKSko=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_INTERNAL",
+         "name": "reconcile row",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000002000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "cHBwcHBwcHA=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "cXFxcXFxcXE=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "cnJycnJycnI=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "c3Nzc3Nzc3M=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "dHR0dHR0dHQ=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "dXV1dXV1dXU=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "dnZ2dnZ2dnY=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "d3d3d3d3d3c=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "eHh4eHh4eHg=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "eXl5eXl5eXk=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "enp6enp6eno=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "e3t7e3t7e3s=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "fHx8fHx8fHw=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "fX19fX19fX0=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "fn5+fn5+fn4=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "f39/f39/f38=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "gICAgICAgIA=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "gYGBgYGBgYE=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "goKCgoKCgoI=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "g4ODg4ODg4M=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        },
+        {
+         "traceId": "EREREREREREREREREREREQ==",
+         "spanId": "hISEhISEhIQ=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "health probe",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2000001000000"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "resource": {
+      "attributes": [
+       {
+        "key": "service.name",
+        "value": {
+         "stringValue": "broken"
+        }
+       },
+       {
+        "key": "service.instance.id",
+        "value": {
+         "stringValue": "shared-1"
+        }
+       },
+       {
+        "key": "deployment.environment.name",
+        "value": {
+         "stringValue": "production"
+        }
+       },
+       {
+        "key": "k8s.pod.name",
+        "value": {
+         "stringValue": "broken-bbb222"
+        }
+       },
+       {
+        "key": "host.ip",
+        "value": {
+         "stringValue": "10.42.0.7"
+        }
+       },
+       {
+        "key": "process.command_args",
+        "value": {
+         "stringValue": "--spring.datasource.password=hunter2"
+        }
+       }
+      ]
+     },
+     "scopeSpans": [
+      {
+       "scope": {
+        "name": "github.com/k8squad/payments",
+        "version": "v1.2.3"
+       },
+       "spans": [
+        {
+         "traceId": "IiIiIiIiIiIiIiIiIiIiIg==",
+         "spanId": "YGBgYGBgYGA=",
+         "parentSpanId": "//////////8=",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "GET /report",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2050000000000"
+        },
+        {
+         "traceId": "IiIiIiIiIiIiIiIiIiIiIg==",
+         "spanId": "YWFhYWFhYWE=",
+         "parentSpanId": "",
+         "kind": "SPAN_KIND_CLIENT",
+         "name": "GET /upstream",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2050000000000"
+        },
+        {
+         "traceId": "IiIiIiIiIiIiIiIiIiIiIg==",
+         "spanId": "YmJiYmJiYmI=",
+         "parentSpanId": "YWFhYWFhYWE=",
+         "kind": "SPAN_KIND_SERVER",
+         "name": "GET /users",
+         "startTimeUnixNano": "2000000000000",
+         "endTimeUnixNano": "2050000000000",
+         "attributes": [
+          {
+           "key": "db.query.text",
+           "value": {
+            "stringValue": "SELECT * FROM users WHERE email='alice@example.com'"
+           }
+          },
+          {
+           "key": "service.name",
+           "value": {
+            "stringValue": "broken"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "logs": [
+  {
+   "resourceLogs": [
+    {
+     "resource": {
+      "attributes": [
+       {
+        "key": "service.name",
+        "value": {
+         "stringValue": "broken"
+        }
+       },
+       {
+        "key": "service.instance.id",
+        "value": {
+         "stringValue": "shared-1"
+        }
+       },
+       {
+        "key": "service.criticality",
+        "value": {
+         "stringValue": "HIGH"
+        }
+       },
+       {
+        "key": "deployment.environment.name",
+        "value": {
+         "stringValue": "production"
+        }
+       },
+       {
+        "key": "k8s.namespace.name",
+        "value": {
+         "stringValue": "broken"
+        }
+       },
+       {
+        "key": "k8s.pod.name",
+        "value": {
+         "stringValue": "broken-aaa111"
+        }
+       }
+      ]
+     },
+     "scopeLogs": [
+      {
+       "scope": {
+        "name": "github.com/k8squad/payments",
+        "version": "v1.2.3"
+       },
+       "logRecords": [
+        {
+         "timeUnixNano": "0",
+         "severityNumber": 5,
+         "severityText": "DEBUG",
+         "body": {
+          "stringValue": "wire probe"
+         }
+        },
+        {
+         "timeUnixNano": "1296000000000000",
+         "severityNumber": 5,
+         "severityText": "DEBUG",
+         "body": {
+          "stringValue": "wire probe"
+         }
+        },
+        {
+         "timeUnixNano": "2000000000000",
+         "severityNumber": 0,
+         "severityText": "",
+         "body": {
+          "stringValue": "converted from file"
+         }
+        },
+        {
+         "timeUnixNano": "2000000000000",
+         "severityNumber": 9,
+         "severityText": "INFO",
+         "body": {
+          "stringValue": "login failed for alice@example.com: password=hunter2"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "metrics": [
+  {
+   "resourceMetrics": [
+    {
+     "resource": {
+      "attributes": [
+       {
+        "key": "service.name",
+        "value": {
+         "stringValue": "broken"
+        }
+       },
+       {
+        "key": "service.instance.id",
+        "value": {
+         "stringValue": "shared-1"
+        }
+       },
+       {
+        "key": "deployment.environment.name",
+        "value": {
+         "stringValue": "production"
+        }
+       },
+       {
+        "key": "k8s.pod.name",
+        "value": {
+         "stringValue": "broken-bbb222"
+        }
+       },
+       {
+        "key": "host.ip",
+        "value": {
+         "stringValue": "10.42.0.7"
+        }
+       },
+       {
+        "key": "process.command_args",
+        "value": {
+         "stringValue": "--spring.datasource.password=hunter2"
+        }
+       }
+      ]
+     },
+     "scopeMetrics": [
+      {
+       "scope": {
+        "name": "github.com/k8squad/payments",
+        "version": "v1.2.3"
+       },
+       "metrics": [
+        {
+         "name": "collection.duration.seconds",
+         "unit": "s",
+         "gauge": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2000000000000",
+            "asDouble": 1
+           }
+          ]
+         }
+        },
+        {
+         "name": "http.response.status_code",
+         "unit": "{error}",
+         "gauge": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2000000000000",
+            "asDouble": 1
+           }
+          ]
+         }
+        },
+        {
+         "name": "cpu.usage",
+         "unit": "",
+         "gauge": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2000000000000",
+            "asDouble": 0.42
+           }
+          ]
+         }
+        },
+        {
+         "name": "request.duration",
+         "unit": "ms",
+         "gauge": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2000000000000",
+            "asDouble": 3
+           }
+          ]
+         }
+        },
+        {
+         "name": "request.duration",
+         "unit": "s",
+         "gauge": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2001000000000",
+            "asDouble": 0.003
+           }
+          ]
+         }
+        },
+        {
+         "name": "latency",
+         "unit": "ms",
+         "histogram": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2000000000000",
+            "explicitBounds": [
+             1,
+             5,
+             10
+            ],
+            "bucketCounts": [
+             "1",
+             "1",
+             "1",
+             "1"
+            ]
+           }
+          ],
+          "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+         }
+        },
+        {
+         "name": "latency",
+         "unit": "ms",
+         "histogram": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2001000000000",
+            "explicitBounds": [
+             1,
+             10,
+             50
+            ],
+            "bucketCounts": [
+             "1",
+             "1",
+             "1",
+             "1"
+            ]
+           }
+          ],
+          "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+         }
+        },
+        {
+         "name": "login.failures",
+         "unit": "{error}",
+         "gauge": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "2000000000000",
+            "asDouble": 7,
+            "attributes": [
+             {
+              "key": "user",
+              "value": {
+               "stringValue": "alice@example.com"
+              }
+             }
+            ]
+           }
+          ]
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

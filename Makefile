@@ -171,3 +171,10 @@ conformance: ## Story 5.6 (GATE-BLOCKING): run the A2A shim conformance suite ov
 .PHONY: conformance-ollama
 conformance-ollama: ## Story 5.6 $0 lane: prove every byoModelEndpoint runtime is conformant on a BYO Ollama endpoint (ISI-2157).
 	go run ./cmd/conformance -lane ollama
+
+.PHONY: instscore
+instscore: ## ISI-7748 $0 lane: score OTLP JSON fixtures offline against the instrumentation-score rules (ISI-7741).
+	go test -race -count=1 ./pkg/telemetry/instscore/... ./cmd/instscore/...
+	go run ./cmd/instscore pkg/telemetry/instscore/testdata/good_service.json
+	go run ./cmd/instscore pkg/telemetry/instscore/testdata/violations.json
+	go run ./cmd/instscore pkg/telemetry/instscore/testdata/no_data_metrics_only.json

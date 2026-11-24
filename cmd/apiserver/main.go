@@ -48,6 +48,7 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/internal/instscoreingest"
 	"github.com/K8squad/K8squad/internal/runsource"
 	"github.com/K8squad/K8squad/pkg/auth"
 	"github.com/K8squad/K8squad/pkg/coord"
@@ -827,6 +828,46 @@ func main() {
 		log.Printf("ksquad-apiserver: org-ops seam disabled — needs both a >=32B JWT signing key and a CRD write client")
 	}
 
+	// ISI-7749 (phase 3 of the ISI-7741 plan): the instrumentation-score
+	// ingestion tap. The OTel gateway's otlphttp/instscore exporter mirrors its
+	// redacted OTLP batches here; the surface folds them into per-service
+	// evidence windows (migration 0042) and refreshes the latest rule verdicts
+	// + score history. Like task-io/org-ops it is bearer-authed at the router
+	// root — the collector is the client, no console session exists. Absent a
+	// token the seam stays unmounted (fail visible), so an unconfigured
+	// deployment answers 404 at the route rather than accepting unauthenticated
+	// telemetry.
+	var instScoreIngest http.Handler
+	if token := os.Getenv("KSQUAD_INSTSCORE_TOKEN"); token != "" {
+		instStore, serr := instscoreingest.NewSQLStore(db)
+		ingestSvc, ierr := instscoreingest.New(instStore, nil)
+		switch {
+		case serr != nil:
+			log.Printf("ksquad-apiserver: instscore seam disabled (store): %v", serr)
+		case ierr != nil:
+			log.Printf("ksquad-apiserver: instscore seam disabled (service): %v", ierr)
+		default:
+			instScoreIngest = ingestSvc.Handler(token)
+			log.Printf("ksquad-apiserver: instscore ingestion tap ready (/api/instscore/v1/{traces,metrics,logs})")
+		}
+	} else {
+		log.Printf("ksquad-apiserver: instscore seam disabled — no KSQUAD_INSTSCORE_TOKEN configured")
+	}
+
+	// ISI-7750 (phase 4 of the ISI-7741 plan): the instrumentation-score READ
+	// surface. It reads the same store the tap writes (migration 0042), so it
+	// wires whenever the database is — independent of the ingest token: a
+	// deployment can surface scores even while re-configuring its collector
+	// auth, and the console session (not a bearer token) is the identity via
+	// the §13 choke point. Reads only; a failure here keeps the routes at
+	// their documented 501.
+	var instScoreReads apiserver.InstScoreReader
+	if readStore, rerr := instscoreingest.NewSQLStore(db); rerr == nil {
+		instScoreReads = readStore
+	} else {
+		log.Printf("ksquad-apiserver: instscore read surface disabled (store): %v", rerr)
+	}
+
 	// ISI-4928: the discussion Store doubles as the proposal decision-lifecycle seam
 	// (ProposalLifecycle). The confirm/dismiss routes also need the two authoring seams
 	// (WorkItemWrites above, WorkItemDispatch when the informer cache is up) — they fan
@@ -979,7 +1020,11 @@ func main() {
 		Hub:        hub,
 		ProjectHub: projectHub, // ISI-5194 bus shared with the projector + discussion live-echo (ISI-5208)
 		TaskIO:     taskIOHandler,
-		OrgOps:     orgOpsHandler,
+		// ISI-7749 instscore ingestion tap (nil ⇒ route absent).
+		InstScoreIngest: instScoreIngest,
+		// ISI-7750 instscore read surface (nil ⇒ documented 501).
+		InstScoreReads: instScoreReads,
+		OrgOps:          orgOpsHandler,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,

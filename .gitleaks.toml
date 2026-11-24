@@ -11,13 +11,18 @@
 # Scope is deliberately narrow: only build-artifact / vendored trees, never source dirs.
 # This does not soften real-secret detection (default rules stay on for all source), so it
 # is consistent with the "green means clean, not ran" invariant of the L4 workflow.
+#
+# third_party/instrumentation-score is the vendored upstream rules tree (ISI-7741/ISI-7747,
+# pinned at ef080a8a). Its rule DOCS deliberately quote example credentials (RES-010's
+# "api_key=sk-proj-..." sample strings) — that is the rule's subject matter, not a leak.
+# Vendored, unmodified-by-us content; allowed by path for the same reason as vendor/.
 title = "K8squad gitleaks config"
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Generated build output and vendored deps (gitignored; scanned only because --no-git ignores .gitignore)"
+description = "Generated build output, vendored deps, and vendored spec docs (gitignored or third-party; scanned only because --no-git ignores .gitignore)"
 paths = [
   '''(^|/)\.next/''',
   '''(^|/)node_modules/''',
@@ -26,4 +31,5 @@ paths = [
   '''(^|/)coverage/''',
   '''(^|/)\.turbo/''',
   '''(^|/)vendor/''',
+  '''(^|/)third_party/instrumentation-score/''',
 ]

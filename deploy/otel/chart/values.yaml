@@ -31,6 +31,24 @@ collector:
     name: dynatrace-otlp
     key: token
 
+  # ── instscore ingestion tap (ISI-7749, phase 3 of ISI-7741) ────────────────
+  # Second exporter otlphttp/instscore mirroring the SAME redacted,
+  # post-processor batches to the K8squad apiserver's OTLP/HTTP ingestion
+  # route, which folds them into per-service evidence windows in Postgres
+  # (migration 0042) and refreshes instrumentation-score verdicts. The tap
+  # rides AFTER k8sattributes/resource and DOWNSTREAM of redaction by
+  # construction — exporters receive the processed batch. Auth token is NEVER
+  # in values: create the Secret (default instscore-ingest/token) out-of-band
+  # with the SAME value as the apiserver's KSQUAD_INSTSCORE_TOKEN.
+  # Cross-release wiring: endpoint targets the ksquad chart's apiserver
+  # Service "<fullname>-apiserver.<ns>.svc" (port 80).
+  instscore:
+    enabled: true
+    endpoint: "http://ksquad-apiserver.ksquad-system.svc/api/instscore"
+    authSecretRef:
+      name: instscore-ingest
+      key: token
+
   # BYO collector (mode=external). HTTP(S) OTLP endpoint of the user's own
   # collector, e.g. "http://my-collector.monitoring:4318". Used by the
   # node-logs DaemonSet when enabled; workload wiring is done by setting
