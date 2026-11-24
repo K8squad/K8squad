@@ -29,7 +29,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -987,37 +986,20 @@ type byoTarget struct {
 // by DNS name, so an FQDN endpoint would need an explicit operator-configured
 // CIDR (out of scope) rather than a silently-wrong namespace hole. The port is
 // the URL's explicit port, else the scheme default (443 https / 80 http).
+//
+// The host classification is modelendpoint.ClassifyEndpointURL — the SINGLE
+// source shared with the dispatch-time egress guard (ISI-7705), so the netpol
+// writer and the guard can never disagree about which hosts are external.
 func byoEgressTargetFromURL(rawURL string) *byoTarget {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || u.Host == "" {
+	host, port, ns, kind := modelendpoint.ClassifyEndpointURL(rawURL)
+	switch kind {
+	case modelendpoint.HostIP:
+		return &byoTarget{IP: host, Port: port}
+	case modelendpoint.HostInCluster:
+		return &byoTarget{Namespace: ns, Port: port}
+	default:
 		return nil
 	}
-	host := u.Hostname()
-	var port int32
-	if ps := u.Port(); ps != "" {
-		if p, err := strconv.ParseInt(ps, 10, 32); err == nil && p > 0 {
-			port = int32(p)
-		}
-	}
-	if port == 0 {
-		port = 80
-		if u.Scheme == "https" {
-			port = 443
-		}
-	}
-	if net.ParseIP(host) != nil {
-		return &byoTarget{IP: host, Port: port}
-	}
-	// In-cluster Service DNS only when unambiguous (…svc[.cluster.local]);
-	// a public FQDN (api.example.com) is deliberately NOT treated as an
-	// in-cluster namespace.
-	labels := strings.Split(host, ".")
-	for i, l := range labels {
-		if l == "svc" && i >= 1 && labels[i-1] != "" {
-			return &byoTarget{Namespace: labels[i-1], Port: port}
-		}
-	}
-	return nil
 }
 
 // byoModelTargets resolves the DISTINCT BYO model endpoints the team's

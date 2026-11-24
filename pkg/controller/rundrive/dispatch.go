@@ -132,6 +132,16 @@ type OperatorDispatchConfig struct {
 	// a stream the server will never start within the watchdog window. Nil
 	// disables gating (ledger-only lanes, tests that predate the gate).
 	EndpointGate *EndpointGate
+	// SandboxProxyEnv returns the KSQUAD_SANDBOX_*_PROXY env the operator
+	// stamps on every sandbox pod (the cmd/operator/main.go ISI-5477
+	// pass-through of the operator's own env — the same values the warm
+	// pool's podEnv carries, so cold-boot and warm-bind pods agree). The
+	// dispatch-time egress guard (ISI-7705, egress_guard.go) reads it to
+	// decide whether the sandbox can route an external-FQDN BYO endpoint
+	// through the forward proxy. Nil defaults to reading the namespaced
+	// vars (plus conventional NO_PROXY) from the operator process env — the
+	// exact source the warmpool stamps podEnv from.
+	SandboxProxyEnv func() map[string]string
 	// AgentGate, when set, serializes dispatch per (team, agent)
 	// (ISI-7499 C4/D3): one in-flight run per agent, everyone else queued
 	// by DispatchPriorityKey. buildTask re-acquires the run's slot
@@ -543,6 +553,21 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		// is captured off the resolution rather than off modelRoute.
 		modelTier = string(tier)
 		if endpoint.BaseURL != "" {
+			// ISI-7705: dispatch-time endpoint-aware egress guard — the
+			// single seam that sees the resolved endpoint for EVERY run
+			// (cold-boot AND warm-bind: Pool.Bind never cold-boots, so the
+			// boot/bind-time signal from ISI-7691 cannot cover this path).
+			// An external-FQDN BYO endpoint + no effective sandbox proxy +
+			// an egress-policed namespace fails FAST here with a typed
+			// sentinel (the driver parks it with a Run condition + audit
+			// rows) instead of the ~134s SYN-retry hang (ISI-7686). Checked
+			// BEFORE the endpoint-gate slot is taken so a blocked run never
+			// holds a scarce per-endpoint permit. Healthy configs —
+			// in-cluster/LAN endpoints, proxied sandboxes, NO_PROXY-covered
+			// hosts, proxy-less dev namespaces — pass through untouched.
+			if err := d.guardDispatchEgress(ctx, run, endpoint.BaseURL); err != nil {
+				return wire.Task{}, err
+			}
 			// ISI-5037: serialize Runs per BYO endpoint. A single-stream
 			// endpoint (Ollama) accepts concurrent streams at TCP but queues
 			// them with an unbounded first-token wait, so a concurrent Run
