@@ -756,7 +756,16 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	}
 	opts := reconcile.Options{Durable: true, Fence: store.Fence(), MaxPasses: r.maxPasses()}
 	if laps > 0 {
-		next := laps + 1 // retry lap N: a genuine new agent attempt (fresh task id)
+		// ISI-7763: laps is the count of ACCEPTED retry enters (the
+		// retry_lap_entered audit rows LapsUsed counts), so retry enter #N
+		// dispatches as lap N — run_id#lapN, a genuine new agent attempt
+		// with its own at-most-once marker (the bare run_id stays lap 0,
+		// the original dispatch; a crash re-drive re-derives the same id
+		// and reattaches). The previous laps+1 skipped an id and, with the
+		// pre-ISI-7763 marker-based counter wedged at zero, meant no retry
+		// lap EVER carried a fresh task id — every re-drive reattached the
+		// original dispatch marker and burned the retry budget on no-ops.
+		next := laps
 		opts.Lap = &next
 	}
 	if err := reconcile.Reconcile(effects, store, opts); err != nil {
