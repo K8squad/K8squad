@@ -39,8 +39,13 @@ jobs:
           # exists") and kills the job on disk pressure. The dir IS the cache.
           cache: false
 
-      - name: Scoring engine + ingest + CLI tests (unit, race)
-        run: go test -race -count=1 ./pkg/telemetry/instscore/... ./internal/instscoreingest/... ./cmd/instscore/...
+      - name: Scoring engine + ingest + read surface + CLI tests (unit, race)
+        run: |
+          go test -race -count=1 ./pkg/telemetry/instscore/... ./internal/instscoreingest/... ./cmd/instscore/...
+          # The phase-4 read surface rides the apiserver router; the -run filter
+          # keeps this lane scoped to the instscore handler suites (the full
+          # apiserver package belongs to the main CI lane).
+          go test -race -count=1 ./internal/apiserver/ -run 'InstScore'
 
       - name: "Score the OTLP JSON fixtures offline (golden: 100 / 17.14 / 61.43)"
         run: |

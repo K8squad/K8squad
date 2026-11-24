@@ -377,6 +377,13 @@ type Options struct {
 	// point. Nil ⇒ the surface is simply absent (no KSQUAD_INSTSCORE_TOKEN
 	// configured), exactly like the task-io seam's fail-visible shape.
 	InstScoreIngest http.Handler
+	// InstScoreReads is the ISI-7750 instrumentation-score read surface: the
+	// console-facing GET /api/v1/instscore/services{,/{name}} report over the
+	// phase-3 store (migration 0042). Unlike the ingest tap it rides the §13
+	// BFF authz choke point — the console session is the identity. Nil ⇒ both
+	// routes keep the documented 501 (a DB-less dev run), like the sibling
+	// read models.
+	InstScoreReads InstScoreReader
 }
 
 // NewServer assembles the root router from opts.
@@ -703,6 +710,29 @@ func (s *Server) routes(opts Options) {
 			teamsList.HandleFunc("", s.teams(opts.Teams)).Methods(http.MethodGet)
 		} else {
 			teamsList.HandleFunc("", notImplemented("teams read model", "ISI-3953: wire a TeamsReader (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// ── ISI-7750 instrumentation-score read surface (phase 4 of the ──
+		// ISI-7741 plan): the report-only scoring view the console's
+		// Instrumentation page renders. GET /api/v1/instscore/services lists
+		// every observed service (score, category, tallies); GET /api/v1/
+		// instscore/services/{name} returns the rule-by-rule verdicts with
+		// impact + failed-rule guidance and the hourly history. Same §13
+		// choke point as the sibling read models; the {name} segment cannot
+		// be empty, so the unnamed service.name bucket (kept visible in the
+		// list for its RES-005 evidence) is list-only by construction.
+		instList := s.router.Path("/api/v1/instscore/services").Subrouter()
+		instList.Use(authz)
+		instOne := s.router.Path("/api/v1/instscore/services/{name}").Subrouter()
+		instOne.Use(authz)
+		if opts.InstScoreReads != nil {
+			instList.HandleFunc("", s.instscoreServices(opts.InstScoreReads)).Methods(http.MethodGet)
+			instOne.HandleFunc("", s.instscoreServiceDetail(opts.InstScoreReads)).Methods(http.MethodGet)
+		} else {
+			instList.HandleFunc("", notImplemented("instscore services read model", "ISI-7750: wire the instscoreingest SQLStore (migration 0042) to enable")).
+				Methods(http.MethodGet)
+			instOne.HandleFunc("", notImplemented("instscore service detail read model", "ISI-7750: wire the instscoreingest SQLStore (migration 0042) to enable")).
 				Methods(http.MethodGet)
 		}
 

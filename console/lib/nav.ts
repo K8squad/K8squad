@@ -165,6 +165,16 @@ export function navTree(): NavNode[] {
     },
     { id: "runs", label: "Runs", href: "/runs", scope: "global" },
     {
+      // Instrumentation Score (ISI-7750, phase 4 of the ISI-7741 plan): the
+      // report-only conformance view of observed workload telemetry against the
+      // vendored instrumentation-score rules. No requiredAccess — the §13 choke
+      // point is the wall (the score store is the fleet's own telemetry).
+      id: "instscore",
+      label: "Instrumentation",
+      href: "/instscore",
+      scope: "global",
+    },
+    {
       // SETTINGS — a non-navigating section header (see NavNode.section), NOT the old
       // Settings→Configuration accordion. Its children render as normal rail links beneath a
       // small-caps heading, matching the ISI-3641 mock's grouped settings block.

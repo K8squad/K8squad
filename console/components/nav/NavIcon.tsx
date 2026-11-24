@@ -27,7 +27,8 @@ export type NavIconId =
   | "users"
   | "menu"
   | "close"
-  | "lock";
+  | "lock"
+  | "instscore";
 
 const P: Record<NavIconId, string> = {
   dashboard: "M3 12h7V3H3v9zm0 9h7v-7H3v7zm11 0h7V10h-7v11zm0-18v6h7V3h-7z",
@@ -81,6 +82,10 @@ const P: Record<NavIconId, string> = {
   menu: "M4 6h16M4 12h16M4 18h16",
   // Padlock (E1-S3 nav lock): rounded shackle + body, stroke style matching the set.
   lock: "M8 11V7a4 4 0 118 0v4M5 11h14v10H5V11z",
+  // Instrumentation Score (ISI-7750): a gauge — semicircular dial over a
+  // baseline with a needle reading off-center — the report-only conformance
+  // score affordance, distinct from the waveform (otel) glyph.
+  instscore: "M5 19a9 9 0 1114 0M12 15l3.5-5.5M12 17a1.4 1.4 0 100-2.8 1.4 1.4 0 000 2.8z",
   close: "M6 6l12 12M18 6L6 18",
 };
 

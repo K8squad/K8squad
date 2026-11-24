@@ -163,3 +163,95 @@ func TestByIDLooksUpEveryRule(t *testing.T) {
 		t.Error("ByID returned true for an unknown rule")
 	}
 }
+
+// Field patterns for the guidance sync (phase 4, ISI-7750). The vendored tree
+// spells the bold header two ways — `**Criteria:**` and (MET-006 only)
+// `**Criteria**:` — so the pattern accepts the colon inside or outside the
+// bold markers. Values run to the next bold header (multi-paragraph Criteria
+// such as SPA-006's sensitive-format list stay whole), matching the generator
+// that pinned guidance.go.
+var (
+	ruleDescPat  = regexp.MustCompile(`(?s)\*\*Description:?\*\*:?\s*(.*?)\n\n\*\*`)
+	ruleCritPat  = regexp.MustCompile(`(?s)\*\*Criteria:?\*\*:?\s*(.*?)\n\n\*\*`)
+	guidanceSync = normalizeVendoredText
+)
+
+// TestRulesyncGuidanceMatchesVendoredRules extends the rulesync contract to
+// the phase-4 read surface's pinned prose: every vendored rule's Description
+// and Criteria must appear in guidance.go verbatim under the documented
+// normalization (whitespace collapsed, "\=" unescaped), and the maps must
+// carry no extra or missing rule IDs. A failure means the vendored pin moved
+// (or guidance.go was hand-edited) — re-generate, never patch by hand.
+func TestRulesyncGuidanceMatchesVendoredRules(t *testing.T) {
+	entries, err := os.ReadDir(rulesDir)
+	if err != nil {
+		t.Fatalf("read vendored rules dir %s: %v", rulesDir, err)
+	}
+
+	seen := make(map[string]bool, len(ruleDescriptions))
+	for id := range ruleDescriptions {
+		if _, ok := ruleGuidance[id]; !ok {
+			t.Errorf("ruleDescriptions lists %s but ruleGuidance does not — the maps must cover the same rule set", id)
+		}
+		seen[id] = true
+	}
+	for id := range ruleGuidance {
+		if !seen[id] {
+			t.Errorf("ruleGuidance lists %s but ruleDescriptions does not — the maps must cover the same rule set", id)
+		}
+	}
+
+	for _, e := range entries {
+		if e.IsDir() || e.Name() == "_template.md" || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(rulesDir, e.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		id := string(ruleIDPat.FindSubmatch(body)[1])
+
+		dm := ruleDescPat.FindSubmatch(body)
+		if dm == nil {
+			t.Errorf("%s: vendored rule has no Description field", e.Name())
+			continue
+		}
+		if got := guidanceSync(string(dm[1])); got != ruleDescriptions[id] {
+			t.Errorf("%s: pinned Description drift:\n vendored: %q\n pinned:  %q", e.Name(), got, ruleDescriptions[id])
+		}
+
+		cm := ruleCritPat.FindSubmatch(body)
+		if cm == nil {
+			t.Errorf("%s: vendored rule has no Criteria field", e.Name())
+			continue
+		}
+		if got := guidanceSync(string(cm[1])); got != ruleGuidance[id] {
+			t.Errorf("%s: pinned guidance (Criteria) drift:\n vendored: %q\n pinned:  %q", e.Name(), got, ruleGuidance[id])
+		}
+		seen[id] = false
+	}
+	for id, left := range seen {
+		if left {
+			t.Errorf("guidance maps list %s but no vendored markdown exists under %s", id, rulesDir)
+		}
+	}
+}
+
+// TestGuidanceAndDescriptionLookups keeps the accessors honest for every
+// registry rule — the read surface assumes both resolve for all 26 IDs.
+func TestGuidanceAndDescriptionLookups(t *testing.T) {
+	for _, r := range Rules {
+		if d, ok := Description(r.ID); !ok || d == "" {
+			t.Errorf("Description(%s) missing or empty", r.ID)
+		}
+		if g, ok := FailedGuidance(r.ID); !ok || g == "" {
+			t.Errorf("FailedGuidance(%s) missing or empty", r.ID)
+		}
+	}
+	if _, ok := Description("NOPE-000"); ok {
+		t.Error("Description returned true for an unknown rule")
+	}
+	if _, ok := FailedGuidance("NOPE-000"); ok {
+		t.Error("FailedGuidance returned true for an unknown rule")
+	}
+}

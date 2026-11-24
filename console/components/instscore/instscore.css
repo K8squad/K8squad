@@ -1,0 +1,235 @@
+/* instscore.css — the Instrumentation Score screen (ISI-7750), themed off the
+ * shell tokens (8.9) exactly like audit.css: dark + light ride the same
+ * --canvas/--surface/--border/--text vars via [data-theme]; the score badge
+ * tones reuse the status palette vocabulary shared with the console. */
+
+.instscore {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 72rem;
+}
+
+.instscore__head h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  color: var(--text-1);
+}
+
+.instscore__sub {
+  margin: 0.25rem 0 0;
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+
+.instscore__note {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-size: 0.88rem;
+}
+
+.instscore__note--error {
+  border-color: var(--danger, #b3536a);
+  color: var(--danger, #b3536a);
+}
+
+.instscore__note--denied {
+  color: var(--text-2);
+}
+
+.instscore__table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-size: 0.88rem;
+}
+
+.instscore__caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0.7rem 1rem 0.4rem;
+  color: var(--text-2);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.instscore__table th,
+.instscore__table td {
+  text-align: left;
+  padding: 0.55rem 0.9rem;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.instscore__table thead th {
+  border-top: none;
+  color: var(--text-2);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.instscore__table tbody tr:hover {
+  background: color-mix(in srgb, var(--canvas) 55%, transparent);
+}
+
+.instscore__svc {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, #6ea8fe);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.instscore__badge {
+  display: inline-block;
+  min-width: 2.6rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.instscore__badge--excellent {
+  background: color-mix(in srgb, #3fb27f 22%, transparent);
+  color: #3fb27f;
+}
+
+.instscore__badge--good {
+  background: color-mix(in srgb, #6ea8fe 22%, transparent);
+  color: #6ea8fe;
+}
+
+.instscore__badge--needs-improvement {
+  background: color-mix(in srgb, #d9a441 22%, transparent);
+  color: #d9a441;
+}
+
+.instscore__badge--poor {
+  background: color-mix(in srgb, #b3536a 22%, transparent);
+  color: #b3536a;
+}
+
+.instscore__badge--pending {
+  background: color-mix(in srgb, var(--text-2) 16%, transparent);
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.instscore__row--fail td {
+  background: color-mix(in srgb, #b3536a 7%, transparent);
+}
+
+.instscore__row--na td {
+  color: var(--text-2);
+}
+
+.instscore__status {
+  font-weight: 600;
+}
+
+.instscore__status--pass {
+  color: #3fb27f;
+}
+
+.instscore__status--fail {
+  color: #b3536a;
+}
+
+.instscore__status--not_evaluated {
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.instscore__rule {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.instscore__rule-id {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.instscore__rule-desc {
+  color: var(--text-2);
+  font-size: 0.78rem;
+  max-width: 26rem;
+}
+
+.instscore__evidence {
+  display: grid;
+  gap: 0.3rem;
+  max-width: 34rem;
+}
+
+.instscore__fix {
+  justify-self: start;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.12rem 0.5rem;
+  color: var(--accent, #6ea8fe);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.instscore__guidance {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  font-size: 0.8rem;
+}
+
+.instscore__detail {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.instscore__detail-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--text-1);
+}
+
+.instscore__detail-head p {
+  margin: 0.3rem 0 0;
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+
+.instscore__spark {
+  margin: 0;
+  display: grid;
+  gap: 0.25rem;
+  justify-self: start;
+}
+
+.instscore__spark-line {
+  stroke: var(--accent, #6ea8fe);
+}
+
+.instscore__spark figcaption {
+  color: var(--text-2);
+  font-size: 0.75rem;
+}
