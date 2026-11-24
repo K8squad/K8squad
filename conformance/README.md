@@ -72,3 +72,18 @@ if !rep.OK() {
 `Report`, so one call gives the full picture. Registering the runtime is the only
 core-adjacent step — the engine, SSE sequencing and lifecycle are shared and
 already conformant.
+
+## The telemetry twin: instrumentation-score conformance
+
+The same $0-lane pattern scores **workload telemetry quality** instead of
+shim behavior: vendored
+[instrumentation-score/spec](https://github.com/instrumentation-score/spec)
+rules (26, pinned in `third_party/instrumentation-score/`) evaluated by the
+pure engine in `pkg/telemetry/instscore/`, drivable offline over an OTLP JSON
+dump with `make instscore` / `cmd/instscore` (CI lane:
+`.github/workflows/instscore.yml` — fixture scores are assertions). A live
+tap mirrors the OTel gateway's redacted batches into the apiserver for
+per-service verdicts on the console's `/instscore` page.
+
+- Engine, rules, CLI: [`pkg/telemetry/instscore/README.md`](../pkg/telemetry/instscore/README.md)
+- Deploy & verify the live pipeline: [`docs/observability/instrumentation-score.md`](../docs/observability/instrumentation-score.md)
