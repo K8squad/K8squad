@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -30,18 +31,23 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
-
-	dbmigrate "github.com/K8squad/K8squad/db"
 )
 
-// openTestDB applies the shared forward-only migrations (including 0042) to a
-// real Postgres and returns the handle. Gated on DATABASE_URL exactly like
-// db/dbmigrate_integration_test.go — a plain `go test` skips these.
+// openTestDB provisions the instscore schema from the SHIPPED 0042 migration
+// against the DATABASE_URL Postgres and returns the handle — the same pattern
+// as the audittrail/discussion suites: reset only this suite's schema and apply
+// the real migration file (not inline DDL), so drift between 0042 and the store
+// goes RED here. It deliberately does NOT walk the whole dbmigrate chain: the
+// shared L1 lane's DATABASE_URL already carries unledgered coord/discussion
+// schemas re-created by sibling suites (e.g. audittrail's DROP SCHEMA coord +
+// raw 0001), and dbmigrate.Apply is forward-only — it cannot baseline past
+// them. Gated on DATABASE_URL like the sibling suites — a plain `go test`
+// skips these.
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		t.Skip("DATABASE_URL unset — skipping the instscoreingest integration test (needs a fresh real Postgres)")
+		t.Skip("DATABASE_URL unset — skipping the instscoreingest integration test (needs a real Postgres)")
 	}
 	dbh, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -53,8 +59,23 @@ func openTestDB(t *testing.T) *sql.DB {
 	if err := dbh.PingContext(ctx); err != nil {
 		t.Fatalf("ping db: %v", err)
 	}
-	if err := dbmigrate.Apply(ctx, dbh); err != nil {
-		t.Fatalf("apply migrations: %v", err)
+	if _, err := dbh.ExecContext(ctx, `DROP SCHEMA IF EXISTS instscore CASCADE`); err != nil {
+		t.Fatalf("reset instscore schema: %v", err)
+	}
+	var mig []byte
+	for _, c := range []string{
+		filepath.Join("..", "..", "db", "migrations", "0042_instscore_ingest.sql"),
+		filepath.Join("db", "migrations", "0042_instscore_ingest.sql"),
+	} {
+		if mig, err = os.ReadFile(c); err == nil {
+			break
+		}
+	}
+	if mig == nil {
+		t.Fatal("could not read shipped migration 0042_instscore_ingest.sql (cwd-relative candidates failed)")
+	}
+	if _, err := dbh.ExecContext(ctx, string(mig)); err != nil {
+		t.Fatalf("apply 0042_instscore_ingest: %v", err)
 	}
 	return dbh
 }

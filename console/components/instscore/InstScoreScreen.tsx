@@ -67,7 +67,9 @@ export function InstScoreScreen({
           const services = Array.isArray(body?.services) ? body.services : [];
           if (cancelled) return;
           setRows(services);
-          setRulesTotal(typeof body?.rules_total === "number" ? body.rules_total : 0);
+          setRulesTotal(
+            typeof body?.rules_total === "number" ? body.rules_total : 0,
+          );
           setState(services.length === 0 ? "empty" : "ok");
           return;
         }
@@ -229,9 +231,7 @@ export function InstScoreScreen({
         </p>
       )}
 
-      {detail.phase === "ok" && (
-        <InstScoreDetailPanel detail={detail.detail} />
-      )}
+      {detail.phase === "ok" && <InstScoreDetailPanel detail={detail.detail} />}
     </section>
   );
 }
@@ -239,7 +239,10 @@ export function InstScoreScreen({
 /** The drill-in panel: summary, hourly history sparkline, rule verdict table. */
 function InstScoreDetailPanel({ detail }: { detail: InstScoreServiceDetail }) {
   return (
-    <article className="instscore__detail" aria-label={`${serviceLabel(detail.service)} verdicts`}>
+    <article
+      className="instscore__detail"
+      aria-label={`${serviceLabel(detail.service)} verdicts`}
+    >
       <header className="instscore__detail-head">
         <h2>{serviceLabel(detail.service)}</h2>
         <p>
@@ -257,8 +260,8 @@ function InstScoreDetailPanel({ detail }: { detail: InstScoreServiceDetail }) {
               {" "}
               · disclosed {detail.implemented}/{detail.total} rules
             </>
-          )}
-          {" "}· evaluated {whenLabel(detail.evaluated_at)}
+          )}{" "}
+          · evaluated {whenLabel(detail.evaluated_at)}
         </p>
       </header>
 
@@ -315,7 +318,9 @@ function InstScoreVerdictRow({ verdict }: { verdict: InstScoreVerdict }) {
         <span
           className={`instscore__status instscore__status--${verdict.status}`}
         >
-          {verdict.status === "not_evaluated" ? "not evaluated" : verdict.status}
+          {verdict.status === "not_evaluated"
+            ? "not evaluated"
+            : verdict.status}
         </span>
       </td>
       <td>
@@ -352,8 +357,11 @@ function InstScoreHistorySparkline({
   const h = 48;
   const n = history.length;
   const x = (i: number) => (i / Math.max(1, n - 1)) * (w - 2) + 1;
-  const y = (score: number) => h - 2 - (Math.max(0, Math.min(100, score)) / 100) * (h - 6);
-  const points = history.map((p, i) => `${x(i).toFixed(1)},${y(p.score).toFixed(1)}`).join(" ");
+  const y = (score: number) =>
+    h - 2 - (Math.max(0, Math.min(100, score)) / 100) * (h - 6);
+  const points = history
+    .map((p, i) => `${x(i).toFixed(1)},${y(p.score).toFixed(1)}`)
+    .join(" ");
   const first = history[0]?.score ?? 0;
   const last = history[n - 1]?.score ?? 0;
   return (

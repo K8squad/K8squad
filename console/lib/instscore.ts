@@ -59,12 +59,7 @@ export interface InstScoreServiceDetail extends InstScoreServiceSummary {
 /** The screen's load states — the audit vocabulary: honest states render as
  *  themselves, never a fabricated fallback. */
 export type InstScoreLoadState =
-  | "loading"
-  | "ok"
-  | "empty"
-  | "denied"
-  | "unconfigured"
-  | "error";
+  "loading" | "ok" | "empty" | "denied" | "unconfigured" | "error";
 
 /** Map an HTTP status to the screen's load state (401/403+404 deny-collapse,
  *  501 unconfigured, anything else error — the house classify pattern). */
@@ -124,5 +119,8 @@ export function whenLabel(iso?: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z");
+  return d
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d+Z$/, "Z");
 }

@@ -42,11 +42,7 @@ test.describe("ISI-7750 · Instrumentation Score page", () => {
     await page.goto("/instscore");
 
     // The table caption pins the surface; scores are tabular digits.
-    await expect(
-      page.getByRole("table").first(),
-    ).toBeVisible();
-    await expect(
-      page.getByText(/worst score first/i),
-    ).toBeVisible();
+    await expect(page.getByRole("table").first()).toBeVisible();
+    await expect(page.getByText(/worst score first/i)).toBeVisible();
   });
 });

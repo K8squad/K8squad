@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  fireEvent,
+} from "@testing-library/react";
 import { InstScoreScreen } from "@/components/instscore/InstScoreScreen";
 import type {
   InstScoreServiceDetail,
@@ -125,7 +131,9 @@ function seededDetail(): InstScoreServiceDetail {
 
 describe("<InstScoreScreen> — ISI-7750 console smoke against seeded windows", () => {
   it("renders the services list: scores, categories, tallies, pending row, unnamed bucket", async () => {
-    render(<InstScoreScreen load={async () => jsonResponse(200, seededList())} />);
+    render(
+      <InstScoreScreen load={async () => jsonResponse(200, seededList())} />,
+    );
 
     await waitFor(() => {
       expect(screen.getByRole("table")).toBeVisible();
@@ -161,7 +169,11 @@ describe("<InstScoreScreen> — ISI-7750 console smoke against seeded windows", 
     fireEvent.click(screen.getByRole("button", { name: "checkout" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Rule-by-rule verdicts (impact order within rule-ID order)")).toBeVisible();
+      expect(
+        screen.getByText(
+          "Rule-by-rule verdicts (impact order within rule-ID order)",
+        ),
+      ).toBeVisible();
     });
 
     // Disclosure + summary.
@@ -171,41 +183,53 @@ describe("<InstScoreScreen> — ISI-7750 console smoke against seeded windows", 
     expect(screen.getByText(/debug-level log records observed/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "How to fix" }));
     expect(
-      screen.getByText(/severity\.text.*DEBUG.*not observed in a production environment/),
+      screen.getByText(
+        /severity\.text.*DEBUG.*not observed in a production environment/,
+      ),
     ).toBeVisible();
 
     // Passed rule carries no guidance affordance.
-    expect(
-      screen.queryByRole("button", { name: "How to fix" }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "How to fix" })).toBeNull();
 
     // History sparkline is described for assistive tech.
-    expect(screen.getByRole("img", { name: /Hourly score history/ })).toBeVisible();
+    expect(
+      screen.getByRole("img", { name: /Hourly score history/ }),
+    ).toBeVisible();
   });
 
   it("renders the honest states: empty, denied, unconfigured, error", async () => {
     const { rerender } = render(
-      <InstScoreScreen load={async () => jsonResponse(200, { services: [], rules_total: 26 })} />,
+      <InstScoreScreen
+        load={async () => jsonResponse(200, { services: [], rules_total: 26 })}
+      />,
     );
     await waitFor(() => {
       expect(screen.getByText(/No services observed yet/)).toBeVisible();
     });
 
     rerender(
-      <InstScoreScreen load={async () => jsonResponse(401, { error: "unauthenticated" })} />,
+      <InstScoreScreen
+        load={async () => jsonResponse(401, { error: "unauthenticated" })}
+      />,
     );
     await waitFor(() => {
-      expect(screen.getByText(/Denied — this surface needs a console session/)).toBeVisible();
+      expect(
+        screen.getByText(/Denied — this surface needs a console session/),
+      ).toBeVisible();
     });
 
     rerender(
-      <InstScoreScreen load={async () => jsonResponse(501, { error: "not implemented" })} />,
+      <InstScoreScreen
+        load={async () => jsonResponse(501, { error: "not implemented" })}
+      />,
     );
     await waitFor(() => {
       expect(screen.getByText(/Unconfigured/)).toBeVisible();
     });
 
-    rerender(<InstScoreScreen load={async () => Promise.reject(new Error("net"))} />);
+    rerender(
+      <InstScoreScreen load={async () => Promise.reject(new Error("net"))} />,
+    );
     await waitFor(() => {
       expect(screen.getByText(/read model is unavailable/)).toBeVisible();
     });
@@ -223,7 +247,9 @@ describe("<InstScoreScreen> — ISI-7750 console smoke against seeded windows", 
     });
     fireEvent.click(screen.getByRole("button", { name: "checkout" }));
     await waitFor(() => {
-      expect(screen.getByText(/no longer observed in the window/)).toBeVisible();
+      expect(
+        screen.getByText(/no longer observed in the window/),
+      ).toBeVisible();
     });
   });
 });
