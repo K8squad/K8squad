@@ -155,6 +155,16 @@ type ExecSpec struct {
 	// exit only. The func must be pure — it is called from the runner's
 	// scanner goroutine.
 	SettleLine func(line string) bool
+	// Finalize, when set, is called once by the runner's scan goroutine
+	// immediately after stdout EOF — after all Parse calls, before the
+	// scanned channel closes. It may return additional Progress events
+	// that are emitted in order before the channel closes. The canonical
+	// use-case is emitting a MessageKindDeliverable that accumulates across
+	// all scanned lines (ISI-7755): the runtime tracks the final assistant
+	// text via Parse and flushes it as the deliverable here, so the event
+	// is in-band and guaranteed to precede the engine's terminal backstop.
+	// nil = no post-EOF flush.
+	Finalize func() []Progress
 }
 
 // Progress is one runtime-stream progress event handed from the runner to the

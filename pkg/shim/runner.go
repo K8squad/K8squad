@@ -485,6 +485,17 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 				}
 			}
 		}
+		// ISI-7755: post-EOF flush — runtimes that accumulate state across
+		// lines (opencode's deliverable summary) emit their final events here,
+		// after all Parse calls and before scanned closes. The engine's
+		// terminal backstop fires after scanned closes; events emitted here
+		// are strictly prior, so a deliverable emitted by Finalize sets
+		// sawDeliverable=true and correctly suppresses the backstop.
+		if spec.Finalize != nil {
+			for _, p := range spec.Finalize() {
+				emit(p)
+			}
+		}
 	}()
 
 	// Startup watchdog (ISI-5036, reasoning-aware ISI-5763): if the runtime
