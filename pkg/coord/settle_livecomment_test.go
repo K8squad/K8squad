@@ -166,6 +166,14 @@ func TestSettleEmitsCommentEchoProgress(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT source FROM coord.work_item")).
 		WithArgs(slItem).
 		WillReturnRows(sqlmock.NewRows([]string{"source"}).AddRow(nil))
+	// ISI-7772: the settle reads the failure evidence (a2a latest settled lap,
+	// then the phase journal) to classify the real cause.
+	mock.ExpectQuery(regexp.QuoteMeta("FROM coord.a2a_dispatch")).
+		WithArgs(slItem).
+		WillReturnRows(sqlmock.NewRows([]string{"settle_outcome"}).AddRow("failed"))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM coord.run_phase_transition")).
+		WithArgs(slRun).
+		WillReturnRows(sqlmock.NewRows([]string{"exists", "from_phase"}).AddRow(true, "running"))
 	// The lane move itself (failed → todo) + its state_transition audit.
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE coord.work_item")).
 		WithArgs("todo", slItem).
@@ -239,6 +247,78 @@ func TestSettleWithoutRunSkipsEcho(t *testing.T) {
 	}
 	if lane != "" || moved {
 		t.Fatalf("succeeded owns no engine lane: lane=%q moved=%v", lane, moved)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestSettleEmitsCommentEchoFailureNotice (ISI-7772): a FAILED discussion run
+// whose agent never summarised settles to the humane failure notice — a
+// kind=summary comment whose header is "Run failure notice" (never the hollow
+// "the agent did not post one"), whose cause class comes from the settled a2a
+// lap, and whose next action names the single-shot discussion semantics — and
+// its ticket_comment echo co-commits in the same transaction.
+func TestSettleEmitsCommentEchoFailureNotice(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT assignee_agent FROM coord.claim")).
+		WithArgs(slItem).
+		WillReturnRows(sqlmock.NewRows([]string{"assignee_agent"}).AddRow("devon"))
+	// Source: discussion — the single-shot lane override AND the notice next action.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT source FROM coord.work_item")).
+		WithArgs(slItem).
+		WillReturnRows(sqlmock.NewRows([]string{"source"}).AddRow("discussion"))
+	// ISI-7772 failure evidence: the latest settled a2a lap (failed →
+	// model_route) and the phase journal (reached running, failed from running).
+	mock.ExpectQuery(regexp.QuoteMeta("FROM coord.a2a_dispatch")).
+		WithArgs(slItem).
+		WillReturnRows(sqlmock.NewRows([]string{"settle_outcome"}).AddRow("failed"))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM coord.run_phase_transition")).
+		WithArgs(slRun).
+		WillReturnRows(sqlmock.NewRows([]string{"exists", "from_phase"}).AddRow(true, "running"))
+	// Lane: a failed discussion reply is single-shot — cancelled (ISI-5137).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE coord.work_item")).
+		WithArgs("cancelled", slItem).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO coord.audit_log")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	// The agent never summarised — the platform synthesizes the failure notice.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS (")).
+		WithArgs(slItem, slRun).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM coord.change_ref")).
+		WillReturnRows(sqlmock.NewRows([]string{"kind", "ref", "summary"}))
+	mock.ExpectQuery(regexp.QuoteMeta("FROM coord.artifact")).
+		WillReturnRows(sqlmock.NewRows([]string{"kind", "uri"}))
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO coord.comment")).
+		WithArgs(slItem, slAgent, sqlmock.AnyArg(), "summary", slRun).
+		WillReturnRows(sqlmock.NewRows([]string{"created_at"}).AddRow(slTime))
+	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO coord.outbox")).
+		WithArgs(slItem, coord.LiveCommentEventType, slRun,
+			echoPayload(t, "summary", "Run failure notice"), sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+	mock.ExpectCommit()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	lane, moved, err := coord.SettleTerminalLane(ctx, tx, slItem, slRun, slAgent, "failed")
+	if err != nil {
+		t.Fatalf("SettleTerminalLane: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if lane != "cancelled" || !moved {
+		t.Fatalf("failed discussion settle: lane=%q moved=%v, want cancelled/moved", lane, moved)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
