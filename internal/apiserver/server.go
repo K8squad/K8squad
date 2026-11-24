@@ -369,6 +369,14 @@ type Options struct {
 	// ADR-0005 D2). Nil ⇒ the surface is simply absent (no signing key / write
 	// client wired).
 	OrgOps http.Handler
+	// InstScoreIngest is the ISI-7749 instrumentation-score ingestion tap: the
+	// OTLP/HTTP surface (POST /api/instscore/v1/{traces,metrics,logs}) the OTel
+	// gateway's otlphttp/instscore exporter mirrors redacted batches to. Like
+	// TaskIO/OrgOps it carries its OWN bearer auth (the collector has no
+	// console session) and mounts at the router root outside the cookie choke
+	// point. Nil ⇒ the surface is simply absent (no KSQUAD_INSTSCORE_TOKEN
+	// configured), exactly like the task-io seam's fail-visible shape.
+	InstScoreIngest http.Handler
 }
 
 // NewServer assembles the root router from opts.
@@ -502,6 +510,15 @@ func (s *Server) routes(opts Options) {
 	if opts.OrgOps != nil {
 		s.router.PathPrefix("/api/org-ops/").Handler(
 			http.StripPrefix("/api/org-ops", opts.OrgOps))
+	}
+
+	// ── ISI-7749 instrumentation-score ingestion tap — own bearer auth, NOT ──
+	// the cookie choke point (the gateway collector is the client). Mounted at
+	// the router root so /api/instscore/v1/{traces,metrics,logs} reaches the
+	// OTLP/HTTP handler mux. Absent handler ⇒ the surface is simply absent.
+	if opts.InstScoreIngest != nil {
+		s.router.PathPrefix("/api/instscore/").Handler(
+			http.StripPrefix("/api/instscore", opts.InstScoreIngest))
 	}
 
 	// ── Gated API surface (everything below rides the §13 authz choke point) ──

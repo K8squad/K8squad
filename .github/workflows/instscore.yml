@@ -39,8 +39,8 @@ jobs:
           # exists") and kills the job on disk pressure. The dir IS the cache.
           cache: false
 
-      - name: Scoring engine + CLI tests (unit, race)
-        run: go test -race -count=1 ./pkg/telemetry/instscore/... ./cmd/instscore/...
+      - name: Scoring engine + ingest + CLI tests (unit, race)
+        run: go test -race -count=1 ./pkg/telemetry/instscore/... ./internal/instscoreingest/... ./cmd/instscore/...
 
       - name: "Score the OTLP JSON fixtures offline (golden: 100 / 17.14 / 61.43)"
         run: |

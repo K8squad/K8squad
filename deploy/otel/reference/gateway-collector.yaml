@@ -19,6 +19,14 @@ spec:
         secretKeyRef:
           name: dynatrace-otlp
           key: token
+    # ISI-7749 instscore tap bearer token — MUST hold the same value as the
+    # apiserver's KSQUAD_INSTSCORE_TOKEN (Secret instscore-ingest, created
+    # out-of-band alongside dynatrace-otlp).
+    - name: KSQUAD_INSTSCORE_AUTH
+      valueFrom:
+        secretKeyRef:
+          name: instscore-ingest
+          key: token
   # Backing store for the file_storage/queue extension (ISI-4371). The operator
   # auto-wires liveness/readiness from the health_check extension; the persistent
   # sending queue needs a writable volume the readOnlyRootFilesystem does not.
@@ -167,6 +175,29 @@ spec:
           max_elapsed_time: 0
       debug:
         verbosity: basic
+      # ISI-7749 instscore ingestion tap: mirrors the SAME redacted,
+      # post-processor batch to the apiserver's OTLP/HTTP ingestion route
+      # (folds into per-service evidence windows, migration 0042). As an
+      # exporter it taps after k8sattributes/resource and downstream of
+      # redaction by construction. Bounded retry: a report-only side channel
+      # must buffer-and-drain across an apiserver brownout (10m), not accrue
+      # never-ending retries into the self-heal that protects the vendor path.
+      otlphttp/instscore:
+        endpoint: http://ksquad-apiserver.ksquad-system.svc/api/instscore
+        headers:
+          Authorization: "Bearer ${env:KSQUAD_INSTSCORE_AUTH}"
+        tls:
+          insecure: false
+        sending_queue:
+          enabled: true
+          storage: file_storage/queue
+          num_consumers: 2
+          queue_size: 1000
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 10m
     service:
       extensions: [health_check, file_storage/queue]
       pipelines:
@@ -178,14 +209,14 @@ spec:
           # traces. Re-add `tail_sampling` (processor + this list) once tracing
           # is confirmed flowing at 100% capture.
           processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
-          exporters: [otlphttp/vendor]
+          exporters: [otlphttp/vendor, otlphttp/instscore]
         metrics:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, resource, cumulativetodelta, batch]
-          exporters: [otlphttp/vendor]
+          exporters: [otlphttp/vendor, otlphttp/instscore]
         logs:
           receivers: [otlp]
           # batch/logs (not batch) — caps each OTLP request under DT's 10 MB
           # limit so logs stop dropping with HTTP 413 (ISI-7108).
           processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch/logs]
-          exporters: [otlphttp/vendor]
+          exporters: [otlphttp/vendor, otlphttp/instscore]

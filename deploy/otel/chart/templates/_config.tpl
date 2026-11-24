@@ -162,6 +162,34 @@ exporters:
       max_elapsed_time: 0
   debug:
     verbosity: basic
+  {{- if .Values.collector.instscore.enabled }}
+  # ISI-7749 instscore ingestion tap: mirrors the SAME processed batch the
+  # vendor exporter ships to the apiserver's OTLP/HTTP ingestion route. Being
+  # an exporter, it necessarily taps AFTER k8sattributes/resource and
+  # DOWNSTREAM of redaction/transform-redaction — the scored evidence is
+  # redaction-safe by pipeline position (ISI-7741 plan "Defaults chosen").
+  # Bounded retry (10m max_elapsed_time, NOT the vendor's never-give-up): the
+  # tap is a report-only side channel; an apiserver brownout must buffer and
+  # drain, not accrue failures into the health_check self-heal that exists to
+  # protect the vendor path. A small sending_queue rides the same
+  # file_storage/queue extension.
+  otlphttp/instscore:
+    endpoint: {{ .Values.collector.instscore.endpoint | quote }}
+    headers:
+      Authorization: "Bearer ${env:KSQUAD_INSTSCORE_AUTH}"
+    tls:
+      insecure: false
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+      num_consumers: 2
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 10m
+  {{- end }}
 service:
   extensions: [health_check, file_storage/queue]
   pipelines:
@@ -173,17 +201,17 @@ service:
       # validation unreliable. Re-add `tail_sampling` (processor + this list)
       # once tracing is confirmed flowing at 100% capture.
       processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
-      exporters: [otlphttp/vendor]
+      exporters: [otlphttp/vendor{{ if .Values.collector.instscore.enabled }}, otlphttp/instscore{{ end }}]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, k8sattributes, resource, cumulativetodelta, batch]
-      exporters: [otlphttp/vendor]
+      exporters: [otlphttp/vendor{{ if .Values.collector.instscore.enabled }}, otlphttp/instscore{{ end }}]
     logs:
       receivers: [otlp]
       # batch/logs (not batch) — caps each OTLP request under DT's 10 MB limit so
       # logs stop dropping with HTTP 413 (ISI-7108).
       processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch/logs]
-      exporters: [otlphttp/vendor]
+      exporters: [otlphttp/vendor{{ if .Values.collector.instscore.enabled }}, otlphttp/instscore{{ end }}]
 {{- end -}}
 
 {{/*

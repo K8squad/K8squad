@@ -66,6 +66,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.collector.authSecretRef.name }}
                   key: {{ .Values.collector.authSecretRef.key }}
+            {{- if .Values.collector.instscore.enabled }}
+            # ISI-7749 instscore tap bearer token (same value as the
+            # apiserver's KSQUAD_INSTSCORE_TOKEN).
+            - name: KSQUAD_INSTSCORE_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.collector.instscore.authSecretRef.name }}
+                  key: {{ .Values.collector.instscore.authSecretRef.key }}
+            {{- end }}
           ports:
             - name: otlp-grpc
               containerPort: 4317
