@@ -1,0 +1,50 @@
+name: instscore
+
+# ISI-7748 (phase 2 of the instrumentation-score conformance plan, ISI-7741):
+# the $0 CI lane twin of conformance.yml. It exercises the offline scoring
+# engine end-to-end — rule evaluators, spec formula, disclosure — against the
+# pinned OTLP JSON fixtures, then runs the cmd/instscore CLI over the same
+# fixtures exactly as an operator would on a collector dump. No live
+# collector, no network, no paid credential: scoring is pure and
+# deterministic, so fixture scores (100 / 17.14 / 61.43) are assertions.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: instscore-${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a main run (drops its check signal); self-cancel superseded PR pushes.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  instscore:
+    name: instrumentation-score offline lane
+    # Self-hosted per R1 (K8squad/K8squad has no hosted-runner minutes).
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Pin the toolchain to the module's declared Go version (see ci.yml rationale).
+          go-version-file: go.mod
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
+
+      - name: Scoring engine + CLI tests (unit, race)
+        run: go test -race -count=1 ./pkg/telemetry/instscore/... ./cmd/instscore/...
+
+      - name: "Score the OTLP JSON fixtures offline (golden: 100 / 17.14 / 61.43)"
+        run: |
+          set -euo pipefail
+          go run ./cmd/instscore pkg/telemetry/instscore/testdata/good_service.json
+          go run ./cmd/instscore pkg/telemetry/instscore/testdata/violations.json
+          go run ./cmd/instscore pkg/telemetry/instscore/testdata/no_data_metrics_only.json

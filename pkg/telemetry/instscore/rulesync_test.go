@@ -17,7 +17,6 @@ limitations under the License.
 package instscore
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -142,7 +141,7 @@ func equalTargets(a, b []Target) bool {
 // console and API renderings rely on for stable output.
 func TestRulesSortedByID(t *testing.T) {
 	for i := 1; i < len(Rules); i++ {
-		if fmt.Sprintf("%s", Rules[i-1].ID) >= fmt.Sprintf("%s", Rules[i].ID) {
+		if Rules[i-1].ID >= Rules[i].ID {
 			t.Errorf("registry not sorted by ID: %s >= %s", Rules[i-1].ID, Rules[i].ID)
 		}
 	}

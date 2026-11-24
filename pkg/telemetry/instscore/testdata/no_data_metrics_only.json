@@ -1,0 +1,103 @@
+{
+ "metrics": [
+  {
+   "resourceMetrics": [
+    {
+     "resource": {
+      "attributes": [
+       {
+        "key": "service.name",
+        "value": {
+         "stringValue": "metrics-only"
+        }
+       },
+       {
+        "key": "service.instance.id",
+        "value": {
+         "stringValue": "mo-1"
+        }
+       },
+       {
+        "key": "deployment.environment.name",
+        "value": {
+         "stringValue": "staging"
+        }
+       },
+       {
+        "key": "k8s.namespace.name",
+        "value": {
+         "stringValue": "ops"
+        }
+       },
+       {
+        "key": "k8s.pod.name",
+        "value": {
+         "stringValue": "exporter-1"
+        }
+       },
+       {
+        "key": "k8s.pod.uid",
+        "value": {
+         "stringValue": "c0ffee00-1111-2222-3333-444455556666"
+        }
+       }
+      ]
+     },
+     "scopeMetrics": [
+      {
+       "scope": {
+        "name": "github.com/k8squad/payments",
+        "version": "v1.2.3"
+       },
+       "metrics": [
+        {
+         "name": "queue.depth",
+         "unit": "{obj}",
+         "gauge": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "3000000000000",
+            "asDouble": 0,
+            "attributes": [
+             {
+              "key": "queue",
+              "value": {
+               "stringValue": "ingest"
+              }
+             }
+            ]
+           }
+          ]
+         }
+        },
+        {
+         "name": "request.duration",
+         "unit": "ms",
+         "histogram": {
+          "dataPoints": [
+           {
+            "timeUnixNano": "3000000000000",
+            "explicitBounds": [
+             5,
+             25,
+             100
+            ],
+            "bucketCounts": [
+             "1",
+             "2",
+             "0",
+             "0"
+            ]
+           }
+          ],
+          "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+         }
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
