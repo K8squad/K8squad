@@ -575,7 +575,17 @@ func (s *HeartbeatSweeper) reclaimDeadHolders(ctx context.Context) {
 			var ok bool
 			dead, ok = verdicts[runID]
 			if !ok {
-				dead = true // Run CR gone
+				// ISI-7770: absent from the batch snapshot is NOT proof the Run CR is gone — the holder may
+				// have acquired its slot AFTER the sweep's RunList was taken (the 20:42:35Z four-run
+				// false-positive storm reclaimed brand-new holders 3s after creation, and the evicted runs
+				// kept executing). Re-check this one run before reclaiming: a fresh TerminalOrGone verdict
+				// is authoritative, the batch snapshot stays an optimization. A run that is genuinely
+				// absent there is gone; a fresh non-terminal CR keeps its slot.
+				d, err := s.HolderTerminal.TerminalOrGone(ctx, runID)
+				if err != nil {
+					return true, err // fail-safe: never reclaim on a maybe
+				}
+				dead = d
 			}
 		} else {
 			d, err := s.HolderTerminal.TerminalOrGone(ctx, runID)

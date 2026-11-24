@@ -461,3 +461,25 @@ func TestDispatchConcurrencyCapDisabledNeverCounts(t *testing.T) {
 		t.Fatalf("cap-disabled dispatch must never call CountInFlight, got %d calls", len(fl.countCalls))
 	}
 }
+
+// ISI-7770: a WholeRoom broadcast dispatch is exempt from the per-discussion
+// in-flight shed — the whole-room ask flows into the run-scheduling layer
+// (per-endpoint FIFO gate + per-agent non-preemptive queue) instead of being
+// silently dropped at the ceiling.
+func TestDispatchWholeRoomBypassesConcurrencyShed(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "66666666-6666-6666-6666-666666666666", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	fl.inFlight = 9 // far over the cap of 4
+	var marks []string
+	md := capDispatcher(fc, fd, fl, &marks, 4)
+
+	d := sampleDispatch()
+	d.WholeRoom = true
+	if err := md.DispatchMention(context.Background(), d); err != nil {
+		t.Fatalf("whole-room dispatch: %v", err)
+	}
+	if len(fc.calls) != 1 || len(fd.calls) != 1 {
+		t.Fatalf("whole-room dispatch must mint: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+}
