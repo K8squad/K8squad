@@ -94,3 +94,74 @@ func TestOpenCodeCommandWiresSettleAndLingerGuards(t *testing.T) {
 		t.Error("BYO runs must disable the models.dev fetch (self-contained provider block)")
 	}
 }
+
+// ISI-7755: the opencode Command wires a Finalize hook alongside Parse so the
+// final assistant text is promoted to MessageKindDeliverable after stdout EOF,
+// in-band and before the engine's terminal backstop fires.
+func TestOpenCodeCommandWiresFinalizeHook(t *testing.T) {
+	rt, err := Get(apiv1alpha1.RuntimeTypeOpenCode)
+	if err != nil {
+		t.Fatalf("Get(opencode): %v", err)
+	}
+	spec, err := rt.Command(LaunchContext{
+		Envelope: a2a.Envelope{SystemContext: "sys", Input: "summarize"},
+	})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if spec.Parse == nil {
+		t.Fatal("opencode ExecSpec must set Parse")
+	}
+	if spec.Finalize == nil {
+		t.Fatal("opencode ExecSpec must set Finalize (ISI-7755)")
+	}
+
+	// Feed one text event and a step_finish through Parse; Finalize should
+	// emit exactly one MessageKindDeliverable with that text.
+	textLine := `{"type":"text","part":{"text":"here is my summary"}}`
+	finishLine := `{"type":"step_finish","part":{"type":"step-finish","reason":"stop"}}`
+	for _, line := range []string{textLine, finishLine} {
+		spec.Parse(line)
+	}
+	final := spec.Finalize()
+	if len(final) != 1 {
+		t.Fatalf("Finalize() = %d events, want 1", len(final))
+	}
+	p := final[0]
+	if p.Message == nil {
+		t.Fatal("Finalize() event must be an EventMessage")
+	}
+	if p.Message.Kind != a2a.MessageKindDeliverable {
+		t.Errorf("Finalize() message kind = %q, want %q", p.Message.Kind, a2a.MessageKindDeliverable)
+	}
+	if p.Message.Text != "here is my summary" {
+		t.Errorf("Finalize() message text = %q, want %q", p.Message.Text, "here is my summary")
+	}
+}
+
+// ISI-7755: Finalize returns nothing when no text was seen (e.g. a run that
+// failed before any assistant text, or an error-only run tagged deliverable by
+// the error path).
+func TestOpenCodeFinalizeEmptyWhenNoText(t *testing.T) {
+	rt, err := Get(apiv1alpha1.RuntimeTypeOpenCode)
+	if err != nil {
+		t.Fatalf("Get(opencode): %v", err)
+	}
+	spec, err := rt.Command(LaunchContext{
+		Envelope: a2a.Envelope{SystemContext: "sys", Input: "task"},
+	})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	// Finalize with no prior Parse calls — no text accumulated.
+	if got := spec.Finalize(); len(got) != 0 {
+		t.Errorf("Finalize() with no text = %d events, want 0", len(got))
+	}
+	// A genuine (non-throttle) error delivers a deliverable-tagged message via
+	// the error path — Finalize must not duplicate it (no thinking text
+	// accumulated, so finalize returns nothing).
+	spec.Parse(`{"type":"error","error":{"name":"AuthError","data":{"message":"invalid api key"}}}`)
+	if got := spec.Finalize(); len(got) != 0 {
+		t.Errorf("Finalize() after error-only run = %d events, want 0", len(got))
+	}
+}
