@@ -17,10 +17,21 @@ score = Σ(pass_i × weight_i) / Σ(evaluated_i × weight_i) × 100
 ```
 
 - Impact weights: Critical 40 · Important 30 · Normal 20 · Low 10.
-- A rule that is `not_evaluated` for a service (no relevant evidence in the
-  window) is excluded from **both** sums — it never drags the score down.
 - Qualitative bands (`Categorize`): 90–100 Excellent · 75–89 Good ·
   50–74 Needs Improvement · 0–49 Poor.
+
+**No-data policy.** A rule whose target signal is entirely absent from the
+window **fails** with evidence `no <signal> observed in window` — the
+specification has no N/A, and the conservative default keeps scores
+comparable across implementations. A metrics-only service therefore fails
+the LOG/SPA rules (see the `no_data_metrics_only.json` fixture, 61.43), not
+quietly dodges them.
+
+**`not_evaluated` is different**: it marks a rule the implementation does
+not implement — the spec-mandated disclosure — and such rules are excluded
+from *both* sums (they never drag the score down). All 26 vendored rules
+have evaluators here, so the status appears only in the report shape, kept
+for spec fidelity.
 
 Every rule verdict carries a human-readable `Evidence` string naming the
 offending attribute/span/log/metric, so a FAIL is actionable without re-running
