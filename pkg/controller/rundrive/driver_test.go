@@ -1409,8 +1409,10 @@ func TestEndpointGateReleasedOnCancelFinish(t *testing.T) {
 }
 
 // TestEndpointGateKeptAcrossRetryLap: the retry path deliberately keeps the
-// permit — the same run re-acquires it as a no-op on the next lap, so no
-// other run can jump the lap's backoff queue.
+// permit for a run that HAS dispatched (in-flight step) — the same run
+// re-acquires it as a no-op on the next lap, so no other run can jump the
+// lap's backoff queue. (A pre-dispatch retry releases instead — ISI-7788,
+// TestEndpointGateReleasedOnPreDispatchRetryLap.)
 func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
 	uid := "11111111-1111-1111-1111-111111111111"
 	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
@@ -1442,6 +1444,77 @@ func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
 	}
 	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
 		t.Fatal("the retrying run's own re-acquire must stay an idempotent grant")
+	}
+}
+
+// TestEndpointGateReleasedOnTerminalAbsorb: a run whose work item went
+// terminal through a path the driver's release sites missed (projector
+// force-fail, reaper force-fail, a fail-closed park from another leader)
+// frees its BYO endpoint permit on the absorbing pass — the per-agent slot
+// already releases on this branch (ISI-7499 C4); the endpoint twin was the
+// ISI-7788 gap (a Failed run held a single-slot endpoint for 11h44m while
+// its waiter sat "exempt from zombie reap").
+func TestEndpointGateReleasedOnTerminalAbsorb(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{
+		found: true,
+		state: ClaimState{Step: reconcile.StepFailed, Fence: 2, Holder: "a"},
+	}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
+		t.Fatal("fixture: the absorbing run must hold the endpoint slot")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("absorb drive: %v", err)
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
+		t.Fatal("the absorbing pass must release the terminal run's endpoint slot")
+	}
+}
+
+// TestEndpointGateReleasedOnPreDispatchRetryLap: a retry lap entered while
+// the run has NOT dispatched (step at or below claiming_sandbox — the
+// sandbox claim-failure requeue path) releases the BYO endpoint permit for
+// the backoff window instead of carrying it across laps: a
+// never-dispatched holder is not using the endpoint, and the kept permit
+// starved the queue behind a non-dispatching holder (ISI-7788 live wedge:
+// 12 waiters, 14+ min, zero throughput on a 1-slot endpoint).
+func TestEndpointGateReleasedOnPreDispatchRetryLap(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	max := int32(3)
+	run.Spec.RetryPolicy = &api.RetryPolicy{MaxRetries: &max}
+	run.Status.SandboxRef = &api.ObjectRef{Namespace: "default", Name: "gone-pod"}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	lease := time.Now().Add(time.Minute)
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepClaimingSandbox, Fence: 7, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: &lease, ItemState: "in_progress"},
+		laps: 1, retryOK: true, retryNewFence: 8, renewOK: true}
+	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 7, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{},
+		&fakeRunner{store: store, effects: &fakeMachineEffects{err: errSandboxGone}})
+	d.Sandbox = &fakeReleaser{}
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid, 0, PriorityKey{}); !ok {
+		t.Fatal("fixture: the retrying run must hold the endpoint slot")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("retry drive: %v", err)
+	}
+	if len(claims.retryCalls) != 1 {
+		t.Fatal("in-budget pre-dispatch death must enter the retry lap")
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next", 0, PriorityKey{}); !ok {
+		t.Fatal("a never-dispatched retry lap must release the endpoint slot for the backoff window")
 	}
 }
 

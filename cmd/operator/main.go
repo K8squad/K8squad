@@ -1683,11 +1683,14 @@ func main() {
 			// through a path the driver's release sites missed.
 			AgentGate:      agentGate,
 			HolderTerminal: liveRuns,
-			// ISI-7687: the holder-side liveness half of the reclaim — a
-			// holder whose Run CR is wedged non-terminal with no live
-			// sandbox pod past the stall grace (measured from the gate's
-			// frozen acquisition time) yields its slot instead of starving
-			// every waiter on a single-slot BYO endpoint for days.
+			// ISI-7687/ISI-7788: the holder-side liveness half of the
+			// reclaim — a holder whose Run CR is wedged non-terminal with no
+			// sandbox pod (or a pod stuck never-Ready past the stall grace,
+			// measured from the gate's frozen acquisition time) yields its
+			// slot instead of starving every waiter on a single-slot BYO
+			// endpoint for days. The bar is a RUNNING pod (HasRunningSandbox):
+			// an existing-but-never-Ready pod is a stuck bring-up, not proof
+			// of endpoint use.
 			HolderSandbox: liveRuns,
 			Log:           func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
