@@ -50,6 +50,23 @@ describe("WorkingIndicators", () => {
     expect(row.textContent).toContain("could not respond");
   });
 
+  it("shows the real queued state for a provably queued run (ISI-7772)", () => {
+    render(<WorkingIndicators watches={[w({ live: "queued" })]} />);
+    const row = screen.getByTestId("working-indicator");
+    expect(row.getAttribute("data-phase")).toBe("working");
+    expect(row.textContent).toContain(
+      "john is queued behind the endpoint gate",
+    );
+  });
+
+  it("shows the honest waiting seat for a timed-out watch (ISI-7772)", () => {
+    render(<WorkingIndicators watches={[w({ phase: "waiting" })]} />);
+    const row = screen.getByTestId("working-indicator");
+    expect(row.getAttribute("data-phase")).toBe("waiting");
+    expect(row.textContent).toContain("john hasn't replied yet");
+    expect(row.textContent).not.toContain("could not respond");
+  });
+
   it("announces politely via an aria-live status region", () => {
     render(<WorkingIndicators watches={[w()]} />);
     const list = screen.getByTestId("working-list");

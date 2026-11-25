@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  applyLivePresence,
   applyReply,
   dispatchTargets,
   expireStale,
@@ -249,8 +250,8 @@ describe("expireStale", () => {
     },
   ];
 
-  it("marks a stale working watch failed once the timeout elapses", () => {
-    expect(expireStale(w, 60_000, 60_000)[0].phase).toBe("failed");
+  it("marks a stale working watch waiting once the timeout elapses (ISI-7772 honest seat)", () => {
+    expect(expireStale(w, 60_000, 60_000)[0].phase).toBe("waiting");
   });
 
   it("leaves a fresh working watch alone", () => {
@@ -303,7 +304,9 @@ describe("groupByMessage / hasActiveWork", () => {
 });
 
 // ISI-7483 (queued ≠ failed): a timed-out watch whose agent provably still
-// holds a live (queued or running) run must NOT expire to failed.
+// holds a live (queued or running) run must NOT expire. ISI-7772: when the
+// probe cannot prove liveness, the seat drops to the honest waiting state —
+// a timeout is not proof of failure.
 describe("expireStale stillLive (ISI-7483)", () => {
   const watch = (agentName: string): DispatchWatch => ({
     key: `m1:${agentName.toLowerCase()}`,
@@ -322,16 +325,16 @@ describe("expireStale stillLive (ISI-7483)", () => {
     expect(out[0].phase).toBe("working");
   });
 
-  it("expires a timed-out watch when the probe says the run is not live", () => {
+  it("drops a timed-out watch to waiting when the probe says the run is not live", () => {
     const out = expireStale([watch("ada")], now, timeout, {
       stillLive: () => false,
     });
-    expect(out[0].phase).toBe("failed");
+    expect(out[0].phase).toBe("waiting");
   });
 
-  it("expires when no probe is supplied (legacy wall-clock behavior)", () => {
+  it("drops to the honest waiting seat when no probe is supplied", () => {
     const out = expireStale([watch("ada")], now, timeout);
-    expect(out[0].phase).toBe("failed");
+    expect(out[0].phase).toBe("waiting");
   });
 
   it("never touches non-working or unexpired watches regardless of the probe", () => {
@@ -342,5 +345,51 @@ describe("expireStale stillLive (ISI-7483)", () => {
     });
     expect(out[0].phase).toBe("replied");
     expect(out[1].phase).toBe("working");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyLivePresence — ISI-7772: stamp the real per-agent live-run state.
+// ---------------------------------------------------------------------------
+
+describe("applyLivePresence (ISI-7772)", () => {
+  const watch = (
+    agentName: string,
+    live?: "queued" | "running",
+  ): DispatchWatch => ({
+    key: `m1:${agentName.toLowerCase()}`,
+    agentName,
+    messageId: "m1",
+    phase: "working",
+    since: 0,
+    live,
+  });
+
+  it("stamps queued and running states from the presence map (case-insensitive)", () => {
+    const out = applyLivePresence([watch("ada"), watch("Brin")], {
+      ada: { state: "queued" },
+      brin: { state: "running" },
+    });
+    expect(out[0].live).toBe("queued");
+    expect(out[1].live).toBe("running");
+  });
+
+  it("clears the stamp when the agent has no live run", () => {
+    const out = applyLivePresence([watch("ada", "running")], {
+      other: { state: "running" },
+    });
+    expect(out[0].live).toBeUndefined();
+  });
+
+  it("leaves non-working watches untouched", () => {
+    const replied = { ...watch("ada"), phase: "replied" as const };
+    const out = applyLivePresence([replied], { ada: { state: "queued" } });
+    expect(out[0]).toBe(replied);
+  });
+
+  it("returns a copy when there is no presence feed", () => {
+    const ws = [watch("ada")];
+    expect(applyLivePresence(ws, null)).not.toBe(ws);
+    expect(applyLivePresence(ws, null)).toEqual(ws);
   });
 });
