@@ -97,6 +97,17 @@ type runLivenessChecker interface {
 	HasLiveSandbox(ctx context.Context, runID string) (bool, error)
 }
 
+// runRunningChecker is the STRICTER holder-side pod bar (ISI-7788). Where
+// runLivenessChecker (the claim-side zombie gate) counts any existing pod
+// as live so a booting claim is never reaped, the holder-side reclaim must
+// not accept a pod that has existed without ever going Running: past the
+// bring-up grace that is a stuck sandbox bring-up holding a BYO endpoint
+// permit without dispatching (the ISI-7788 wedge — a Claiming holder with a
+// never-Ready pod parked a 1-slot endpoint while every waiter starved).
+type runRunningChecker interface {
+	HasRunningSandbox(ctx context.Context, runID string) (bool, error)
+}
+
 // HasLiveSandbox reports whether any non-terminating, non-terminal sandbox pod
 // carries the ksquad.io/run label for the given Run UID. Zero matching live pods
 // ⇒ the Run's sandbox is gone. A list error is returned to the caller, which
@@ -122,6 +133,37 @@ func (l *LiveRuns) HasLiveSandbox(ctx context.Context, runID string) (bool, erro
 		// physically exists is NOT a zombie, so a capacity-starved Claiming run is
 		// never wrongly reaped (only a Run with NO pod at all is a zombie).
 		return true, nil
+	}
+	return false, nil
+}
+
+// HasRunningSandbox is the STRICTER bar the holder-side reclaim applies
+// (ISI-7788): only a pod whose phase is Running counts. HasLiveSandbox
+// deliberately counts a Pending (scheduling/pulling) pod as live — the
+// claim-side zombie gate must not reap a capacity-starved boot — but that
+// leniency let a wedged holder park a single-slot BYO endpoint behind a pod
+// that existed yet never became Ready: terminal-or-gone never fired (the
+// Run CR is non-terminal), the pod-liveness half never fired (a pod exists),
+// and every waiter starved behind a non-dispatching holder. Past the
+// bring-up grace a holder must prove a RUNNING pod. Fails SAFE on a list
+// error (keep — never reclaim on a maybe); fails CLOSED (false, nil) on an
+// empty runID.
+func (l *LiveRuns) HasRunningSandbox(ctx context.Context, runID string) (bool, error) {
+	if l == nil || l.Reader == nil || runID == "" {
+		return false, nil
+	}
+	pods := &corev1.PodList{}
+	if err := l.Reader.List(ctx, pods, client.MatchingLabels{sandbox.LabelRun: runID}); err != nil {
+		return false, fmt.Errorf("rundrive.heartbeat: list sandbox pods for run %s: %w", runID, err)
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.DeletionTimestamp != nil {
+			continue // terminating — not running
+		}
+		if p.Status.Phase == corev1.PodRunning {
+			return true, nil
+		}
 	}
 	return false, nil
 }
@@ -409,14 +451,18 @@ type HeartbeatSweeper struct {
 	// HolderTerminal reports whether a run uid is terminal or its Run CR is
 	// gone (*LiveRuns.TerminalOrGone). Nil disables the reclaim.
 	HolderTerminal runTerminalChecker
-	// HolderSandbox answers whether a holder run still has a live sandbox
-	// pod (ISI-7687 — *LiveRuns.HasLiveSandbox). A holder whose Run CR is
-	// non-terminal but whose sandbox has been absent past the stall grace
-	// (anchored on the gate's frozen acquisition time) is a zombie holder:
-	// its slot is reclaimed so queued waiters proceed. Nil disables the
-	// pod-liveness half (terminal-or-gone reclaim only — pre-ISI-7687
-	// behavior).
-	HolderSandbox runLivenessChecker
+	// HolderSandbox answers whether a holder run has a RUNNING sandbox pod
+	// (ISI-7687/ISI-7788 — *LiveRuns.HasRunningSandbox). A holder whose Run
+	// CR is non-terminal but whose sandbox is absent — or stuck in a
+	// never-Ready Pending state — past the stall grace (anchored on the
+	// gate's frozen acquisition time) is a zombie holder: its slot is
+	// reclaimed so queued waiters proceed. ISI-7788 tightened the bar from
+	// "a pod exists" to "a pod is Running": a pod that exists but never
+	// boots is a stuck bring-up, not proof of endpoint use (a Claiming
+	// holder wedged a 1-slot BYO endpoint for 14+ min while 12 waiters
+	// starved with zero endpoint throughput). Nil disables the pod-liveness
+	// half (terminal-or-gone reclaim only — pre-ISI-7687 behavior).
+	HolderSandbox runRunningChecker
 	// ZombieStallGrace overrides DefaultZombieStallGrace when > 0 (tests shrink
 	// it). A pod-less in-flight claim older than this is released as a zombie.
 	ZombieStallGrace time.Duration
@@ -639,9 +685,10 @@ func (s *HeartbeatSweeper) terminalVerdicts(ctx context.Context) (map[string]boo
 // holderSandboxLive is the ISI-7687 holder half of the reclaim predicate:
 // a holder that has held its slot longer than the stall grace (the same
 // DefaultZombieStallGrace the claim-side zombie gate uses, measured from
-// the gate's frozen acquisition time) must prove a live sandbox pod or
-// yield the slot — a sandbox that never became Ready must not hold a
-// single-slot BYO endpoint unbounded. Within the grace the holder is kept
+// the gate's frozen acquisition time) must prove a RUNNING sandbox pod
+// (ISI-7788: an existing-but-never-Ready pod is a stuck bring-up, not
+// proof of endpoint use) or yield the slot — a sandbox that never became
+// Ready must not hold a single-slot BYO endpoint unbounded. Within the grace the holder is kept
 // without the pod check (cold-boot allowance). A checker error fails SAFE
 // (keep — never reclaim on a maybe); a nil checker or a zero heldSince
 // (pre-ISI-7687 gate state) also keeps. NOTE the deliberate asymmetry with
@@ -664,7 +711,12 @@ func (s *HeartbeatSweeper) holderSandboxLive(ctx context.Context, runID string, 
 	if s.clock().Sub(heldSince) <= grace {
 		return true, nil // bring-up window: the sandbox may not exist yet
 	}
-	return s.HolderSandbox.HasLiveSandbox(ctx, runID)
+	// ISI-7788: the holder bar is a RUNNING pod, not mere existence — a
+	// pod stuck Pending since acquisition is a wedged bring-up. The
+	// claim-side zombie gate above stays lenient (it must not reap a
+	// booting claim); the asymmetry is deliberate and documented in
+	// LiveRuns.HasRunningSandbox.
+	return s.HolderSandbox.HasRunningSandbox(ctx, runID)
 }
 
 // releaseGateSlot drops a dead/terminal run's endpoint-gate presence (slots

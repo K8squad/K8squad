@@ -499,6 +499,16 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		if r.AgentGate != nil {
 			r.AgentGate.Release(runID)
 		}
+		// ISI-7788: the endpoint twin of the release above. A run whose item
+		// went terminal through any path the driver's release sites missed
+		// (projector force-fail, reaper force-fail, a fail-closed park from
+		// another leader) must not keep its BYO endpoint permit past the
+		// absorbing pass: a Failed run held a single-slot endpoint for
+		// 11h44m while its waiter sat "exempt from zombie reap". Idempotent
+		// and nil-safe like the agent release.
+		if r.EndpointGate != nil {
+			r.EndpointGate.ReleaseByRun(runID)
+		}
 		noopTick = true
 		return ctrl.Result{}, nil // absorbing (AC5): the projector has it
 	}
@@ -953,6 +963,14 @@ func (r *Driver) failClosedPark(ctx context.Context, run *api.Run, runID string,
 		// Absorb — the committed terminal step stops the drive on the next pass.
 		return ctrl.Result{}, nil
 	}
+	// ISI-7788: a fail-closed/egress-blocked park is terminal — release the
+	// BYO endpoint permit now. The run never reaches the dispatcher's OnDone
+	// and the parked item does not re-drive THIS Run, so the permit would
+	// otherwise leak to the sweep backstop (which never fires while the
+	// projector phase lags). Idempotent; nil-safe.
+	if r.EndpointGate != nil {
+		r.EndpointGate.ReleaseByRun(runID)
+	}
 	slog.WarnContext(ctx, "rundrive: run failed closed (non-retryable); parked work item — not re-dispatching",
 		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
 		"blocked_reason", reason, "cause", cause.Error())
@@ -990,6 +1008,14 @@ func (r *Driver) egressBlockedFail(ctx context.Context, run *api.Run, runID stri
 		// Fence moved / already terminal: another path settled this generation.
 		// Absorb — the committed terminal step stops the drive on the next pass.
 		return ctrl.Result{}, nil
+	}
+	// ISI-7788: a fail-closed/egress-blocked park is terminal — release the
+	// BYO endpoint permit now. The run never reaches the dispatcher's OnDone
+	// and the parked item does not re-drive THIS Run, so the permit would
+	// otherwise leak to the sweep backstop (which never fires while the
+	// projector phase lags). Idempotent; nil-safe.
+	if r.EndpointGate != nil {
+		r.EndpointGate.ReleaseByRun(runID)
 	}
 	slog.WarnContext(ctx, "rundrive: run failed fast at dispatch — external BYO model endpoint unreachable from proxy-less sandbox behind egress NetworkPolicy; parked work item — not re-dispatching",
 		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
@@ -1319,6 +1345,18 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 			// Fence moved under us (another leader reclaimed): re-read next pass.
 			return ctrl.Result{RequeueAfter: continueDelay}, nil
 		}
+		// ISI-7788: a retry lap entered BEFORE the run ever dispatched (the
+		// durable step never got past claiming_sandbox — the sandbox
+		// claim-failure requeue path) releases the BYO endpoint permit for
+		// the backoff window: a never-dispatched holder is not using the
+		// endpoint, and the kept permit starved the queue behind a
+		// non-dispatching holder on a 1-slot endpoint. The next lap re-acquires
+		// through the gate's queue like any waiter. A run that HAS dispatched
+		// (in-flight step) still keeps the permit — its next lap re-attaches
+		// the follow and no other run may jump that lap's backoff queue.
+		if r.EndpointGate != nil && !inFlightStep(cs.Step) {
+			r.EndpointGate.ReleaseByRun(runID)
+		}
 		return ctrl.Result{RequeueAfter: r.BackoffFor(run, laps+1)}, nil
 	}
 	if _, err := r.Claims.FailEnter(ctx, run.Spec.WorkItemRef, runID, cs.Fence); err != nil {
@@ -1327,9 +1365,10 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 	// ISI-5037 defensive release: a terminally failed run never reaches the
 	// dispatcher's OnDone, so its BYO endpoint permit would leak and queue
 	// every later run on that endpoint forever. Idempotent; nil-safe. (The
-	// retry path above deliberately KEEPS the permit: the same run
-	// re-acquires it as a no-op on the next lap, so no other run can jump a
-	// lap's backoff queue.)
+	// retry path KEEPS the permit for a run that HAS dispatched: the same
+	// run re-acquires it as a no-op on the next lap, so no other run can jump
+	// a lap's backoff queue; a pre-dispatch retry releases it instead,
+	// ISI-7788.)
 	if r.EndpointGate != nil {
 		r.EndpointGate.ReleaseByRun(runID)
 	}
