@@ -159,19 +159,28 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 	// and succeeded owns no engine lane (it stays in_progress, ISI-4298 pin —
 	// and carries a terminal claim, so intake's single-shot scan never re-selects
 	// it either). Gated on the coord.work_item.source column (migration 0027).
-	if lane == "todo" {
-		var src sql.NullString
+	// ISI-7772 (ISI-7074 family, ISI-7770 D5): a FAILED run additionally owes
+	// the thread the humane failure surface — the REAL cause class read from
+	// durable evidence (never the hardcoded "retry budget exhausted"
+	// assumption) and the source-aware next action. The source read below
+	// serves both the ISI-5137 lane override and that notice.
+	src := ""
+	var failure *failureNotice
+	if terminalStep == "failed" {
+		var source sql.NullString
 		switch err := tx.QueryRowContext(ctx,
-			`SELECT source FROM coord.work_item WHERE id = $1::uuid`, workItemID).Scan(&src); err {
+			`SELECT source FROM coord.work_item WHERE id = $1::uuid`, workItemID).Scan(&source); err {
 		case nil, sql.ErrNoRows:
 			// proceed; a missing row leaves the lane and the WHERE-guarded UPDATE
 			// below no-ops it anyway.
 		default:
 			return "", false, fmt.Errorf("coord.SettleTerminalLane: read source: %w", err)
 		}
-		if src.String == "discussion" {
-			lane = "cancelled"
-		}
+		src = source.String
+		failure = newFailureNotice(readRunFailureEvidence(ctx, tx, workItemID, runID), agent.String, src)
+	}
+	if lane == "todo" && src == "discussion" {
+		lane = "cancelled"
 	}
 
 	if lane != "" {
@@ -235,7 +244,7 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 		// was canned noise on top of the run's clean comment.
 		if terminalStep != "succeeded" {
 			if err := insertSettleComment(ctx, tx, workItemID, runID, principal, "progress",
-				settleSummary(terminalStep, lane, moved, agent.String)); err != nil {
+				settleSummary(terminalStep, lane, moved, agent.String, failure)); err != nil {
 				return "", false, fmt.Errorf("coord.SettleTerminalLane: terminal progress: %w", err)
 			}
 		}
@@ -245,7 +254,7 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 	// Agent omitted a summary — the platform synthesizes the required one from the
 	// durable run record (change refs, artifacts, outcome), carrying NO progress
 	// tokens so the recap reads human-first.
-	body, err := synthesizeSummary(ctx, tx, workItemID, runID, terminalStep, lane, moved, agent.String)
+	body, err := synthesizeSummary(ctx, tx, workItemID, runID, terminalStep, lane, moved, agent.String, failure)
 	if err != nil {
 		return "", false, fmt.Errorf("coord.SettleTerminalLane: synthesize summary: %w", err)
 	}
@@ -310,15 +319,16 @@ func insertSettleComment(ctx context.Context, tx *sql.Tx, workItemID, runID, pri
 // step-by-step detail lives in the Activity feed). The record reads are
 // best-effort: a query hiccup degrades a section to its honest-empty wording
 // rather than failing the settle (the summary comment must always land).
-func synthesizeSummary(ctx context.Context, tx *sql.Tx, workItemID, runID, terminalStep, lane string, moved bool, agent string) (string, error) {
+func synthesizeSummary(ctx context.Context, tx *sql.Tx, workItemID, runID, terminalStep, lane string, moved bool, agent string, failure *failureNotice) (string, error) {
 	runParam := sql.NullString{}
 	if runID != "" {
 		runParam = sql.NullString{String: runID, Valid: true}
 	}
 
+	// ISI-7772: the failed outcome text lives in the failureNotice — the
+	// hardcoded "Run failed (retry budget exhausted)" assumption is gone.
 	outcome := map[string]string{
 		"succeeded": "Run succeeded",
-		"failed":    "Run failed (retry budget exhausted)",
 		"cancelled": "Run was cancelled",
 	}[terminalStep]
 	if outcome == "" {
@@ -371,13 +381,22 @@ func synthesizeSummary(ctx context.Context, tx *sql.Tx, workItemID, runID, termi
 		_ = rows.Close()
 	}
 
-	return renderSynthesizedSummary(outcome, who, terminalStep, runID, changes, artifacts), nil
+	return renderSynthesizedSummary(outcome, who, terminalStep, runID, changes, artifacts, failure), nil
 }
 
 // renderSynthesizedSummary composes the five-part platform summary from already-read
 // pieces. Kept pure (no db) so the template — and the ISI-7094 invariant that a
 // summary carries NO [run/[tool/[status progress tokens — is unit-testable.
-func renderSynthesizedSummary(outcome, who, terminalStep, runID string, changes, artifacts []string) string {
+func renderSynthesizedSummary(outcome, who, terminalStep, runID string, changes, artifacts []string, failure *failureNotice) string {
+	// ISI-7772: a FAILED run never gets the hollow "the agent did not post
+	// one" template — the run died before the agent had any chance to post
+	// one. The failure notice names who failed, the real cause class with the
+	// evidence it rests on, and the honest next action.
+	var fb strings.Builder
+	if failure != nil {
+		failure.render(&fb, runID, changes, artifacts)
+		return fb.String()
+	}
 	next := map[string]string{
 		"succeeded": "Awaiting human review; move the ticket to done when the work is accepted.",
 		"failed":    "The ticket is back on the dispatchable lane for another attempt or human attention.",
@@ -414,18 +433,23 @@ func renderSynthesizedSummary(outcome, who, terminalStep, runID string, changes,
 // settleSummary renders the one-line change summary. It names the agent when
 // known and the lane the settle wrote (or the item's unchanged lane when a
 // human move was respected).
-func settleSummary(terminalStep, lane string, moved bool, agent string) string {
+func settleSummary(terminalStep, lane string, moved bool, agent string, failure *failureNotice) string {
 	who := ""
 	if agent != "" {
 		who = " — agent " + agent
 	}
 	outcome := map[string]string{
 		"succeeded": "Run succeeded",
-		"failed":    "Run failed (retry budget exhausted)",
 		"cancelled": "Run cancelled",
 	}[terminalStep]
 	if outcome == "" {
-		outcome = "Run reached terminal step " + terminalStep
+		if failure != nil {
+			// ISI-7772: the one-liner names the real cause class — the
+			// hardcoded "retry budget exhausted" assumption is gone.
+			outcome = "Run failed (" + failure.short + ")"
+		} else {
+			outcome = "Run reached terminal step " + terminalStep
+		}
 	}
 	switch {
 	case moved:

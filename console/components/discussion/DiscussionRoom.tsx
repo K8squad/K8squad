@@ -32,6 +32,7 @@ import { appendThinking } from "@/lib/discussion/liveThinking";
 import { audienceWire } from "@/lib/discussion/audience";
 import {
   applyAuthorReply,
+  applyLivePresence,
   applyReply,
   dispatchTargets,
   expireStale,
@@ -56,8 +57,10 @@ import { RunEndedWatch } from "./RunEndedWatch";
 import type { AgentRunPresence } from "@/lib/overview/liveRuns";
 import "./discussion.css";
 
-// How long a dispatched agent may stay silent before the room shows "could not
-// respond" (ISI-5174 AC3). A discussion thread-run reads the thread, runs a
+// How long a dispatched agent may stay silent before the room drops the seat to
+// its honest "hasn't replied yet" waiting state (ISI-5174 AC3, ISI-7772: the
+// timeout is not proof of failure, so the seat never claims "could not
+// respond" without evidence). A discussion thread-run reads the thread, runs a
 // model turn, and posts back — minutes, not seconds — so this is generous enough
 // not to false-fail a live run yet short enough that a dead run stops spinning.
 const WORKING_TIMEOUT_MS = 5 * 60_000;
@@ -198,6 +201,14 @@ export function DiscussionRoom({
     const p = byName[w.agentName] ?? byName[w.agentName.toLowerCase()];
     return !!p && (p.state === "queued" || p.state === "running");
   }, []);
+
+  // ISI-7772 (humane failure surface): stamp the agent's REAL live-run state
+  // (queued/running) onto the working watches whenever the presence feed
+  // refreshes, so a queued seat renders its own honest copy instead of the
+  // generic working label.
+  useEffect(() => {
+    setWorking((cur) => applyLivePresence(cur, liveRuns));
+  }, [liveRuns]);
 
   const load = useCallback(async () => {
     try {

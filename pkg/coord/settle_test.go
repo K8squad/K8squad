@@ -69,15 +69,17 @@ func TestSettleIsTerminal(t *testing.T) {
 func TestSettleSummary(t *testing.T) {
 	// succeeded owns no engine lane — completion is recorded, the human owns
 	// the move to done.
-	if got := settleSummary("succeeded", "", false, "sam"); got != "Run succeeded — agent sam: recorded on the ticket; lane unchanged (awaiting review)." {
+	if got := settleSummary("succeeded", "", false, "sam", nil); got != "Run succeeded — agent sam: recorded on the ticket; lane unchanged (awaiting review)." {
 		t.Fatalf("succeeded summary = %q", got)
 	}
-	if got := settleSummary("failed", "todo", true, ""); got != "Run failed (retry budget exhausted): lane → todo (engine settle)." {
+	// ISI-7772: the failed one-liner names the real cause class from the
+	// failure notice — the hardcoded "retry budget exhausted" assumption is gone.
+	if got := settleSummary("failed", "todo", true, "", newFailureNotice(runFailureEvidence{a2aOutcome: SettleOutcomeFailed}, "", "")); got != "Run failed (model route retry limit): lane → todo (engine settle)." {
 		t.Fatalf("failed unattributed summary = %q", got)
 	}
 	// A human lane move raced ahead of a failed/cancelled settle: the settle
 	// reports the outcome without claiming a lane move.
-	if got := settleSummary("cancelled", "cancelled", false, "sam"); got != "Run cancelled — agent sam: lane left as-is (human move respected, or already terminal/parked)." {
+	if got := settleSummary("cancelled", "cancelled", false, "sam", nil); got != "Run cancelled — agent sam: lane left as-is (human move respected, or already terminal/parked)." {
 		t.Fatalf("unmoved summary = %q", got)
 	}
 }

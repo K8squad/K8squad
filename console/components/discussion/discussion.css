@@ -540,8 +540,15 @@ a.ksq-ticket-chip:hover {
 .ksq-working--failed {
   color: var(--status-blocked);
 }
+/* ISI-7772: the honest timed-out seat — muted, no failure hue (the room cannot
+ * prove failure at timeout, so it must not paint one). */
+.ksq-working--waiting {
+  color: var(--text-2);
+  font-style: italic;
+}
 .ksq-working__check,
-.ksq-working__warn {
+.ksq-working__warn,
+.ksq-working__wait {
   font-family: var(--font-mono);
   font-weight: 600;
 }
