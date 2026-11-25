@@ -114,6 +114,44 @@ describe("<DiscussionRoomClient> — ISI-5673 routing", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
+  it("ISI-7841: a deep-linked thread NOT in the loaded list loads that exact thread (adopted via getThreadInfo), never the newest", async () => {
+    params = new URLSearchParams("thread=unlisted");
+    const getThreadInfo = vi.fn(async () =>
+      thread("unlisted", "Adopted", "2026-10-11T08:00:00Z"),
+    );
+    renderClient(stubClient({ getThreadInfo }));
+    // The requested id wins immediately — no silent newest-thread masquerade.
+    await waitFor(() =>
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:unlisted"),
+    );
+    // The record is adopted into the panel list, so its row renders like any
+    // other and the requested discussion is selectable from the panel.
+    await waitFor(() =>
+      expect(screen.getByTestId("discussions-row-unlisted")).toBeTruthy(),
+    );
+    expect(getThreadInfo).toHaveBeenCalledWith("p1", "unlisted");
+    // An explicit request is never canonicalized away to the newest thread.
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("ISI-7841: an unresolvable requested thread keeps that id (honest not-found), never swaps to another thread", async () => {
+    params = new URLSearchParams("thread=ghost");
+    const getThreadInfo = vi.fn(async () => {
+      throw new Error("discussion api: status 404 (not-found)");
+    });
+    renderClient(stubClient({ getThreadInfo }));
+    await waitFor(() =>
+      expect(screen.getByTestId("mock-room").textContent).toBe("room:ghost"),
+    );
+    await waitFor(() => expect(getThreadInfo).toHaveBeenCalled());
+    // Still the requested thread — no silent fallback to newest, and the URL
+    // is not rewritten away from the user's request. (<DiscussionRoom> renders
+    // its own room-not-found state for the unresolvable id; mocked here.)
+    expect(screen.getByTestId("mock-room").textContent).toBe("room:ghost");
+    expect(replace).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+  });
+
   it("open-existing: clicking a row pushes ?thread and loads that thread", async () => {
     const { rerender } = renderClient(stubClient());
     await waitFor(() => screen.getByTestId("discussions-row-older"));

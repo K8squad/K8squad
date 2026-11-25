@@ -46,15 +46,20 @@ export function sortThreadsByRecency(threads: readonly Thread[]): Thread[] {
 
 /**
  * Resolve the thread the room should show from the `?thread={id}` URL request
- * and the loaded list. A requested id that exists in the list wins (linkable /
- * back-button friendly); otherwise the newest thread is the default; `null`
- * when the project has no threads yet (the empty-room bootstrap then opens one).
+ * and the loaded list. An EXPLICIT request always wins — even when the id is
+ * not (yet) present in the loaded list (deep link from inbox/overview, a stale
+ * or capped list): the caller adopts the requested record (see RoomClient's
+ * getThreadInfo upsert) and the room loads that exact thread, so a request
+ * never silently masquerades as a different (newest) thread (ISI-7841). With
+ * no request, the newest thread is the default; `null` only when nothing is
+ * requested and the project has no threads yet (the empty-room bootstrap then
+ * opens one).
  */
 export function resolveActiveThreadId(
   threads: readonly Thread[],
   requested: string | null | undefined,
 ): string | null {
-  if (requested && threads.some((t) => t.id === requested)) return requested;
+  if (requested) return requested;
   return threads[0]?.id ?? null;
 }
 

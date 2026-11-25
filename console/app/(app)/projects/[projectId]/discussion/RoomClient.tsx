@@ -100,8 +100,11 @@ export function DiscussionRoomClient({
   );
 
   // The active thread is a pure derivation of the URL request + the loaded list
-  // (ISI-5673): a valid `?thread={id}` wins; otherwise the newest thread; null
-  // only while the list is empty (the bootstrap below then opens one).
+  // (ISI-5673, ISI-7841): an explicit `?thread={id}` ALWAYS wins — even when
+  // the record is not (yet) in the list (the adopt effect below upserts it; an
+  // unresolvable id renders the room's honest not-found state). With no
+  // request the newest thread wins; null only while nothing is requested and
+  // the list is empty (the bootstrap below then opens one).
   const activeThreadId = useMemo(
     () => resolveActiveThreadId(threads, requestedThreadId),
     [threads, requestedThreadId],
@@ -145,12 +148,16 @@ export function DiscussionRoomClient({
     };
   }, [client, projectId, attempt]);
 
-  // Canonicalize the URL: once the list is ready, if the request was absent or
-  // stale, pin `?thread={active}` so the surface is always linkable (replace —
-  // no history entry; explicit row selection uses push for back-button nav).
+  // Canonicalize the URL: once the list is ready, when NO thread is explicitly
+  // requested, pin `?thread={active}` so the surface is always linkable
+  // (replace — no history entry; explicit row selection uses push for
+  // back-button nav). An explicit request is never rewritten: replacing a
+  // requested-but-unlisted id back to the newest thread is exactly the silent
+  // clobber that kept the room on the wrong discussion (ISI-7841) — the room
+  // keeps the requested thread (or its honest not-found state) instead.
   useEffect(() => {
     if (listState !== "ready" || !activeThreadId) return;
-    if (requestedThreadId === activeThreadId) return;
+    if (requestedThreadId) return;
     const params = new URLSearchParams(searchParams.toString());
     params.set("thread", activeThreadId);
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
@@ -162,6 +169,43 @@ export function DiscussionRoomClient({
     router,
     searchParams,
   ]);
+
+  // ISI-7841: a requested thread id that is not in the loaded list (deep link
+  // from inbox/overview, a stale or capped list) is ADOPTED, never silently
+  // swapped for the newest thread. One `getThreadInfo` fetch per requested id
+  // upserts the record so the Discussions panel reflects it; when the id is not
+  // resolvable for this principal (missing, foreign, or denied) the fetch fails
+  // and the room keeps the requested id — <DiscussionRoom> then renders its
+  // honest not-found state instead of another thread's content.
+  const adoptedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !requestedThreadId ||
+      listState !== "ready" ||
+      threads.some((t) => t.id === requestedThreadId) ||
+      adoptedFor.current === requestedThreadId ||
+      typeof client.getThreadInfo !== "function"
+    ) {
+      return;
+    }
+    adoptedFor.current = requestedThreadId;
+    let alive = true;
+    void (async () => {
+      try {
+        const info = await client.getThreadInfo(projectId, requestedThreadId);
+        if (!alive) return;
+        setThreads((cur) =>
+          cur.some((t) => t.id === info.id) ? cur : upsertThread(cur, info),
+        );
+      } catch {
+        // Unresolvable requested id: leave the list as-is — the room stays on
+        // the requested thread and shows its own not-found state (ISI-7841).
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [client, projectId, listState, threads, requestedThreadId]);
 
   const selectThread = useCallback(
     (id: string) => {
