@@ -60,6 +60,9 @@ type fakeIntakeSource struct {
 	// parkErr, when set, makes ParkWorkItem fail (honest-degraded: logged, item
 	// left for the next tick).
 	parkErr error
+	// parkedFloors records the breaker_floor each ParkWorkItem call stamped
+	// (ISI-7837): the durable reset baseline the cap counts above.
+	parkedFloors map[string]int
 }
 
 func (f *fakeIntakeSource) DueWorkItems(_ context.Context, limit int) ([]IntakeItem, error) {
@@ -75,14 +78,16 @@ func (f *fakeIntakeSource) RearmSettled(_ context.Context, workItemID string) er
 	return f.rearmErr
 }
 
-func (f *fakeIntakeSource) ParkWorkItem(_ context.Context, workItemID, reason string) error {
+func (f *fakeIntakeSource) ParkWorkItem(_ context.Context, workItemID, reason string, floor int) error {
 	if f.parkErr != nil {
 		return f.parkErr
 	}
 	if f.parked == nil {
 		f.parked = map[string]string{}
+		f.parkedFloors = map[string]int{}
 	}
 	f.parked[workItemID] = reason
+	f.parkedFloors[workItemID] = floor
 	return nil
 }
 
@@ -152,10 +157,10 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 		t.Fatalf("NewSQLIntakeSource: %v", err)
 	}
 
-	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent", "source", "priority"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder", "board", "urgent").
-		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil, "discussion", nil)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source, wi.priority
+	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent", "source", "priority", "breaker_floor"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder", "board", "urgent", 10).
+		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil, "discussion", nil, 0)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source, wi.priority, wi.breaker_floor
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
 		   AND wi.blocked_reason IS NULL
@@ -197,6 +202,14 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 	}
 	if items[1].Priority != "" {
 		t.Fatalf("row 1 priority (NULL): got %q want empty", items[1].Priority)
+	}
+	// breaker_floor is selected too (ISI-7837): the durable reset baseline the
+	// generation cap counts above.
+	if items[0].BreakerFloor != 10 {
+		t.Fatalf("row 0 breaker_floor: got %d want 10", items[0].BreakerFloor)
+	}
+	if items[1].BreakerFloor != 0 {
+		t.Fatalf("row 1 breaker_floor: got %d want 0", items[1].BreakerFloor)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -1257,7 +1270,9 @@ func TestSQLIntakeSourceParkWorkItem(t *testing.T) {
 	const reason = "retry_circuit_breaker_max_generations_10"
 
 	parkQ := regexp.QuoteMeta(`UPDATE coord.work_item
-		   SET blocked_reason = $2, updated_at = now()
+		   SET blocked_reason = $2,
+		       breaker_floor  = GREATEST(breaker_floor, $3),
+		       updated_at     = now()
 		 WHERE id = $1::uuid AND blocked_reason IS NULL`)
 	auditQ := regexp.QuoteMeta(`INSERT INTO coord.audit_log`)
 	commentQ := regexp.QuoteMeta(`INSERT INTO coord.comment`)
@@ -1265,25 +1280,128 @@ func TestSQLIntakeSourceParkWorkItem(t *testing.T) {
 
 	// Happy park: one row updated ⇒ audit + comment + outbox.
 	mock.ExpectBegin()
-	mock.ExpectExec(parkQ).WithArgs(itemID, reason).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(parkQ).WithArgs(itemID, reason, 10).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(auditQ).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(commentQ).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(outboxQ).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
-	if err := src.ParkWorkItem(context.Background(), itemID, reason); err != nil {
+	if err := src.ParkWorkItem(context.Background(), itemID, reason, 10); err != nil {
 		t.Fatalf("ParkWorkItem (park): %v", err)
 	}
 
 	// Re-park: already blocked (0 rows) ⇒ committed no-op, no audit/comment/outbox.
 	mock.ExpectBegin()
-	mock.ExpectExec(parkQ).WithArgs(itemID, reason).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(parkQ).WithArgs(itemID, reason, 10).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
-	if err := src.ParkWorkItem(context.Background(), itemID, reason); err != nil {
+	if err := src.ParkWorkItem(context.Background(), itemID, reason, 10); err != nil {
 		t.Fatalf("ParkWorkItem (no-op): %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// TestIntakeSweepBreakerFloorResetsOnUnpark is the ISI-7837 regression: a
+// ticket parked by the circuit-breaker (breaker_floor stamped at park time)
+// that is un-parked by a human kick-off comment (blocked_reason cleared, the
+// floor retained — pkg/coord/workitemcomment.go) MUST dispatch again: the cap
+// counts generations ABOVE the floor, so highestGen(10) - floor(10) = 0 < cap.
+// The live incident shape (comment 201, run never minted, nothing streamed) is
+// exactly the silent no-op this test forbids.
+func TestIntakeSweepBreakerFloorResetsOnUnpark(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	// The incident shape: r1..r10 minted (highestGen 10), the breaker parked the
+	// item (floor stamped 10), r10 then SUCCEEDED, and a human kick-off comment
+	// cleared the park (blocked_reason NULL, floor stays). The terminal r10 does
+	// not suppress intake as a live run.
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-r10", Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseSucceeded},
+	})
+	src := &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj", BreakerFloor: 10},
+	}}
+	in, cl, _ := newIntake(t, src, objs...)
+	in.MaxGenerations = 10 // cap: highestGen(10) - floor(10) = 0 < 10 → dispatch
+
+	in.sweep(context.Background())
+
+	// NOT re-parked: the kick-off reset the breaker’s effective count to zero.
+	if len(src.parked) != 0 {
+		t.Fatalf("an un-parked item at the floor must NOT be re-parked; parked=%v", src.parked)
+	}
+	if len(src.rearmed) != 1 || src.rearmed[0] != itemID {
+		t.Fatalf("the un-parked item must be re-armed before mint; rearmed=%v", src.rearmed)
+	}
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	// The seeded r10 + a freshly minted r11 — generations never renumber (names
+	// stay collision-free against surviving runs, ISI-4829); the COUNTER that
+	// gates dispatch (highestGen - floor) is what reset to zero.
+	want := "intake-" + itemID + "-coder-r11"
+	found := false
+	for _, r := range runs.Items {
+		if r.Name == want {
+			found = true
+		}
+	}
+	if !found {
+		var names []string
+		for _, r := range runs.Items {
+			names = append(names, r.Name)
+		}
+		t.Fatalf("the kick-off must mint a fresh generation %s; got %v", want, names)
+	}
+}
+
+// TestIntakeSweepBreakerReArmsAboveFloor guards the other half of the ISI-7837
+// semantics: the park must REMAIN for genuinely thrashing items. The cap counts
+// generations ABOVE the floor, so an un-parked item whose post-reset
+// generations again reach the cap re-parks — with the floor raised to the new
+// highestGen (monotonic via GREATEST, never renumbering).
+func TestIntakeSweepBreakerReArmsAboveFloor(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	// Un-parked at floor 10, then thrashed to r13: effective count 13-10 = 3.
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-r13", Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseFailed},
+	})
+	src := &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj", BreakerFloor: 10},
+	}}
+	in, cl, _ := newIntake(t, src, objs...)
+	in.MaxGenerations = 3 // cap: highestGen(13) - floor(10) = 3 >= 3 → re-park
+
+	in.sweep(context.Background())
+
+	if got, ok := src.parked[itemID]; !ok || got != "retry_circuit_breaker_max_generations_3" {
+		t.Fatalf("the thrashing item must re-park with the cap reason; parked=%v", src.parked)
+	}
+	if got := src.parkedFloors[itemID]; got != 13 {
+		t.Fatalf("the re-park must stamp the floor at the new highestGen; got %d want 13", got)
+	}
+	if len(src.rearmed) != 0 {
+		t.Fatalf("a re-parked item must NOT be re-armed; rearmed=%v", src.rearmed)
+	}
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("the re-parked item must mint NO new Run; got %d", len(runs.Items))
 	}
 }
 

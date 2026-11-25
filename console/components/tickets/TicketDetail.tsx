@@ -1482,7 +1482,14 @@ function Composer({
     // honest ladder. The comment path picks no agent; the re-triggered Run goes to
     // the ticket's requested/last agent, which the parent hands us as `reTriggerAgent`.
     // reTriggered=false (todo/backlog comment, or the live-holder guard) seeds nothing.
-    if (comment.reTriggered) onDispatched(reTriggerAgent);
+    // ISI-7837: breakerReset=true — the comment kicked off a circuit-breaker-parked
+    // ticket (the park cleared + the breaker’s generation count reset, pkg/coord
+    // AppendHumanComment) — mints too, so it seeds the SAME ladder. The breaker parks
+    // a ticket ON “todo” (it stamps blocked_reason, never a lane move), so reTriggered
+    // is absent in exactly this shape: without breakerReset here the kick-off was the
+    // silent no-op of the live incident (comment 201, no run, nothing streamed).
+    if (comment.reTriggered || comment.breakerReset)
+      onDispatched(reTriggerAgent);
     onPosted(comment);
   }
 
