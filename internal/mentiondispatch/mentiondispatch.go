@@ -192,14 +192,22 @@ func (m *dispatcher) DispatchMention(ctx context.Context, d discussion.MentionDi
 		return fmt.Errorf("mention dispatch: empty agent name")
 	}
 
-	// (0) HARD per-discussion concurrent-run backstop (ISI-5670). BEFORE claiming/minting, shed this
-	// dispatch if the thread is already at the ceiling — the one guarantee that holds across EVERY path
-	// (party voice, @-mention, legacy broadcast arm), independent of the per-endpoint FIFO gate and the
-	// voices-per-round bound. Checked before Claim so a shed dispatch leaves no ledger row to churn; the
-	// broadcast loop calls DispatchMention sequentially, so each successive call sees the prior mint's
-	// freshly-committed row and the count is accurate. A count error is treated as "do not mint" (fail
-	// closed): the backstop's whole job is to refuse to fan out when it cannot prove headroom.
-	if m.maxInFlight > 0 && d.ThreadID != uuid.Nil {
+	// (0) HARD per-discussion concurrent-run backstop (ISI-5670) — for every EXPLICITLY-targeted
+	// dispatch. BEFORE claiming/minting, shed this dispatch if the thread is already at the ceiling —
+	// the one guarantee that holds across every bounded path (party voice, @-mention), independent of
+	// the per-endpoint FIFO gate and the voices-per-round bound. Checked before Claim so a shed dispatch
+	// leaves no ledger row to churn; the broadcast loop calls DispatchMention sequentially, so each
+	// successive call sees the prior mint's freshly-committed row and the count is accurate. A count
+	// error is treated as "do not mint" (fail closed): the backstop's whole job is to refuse to fan out
+	// when it cannot prove headroom.
+	//
+	// ISI-7770: a WholeRoom broadcast dispatch (a human bare-party post) is EXEMPT from the shed. The
+	// triggering human asked the entire room; shedding the tail produced the "12 of 13 agents could not
+	// respond" hollow outcome — agents never dispatched, console watching seats expiring to a lie. The
+	// whole-room fan-out instead flows into the run-scheduling layer — the per-endpoint FIFO gate
+	// (ISI-5594/ISI-7487) and the per-agent non-preemptive queue (ISI-7499) — which sequences admission;
+	// the ceiling still bounds every explicitly-targeted path.
+	if m.maxInFlight > 0 && d.ThreadID != uuid.Nil && !d.WholeRoom {
 		staleness := m.inFlightStaleness
 		if staleness <= 0 {
 			staleness = discussion.DefaultPartyVoiceSettleTimeout

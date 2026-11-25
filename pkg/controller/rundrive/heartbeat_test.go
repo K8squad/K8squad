@@ -1207,3 +1207,36 @@ func TestHeartbeatSweepHolderDefaultGraceFallback(t *testing.T) {
 		t.Fatalf("pod-less holder past the DEFAULT grace was not reclaimed")
 	}
 }
+
+// fakeStaleBatchChecker fakes a batch checker whose RunList snapshot is STALE:
+// TerminalOrGoneAll omits the holder (the list was taken before the fresh run
+// was created), while the per-run TerminalOrGone reflects a FRESH read — the
+// ISI-7770 TOCTOU window between the sweep's snapshot and the eviction.
+type fakeStaleBatchChecker struct {
+	perRun map[string]bool
+}
+
+func (f fakeStaleBatchChecker) TerminalOrGone(_ context.Context, runID string) (bool, error) {
+	return f.perRun[runID], nil
+}
+
+func (f fakeStaleBatchChecker) TerminalOrGoneAll(_ context.Context) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+// ISI-7770: a holder absent from the batch verdicts snapshot is NOT "gone" —
+// the snapshot may predate the holder's acquisition. The sweep must re-check
+// the run per-checker before reclaiming; a fresh non-terminal CR keeps its slot.
+func TestHeartbeatSweepKeepsHolderAbsentFromStaleBatchSnapshot(t *testing.T) {
+	g := NewEndpointGate(1)
+	const ep = "https://api.z.ai/api/coding/paas/v4"
+	g.Acquire(ep, "fresh-holder", 1, PriorityKey{})
+	g.Acquire(ep, "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeStaleBatchChecker{perRun: map[string]bool{"fresh-holder": false}}
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire(ep, "fresh-holder", 1, PriorityKey{}); !ok {
+		t.Fatalf("fresh holder lost its slot to a stale batch snapshot (ISI-7770 race)")
+	}
+}
