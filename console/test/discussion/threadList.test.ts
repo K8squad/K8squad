@@ -66,12 +66,16 @@ describe("resolveActiveThreadId", () => {
   it("honours a valid ?thread request", () => {
     expect(resolveActiveThreadId(list, "older")).toBe("older");
   });
-  it("falls back to the first (newest) thread for a missing/stale request", () => {
-    expect(resolveActiveThreadId(list, null)).toBe("newest");
-    expect(resolveActiveThreadId(list, "ghost")).toBe("newest");
+  it("ISI-7841: keeps a requested id that is NOT in the list — no silent newest fallback", () => {
+    expect(resolveActiveThreadId(list, "ghost")).toBe("ghost");
   });
-  it("returns null when the list is empty", () => {
-    expect(resolveActiveThreadId([], "whatever")).toBeNull();
+  it("falls back to the newest thread only when nothing is requested", () => {
+    expect(resolveActiveThreadId(list, null)).toBe("newest");
+    expect(resolveActiveThreadId(list, undefined)).toBe("newest");
+  });
+  it("returns null only when nothing is requested and the list is empty", () => {
+    expect(resolveActiveThreadId([], null)).toBeNull();
+    expect(resolveActiveThreadId([], "whatever")).toBe("whatever");
   });
 });
 
