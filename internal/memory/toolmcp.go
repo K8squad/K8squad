@@ -307,6 +307,9 @@ func (m *ToolMCP) handle(w http.ResponseWriter, r *http.Request) {
 		if bearer := bearerToken(r.Header.Get("Authorization")); bearer != "" {
 			as, err := m.tokenAuth.Verify(bearer)
 			if err != nil {
+				// Fail closed (ISI-7873): a presented-but-unverifiable run token is a
+				// 401, never a header-trust fallback. Record it so a recurrence alerts.
+				TenancyRejected(r.Context(), TenancyTransportMCP, TenancyReasonBearerVerifyFailed, true)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -553,6 +556,10 @@ func (m *ToolMCP) toolsCall(ctx context.Context, sess mcpSession, params json.Ra
 	// Every tool is tenant-scoped: without a server-authenticated team there is no caller identity to
 	// scope the read/write to. This is the MCP edge of INV3 — mirrors toolhttp's 401 on a missing header.
 	if sess.team == "" {
+		// The MCP analogue of toolhttp's 401 on a missing tenant (INV3). A warm-pool
+		// discussion/party run reaching here without a resolvable tenant is blinded to
+		// every tool; record the operator-visible signal before refusing (ISI-7873).
+		TenancyRejected(ctx, TenancyTransportMCP, TenancyReasonMissingTeam, sess.viaToken)
 		return toolError("X-Team-Id required (server-authenticated caller tenant)")
 	}
 

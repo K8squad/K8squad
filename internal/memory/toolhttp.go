@@ -33,6 +33,16 @@ type ToolHTTP struct {
 	// discussion_post fires the @-mention trigger and carries the loop-guard hop, symmetric with the REST
 	// handler. Nil ⇒ the tool posts exactly as before (no dispatch, no stamp). See WithDiscussionDispatch.
 	mentions *DiscussionDispatch
+	// tokenAuth backs the ADR-0024a S3/D2 token-auth (sandbox) path on this compat
+	// shim (ISI-7873, WS-A of ISI-7868). A warm-pool discussion/party pod boots
+	// generic (ADR-044 step 6) and rides the per-run HS256 run-capability token, not
+	// the §13 BFF's X-Team-Id header — so a header-only shim rejected every such
+	// caller with a silent 401 and blinded the agent. When a verifier is wired AND a
+	// request presents a bearer token, tenancy/authorship come from the VERIFIED
+	// token claims and ALL inbound X-* identity headers are discarded, exactly as
+	// toolmcp.go does. Nil ⇒ the token path is off and only the trusted BFF header
+	// path serves (unchanged). See WithAuthoringTokenAuth.
+	tokenAuth AuthoringTokenVerifier
 }
 
 // DiscussionWriter is the minimal seam the discussion_post tool depends on: the two authored-write
@@ -62,6 +72,111 @@ func (h *ToolHTTP) WithDiscussionDispatch(dispatch *DiscussionDispatch) *ToolHTT
 	return h
 }
 
+// WithAuthoringTokenAuth enables the ADR-0024a S3/D2 token-auth (sandbox) path on
+// the compat shim (ISI-7873): a request presenting a bearer run-capability token
+// is authenticated from the verified token claims and ALL inbound X-* identity
+// headers are discarded, so an untrusted warm-pool sandbox can neither forge
+// authorship nor widen tenancy by stamping its own headers. This is the HTTP peer
+// of (*ToolMCP).WithAuthoringTokenAuth, wired from the SAME verifier/minter in
+// cmd/memory so the two memory edges cannot diverge on who a caller is. Passing a
+// nil verifier leaves the token path off (header/BFF path only). Returns the
+// receiver for chaining at construction.
+func (h *ToolHTTP) WithAuthoringTokenAuth(verifier AuthoringTokenVerifier) *ToolHTTP {
+	if verifier == nil {
+		return h
+	}
+	h.tokenAuth = verifier
+	return h
+}
+
+// httpIdentity is the resolved per-request caller identity on the compat shim. On
+// the token path (a bearer verified) every field is derived from the VERIFIED
+// token claims and all inbound X-* headers are discarded (parity with toolmcp.go's
+// mcpSession); on the header path the fields come from the BFF-stamped X-* headers
+// (unchanged behaviour). team=="" after resolution is the missing-tenant 401.
+type httpIdentity struct {
+	team      string
+	principal string
+	agentID   *string
+	runID     *string
+	viaToken  bool
+}
+
+// reader derives the R2 reader scope from the resolved identity — the token-path or
+// header-path principal/agent, never a raw header read (so the token path's claims,
+// not a forged X-Agent-Id, drive direct-audience visibility).
+func (id httpIdentity) reader() ReaderIdentity {
+	return ReaderIdentity{Principal: id.principal, AgentID: strVal(id.agentID)}
+}
+
+// identify resolves the caller identity for a request. When a run-capability-token
+// verifier is wired AND the request presents a bearer token, identity/tenancy come
+// from the VERIFIED token claims and EVERY inbound X-* identity header is discarded
+// — an untrusted warm-pool sandbox cannot forge authorship or self-grant tenancy by
+// stamping its own headers (ISI-7873). A bearer token that does NOT verify fails
+// closed: it records the rejection, writes a 401, and returns ok=false — we never
+// fall back to header trust (that would let a sandbox pair a junk token with forged
+// X-* headers). With no verifier wired or no bearer present, the BFF header path
+// serves unchanged.
+func (h *ToolHTTP) identify(w http.ResponseWriter, r *http.Request) (httpIdentity, bool) {
+	if h.tokenAuth != nil {
+		if bearer := bearerToken(r.Header.Get("Authorization")); bearer != "" {
+			as, err := h.tokenAuth.Verify(bearer)
+			if err != nil {
+				TenancyRejected(r.Context(), TenancyTransportHTTP, TenancyReasonBearerVerifyFailed, true)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return httpIdentity{}, false
+			}
+			return httpIdentity{
+				team:      as.TeamID,
+				principal: as.Principal,
+				agentID:   optional(as.AgentID),
+				runID:     optional(as.RunID),
+				viaToken:  true,
+			}, true
+		}
+	}
+	return httpIdentity{
+		team:      r.Header.Get("X-Team-Id"),
+		principal: r.Header.Get("X-Principal-Id"),
+		agentID:   optional(r.Header.Get("X-Agent-Id")),
+		runID:     optional(r.Header.Get("X-Run-Id")),
+	}, true
+}
+
+// requireTeam resolves the caller identity and asserts a server-authenticated
+// tenant. It is the shared head of every read handler: it writes the 401 (and
+// records the operator-visible rejection) on a bearer-verify failure or a missing
+// tenant, returning ok=false, so a handler body only runs with a real tenant.
+func (h *ToolHTTP) requireTeam(w http.ResponseWriter, r *http.Request) (httpIdentity, bool) {
+	id, ok := h.identify(w, r)
+	if !ok {
+		return httpIdentity{}, false
+	}
+	if id.team == "" {
+		TenancyRejected(r.Context(), TenancyTransportHTTP, TenancyReasonMissingTeam, id.viaToken)
+		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
+		return httpIdentity{}, false
+	}
+	return id, true
+}
+
+// requireAuthor is requireTeam plus the write-path author assertion: a resolved
+// tenant AND a server-authenticated principal. It records the missing-principal
+// rejection and writes the 401 peer of the missing-tenant one.
+func (h *ToolHTTP) requireAuthor(w http.ResponseWriter, r *http.Request) (httpIdentity, bool) {
+	id, ok := h.requireTeam(w, r)
+	if !ok {
+		return httpIdentity{}, false
+	}
+	if id.principal == "" {
+		TenancyRejected(r.Context(), TenancyTransportHTTP, TenancyReasonMissingPrincipal, id.viaToken)
+		http.Error(w, "X-Principal-Id required (server-authenticated author)", http.StatusUnauthorized)
+		return httpIdentity{}, false
+	}
+	return id, true
+}
+
 // Mount registers the tool endpoints on the given mux.
 func (h *ToolHTTP) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/mcp/tools/discussion_search", h.discussionSearch)
@@ -89,24 +204,13 @@ type searchResponse struct {
 	Results []Envelope `json:"results"`
 }
 
-// readerIdentity derives the R2 reader scope from the server-stamped session headers — the same
-// X-Principal-Id / X-Agent-Id discipline the write tools use (WINV1/WINV2). Missing headers ⇒ a
-// party-only reader: direct-audience discussion records cannot surface for that caller.
-func readerIdentity(r *http.Request) ReaderIdentity {
-	return ReaderIdentity{
-		Principal: r.Header.Get("X-Principal-Id"),
-		AgentID:   r.Header.Get("X-Agent-Id"),
-	}
-}
-
 func (h *ToolHTTP) discussionSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	team := r.Header.Get("X-Team-Id")
-	if team == "" {
-		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
+	id, ok := h.requireTeam(w, r)
+	if !ok {
 		return
 	}
 	var req searchRequest
@@ -114,7 +218,7 @@ func (h *ToolHTTP) discussionSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	out, err := h.read.DiscussionSearch(r.Context(), team, req.ProjectID, readerIdentity(r), req.Query, req.TopK)
+	out, err := h.read.DiscussionSearch(r.Context(), id.team, req.ProjectID, id.reader(), req.Query, req.TopK)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -127,9 +231,8 @@ func (h *ToolHTTP) memorySearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	team := r.Header.Get("X-Team-Id")
-	if team == "" {
-		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
+	id, ok := h.requireTeam(w, r)
+	if !ok {
 		return
 	}
 	var req searchRequest
@@ -137,7 +240,7 @@ func (h *ToolHTTP) memorySearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	out, err := h.read.MemorySearch(r.Context(), team, readerIdentity(r), req.Query, req.TopK)
+	out, err := h.read.MemorySearch(r.Context(), id.team, id.reader(), req.Query, req.TopK)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -157,9 +260,8 @@ func (h *ToolHTTP) diaryRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	team := r.Header.Get("X-Team-Id")
-	if team == "" {
-		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
+	id, ok := h.requireTeam(w, r)
+	if !ok {
 		return
 	}
 	var req diaryReadRequest
@@ -167,7 +269,7 @@ func (h *ToolHTTP) diaryRead(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	out, err := h.read.DiaryRead(r.Context(), team, req.Agent, req.LastN)
+	out, err := h.read.DiaryRead(r.Context(), id.team, req.Agent, req.LastN)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -186,14 +288,8 @@ func (h *ToolHTTP) diaryAppend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	team := r.Header.Get("X-Team-Id")
-	if team == "" {
-		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
-		return
-	}
-	principal := r.Header.Get("X-Principal-Id")
-	if principal == "" {
-		http.Error(w, "X-Principal-Id required (server-authenticated author)", http.StatusUnauthorized)
+	id, ok := h.requireAuthor(w, r)
+	if !ok {
 		return
 	}
 	var req diaryAppendRequest
@@ -202,10 +298,10 @@ func (h *ToolHTTP) diaryAppend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	author := AuthorScope{
-		TeamID:    team,
-		Principal: principal,
-		AgentID:   optional(r.Header.Get("X-Agent-Id")),
-		RunID:     optional(r.Header.Get("X-Run-Id")),
+		TeamID:    id.team,
+		Principal: id.principal,
+		AgentID:   id.agentID,
+		RunID:     id.runID,
 	}
 	rec, err := h.write.DiaryAppend(r.Context(), author, req.Entry)
 	if err != nil {
@@ -247,14 +343,8 @@ func (h *ToolHTTP) memoryWrite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	team := r.Header.Get("X-Team-Id")
-	if team == "" {
-		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
-		return
-	}
-	principal := r.Header.Get("X-Principal-Id")
-	if principal == "" {
-		http.Error(w, "X-Principal-Id required (server-authenticated author)", http.StatusUnauthorized)
+	id, ok := h.requireAuthor(w, r)
+	if !ok {
 		return
 	}
 	var req writeToolRequest
@@ -263,10 +353,10 @@ func (h *ToolHTTP) memoryWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	author := AuthorScope{
-		TeamID:    team,
-		Principal: principal,
-		AgentID:   optional(r.Header.Get("X-Agent-Id")),
-		RunID:     optional(r.Header.Get("X-Run-Id")),
+		TeamID:    id.team,
+		Principal: id.principal,
+		AgentID:   id.agentID,
+		RunID:     id.runID,
 	}
 	var projectID *string
 	if req.ProjectID != "" {
@@ -322,17 +412,11 @@ func (h *ToolHTTP) discussionPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	teamHdr := r.Header.Get("X-Team-Id")
-	if teamHdr == "" {
-		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
+	id, ok := h.requireAuthor(w, r)
+	if !ok {
 		return
 	}
-	principal := r.Header.Get("X-Principal-Id")
-	if principal == "" {
-		http.Error(w, "X-Principal-Id required (server-authenticated author)", http.StatusUnauthorized)
-		return
-	}
-	teamID, err := uuid.Parse(teamHdr)
+	teamID, err := uuid.Parse(id.team)
 	if err != nil {
 		http.Error(w, "malformed X-Team-Id (want uuid)", http.StatusBadRequest)
 		return
@@ -351,10 +435,10 @@ func (h *ToolHTTP) discussionPost(w http.ResponseWriter, r *http.Request) {
 	// Provenance is stamped from `auth` alone — the header identity — mirroring handler AC3. IsAdmin
 	// stays false: posting needs no admin and retract is out of scope for the tool.
 	auth := discussion.AuthorContext{
-		Principal: principal,
+		Principal: id.principal,
 		TeamID:    teamID,
-		AgentID:   optional(r.Header.Get("X-Agent-Id")),
-		RunID:     optional(r.Header.Get("X-Run-Id")),
+		AgentID:   id.agentID,
+		RunID:     id.runID,
 	}
 	// thread_id omitted ⇒ open a new thread (title required); present ⇒ reply to it.
 	if req.ThreadID == "" {
