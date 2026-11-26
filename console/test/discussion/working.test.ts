@@ -6,6 +6,7 @@ import {
   expireStale,
   groupByMessage,
   hasActiveWork,
+  resolveActiveRunWorkItem,
   seedWatches,
   watchKey,
   type DispatchRosterAgent,
@@ -300,6 +301,86 @@ describe("groupByMessage / hasActiveWork", () => {
         },
       ]),
     ).toBe(true);
+  });
+});
+
+// ISI-7906 (WS-B of ISI-7893): resolve the interrupt target work-item id from
+// the active working watch joined to the overview presence feed by agent name.
+describe("resolveActiveRunWorkItem", () => {
+  const working: DispatchWatch[] = [
+    {
+      key: "a",
+      agentName: "Amelia",
+      messageId: "m1",
+      phase: "working",
+      since: 0,
+    },
+  ];
+
+  it("returns the work-item id of an active watch's agent from the presence map", () => {
+    expect(
+      resolveActiveRunWorkItem(working, {
+        Amelia: { workItem: "wi-42" },
+      }),
+    ).toBe("wi-42");
+  });
+
+  it("matches the presence map case-insensitively (lowercased fallback)", () => {
+    expect(
+      resolveActiveRunWorkItem(working, {
+        amelia: { workItem: "wi-7" },
+      }),
+    ).toBe("wi-7");
+  });
+
+  it("returns undefined when the live run exposes no work-item id yet", () => {
+    expect(resolveActiveRunWorkItem(working, { Amelia: {} })).toBeUndefined();
+  });
+
+  it("ignores non-working watches (only a live run is interruptible)", () => {
+    const replied: DispatchWatch[] = [
+      {
+        key: "a",
+        agentName: "Amelia",
+        messageId: "m1",
+        phase: "replied",
+        since: 0,
+      },
+    ];
+    expect(
+      resolveActiveRunWorkItem(replied, {
+        Amelia: { workItem: "wi-42" },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when there is no presence feed at all", () => {
+    expect(resolveActiveRunWorkItem(working, null)).toBeUndefined();
+    expect(resolveActiveRunWorkItem(working, undefined)).toBeUndefined();
+  });
+
+  it("returns the first resolvable work-item across several active watches", () => {
+    const many: DispatchWatch[] = [
+      {
+        key: "a",
+        agentName: "NoRun",
+        messageId: "m1",
+        phase: "working",
+        since: 0,
+      },
+      {
+        key: "b",
+        agentName: "Winston",
+        messageId: "m1",
+        phase: "working",
+        since: 0,
+      },
+    ];
+    expect(
+      resolveActiveRunWorkItem(many, {
+        Winston: { workItem: "wi-9" },
+      }),
+    ).toBe("wi-9");
   });
 });
 

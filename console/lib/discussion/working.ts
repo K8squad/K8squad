@@ -393,3 +393,32 @@ export function groupByMessage(
 export function hasActiveWork(watches: readonly DispatchWatch[]): boolean {
   return watches.some((w) => w.phase === "working");
 }
+
+/**
+ * ISI-7906 (WS-B of ISI-7893, interrupt affordance): resolve the work-item id of
+ * a still-live dispatched run so the composer's interrupt (components/KillRun,
+ * work-item scoped) has a target. The minted run id never reaches the console —
+ * dispatch is a server-side decision keyed by (messageId, agent) AFTER the post
+ * commits (see header + internal/discussion/dispatch.go) — so the FE-side
+ * correlation is the active working watch joined to the per-agent overview
+ * presence feed by agent NAME (any case), the SAME map applyLivePresence /
+ * watchStillLive read. Returns the first active watch's resolved work-item id,
+ * or undefined when no live run exposes one yet; the caller then renders the
+ * interrupt DISABLED with a tooltip rather than hiding it, so the room never
+ * dead-ends with "a run is live and no way to stop it".
+ */
+export function resolveActiveRunWorkItem(
+  watches: readonly DispatchWatch[],
+  byName:
+    | Readonly<Record<string, { workItem?: string } | undefined>>
+    | null
+    | undefined,
+): string | undefined {
+  if (!byName) return undefined;
+  for (const w of watches) {
+    if (w.phase !== "working") continue;
+    const p = byName[w.agentName] ?? byName[w.agentName.toLowerCase()];
+    if (p?.workItem) return p.workItem;
+  }
+  return undefined;
+}
