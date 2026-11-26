@@ -300,6 +300,12 @@ type openclawMCPEntry struct {
 	Args    []string          `json:"args,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	// Headers carries the streamable-http request headers: the IR's static
+	// non-secret headers plus the per-run bearer token as an env-name
+	// ${VAR} reference the openclaw config loader resolves from process env
+	// (never a literal token, ADR-045 D5). Added for streamable-http
+	// credential parity with the other renderers (ISI-7873).
+	Headers map[string]string `json:"headers,omitempty"`
 
 	// openclaw's native tool allow/deny per server.
 	AllowedTools []string `json:"allowedTools,omitempty"`
@@ -314,7 +320,14 @@ type openclawMCPDoc struct {
 
 // RenderOpenClaw renders the openclaw `mcp.servers` section: stdio as
 // command entries, streamable-http as url entries, credentials as env
-// name references (openclaw env-passthrough resolves them).
+// name references (openclaw env-passthrough resolves them). On the
+// streamable-http path the per-run bearer credential rides as an
+// Authorization ${ENV} header reference — renderer parity with
+// RenderClaudeCode/RenderOpenCodeConfig/RenderCodex (ISI-7873, parent
+// ISI-7868): until this landed the openclaw renderer dropped the
+// credential entirely for http servers, so a warm-pool openclaw run called
+// the memory MCP servers tokenless and the memory edge rejected it with
+// the tenancy 401.
 func RenderOpenClaw(endpoints []Endpoint) ([]byte, error) {
 	var doc openclawMCPDoc
 	doc.MCP.Servers = map[string]openclawMCPEntry{}
@@ -337,6 +350,22 @@ func RenderOpenClaw(endpoints []Endpoint) ([]byte, error) {
 		case string(api.MCPTransportStreamableHTTP):
 			entry.Type = "http"
 			entry.URL = ep.URL
+			// ISI-7873 (parent ISI-7868): streamable-http credential parity with
+			// RenderClaudeCode/RenderOpenCodeConfig — the per-run bearer token
+			// rides as an Authorization ${ENV} reference so the runtime's MCP
+			// client presents the run token to the memory edge. Before this the
+			// openclaw renderer shipped url-only entries: the env token the shim
+			// layers onto the subprocess env (engine.go mcpCredentialEnv) was
+			// never attached, and sandbox callers were rejected with the tenancy
+			// 401. The env NAME resolves from process env; never the literal
+			// token (ADR-045 D5).
+			entry.Headers = ep.Headers
+			for _, name := range ep.EnvNames {
+				if entry.Headers == nil {
+					entry.Headers = map[string]string{}
+				}
+				entry.Headers["Authorization"] = "Bearer ${" + name + "}"
+			}
 		default:
 			return nil, fmt.Errorf("openclaw renderer: unknown transport %q for server %q", ep.Transport, ep.Name)
 		}
