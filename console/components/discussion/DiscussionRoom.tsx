@@ -29,6 +29,12 @@ import {
   type ThinkingRow,
 } from "@/lib/discussion/liveFeed";
 import { appendThinking } from "@/lib/discussion/liveThinking";
+import {
+  fetchThreadRunEvents,
+  hydratedRoomEvents,
+  seedLiveThinking,
+  type HydratedThreadRun,
+} from "@/lib/discussion/hydration";
 import { audienceWire } from "@/lib/discussion/audience";
 import {
   applyAuthorReply,
@@ -115,6 +121,18 @@ export interface DiscussionRoomProps {
    * queued ⇄ running flip. Optional — absent degrades the roster to plain presence.
    */
   liveRuns?: Record<string, AgentRunPresence>;
+  /**
+   * Durable REST hydration loader for the run-scoped feed rows (ISI-7869,
+   * WS-C of parent ISI-7864): fetches the thread's run-event tail on mount so
+   * a fresh tab renders the full feed — run steps under their dispatch
+   * messages, final comments — without a live SSE connection. Optional —
+   * absent means the built-in best-effort fetch (a failure degrades to the
+   * SSE-only behavior of before this seam).
+   */
+  loadRunEvents?: (
+    projectId: string,
+    threadId: string,
+  ) => Promise<HydratedThreadRun[] | null>;
 }
 
 type LoadState = "loading" | "ready" | "not-found" | "error";
@@ -127,6 +145,7 @@ export function DiscussionRoom({
   loadRoster,
   searchMentions,
   liveRuns,
+  loadRunEvents,
 }: DiscussionRoomProps) {
   const [state, setState] = useState<LoadState>("loading");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -209,6 +228,32 @@ export function DiscussionRoom({
   useEffect(() => {
     setWorking((cur) => applyLivePresence(cur, liveRuns));
   }, [liveRuns]);
+
+  // ISI-7869 (WS-C of parent ISI-7864): durable REST hydration on mount. The
+  // live bus renders run-scoped rows (thinking steps, final comments) only
+  // while their dispatch has a working watch — a fresh tab has none, so the
+  // step feed rendered empty. Hydrate the thread's run-event tail from the
+  // durable outbox journal (the ISI-7484 pattern extended to discussion
+  // threads): seed the per-message thinking map under each run's ANCHOR
+  // message (the durable correlation the live wire lacks) and fold the
+  // run-authored message echoes through the same idempotent reducer live
+  // frames ride. Best-effort — a failure degrades to the SSE-only behavior.
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const loader = loadRunEvents ?? fetchThreadRunEvents;
+      const runs = await loader(projectId, threadId);
+      if (!alive || !runs || runs.length === 0) return;
+      setLiveThinking((cur) => seedLiveThinking(runs, cur));
+      const events = hydratedRoomEvents(runs);
+      if (events.length > 0) {
+        setMessages((cur) => events.reduce(applyRoomEvent, cur));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [loadRunEvents, projectId, threadId]);
 
   const load = useCallback(async () => {
     try {
