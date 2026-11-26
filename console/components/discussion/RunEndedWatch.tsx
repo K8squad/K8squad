@@ -32,6 +32,14 @@ import { useEffect, useRef } from "react";
 import { useRunStream } from "@/lib/useRunStream";
 
 /**
+ * ISI-7901: rows retained per ended-watch. The watch only needs the terminal
+ * ended milestone, so the tail cap keeps a long, dense run from growing an
+ * unbounded buffer under every mounted watch (rendering surfaces keep the
+ * full history - only this consumer passes a cap).
+ */
+const RUN_WATCH_MAX_EVENTS = 32;
+
+/**
  * True when a shared-stream LIFECYCLE event is the terminal `ended` milestone
  * (useRunStream stamps its summary as `"ended"` or `"ended: {step}"`). Same
  * predicate as the ticket view's private isEnded (useTicketRunStream.ts) —
@@ -57,7 +65,9 @@ export function RunEndedWatch({
   // ever constructing the stream in that environment.
   const canStream =
     typeof window !== "undefined" && typeof window.EventSource === "function";
-  const { events } = useRunStream(canStream ? runId : "");
+  const { events } = useRunStream(canStream ? runId : "", {
+    maxEvents: RUN_WATCH_MAX_EVENTS,
+  });
 
   // Fire once per mount: a replayed `ended` (native SSE reconnect /
   // Last-Event-ID replay) must never loop the parent's re-fetch. Mirrors the

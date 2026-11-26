@@ -84,6 +84,18 @@ const PARTY_POLL_MS = 20_000;
 // ends its runs near-simultaneously — this window collapses that burst into
 // ONE re-fetch.
 const RUN_ENDED_REFETCH_DELAY_MS = 300;
+// ISI-7901 (parent ISI-7900, D1): bound the run-watch fan-out. Every mounted
+// watch holds one live EventSource to /api/runs/{id}/stream, and the browser
+// caps concurrent connections per host (~6 on HTTP/1.1): an unbounded fan-out
+// in a long party/multi-agent session starved every other request (left-menu
+// nav, reloads) and froze the SPA. 3 keeps the shared project SSE plus routine
+// fetches inside the budget; run_ended still rides the project bus for evicted
+// ids, so the coalesced re-fetch coverage is preserved.
+const MAX_RUN_WATCHES = 3;
+// Lease for a watch whose run went silent (missed/delayed ended): refreshed by
+// every envelope rememberRun sees for that run, retired by the sweep.
+const RUN_WATCH_TTL_MS = 10 * 60_000;
+const RUN_WATCH_SWEEP_MS = 30_000;
 
 // Human-readable timestamp for the post-reset "reset by <who> · <time>" header
 // (ISI-5674 WS-D). Degrades to the raw ISO on an unparseable value so the header
@@ -385,12 +397,55 @@ export function DiscussionRoom({
   // keys the room by thread id, so a thread switch remounts the room and these
   // watches with it.
   const [runWatches, setRunWatches] = useState<string[]>([]);
+  // ISI-7901: the watch set is bounded by construction (constants block
+  // above) - an LRU cap plus a silence lease, both maintained here.
+  const runWatchTouchedRef = useRef(new Map<string, number>());
+  const rememberRun = useCallback((runId: string) => {
+    runWatchTouchedRef.current.set(runId, Date.now());
+    setRunWatches((cur) => {
+      if (cur.includes(runId)) {
+        // LRU touch: move the id to the most-recent end.
+        return cur.length <= 1
+          ? cur
+          : [...cur.filter((x) => x !== runId), runId];
+      }
+      const next = [...cur, runId];
+      return next.length > MAX_RUN_WATCHES
+        ? next.slice(next.length - MAX_RUN_WATCHES)
+        : next;
+    });
+  }, []);
+  // TTL sweep: retire watches whose run has been silent past the lease - a
+  // missed or delayed ended can no longer pin a stream for the room's life.
+  useEffect(() => {
+    const t = setInterval(() => {
+      setRunWatches((cur) => {
+        if (cur.length === 0) return cur;
+        const now = Date.now();
+        const keep = cur.filter(
+          (id) =>
+            now - (runWatchTouchedRef.current.get(id) ?? now) <
+            RUN_WATCH_TTL_MS,
+        );
+        return keep.length === cur.length ? cur : keep;
+      });
+    }, RUN_WATCH_SWEEP_MS);
+    return () => clearInterval(t);
+  }, []);
+  // Touch-stamp hygiene: stamps live only while their id is still mounted.
+  useEffect(() => {
+    const live = new Set(runWatches);
+    for (const id of runWatchTouchedRef.current.keys()) {
+      if (!live.has(id)) runWatchTouchedRef.current.delete(id);
+    }
+  }, [runWatches]);
   // Coalesced re-fetch: the first terminal milestone schedules ONE load();
   // endings landing inside the window collapse into it. Mirrors the ticket
   // view's ended -> reload-key bump, extended for the room's multi-run fan-out.
   const refetchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onRunEnded = useCallback(
     (runId: string) => {
+      runWatchTouchedRef.current.delete(runId);
       setRunWatches((cur) => cur.filter((x) => x !== runId));
       if (refetchTimer.current) return;
       refetchTimer.current = setTimeout(() => {
@@ -418,9 +473,8 @@ export function DiscussionRoom({
         // for tailing the run's terminal ended milestone. The envelope is
         // still rendered (or dropped) exactly as before; only the id is new.
         if (se.row.runId) {
-          setRunWatches((cur) =>
-            cur.includes(se.row.runId) ? cur : [...cur, se.row.runId],
-          );
+          // ISI-7901: bounded remember (LRU cap + silence lease).
+          rememberRun(se.row.runId);
         }
         // Live run thinking: correlate to the working watch it belongs under and
         // append it inline (dropped if it matches no active dispatch in this thread).
@@ -436,9 +490,8 @@ export function DiscussionRoom({
         // answers) PLUS the working-watch resolution — the final comment IS the
         // agent's response, even when no in-thread reply ever lands.
         if (se.row.runId) {
-          setRunWatches((cur) =>
-            cur.includes(se.row.runId) ? cur : [...cur, se.row.runId],
-          );
+          // ISI-7901: bounded remember (LRU cap + silence lease).
+          rememberRun(se.row.runId);
         }
         setLiveThinking((cur) =>
           appendThinking(
@@ -482,7 +535,7 @@ export function DiscussionRoom({
       }
     });
     return unsub;
-  }, [subscribe, onRunEnded]);
+  }, [subscribe, onRunEnded, rememberRun]);
 
   // Failure sweep (ISI-5174 AC3): expire a still-working watch to "could not
   // respond" once its run has been silent past the timeout, so an indicator
