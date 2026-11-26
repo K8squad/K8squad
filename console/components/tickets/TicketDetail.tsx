@@ -1915,16 +1915,21 @@ function TicketBody({
   // "working" pre-backend-fix) while the reply stayed invisible until a manual reload or
   // a new tab. Keyed on the dispatch nonce so a second nudge on the same ticket re-arms
   // it; the ref guard makes it fire exactly once per dispatch across terminal re-renders.
-  const settledFor = useRef<number | null>(null);
+  const settledFor = useRef<string>("");
   useEffect(() => {
     const at = dispatch?.at ?? null;
     if (at === null) return;
     const state = dispatchWatch?.state;
     if (state !== "succeeded" && state !== "failed") return;
-    if (settledFor.current === at) return; // already reloaded for this dispatch
-    settledFor.current = at;
+    // ISI-7863 (parent ISI-7862): keyed per FOLLOWED run, not per dispatch — the
+    // ladder re-seeds onto each re-dispatched run (fail → new run_id), and every
+    // one of them must reload the thread once on settle so its terminal rows
+    // (failure notice, final SUMMARY) materialize in the originating tab.
+    const key = `${at}:${dispatchWatch?.runId ?? ""}`;
+    if (settledFor.current === key) return; // already reloaded for this run
+    settledFor.current = key;
     onRunSettled();
-  }, [dispatchWatch?.state, dispatch?.at, onRunSettled]);
+  }, [dispatchWatch?.state, dispatchWatch?.runId, dispatch?.at, onRunSettled]);
   // ISI-7274 (parent ISI-7262 WS-2): the self-dispatch ladder's once-per-dispatch
   // reload above fires the moment the ladder freezes terminal — BEFORE the run's
   // final task-io comment (or the settle's terminal rows, which commit after the

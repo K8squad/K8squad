@@ -10,7 +10,10 @@
 //         (board-locked thresholds, interaction f3d5c62e).
 //   AC-2  honesty: a run that reaches Claiming but not Running NEVER shows "Working…".
 //   AC-3  terminal: a Failed/Succeeded run resolves the card to a STATIC terminal state and
-//         stops all timers/subscriptions (no zombie transitions, no leaked poll).
+//         stops the ACTIVE 2s discovery poll (no zombie transitions, no leaked interval).
+//         ISI-7863 amendment: the PASSIVE 5s item-run reconcile keeps watching the listing
+//         while the dispatch stays seeded — that follower is what re-arms the card when the
+//         operator re-dispatches the item (the ISI-7863 case at the bottom of this file).
 //
 // Fake-timer strategy: `shouldAdvanceTime: true` lets real time drive React/RTL microtasks and
 // `waitFor` (advancing the fake clock only microscopically), while `advanceTimersByTimeAsync`
@@ -265,9 +268,10 @@ describe("TicketDetail — degrade & honesty (ISI-4883 / S5)", () => {
       "blocked",
     );
 
-    // The discovery poll has done its job and handed off — snapshot its call count, then let a full
-    // minute of wall-clock elapse. A terminal card must freeze: no state churn, no degrade note, and
-    // NO further /api/runs polls (the subscription is torn down — no leaked interval).
+    // The ACTIVE 2s discovery poll has done its job and handed off. A terminal card must
+    // freeze: no state churn, no degrade note. ISI-7863: the PASSIVE 5s item-run reconcile
+    // keeps watching the listing (visible-tab cadence) so a re-dispatch can re-arm the card —
+    // it must never fall back to the active 2s ladder cadence.
     const pollsAtTerminal = runsPollCount();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_000);
@@ -277,7 +281,12 @@ describe("TicketDetail — degrade & honesty (ISI-4883 / S5)", () => {
       "failed",
     );
     expect(screen.queryByTestId("dispatch-degrade")).toBeNull();
-    expect(runsPollCount()).toBe(pollsAtTerminal);
+    // 60s at the 5s reconcile cadence ⇒ ~12 slow polls — never the 30 the active 2s
+    // cadence would cost: the active subscription IS torn down at terminal, only the
+    // item follower stays armed.
+    const growth = runsPollCount() - pollsAtTerminal;
+    expect(growth).toBeGreaterThan(0); // the item follower stays armed (ISI-7863)
+    expect(growth).toBeLessThanOrEqual(13); // …but only at the passive cadence
   });
 
   it("AC-3: a Succeeded run resolves the card to the static 'Finished' terminal state", async () => {
@@ -311,5 +320,87 @@ describe("TicketDetail — degrade & honesty (ISI-4883 / S5)", () => {
       "succeeded",
     );
     expect(screen.queryByTestId("dispatch-degrade")).toBeNull();
+  });
+
+  it("ISI-7863: after a Failed run, an operator re-dispatch re-arms the card (the originating tab follows the item's current run)", async () => {
+    // The board repro (parent ISI-7862): run #1 fails — no SSE ended frame ever
+    // reaches the tab — the operator re-dispatches, and a NEW run id holds the
+    // item. The originating tab must re-subscribe to the item's CURRENT run
+    // instead of freezing on the dead one ("is working…" forever, no live feed).
+    routeFetch({
+      runs: [
+        {
+          id: "run-1",
+          workItemRef: "wi-1",
+          phase: "Failed",
+          agents: ["agent:reviewer"],
+        },
+      ],
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await commentAndAssign();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("dispatch-pending-card")).toHaveAttribute(
+        "data-state",
+        "failed",
+      ),
+    );
+
+    // The operator re-dispatches: a NEW live run now holds the same item.
+    routeFetch({
+      runs: [
+        {
+          id: "run-2",
+          workItemRef: "wi-1",
+          phase: "Running",
+          agents: ["agent:reviewer"],
+        },
+        {
+          id: "run-1",
+          workItemRef: "wi-1",
+          phase: "Failed",
+          agents: ["agent:reviewer"],
+        },
+      ],
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("dispatch-pending-card")).toHaveAttribute(
+        "data-state",
+        "working",
+      ),
+    );
+    expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Working…");
+
+    // And when the re-dispatched run succeeds, the card resolves — no reload.
+    routeFetch({
+      runs: [
+        {
+          id: "run-2",
+          workItemRef: "wi-1",
+          phase: "Succeeded",
+          agents: ["agent:reviewer"],
+        },
+        {
+          id: "run-1",
+          workItemRef: "wi-1",
+          phase: "Failed",
+          agents: ["agent:reviewer"],
+        },
+      ],
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId("dispatch-pending-card")).toHaveAttribute(
+        "data-state",
+        "succeeded",
+      ),
+    );
+    expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Finished");
   });
 });
