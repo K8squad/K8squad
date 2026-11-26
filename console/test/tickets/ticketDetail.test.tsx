@@ -151,6 +151,13 @@ const DONE_UNHELD = {
   RequestedAgent: "agent:builder",
 };
 
+/**
+ * ISI-7905: a thread where the run has already settled — no active RunID so the
+ * composer's submit button is not locked. Use this for comment-posting tests that
+ * do not want to exercise the run-active lock.
+ */
+const COMMENT_THREAD = { ...THREAD, RunID: "" };
+
 const POSTED_COMMENT = {
   author: "user:me",
   body: "hello agents",
@@ -552,7 +559,7 @@ describe("TicketDetail", () => {
   });
 
   it("lets a contributor post a comment (optimistic append + reconciling refetch)", async () => {
-    routeFetch({ role: "contributor" });
+    routeFetch({ role: "contributor", thread: COMMENT_THREAD });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     // Contributor gets the LIVE composer, not the read-only surface.
@@ -579,7 +586,7 @@ describe("TicketDetail", () => {
   });
 
   it("keeps the honest gap copy when the endpoint isn't wired (POST 404)", async () => {
-    routeFetch({ role: "contributor", postStatus: 404 });
+    routeFetch({ role: "contributor", postStatus: 404, thread: COMMENT_THREAD });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     await waitFor(() =>
@@ -600,7 +607,7 @@ describe("TicketDetail", () => {
   });
 
   it("surfaces an inline error on a non-404 4xx and keeps the composer usable", async () => {
-    routeFetch({ role: "contributor", postStatus: 400 });
+    routeFetch({ role: "contributor", postStatus: 400, thread: COMMENT_THREAD });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     await waitFor(() =>
@@ -616,6 +623,46 @@ describe("TicketDetail", () => {
     );
     // Composer stays live so the caller can retry (not swapped to read-only).
     expect(screen.getByTestId("detail-composer")).toBeTruthy();
+    expect(screen.getAllByTestId("activity-comment")).toHaveLength(2);
+  });
+
+  // ---- ISI-7905: run-active composer lock ----
+
+  it("disables the submit button and shows run-active message when a run is live", async () => {
+    // Default THREAD has State=in_review + RunID=run-9 → threadRunActive=true.
+    routeFetch({ role: "contributor" });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
+    // Submit button is disabled while the run is live.
+    expect(
+      (screen.getByTestId("detail-composer-submit") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // Run-active notice and KillRun arm button are visible.
+    expect(screen.getByTestId("detail-composer-run-active")).toBeTruthy();
+    expect(screen.getByTestId("kill-arm")).toBeTruthy();
+    expect(
+      screen.getByText(/An agent run is in progress/),
+    ).toBeTruthy();
+  });
+
+  it("clicking submit while a run is active does not post a comment", async () => {
+    routeFetch({ role: "contributor" });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer")).toBeTruthy(),
+    );
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "sneaky comment" },
+    });
+    // Click the submit button (it is disabled; the click should be a no-op).
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    // Comment count stays at the original 2 — nothing was posted.
     expect(screen.getAllByTestId("activity-comment")).toHaveLength(2);
   });
 
