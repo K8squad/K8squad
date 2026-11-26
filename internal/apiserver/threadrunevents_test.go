@@ -60,7 +60,7 @@ func anchoredThreadReader() *fakeRunReader {
 	reader := &fakeRunReader{}
 	ts := time.Date(2026, 11, 26, 9, 0, 0, 0, time.UTC)
 	reader.add(
-		events.RunEvent{ID: 11, RunID: testRunUID, EventType: "thinking", Payload: []byte(`{"runId":"` + testRunUID + `","author":"agent:john","body":"step one","seq":1}`), OccurredAt: ts},
+		events.RunEvent{ID: 11, RunID: testRunUID, EventType: "thinking", Payload: []byte(`{"runId":"`+testRunUID+`","author":"agent:john","body":"step one","seq":1}`), OccurredAt: ts},
 		events.RunEvent{ID: 12, RunID: testRunUID, EventType: "tool_result", Payload: []byte(`{"x":1}`), OccurredAt: ts.Add(time.Second)},
 		events.RunEvent{ID: 13, RunID: testRunUID, EventType: "ticket_comment", Payload: []byte(`{"author":"agent:john","body":"final"}`), OccurredAt: ts.Add(2 * time.Second)},
 		events.RunEvent{ID: 14, RunID: testRunUID, EventType: "discussion_message", Payload: []byte(`{"type":"message.created"}`), OccurredAt: ts.Add(3 * time.Second)},
@@ -81,7 +81,7 @@ func decodeThreadRunEvents(t *testing.T, rec *httptest.ResponseRecorder) ThreadR
 
 func TestThreadRunEventsHydratesAnchoredRoomTail(t *testing.T) {
 	anchors := &fakeAnchorReader{anchors: []discussion.ThreadRunAnchor{{RunID: testRunUID, AnchorMessageID: testAnchorMsg}}}
-	rec := threadRunEventsRequest(t, "/api/projects/team-1/proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), true)
+	rec := threadRunEventsRequest(t, "/api/projects/team-1-proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
@@ -114,7 +114,7 @@ func TestThreadRunEventsHydratesAnchoredRoomTail(t *testing.T) {
 
 func TestThreadRunEventsEmptyForDispatchlessThread(t *testing.T) {
 	anchors := &fakeAnchorReader{}
-	rec := threadRunEventsRequest(t, "/api/projects/team-1/proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), true)
+	rec := threadRunEventsRequest(t, "/api/projects/team-1-proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -126,7 +126,7 @@ func TestThreadRunEventsEmptyForDispatchlessThread(t *testing.T) {
 
 func TestThreadRunEventsUnauthenticated(t *testing.T) {
 	anchors := &fakeAnchorReader{}
-	rec := threadRunEventsRequest(t, "/api/projects/team-1/proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), false)
+	rec := threadRunEventsRequest(t, "/api/projects/team-1-proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), false)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
@@ -134,7 +134,7 @@ func TestThreadRunEventsUnauthenticated(t *testing.T) {
 
 func TestThreadRunEventsBadThreadID(t *testing.T) {
 	anchors := &fakeAnchorReader{}
-	rec := threadRunEventsRequest(t, "/api/projects/team-1/proj-a/discussion/threads/not-a-uuid/run-events", anchors, anchoredThreadReader(), true)
+	rec := threadRunEventsRequest(t, "/api/projects/team-1-proj-a/discussion/threads/not-a-uuid/run-events", anchors, anchoredThreadReader(), true)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
@@ -142,7 +142,7 @@ func TestThreadRunEventsBadThreadID(t *testing.T) {
 
 func TestThreadRunEventsAnchorReadFailureIsBadGateway(t *testing.T) {
 	anchors := &fakeAnchorReader{err: errors.New("ledger down")}
-	rec := threadRunEventsRequest(t, "/api/projects/team-1/proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), true)
+	rec := threadRunEventsRequest(t, "/api/projects/team-1-proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, anchoredThreadReader(), true)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
@@ -150,7 +150,7 @@ func TestThreadRunEventsAnchorReadFailureIsBadGateway(t *testing.T) {
 
 func TestThreadRunEventsPerRunFailureSkipsRun(t *testing.T) {
 	anchors := &fakeAnchorReader{anchors: []discussion.ThreadRunAnchor{{RunID: testRunUID, AnchorMessageID: testAnchorMsg}}}
-	rec := threadRunEventsRequest(t, "/api/projects/team-1/proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, failingRunReader{anchoredThreadReader()}, true)
+	rec := threadRunEventsRequest(t, "/api/projects/team-1-proj-a/discussion/threads/"+testThreadID+"/run-events", anchors, failingRunReader{anchoredThreadReader()}, true)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (per-run failure degrades)", rec.Code)
 	}
