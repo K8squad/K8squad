@@ -38,3 +38,11 @@ dist/
 
 # accidental local build artifacts (ISI-4495 hygiene)
 /event-relay
+
+# Agent worktree scratch - never commit worktree dirs (ISI-7845)
+/_wt/
+/.claude/worktrees/
+/.wt-*
+/_isi*/
+/apiserver
+/cmd/shim/ksquad-system-context.txt
