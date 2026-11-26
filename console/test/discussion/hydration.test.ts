@@ -13,11 +13,15 @@ import {
 // the fetch degrades to null instead of throwing.
 
 function runWith(
-  events: Array<{ id: string; type: string; data: unknown }>,
+  events: Array<{ id: string; type: string; data: unknown; at?: string }>,
   anchor = "m1",
   runId = "r1",
 ): HydratedThreadRun {
-  return { runId, anchorMessageId: anchor, events };
+  return {
+    runId,
+    anchorMessageId: anchor,
+    events: events.map((e) => ({ at: "", ...e })),
+  };
 }
 
 describe("seedLiveThinking", () => {

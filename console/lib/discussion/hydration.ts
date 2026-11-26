@@ -122,16 +122,16 @@ export function seedLiveThinking(
         if (comment) row = ticketCommentToDeliverable(comment);
       }
       if (!row) continue;
-      if (
-        merged.some(
-          (r) => r.runId === row!.runId && r.seq === row!.seq,
-        )
-      ) {
+      if (merged.some((r) => r.runId === row!.runId && r.seq === row!.seq)) {
         continue;
       }
       merged.push(row);
     }
-    next[run.anchorMessageId] = merged;
+    // Only materialize a bucket when it carries rows: an anchor whose tail
+    // held nothing renderable leaves no empty entry in the map.
+    if (merged.length > 0) {
+      next[run.anchorMessageId] = merged;
+    }
   }
   return next;
 }

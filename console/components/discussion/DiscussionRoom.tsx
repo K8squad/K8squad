@@ -145,6 +145,7 @@ export function DiscussionRoom({
   loadRoster,
   searchMentions,
   liveRuns,
+  loadRunEvents,
 }: DiscussionRoomProps) {
   const [state, setState] = useState<LoadState>("loading");
   const [messages, setMessages] = useState<Message[]>([]);
