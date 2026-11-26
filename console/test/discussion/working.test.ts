@@ -308,7 +308,13 @@ describe("groupByMessage / hasActiveWork", () => {
 // the active working watch joined to the overview presence feed by agent name.
 describe("resolveActiveRunWorkItem", () => {
   const working: DispatchWatch[] = [
-    { key: "a", agentName: "Amelia", messageId: "m1", phase: "working", since: 0 },
+    {
+      key: "a",
+      agentName: "Amelia",
+      messageId: "m1",
+      phase: "working",
+      since: 0,
+    },
   ];
 
   it("returns the work-item id of an active watch's agent from the presence map", () => {
@@ -328,14 +334,18 @@ describe("resolveActiveRunWorkItem", () => {
   });
 
   it("returns undefined when the live run exposes no work-item id yet", () => {
-    expect(
-      resolveActiveRunWorkItem(working, { Amelia: {} }),
-    ).toBeUndefined();
+    expect(resolveActiveRunWorkItem(working, { Amelia: {} })).toBeUndefined();
   });
 
   it("ignores non-working watches (only a live run is interruptible)", () => {
     const replied: DispatchWatch[] = [
-      { key: "a", agentName: "Amelia", messageId: "m1", phase: "replied", since: 0 },
+      {
+        key: "a",
+        agentName: "Amelia",
+        messageId: "m1",
+        phase: "replied",
+        since: 0,
+      },
     ];
     expect(
       resolveActiveRunWorkItem(replied, {
@@ -351,8 +361,20 @@ describe("resolveActiveRunWorkItem", () => {
 
   it("returns the first resolvable work-item across several active watches", () => {
     const many: DispatchWatch[] = [
-      { key: "a", agentName: "NoRun", messageId: "m1", phase: "working", since: 0 },
-      { key: "b", agentName: "Winston", messageId: "m1", phase: "working", since: 0 },
+      {
+        key: "a",
+        agentName: "NoRun",
+        messageId: "m1",
+        phase: "working",
+        since: 0,
+      },
+      {
+        key: "b",
+        agentName: "Winston",
+        messageId: "m1",
+        phase: "working",
+        since: 0,
+      },
     ];
     expect(
       resolveActiveRunWorkItem(many, {

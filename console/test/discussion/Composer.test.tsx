@@ -331,9 +331,7 @@ describe("<Composer> — active-run gate + interrupt (ISI-7906 Layers 2+3)", () 
   });
 
   it("renders the reusable KillRun interrupt when a work-item id resolves", () => {
-    render(
-      <Composer onPost={vi.fn()} activeRun interruptWorkItem="wi-42" />,
-    );
+    render(<Composer onPost={vi.fn()} activeRun interruptWorkItem="wi-42" />);
     // KillRun's arm button (components/KillRun.tsx) is reachable from the composer.
     expect(screen.getByTestId("kill-arm")).toBeTruthy();
     expect(screen.queryByTestId("composer-interrupt-pending")).toBeNull();
@@ -343,7 +341,9 @@ describe("<Composer> — active-run gate + interrupt (ISI-7906 Layers 2+3)", () 
     render(<Composer onPost={vi.fn()} activeRun />);
     const pending = screen.getByTestId("composer-interrupt-pending");
     expect(pending).toBeDisabled();
-    expect(pending.getAttribute("title")).toMatch(/once the live run is identified/i);
+    expect(pending.getAttribute("title")).toMatch(
+      /once the live run is identified/i,
+    );
     expect(screen.queryByTestId("kill-arm")).toBeNull();
   });
 
