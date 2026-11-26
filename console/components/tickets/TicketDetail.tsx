@@ -68,6 +68,14 @@ import {
   runCommentKey,
   type RunComment,
 } from "@/lib/tickets/runComments";
+import { buildFeed } from "@/lib/tickets/feedView";
+import {
+  ActivityGroupChip,
+  FeedModeToggle,
+  RunStreamPanel,
+  SystemNoticeCard,
+  useFeedMode,
+} from "./FeedTreatments";
 import { runHref } from "@/lib/discussion/provenance";
 import {
   parseProgressEnvelope,
@@ -590,11 +598,20 @@ function ActivityRow({
   item,
   runMeta,
   projectId,
+  liveSteps,
+  streamRunId,
 }: {
   item: ActivityItem;
   runMeta: Map<string, RunComment>;
   // The ticket's project slug — deep-links a comment's `#` ticket refs (ISI-5214).
   projectId: string;
+  // ISI-7888: the live SSE thinking rows for the run the ticket surface is
+  // already streaming, handed to the owning agent comment's streaming panel.
+  liveSteps?: LiveThinkingRow[];
+  // The run those live rows belong to (the self-dispatch ladder's run or the
+  // ambient holding run) - only the bubble whose meta.runId matches mounts
+  // the panel.
+  streamRunId?: string;
 }) {
   if (item.kind === "event" && item.event) {
     const e = item.event;
@@ -676,7 +693,16 @@ function ActivityRow({
     const meta = runMeta.get(
       runCommentKey(item.comment.author, item.at, item.comment.body),
     );
-    return <RunCommentCard item={item} meta={meta} projectId={projectId} />;
+    return (
+      <RunCommentCard
+        item={item}
+        meta={meta}
+        projectId={projectId}
+        liveSteps={
+          streamRunId && meta?.runId === streamRunId ? liveSteps : undefined
+        }
+      />
+    );
   }
   return null;
 }
@@ -942,11 +968,15 @@ function RunCommentCard({
   item,
   meta,
   projectId,
+  liveSteps,
 }: {
   item: ActivityItem;
   meta?: RunComment;
   // Deep-links this comment's `#` ticket references to the in-console ticket (ISI-5214).
   projectId: string;
+  // ISI-7888: live SSE steps for THIS bubble's run - mounted as the collapsed
+  // streaming bar under the body (the owning agent comment only).
+  liveSteps?: LiveThinkingRow[];
 }) {
   const comment = item.comment!;
   const author = displayName(comment.author);
@@ -1097,6 +1127,22 @@ function RunCommentCard({
         )}
 
         <ProgressBody body={comment.body ?? ""} />
+
+        {/* ISI-7888 (design ISI-7861 para-4 #4): the streaming panel rides the
+            OWNING agent comment - a collapsed bar ("Live: agent working... step
+            N", pulse dot while in flight) expanding to the newest-first step
+            list, hydrated from the ISI-7484 durable store (live rows
+            in-session, GET /api/runs/{id}/events replay after - no second
+            EventSource). */}
+        {meta?.runId && (
+          <RunStreamPanel
+            runId={meta.runId}
+            running={meta.running}
+            liveSteps={liveSteps ?? []}
+            agentName={author}
+            scopeId={`run.${meta.runId}`}
+          />
+        )}
 
         {/* ISI-5214: the `#`-picker ticket LINKS this comment carried, read straight
             off the wire (no render-time refetch) and deep-linked to the in-console
@@ -1988,6 +2034,21 @@ function TicketBody({
     ]),
   );
 
+  // ISI-7888 (ISI-7861 para-4): the conversation-first feed. Conversation is
+  // the default tab (per-user persisted): only human + agent comments render
+  // first-class - operator notices become collapsed system-notice cards,
+  // runs of lane/state events collapse into one activity chip each, and
+  // live thinking steps move under the owning agent comment's streaming
+  // panel. "All activity" restores the ungrouped one-row-per-event shape.
+  const [feedMode, setFeedMode] = useFeedMode();
+  const feedBlocks = useMemo(
+    () => buildFeed(activity, feedMode),
+    [activity, feedMode],
+  );
+  // The run whose live rows liveThinking holds - the self-dispatch ladder's
+  // run when one is streaming this session, else the ambient holding run.
+  const streamRunId = dispatchWatch?.runId ?? thread.runId;
+
   // ISI-5157 — scroll ergonomics for a tall ticket. The page (document) is the
   // scroll owner on this route, so the docked composer and the jump-to-bottom
   // FAB are pinned relative to the viewport (tickets.css). Two small effects:
@@ -2211,20 +2272,52 @@ function TicketBody({
             newest last. */}
           <section className="card" data-testid="detail-activity">
             <h2>Activity</h2>
+            {/* ISI-7888: the [ Conversation | All activity ] segmented control -
+              Conversation default, choice persisted per user (ISI-7861 para-5). */}
+            <FeedModeToggle mode={feedMode} onChange={setFeedMode} />
             {activity.length === 0 && !dispatchWatch ? (
               <p className="muted" data-testid="detail-activity-empty">
                 No activity yet.
               </p>
             ) : (
               <ul className="ksq-activity-list">
-                {activity.map((item, i) => (
-                  <ActivityRow
-                    key={`${item.kind}-${i}`}
-                    item={item}
-                    runMeta={runMeta}
-                    projectId={projectId}
-                  />
-                ))}
+                {feedBlocks.map((block, i) => {
+                  if (block.kind === "notice") {
+                    const scope = `notice.${runCommentKey(
+                      block.item.who,
+                      block.item.at,
+                      block.item.comment?.body ?? "",
+                    )}`;
+                    return (
+                      <SystemNoticeCard
+                        key={`notice-${i}`}
+                        item={block.item}
+                        scopeId={scope}
+                      />
+                    );
+                  }
+                  if (block.kind === "activity") {
+                    const first = block.items[0]?.at ?? "";
+                    const last = block.items[block.items.length - 1]?.at ?? "";
+                    return (
+                      <ActivityGroupChip
+                        key={`group-${i}`}
+                        items={block.items}
+                        scopeId={`activity.${first}.${last}`}
+                      />
+                    );
+                  }
+                  return (
+                    <ActivityRow
+                      key={`${block.item.kind}-${i}`}
+                      item={block.item}
+                      runMeta={runMeta}
+                      projectId={projectId}
+                      liveSteps={liveThinking}
+                      streamRunId={streamRunId}
+                    />
+                  );
+                })}
                 {/* ISI-4881 (S3): the placeholder run bubble lands at the tail — where
                   the real RunCommentCard eventually renders (activity is newest-last),
                   so there is no layout jump on hand-off. Appears within a frame of the
