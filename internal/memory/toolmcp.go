@@ -307,6 +307,10 @@ func (m *ToolMCP) handle(w http.ResponseWriter, r *http.Request) {
 		if bearer := bearerToken(r.Header.Get("Authorization")); bearer != "" {
 			as, err := m.tokenAuth.Verify(bearer)
 			if err != nil {
+				// ISI-7873 (parent ISI-7868): the tenancy rejection is operator-visible
+				// (bounded counter + structured log) — a silent 401 is what blinded the
+				// warm-pool party runs for a whole defect cycle.
+				tenancyRejection("mcp", "session", tenancyReasonBadBearer)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

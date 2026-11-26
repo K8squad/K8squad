@@ -108,6 +108,12 @@ func main() {
 	// change to recall itself).
 	promReg := prometheus.NewRegistry()
 	recallhealth.Register(promReg)
+	// ISI-7873 (parent ISI-7868): the tenancy-rejection signal — every 401 at a
+	// tool edge (missing tenant identity on the BFF path, invalid run capability
+	// token on the sandbox bearer path) ticks a bounded counter and logs a
+	// structured warn line, so a recurrence alerts instead of silently blinding
+	// agents (work item 3).
+	memory.RegisterTenancySignal(promReg)
 	if cfg.EmbedderEndpoint != "" {
 		log.Printf("ksquad-memory: semantic embedder wired (endpoint=%s, model=%s)", cfg.EmbedderEndpoint, cfg.EmbedderModel)
 	} else {
@@ -152,6 +158,31 @@ func main() {
 		log.Printf("ksquad-memory: work_item_search tool mounted (cross-ticket FTS over coord.work_item, team-scoped; ISI-5276)")
 	} else {
 		log.Printf("ksquad-memory: work_item_search tool disabled (search DB unavailable) — reads still serve")
+	}
+
+	// ADR-0024a S3/D2 (ISI-4869, ISI-7873): enable the token-auth (sandbox) path on
+	// BOTH tool transports — the MCP JSON-RPC edge and the compat JSON/HTTP routes —
+	// when the shared HS256 signing key is distributed to this process (D2 option
+	// (a): the SAME KSQUAD_JWT_SIGNING_KEY the control plane mints with). A sandbox
+	// then reaches the tools with a verified run capability token and its client
+	// X-* identity headers are discarded. Until ISI-7873 the compat HTTP surface
+	// was header-only, so a token-bearing warm-pool discussion/party call was
+	// rejected with the tenancy 401 that blinded the party runs; the wiring is
+	// hoisted here (out of the authoring block) so the read/search surfaces
+	// authenticate sandbox bearers even in a read-only deployment. No key ⇒ the
+	// token path stays off and only the trusted BFF header path serves (inert
+	// until the key is delivered — Henrik's D2 readiness call on key distribution).
+	if raw := os.Getenv("KSQUAD_JWT_SIGNING_KEY"); raw != "" {
+		if minter, merr := mcpauthtoken.NewMinter(decodeSigningKey(raw), 0); merr != nil {
+			log.Printf("ksquad-memory: run-capability-token auth DISABLED — KSQUAD_JWT_SIGNING_KEY invalid (tool surfaces stay header-path only): %v", merr)
+		} else {
+			verifier := memory.NewMCPAuthTokenVerifier(minter)
+			mcpTools.WithAuthoringTokenAuth(verifier)
+			tools.WithAuthoringTokenAuth(verifier)
+			log.Printf("ksquad-memory: run-capability-token auth ENABLED on the MCP and compat HTTP tool surfaces — verified tokens accepted; client X-* identity headers discarded on that path (ADR-0024a S3/D2, ISI-7873)")
+		}
+	} else {
+		log.Printf("ksquad-memory: run-capability-token auth off — no KSQUAD_JWT_SIGNING_KEY; tools served on the trusted BFF header path only (ADR-0024a S3/D2 inert)")
 	}
 
 	// ADR-0024 agent work-item authoring lane (ISI-4741): the capability-gated
@@ -220,23 +251,10 @@ func main() {
 		} else {
 			log.Printf("ksquad-memory: propose-mode coordinator authoring off (discussion DB unavailable) — a propose-gated coordinator call is refused honestly")
 		}
-		// ADR-0024a S3/D2 (ISI-4869): enable the token-auth (sandbox) path when the
-		// shared HS256 signing key is distributed to this process (D2 option (a) —
-		// the SAME KSQUAD_JWT_SIGNING_KEY the control plane mints with). A sandbox
-		// then reaches the authoring tools with a verified run capability token, and
-		// its client X-* identity headers are discarded. No key ⇒ the token path
-		// stays off and only the trusted BFF header path serves (inert until the key
-		// is delivered — Henrik's D2 readiness call on key distribution).
-		if raw := os.Getenv("KSQUAD_JWT_SIGNING_KEY"); raw != "" {
-			if minter, merr := mcpauthtoken.NewMinter(decodeSigningKey(raw), 0); merr != nil {
-				log.Printf("ksquad-memory: run-capability-token auth DISABLED — KSQUAD_JWT_SIGNING_KEY invalid (sandbox authoring stays header-path only): %v", merr)
-			} else {
-				mcpTools.WithAuthoringTokenAuth(memory.NewMCPAuthTokenVerifier(minter))
-				log.Printf("ksquad-memory: run-capability-token auth ENABLED — sandbox authoring accepts verified tokens; client X-* identity headers discarded on that path (ADR-0024a S3/D2)")
-			}
-		} else {
-			log.Printf("ksquad-memory: run-capability-token auth off — no KSQUAD_JWT_SIGNING_KEY; authoring served on the trusted BFF header path only (ADR-0024a S3/D2 inert)")
-		}
+		// ADR-0024a S3/D2 token-auth wiring itself is hoisted above (ISI-7873) so
+		// BOTH transports authenticate sandbox bearers independent of the authoring
+		// store; the authoring-specific capability gate (TokenCapabilityResolver)
+		// rides the same verifier via WithAuthoringTokenAuth.
 	}
 
 	// Best-effort discussion→pgvector indexer (10.2, §7.6/§17.4). It projects committed discussion
