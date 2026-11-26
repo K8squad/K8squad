@@ -97,6 +97,7 @@ export interface DispatchMachine {
  */
 export type WatchSignal =
   | { type: "run_discovered"; runId: string }
+  | { type: "follow_run"; runId: string }
   | { type: "phase"; phase: RunPhase | string }
   | {
       type: "lifecycle";
@@ -166,6 +167,14 @@ export function reduceDispatchWatch(
   sig: WatchSignal,
 ): DispatchMachine {
   if (sig.type === "reset") return initialDispatchMachine();
+
+  // ISI-7863 (parent ISI-7862): a NEW live run for the item re-seeds the ladder
+  // even from a terminal state — the ladder follows the item's CURRENT run
+  // (fail → re-dispatch mints a new run_id), never a frozen dead one.
+  if (sig.type === "follow_run") {
+    if (sig.runId === m.runId) return m;
+    return { state: "picking_up", degrade: "none", runId: sig.runId };
+  }
 
   // Once terminal, the card is settled — ignore all further signals (no zombie transitions).
   if (isTerminal(m.state)) return m;
@@ -316,6 +325,62 @@ export function pickDispatchRun(
   }, pool[0]);
 }
 
+// ── Item-level run reconcile (ISI-7863, parent ISI-7862) ───────────────────────────────────────
+//
+// The originating tab's ladder froze on the run it dispatched: the discovery poll
+// STOPS the moment a runId is found and terminal states ignore all further
+// signals. When that run FAILED (no `ended` milestone ever reached the client)
+// and the operator re-dispatched — minting a NEW run_id each time — the tab never
+// re-subscribed: its stream died with run #1, `<agent> is working…` stayed up
+// forever, and a fresh tab (REST hydration) showed the whole story. The reconcile
+// closes that gap at the work-item level: follow the item's CURRENT live run
+// (re-seed the ladder onto it — `follow_run`) and REST-reconcile the watched
+// run's phase from the same listing, so a stream that died without its terminal
+// frame cannot strand the pill on `working` (bounded REST reconcile).
+
+/**
+ * Phases where a run row actively holds the work item (mirrors
+ * useActiveRunDiscovery's LIVE_PHASES). Pending is excluded: a not-yet-claimed
+ * run owns no holder yet, so following it would open no events.
+ */
+const ITEM_LIVE_PHASES: ReadonlySet<string> = new Set(["Claiming", "Running"]);
+
+/**
+ * Reconcile view over a `GET /api/runs` array for the item-level follower:
+ *   - liveRun      the item's CURRENT live run (the listing is newest-first
+ *                  server-side ⇒ the first live match is the most recent), or
+ *                  null when every run for the item is terminal/pending
+ *   - watchedPhase the listing's phase for the run the ladder is already
+ *                  watching — the authoritative REST reconcile for a dead stream
+ * Pure, so the selection rule is unit-tested without a network.
+ */
+export function pickItemRun(
+  rows: RunListRow[],
+  workItemId: string,
+  watchedRunId: string,
+): { liveRun: RunListRow | null; watchedPhase: string | null } {
+  let liveRun: RunListRow | null = null;
+  let watchedPhase: string | null = null;
+  for (const r of rows) {
+    if (r.workItemRef !== workItemId) continue;
+    if (typeof r.id !== "string" || !r.id) continue;
+    if (!watchedPhase && watchedRunId && r.id === watchedRunId && r.phase) {
+      watchedPhase = r.phase;
+    }
+    if (!liveRun && r.phase && ITEM_LIVE_PHASES.has(r.phase)) {
+      liveRun = r;
+    }
+  }
+  return { liveRun, watchedPhase };
+}
+
+/**
+ * Cadence of the item-run reconcile poll — a passive safety net while a dispatch
+ * is seeded; mirrors useActiveRunDiscovery's idle cadence. Backgrounded tabs
+ * skip the fetch, so the loop is a bare timer when hidden.
+ */
+export const ITEM_RUN_RECONCILE_MS = 5_000;
+
 type LifecycleName =
   "assigned" | "scheduled" | "sandbox_bound" | "started" | "ended";
 
@@ -433,6 +498,77 @@ export function useDispatchWatch(
       if (timer) clearTimeout(timer);
     };
   }, [active, terminal, haveRun, workItemId, agent, rearmKey]);
+
+  // ISI-7863 (parent ISI-7862) item-level reconcile: while a dispatch is seeded,
+  // keep watching the listing for the item's CURRENT live run — the ladder must
+  // follow re-dispatches (a NEW run_id) and REST-reconcile the watched run's
+  // phase so a stream that died without its `ended` milestone cannot strand the
+  // pill on "working…". Visible-tab-only (a backgrounded tab skips the fetch),
+  // best-effort, and signal-driven: the reducer's monotonic/terminal rules make
+  // every redundant phase signal a no-op, and follow_run only fires when the
+  // item's live run actually changed.
+  const watchedRunId = machine.runId ?? "";
+  useEffect(() => {
+    if (!active || !workItemId) return;
+    if (typeof window === "undefined") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (cancelled) return;
+      timer = setTimeout(tick, ITEM_RUN_RECONCILE_MS);
+    };
+    const tick = async () => {
+      // Don't poll a backgrounded tab — the user can't see it; the loop keeps
+      // ticking (cheap bare timer) and resumes fetching once foregrounded.
+      if (
+        typeof document !== "undefined" &&
+        document.visibilityState === "hidden"
+      ) {
+        schedule();
+        return;
+      }
+      try {
+        const res = await fetch("/api/runs", {
+          headers: { accept: "application/json" },
+          cache: "no-store",
+        });
+        if (res.ok && !cancelled) {
+          const body = (await res.json()) as unknown;
+          const rows = Array.isArray(body) ? (body as RunListRow[]) : [];
+          const { liveRun, watchedPhase } = pickItemRun(
+            rows,
+            workItemId,
+            watchedRunId,
+          );
+          if (cancelled) return;
+          if (liveRun && liveRun.id && liveRun.id !== watchedRunId) {
+            // A NEW run holds the item — re-seed the ladder onto it, which
+            // re-opens the shared SSE on the new run (and re-hydrates via the
+            // ISI-7484 REST tail): the live subscribe follows re-dispatches.
+            dispatch({ type: "follow_run", runId: liveRun.id });
+            if (liveRun.phase) {
+              dispatch({ type: "phase", phase: liveRun.phase });
+            }
+            return; // the runId change re-arms this effect
+          }
+          if (watchedPhase) {
+            // Authoritative phase for the watched run — freezes the ladder
+            // honestly on Failed/Succeeded even with no SSE terminal frame.
+            dispatch({ type: "phase", phase: watchedPhase });
+          }
+        }
+      } catch {
+        // best-effort reconcile — swallow and retry on the next tick
+      }
+      schedule();
+    };
+    tick();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [active, workItemId, watchedRunId, rearmKey]);
 
   // SSE hand-off: once a runId is known, ride the SHARED run stream for live lifecycle milestones.
   // useRunStream no-ops on an empty id, so this is inert until discovery lands a runId.
