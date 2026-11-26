@@ -124,6 +124,13 @@ type IntakeItem struct {
 	// api.WorkItemPriorityRank) on the minted Run (ISI-7499 plan D1 / C2) —
 	// half of the scheduling key the C3/C4 admission ordering consumes.
 	Priority string
+	// BreakerFloor is the coord.work_item.breaker_floor value (ISI-7837, migration
+	// 0046): generations at or below it never count toward the ISI-5543 retry
+	// circuit-breaker cap. The floor is the DURABLE reset baseline stamped at park
+	// time, so clearing the park (a human kick-off comment) resets the breaker’s
+	// effective count to zero without renumbering Run generations (names must stay
+	// collision-free against surviving generations, ISI-4829).
+	BreakerFloor int
 }
 
 // IntakeSource is the board read-side seam, minimal so tests bind a fake (the
@@ -148,7 +155,10 @@ type IntakeSource interface {
 	// unblocked item (blocked_reason IS NULL) is parked, with its §6.5 audit, a
 	// board-visible comment and §6.6 outbox co-committed; a re-park of an
 	// already-blocked item is an audited no-op (never clobbers a human's block).
-	ParkWorkItem(ctx context.Context, workItemID, reason string) error
+	// floor is the generation baseline stamped with the park (ISI-7837): the cap
+	// afterwards counts generations ABOVE the floor, so clearing the park resets
+	// the breaker’s effective count.
+	ParkWorkItem(ctx context.Context, workItemID, reason string, floor int) error
 }
 
 // sqlIntakeSource binds IntakeSource to the coord schema. Only rows that can
@@ -186,7 +196,7 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 	// the block. This is the dispatch-side gate; RearmSettled carries the same
 	// guard (defense in depth at both intake seams).
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source, wi.priority
+		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source, wi.priority, wi.breaker_floor
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
 		   AND wi.blocked_reason IS NULL
@@ -206,7 +216,7 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 		var requestedAgent sql.NullString
 		var source sql.NullString
 		var priority sql.NullString
-		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID, &requestedAgent, &source, &priority); err != nil {
+		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID, &requestedAgent, &source, &priority, &it.BreakerFloor); err != nil {
 			return nil, fmt.Errorf("rundrive.intake: scan due work item: %w", err)
 		}
 		it.RequestedAgent = requestedAgent.String // "" when NULL
@@ -326,7 +336,7 @@ func (s sqlIntakeSource) RearmSettled(ctx context.Context, workItemID string) er
 // item (ours OR a human's needs_approval block) matches zero rows and the whole
 // transaction is an audited no-op. `blocked` is a CONDITION, not a lane (§8.6):
 // the item keeps its lane and the block is purely the dispatch gate.
-func (s sqlIntakeSource) ParkWorkItem(ctx context.Context, workItemID, reason string) error {
+func (s sqlIntakeSource) ParkWorkItem(ctx context.Context, workItemID, reason string, floor int) error {
 	if reason == "" {
 		reason = "retry_circuit_breaker"
 	}
@@ -338,9 +348,11 @@ func (s sqlIntakeSource) ParkWorkItem(ctx context.Context, workItemID, reason st
 
 	res, err := tx.ExecContext(ctx, `
 		UPDATE coord.work_item
-		   SET blocked_reason = $2, updated_at = now()
+		   SET blocked_reason = $2,
+		       breaker_floor  = GREATEST(breaker_floor, $3),
+		       updated_at     = now()
 		 WHERE id = $1::uuid AND blocked_reason IS NULL`,
-		workItemID, reason)
+		workItemID, reason, floor)
 	if err != nil {
 		return fmt.Errorf("rundrive.intake.ParkWorkItem: park: %w", err)
 	}
@@ -367,7 +379,8 @@ func (s sqlIntakeSource) ParkWorkItem(ctx context.Context, workItemID, reason st
 		workItemID, OperatorPrincipal,
 		"Retry circuit-breaker: this item reached the maximum re-dispatch generations ("+reason+
 			") and is parked (blocked) rather than re-minted. Repeated re-dispatch kept failing — inspect the latest "+
-			"run failures, resolve the cause, and clear the block to re-enable dispatch."); err != nil {
+			"run failures and resolve the cause. Posting a comment on this ticket resets the breaker and re-triggers "+
+			"a run (ISI-7837)."); err != nil {
 		return fmt.Errorf("rundrive.intake.ParkWorkItem: comment: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -532,16 +545,28 @@ func (i *Intake) sweep(ctx context.Context) {
 		// generation N+1 — a reason-agnostic safety valve beneath the driver's
 		// fail-closed classifier, for any deterministic class the driver does not
 		// classify. highestGen is the max surviving generation (ISI-4829), so the
-		// NEXT mint would be highestGen+1; the cap trips at highestGen >= cap. A
-		// park error is honest-degraded: log and leave the item for the next tick.
-		if highestGen[item.ID] >= i.maxGenerations() {
+		// NEXT mint would be highestGen+1; the cap trips at highestGen minus the
+		// item’s breaker_floor (ISI-7837) >= cap. A park error is honest-degraded:
+		// log and leave the item for the next tick.
+		//
+		// ISI-7837 breaker reset: the cap counts generations ABOVE breaker_floor —
+		// the durable baseline stamped at park time (ParkWorkItem). Clearing the
+		// park (a human kick-off comment, pkg/coord/workitemcomment.go) therefore
+		// resets the effective count to zero and the item is dispatchable again: a
+		// parked ticket can always mint a NEW generation on an explicit human
+		// kick-off, while autonomous churn stays bounded (the breaker re-arms at
+		// cap generations above the floor). The floor never renumbers generations
+		// (names stay collision-free against surviving runs, ISI-4829); a GC-pruned
+		// series below the floor yields a negative effective count, which simply
+		// dispatches.
+		if highestGen[item.ID]-item.BreakerFloor >= i.maxGenerations() {
 			reason := fmt.Sprintf("retry_circuit_breaker_max_generations_%d", i.maxGenerations())
-			if err := i.Source.ParkWorkItem(ctx, item.ID, reason); err != nil {
+			if err := i.Source.ParkWorkItem(ctx, item.ID, reason, highestGen[item.ID]); err != nil {
 				i.logf("rundrive.intake: work item %s not parked after %d generations: %v",
 					item.ID, highestGen[item.ID], err)
 			} else {
-				i.logf("rundrive.intake: work item %s parked by circuit-breaker (%d generations minted, cap %d); not re-dispatching",
-					item.ID, highestGen[item.ID], i.maxGenerations())
+				i.logf("rundrive.intake: work item %s parked by circuit-breaker (%d generations minted, floor %d, cap %d); not re-dispatching",
+					item.ID, highestGen[item.ID], item.BreakerFloor, i.maxGenerations())
 			}
 			continue
 		}

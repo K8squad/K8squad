@@ -47,6 +47,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +62,15 @@ type HumanCommentOutcome struct {
 	ReTriggered bool   `json:"reTriggered"`
 	FromState   string `json:"fromState,omitempty"`
 	ToState     string `json:"toState,omitempty"`
+	// BreakerReset (ISI-7837): the comment kicked off a ticket parked by the
+	// ISI-5543 retry circuit-breaker — the park (blocked_reason) was cleared and
+	// the breaker’s effective generation count reset (breaker_floor, stamped at
+	// park time, is the baseline the cap counts above), so the next intake sweep
+	// mints a fresh Run. The composer surfaces this so a kick-off is never silent.
+	// False for a non-breaker block (needs_approval, a human block): those parks
+	// are NOT cleared by a comment — the outcome’s silence there is the console’s
+	// cue to render the blocked badge instead.
+	BreakerReset bool `json:"breakerReset,omitempty"`
 }
 
 // commentReTriggerLanes are the lanes a human comment re-dispatches from: the
@@ -78,6 +88,14 @@ var commentReTriggerLanes = map[string]bool{
 	"documentation":  true,
 	"in_progress":    true,
 	"in_review":      true,
+}
+
+// breakerPark reports whether a blocked_reason is the ISI-5543/ISI-7837 retry
+// circuit-breaker park (ours to clear on a kick-off comment), as opposed to a
+// human block or needs_approval (never comment-cleared). The sweep stamps the
+// reason retry_circuit_breaker_max_generations_<N> (intake.go).
+func breakerPark(reason string) bool {
+	return strings.HasPrefix(reason, "retry_circuit_breaker")
 }
 
 // AppendHumanComment appends one human-authored comment to a work item under a Team
@@ -129,13 +147,14 @@ func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID,
 	var teamOut sql.NullString
 	var liveHolder sql.NullString
 	var projectID string
+	var blockedReason sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT wi.state, wi.team_id::text, wi.project_id::text, c.holder_principal
+		SELECT wi.state, wi.team_id::text, wi.project_id::text, wi.blocked_reason, c.holder_principal
 		  FROM coord.work_item wi
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
 		 WHERE wi.id = $1::uuid
 		   FOR UPDATE OF wi`,
-		workItemID).Scan(&currentState, &teamOut, &projectID, &liveHolder)
+		workItemID).Scan(&currentState, &teamOut, &projectID, &blockedReason, &liveHolder)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return HumanCommentOutcome{}, ErrWorkItemNotFound
@@ -183,6 +202,42 @@ func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID,
 	}
 
 	outcome := HumanCommentOutcome{TaskComment: TaskComment{Author: principal, Body: body, CreatedAt: created, References: resolvedRefs}}
+
+	// ISI-7837 (retry circuit-breaker reset on kick-off): a comment is the
+	// explicit human work signal. When the ticket is parked by OUR generation-cap
+	// breaker (matched by breakerPark below), the kick-off clears the park in the
+	// same transaction, and the breaker’s effective generation count resets with
+	// it — breaker_floor, stamped at park time, is the baseline the intake cap
+	// counts above (intake.go, ISI-7837) — so the next intake sweep mints a fresh
+	// Run. The park stays for genuinely thrashing items BETWEEN kick-offs: the
+	// breaker re-arms at cap generations above the floor, bounding autonomous
+	// churn while an explicit human kick-off always wins. ONLY our circuit-breaker
+	// park is cleared — a human block or needs_approval is never clobbered by a
+	// comment. The CAS re-asserts the exact reason read under the FOR UPDATE lock,
+	// so a racing park/unpark of a different reason leaves 0 rows and the comment
+	// still lands (fail-closed, the same discipline as the lane CAS below).
+	if blockedReason.Valid && breakerPark(blockedReason.String) {
+		res, err := tx.ExecContext(ctx, `
+			UPDATE coord.work_item
+			   SET blocked_reason = NULL, updated_at = now()
+			 WHERE id = $1::uuid
+			   AND blocked_reason = $2`,
+			workItemID, blockedReason.String)
+		if err != nil {
+			return HumanCommentOutcome{}, fmt.Errorf("coord.AppendHumanComment: breaker reset: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return HumanCommentOutcome{}, fmt.Errorf("coord.AppendHumanComment: breaker reset rows: %w", err)
+		} else if n == 1 {
+			if err := s.writeAudit(ctx, tx, workItemID, "work_item_unparked", principal, "", map[string]any{
+				"blocked_reason": blockedReason.String,
+				"via":            "comment",
+			}); err != nil {
+				return HumanCommentOutcome{}, err
+			}
+			outcome.BreakerReset = true
+		}
+	}
 
 	// ISI-4495 comment-triggered re-dispatch: parked lane + no live checkout
 	// holder → advance to the dispatch lane so Intake mints the next Run. The

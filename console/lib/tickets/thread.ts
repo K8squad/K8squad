@@ -245,6 +245,14 @@ export async function fetchWorkItemThread(
 export interface PostedComment extends ThreadComment {
   /** True when this comment re-dispatched the ticket (parked → todo, ISI-4495). */
   reTriggered?: boolean;
+  /**
+   * True when this comment kicked off a retry-circuit-breaker-parked ticket
+   * (ISI-7837): the breaker park was cleared and the effective generation count
+   * reset, so the next intake sweep mints a fresh Run. The breaker parks a ticket
+   * ON "todo" (it stamps blocked_reason, never a lane move), so reTriggered can
+   * be absent while breakerReset is true — the kick-off still mints.
+   */
+  breakerReset?: boolean;
   fromState?: string;
   toState?: string;
 }
@@ -291,6 +299,8 @@ export async function postWorkItemComment(
     createdAt: str(o, "createdAt", "CreatedAt"),
     ...(refs.length > 0 ? { references: refs } : {}),
     reTriggered: o.reTriggered === true || o.ReTriggered === true || undefined,
+    breakerReset:
+      o.breakerReset === true || o.BreakerReset === true || undefined,
     fromState: str(o, "fromState", "FromState") || undefined,
     toState: str(o, "toState", "ToState") || undefined,
   };

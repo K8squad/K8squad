@@ -233,3 +233,30 @@ describe("TicketDetail — plain-comment re-trigger ladder (ISI-4918 / S7)", () 
     expect(screen.queryByTestId("detail-dispatch-status")).toBeNull();
   });
 });
+
+// ISI-7837: the breaker-reset kick-off. A circuit-breaker-parked ticket sits ON
+// "todo" (the park stamps blocked_reason only, never a lane move), so the kick-off
+// comment returns breakerReset=true with reTriggered ABSENT: the run is minted by
+// the next intake sweep, and the composer must seed the SAME honest ladder — or
+// the kick-off is a silent no-op (the live incident: comment 201, no run, no stream).
+describe("TicketDetail — breaker-reset kick-off (ISI-7837)", () => {
+  it("seeds the ladder when the comment resets the circuit breaker (reTriggered absent)", async () => {
+    routeFetch({
+      comment: {
+        author: "user:me",
+        body: "kick it off",
+        createdAt: "2026-09-25T10:00:00Z",
+        breakerReset: true,
+      },
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await plainComment();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("dispatch-pending-card")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Queued");
+    const line = screen.getByTestId("detail-dispatch-status");
+    expect(line).toHaveTextContent("Dispatched to agent:builder");
+  });
+});
