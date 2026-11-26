@@ -270,3 +270,85 @@ describe("<Composer> — `#` ticket picker (ISI-5167 / ISI-5134 S3)", () => {
     expect(body.value).toBe("ping #Fix the flaky test ");
   });
 });
+
+// ISI-7906 (WS-B of ISI-7893) — sending-state lock + active-work gate + interrupt.
+describe("<Composer> — sending lock (ISI-7906 Layer 1)", () => {
+  it("rapid multi-click fires onPost exactly once (the double-click lock)", async () => {
+    // A deferred onPost holds the `sending` lock open across the round-trip, so
+    // a second/third click lands on the now-disabled button and is a no-op.
+    let resolve!: () => void;
+    const onPost = vi.fn(
+      () =>
+        new Promise<void>((r) => {
+          resolve = r;
+        }),
+    );
+    render(<Composer onPost={onPost} />);
+    fireEvent.change(screen.getByTestId("composer-body"), {
+      target: { value: "go" },
+    });
+    const btn = screen.getByTestId("composer-submit");
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    expect(onPost).toHaveBeenCalledTimes(1);
+    // Button is disabled + shows the in-flight label while sending.
+    expect(btn).toBeDisabled();
+    expect(btn.textContent).toBe("Posting…");
+    // Resolving the post clears the sending lock (the label reverts). The body
+    // was cleared on success, so the button is now disabled only for blank input
+    // — typing fresh text re-enables it (the lock did not wedge).
+    resolve();
+    await waitFor(() => expect(btn.textContent).toBe("Post"));
+    fireEvent.change(screen.getByTestId("composer-body"), {
+      target: { value: "again" },
+    });
+    expect(btn).not.toBeDisabled();
+  });
+
+  it("re-enables the button after a FAILED post (never wedges on error)", async () => {
+    const onPost = vi.fn().mockRejectedValue(new Error("boom"));
+    render(<Composer onPost={onPost} />);
+    fireEvent.change(screen.getByTestId("composer-body"), {
+      target: { value: "go" },
+    });
+    fireEvent.click(screen.getByTestId("composer-submit"));
+    await waitFor(() =>
+      expect(screen.getByTestId("composer-submit")).not.toBeDisabled(),
+    );
+  });
+});
+
+describe("<Composer> — active-run gate + interrupt (ISI-7906 Layers 2+3)", () => {
+  it("activeRun disables the submit button with run-aware copy", () => {
+    render(<Composer onPost={vi.fn()} activeRun />);
+    fireEvent.change(screen.getByTestId("composer-body"), {
+      target: { value: "cannot send now" },
+    });
+    expect(screen.getByTestId("composer-submit")).toBeDisabled();
+    const status = screen.getByTestId("composer-run-status");
+    expect(status.textContent).toMatch(/An agent run is in progress/i);
+  });
+
+  it("renders the reusable KillRun interrupt when a work-item id resolves", () => {
+    render(
+      <Composer onPost={vi.fn()} activeRun interruptWorkItem="wi-42" />,
+    );
+    // KillRun's arm button (components/KillRun.tsx) is reachable from the composer.
+    expect(screen.getByTestId("kill-arm")).toBeTruthy();
+    expect(screen.queryByTestId("composer-interrupt-pending")).toBeNull();
+  });
+
+  it("shows a DISABLED interrupt (not hidden) when the run is not yet identified", () => {
+    render(<Composer onPost={vi.fn()} activeRun />);
+    const pending = screen.getByTestId("composer-interrupt-pending");
+    expect(pending).toBeDisabled();
+    expect(pending.getAttribute("title")).toMatch(/once the live run is identified/i);
+    expect(screen.queryByTestId("kill-arm")).toBeNull();
+  });
+
+  it("no run status region when activeRun is absent (normal composer)", () => {
+    render(<Composer onPost={vi.fn()} />);
+    expect(screen.queryByTestId("composer-run-status")).toBeNull();
+  });
+});

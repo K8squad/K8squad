@@ -44,6 +44,7 @@ import {
   expireStale,
   groupByMessage,
   hasActiveWork,
+  resolveActiveRunWorkItem,
   seedWatches,
   type DispatchWatch,
 } from "@/lib/discussion/working";
@@ -503,6 +504,17 @@ export function DiscussionRoom({
 
   const threads = useMemo(() => nestMessages(messages), [messages]);
   const workingByMessageId = useMemo(() => groupByMessage(working), [working]);
+  // ISI-7906 (WS-B of ISI-7893): the composer lock + interrupt inputs. `activeRun`
+  // is the room-level "an agent turn is live" bit the composer disables on;
+  // `interruptWorkItem` is that run's work-item id, resolved from the overview
+  // presence feed (`liveRuns`, keyed by agent name) joined to the active working
+  // watch — the minted run id never reaches the console. Undefined while a run
+  // is live but not yet identified ⇒ the composer shows the interrupt disabled.
+  const activeRun = useMemo(() => hasActiveWork(working), [working]);
+  const interruptWorkItem = useMemo(
+    () => resolveActiveRunWorkItem(working, liveRuns),
+    [working, liveRuns],
+  );
   // The party_start opener in the transcript, if any (ISI-5589 WS-E). Its
   // presence means this thread hosts a party debate — the framing/poll anchor,
   // and the fallback source for the takeaways card once the session has closed.
@@ -953,6 +965,8 @@ export function DiscussionRoom({
               name: a.name,
             }))}
             searchMentions={searchMentions}
+            activeRun={activeRun}
+            interruptWorkItem={interruptWorkItem}
           />
         </footer>
 
