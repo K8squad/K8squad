@@ -313,6 +313,13 @@ type Options struct {
 	// Runs is the ISI-4571 run-list and run-detail read model (global listing, project-scoped listing, run detail with steps/comments)
 	// behind the SAME §13 choke point. When nil the run routes keep the documented 501 (dev run without an informer cache).
 	Runs *RunsService
+	// ThreadRunEvents is the ISI-7869 (WS-C of parent ISI-7864) durable
+	// discussion-feed hydration read side: the mention_dispatch ledger join
+	// (implemented by *discussion.Store) that resolves a thread's dispatched
+	// runs for GET /api/projects/{projectId}/discussion/threads/{threadId}/
+	// run-events. Set together with RunEvents; nil (or a missing seam) ⇒ the
+	// route keeps the documented 501.
+	ThreadRunEvents ThreadRunAnchorReader
 	// RunEvents is the ISI-7484 durable run-event history read side: the
 	// coord.outbox entity='run' tail behind GET /api/runs/{runId}/events, so a
 	// reload / late join hydrates the Activity feed from the same journal the
@@ -1341,6 +1348,24 @@ func (s *Server) routes(opts Options) {
 		} else {
 			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
 				Methods(http.MethodPatch)
+		}
+
+		// ISI-7869 (WS-C of parent ISI-7864): GET
+		// /api/projects/{projectId}/discussion/threads/{threadId}/run-events — the
+		// durable REST hydration tail for the discussion-room feed, so a fresh tab
+		// renders the full feed (run steps + posted comments) from the same
+		// coord.outbox journal the SSE projector live-tails — the discussion
+		// analog of the ISI-7484 run Activity fallback. Read-only; behind the
+		// same §13 choke point. Registered before the greedy board routes, like
+		// the sibling thread verbs (ROUTE ORDER MATTERS, see the work-items note
+		// below).
+		threadRunEventsRoute := s.router.Path("/api/projects/{projectId:.+}/discussion/threads/{threadId}/run-events").Subrouter()
+		threadRunEventsRoute.Use(authz)
+		if opts.ThreadRunEvents != nil && opts.RunEvents != nil {
+			threadRunEventsRoute.HandleFunc("", threadRunEventsHandler(opts.ThreadRunEvents, opts.RunEvents)).Methods(http.MethodGet)
+		} else {
+			threadRunEventsRoute.HandleFunc("", notImplemented("thread run-events hydration",
+				"ISI-7869: wire the discussion Store ledger join + an events.RunEventReader to enable")).Methods(http.MethodGet)
 		}
 
 		// ISI-7708 (parent ISI-7681 P1): POST

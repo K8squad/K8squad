@@ -963,6 +963,7 @@ func main() {
 		SquadSeries:         squadSeries,
 		Runs:                runsService,
 		RunEvents:           runEvents,
+		ThreadRunEvents:     discussionStore,
 		Teams:               teams,
 		FleetList:           fleetList,
 		AgentActivity:       agentActivity,
@@ -1024,7 +1025,7 @@ func main() {
 		InstScoreIngest: instScoreIngest,
 		// ISI-7750 instscore read surface (nil ⇒ documented 501).
 		InstScoreReads: instScoreReads,
-		OrgOps:          orgOpsHandler,
+		OrgOps:         orgOpsHandler,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,
