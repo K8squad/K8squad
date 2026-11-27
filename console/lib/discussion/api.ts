@@ -98,6 +98,7 @@ export interface DiscussionClient {
     projectId: string,
     threadId: string,
     input: ComposerInput,
+    idempotencyKey?: string,
   ): Promise<Message>;
   /**
    * @-mention search (ISI-4926): agent + work-item suggestions for the
@@ -321,16 +322,25 @@ export function createDiscussionClient(
       return readJson<Thread>(res);
     },
 
-    async postMessage(projectId, threadId, input) {
+    async postMessage(projectId, threadId, input, idempotencyKey) {
       // AC3: the wire body is ONLY { body, parentId?, audience? } — provenance is
       // server-stamped. buildPostBody is the single enforcement point.
       const body = JSON.stringify(buildPostBody(input));
       const url = `${threadsBase(projectId)}/${encodeURIComponent(
         threadId,
       )}/messages`;
+      // ISI-7907: a stable per-submit token rides as the Idempotency-Key header (NOT
+      // the wire body, which stays the exact AC3 shape) so the apiserver's short-window
+      // dedup collapses a double-clicked composer or an at-least-once retry to one
+      // stored message — and no second @-mention dispatch / SSE echo. Omitting it keeps
+      // the header set the post always sent. The BFF forwards the header upstream.
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
       const res = await fetchImpl(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body,
       });
       return readJson<Message>(res);
