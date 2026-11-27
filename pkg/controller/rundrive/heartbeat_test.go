@@ -693,6 +693,58 @@ func TestHeartbeatSweepExemptsEndpointSlotWaiter(t *testing.T) {
 	}
 }
 
+// ISI-7961: a wait-exempt claim whose lease is NOT renewable (lapsed lease /
+// frozen fence — the guarded Renew matched 0 rows) is released after the stall
+// grace instead of being re-exempted forever. The exemption protects a queue
+// position only while the sweep can still renew the claim; once renewal
+// definitively fails, the driver death path re-parks the queued waiter without
+// repairing custody and nothing else ever frees the claim (the 23h wedge:
+// "exempt from zombie reap, renewing lease" and "not renewable (fence N)" on
+// the same claim, every tick). The release hands the item back: custody
+// cleared, run terminalized, lane to todo (reclaimable), gate entry dropped.
+func TestHeartbeatSweepReleasesNotRenewableWaiter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute) // well past the 10m grace
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "claiming", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE coord.claim`).
+		WithArgs(zItem, zRun).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.audit_log`).
+		WithArgs(zItem, zRun, OperatorPrincipal, int64(7), "waiter_lease_lost").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.a2a_dispatch`).
+		WithArgs(zRun, "follow_error").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.work_item`).
+		WithArgs(zItem, "todo").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	rn := &fakeRenewer{ret: false}                        // renewal definitively refused (lapsed lease)
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}}) // no pod (queued outside the endpoint)
+	s.EndpointWait = &fakeEndpointWait{waiting: map[string]bool{zRun: true}}
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("the starved waiter renewal must be attempted once; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations (the not-renewable waiter must be released): %v", err)
+	}
+}
+
 // A genuinely wedged pod-less run that is NOT waiting on an endpoint slot is
 // still reaped as a zombie even with the exemption wired (ISI-5591 must not
 // over-exempt): the release transaction fires and the lease is never renewed.
