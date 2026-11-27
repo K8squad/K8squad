@@ -571,17 +571,46 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 					// through to renew and retry next level-triggered tick.
 					s.logf("rundrive.heartbeat: sandbox liveness for %s run %s: %v — renewing, zombie check deferred",
 						hc.workItemID, hc.holderRun, err)
-				} else if !live && !s.endpointSlotWaiter(ctx, hc) && !s.meshQueueWaiter(ctx, hc) && !s.agentSlotWaiter(ctx, hc) {
-					// Pod-less past the grace AND not a legitimate endpoint-slot
-					// waiter (ISI-5591) AND not a Supervisor-queued mesh run
-					// (ISI-5831 S4) AND not an agent-queue waiter (ISI-7499
-					// C4): a genuine zombie. Release it as failed.
-					if err := s.releaseZombie(ctx, hc); err != nil {
-						s.logf("rundrive.heartbeat: zombie-release %s: %v", hc.workItemID, err)
-					} else {
-						s.logf("rundrive.heartbeat: released zombie claim %s (run %s has no live sandbox pod, step %s, held %s)",
-							hc.workItemID, hc.holderRun, hc.step, s.clock().Sub(hc.acquiredAt).Round(time.Second))
+				} else if !live {
+					exempt := s.endpointSlotWaiter(ctx, hc) || s.meshQueueWaiter(ctx, hc) || s.agentSlotWaiter(ctx, hc)
+					if !exempt {
+						// Pod-less past the grace AND not a legitimate endpoint-slot
+						// waiter (ISI-5591) AND not a Supervisor-queued mesh run
+						// (ISI-5831 S4) AND not an agent-queue waiter (ISI-7499
+						// C4): a genuine zombie. Release it as failed.
+						if err := s.releaseZombie(ctx, hc); err != nil {
+							s.logf("rundrive.heartbeat: zombie-release %s: %v", hc.workItemID, err)
+						} else {
+							s.logf("rundrive.heartbeat: released zombie claim %s (run %s has no live sandbox pod, step %s, held %s)",
+								hc.workItemID, hc.holderRun, hc.step, s.clock().Sub(hc.acquiredAt).Round(time.Second))
+						}
+						continue
 					}
+					// ISI-7961: wait-exempt, but the exemption only holds a real
+					// queue position while the sweep can still RENEW the claim. A
+					// waiter whose renewal definitively fails (lapsed lease / moved
+					// fence — the guarded Renew matched 0 rows) starves forever:
+					// the reap exemption protects it, the driver death path
+					// re-parks a queued waiter without repairing custody (ISI-7499
+					// C4/D5 — it must never terminalize a waiting run), and the
+					// §6.2 re-acquire is unreachable behind that re-park. The fence
+					// is frozen, so nothing ever moves again — the 23h wedge where
+					// holder deletion, run kills and operator restarts all failed
+					// to free the waiters. Bound the exemption: release the claim
+					// through the dead-holder path (custody cleared, run
+					// terminalized, lane returns to todo, gate entry dropped) so
+					// intake re-mints the work.
+					if !s.renew(ctx, hc) {
+						if err := s.releaseDead(ctx, hc, "waiter_lease_lost"); err != nil {
+							s.logf("rundrive.heartbeat: waiter-release %s: %v", hc.workItemID, err)
+						} else {
+							s.logf("rundrive.heartbeat: released starved waiter claim %s (run %s step %s, held %s — wait-exempt but lease not renewable; re-minting)",
+								hc.workItemID, hc.holderRun, hc.step, s.clock().Sub(hc.acquiredAt).Round(time.Second))
+						}
+						continue
+					}
+					// Renewed: the exemption legitimately holds the waiter queue
+					// position (already renewed this pass — skip the bottom renew).
 					continue
 				}
 			}
@@ -761,21 +790,33 @@ func (s *HeartbeatSweeper) due(ctx context.Context) ([]heldClaim, error) {
 // failure (its run-loop contract); the sweep contains that panic — a sweeper
 // goroutine dying would take the whole operator down over a transient DB
 // stall, and the level-triggered next tick is the honest retry.
-func (s *HeartbeatSweeper) renew(ctx context.Context, hc heldClaim) {
+func (s *HeartbeatSweeper) renew(ctx context.Context, hc heldClaim) (renewed bool) {
+	// Fail-safe default: the §6.2 Renew panics on infrastructure failure and
+	// the sweep contains that panic — a panic must never read as
+	// not-renewable (ISI-7961 releases on a DEFINITE renewal verdict, never
+	// on a maybe).
+	renewed = true
 	defer func() {
 		if p := recover(); p != nil {
 			s.logf("rundrive.heartbeat: renew %s panicked: %v", hc.workItemID, p)
+			renewed = true
 		}
 	}()
 	if hc.holderRun == "" {
-		return // provenance gap: nothing Renew's (run_id, fence) guard accepts
+		return true // provenance gap: nothing Renew's (run_id, fence) guard accepts
 	}
 	if !s.Claimer.Renew(ctx, hc.workItemID, hc.principal, hc.holderRun, hc.fence) {
 		// Lost the lease (fence moved / foreign holder / lapsed): the 3.2
-		// death detector owns the follow-up on the Run's next pass.
+		// death detector owns the follow-up on the Run's next pass — EXCEPT
+		// it never fires for a queued waiter (the ISI-7499 C4/D5 death path
+		// re-parks a waiting run without repairing custody), so the sweep
+		// releases a wait-exempt claim whose renewal definitively failed
+		// (ISI-7961).
 		s.logf("rundrive.heartbeat: lease for %s not renewable (fence %d) — death detection owns it",
 			hc.workItemID, hc.fence)
+		return false
 	}
+	return true
 }
 
 // releaseTerminal clears a terminal Run's checkout in one transaction:
