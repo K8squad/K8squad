@@ -261,6 +261,7 @@ export async function postWorkItemComment(
   workItemId: string,
   body: string,
   references?: readonly TicketReference[],
+  idempotencyKey?: string,
 ): Promise<PostedComment> {
   // Only send `references` when the `#`-picker collected at least one link, so a
   // plain comment posts the exact { body } shape it always did (ISI-5214). The
@@ -274,11 +275,20 @@ export async function postWorkItemComment(
         : { workItemId: r.workItemId },
     );
   }
+  // ISI-7907: when the composer passes a stable per-submit token, relay it as the
+  // Idempotency-Key so the apiserver's short-window dedup collapses a double-clicked
+  // or retried POST to one insert (and no second ISI-4495 re-dispatch). Omitting it
+  // keeps the exact header set the comment always sent (unchanged behaviour). The BFF
+  // (console/lib/bff.ts) forwards the header upstream verbatim.
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (idempotencyKey) headers["idempotency-key"] = idempotencyKey;
   const res = await fetch(
     `/api/work-items/${encodeURIComponent(workItemId)}/comments`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
       cache: "no-store",
     },

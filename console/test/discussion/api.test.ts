@@ -293,3 +293,42 @@ describe("createDiscussionClient — party sessions (ISI-5617 / ISI-5613 Gap 2)"
     ).toEqual([]);
   });
 });
+
+describe("createDiscussionClient — Idempotency-Key header (ISI-7907)", () => {
+  /** Record each call's headers so we can assert the opt-in replay token. */
+  function headerRecorder(status: number, json: unknown) {
+    const headers: Array<Record<string, string>> = [];
+    const bodies: string[] = [];
+    const fetchImpl = vi.fn(
+      async (
+        _url: string,
+        init?: { headers?: Record<string, string>; body?: string },
+      ) => {
+        headers.push(init?.headers ?? {});
+        if (init?.body) bodies.push(init.body);
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          json: async () => json,
+        };
+      },
+    ) as unknown as FetchLike;
+    return { fetchImpl, headers, bodies };
+  }
+
+  it("postMessage sends Idempotency-Key when a key is supplied", async () => {
+    const { fetchImpl, headers } = headerRecorder(201, { id: "m1" });
+    const client = createDiscussionClient(fetchImpl);
+    await client.postMessage("p", "t", { body: "hi" }, "key-abc");
+    expect(headers[0]["Idempotency-Key"]).toBe("key-abc");
+  });
+
+  it("postMessage omits Idempotency-Key when no key is supplied (unchanged wire)", async () => {
+    const { fetchImpl, headers, bodies } = headerRecorder(201, { id: "m1" });
+    const client = createDiscussionClient(fetchImpl);
+    await client.postMessage("p", "t", { body: "hi" });
+    expect(headers[0]).not.toHaveProperty("Idempotency-Key");
+    // The wire body stays the exact AC3 shape — the key never leaks into it.
+    expect(JSON.parse(bodies[0])).toEqual({ body: "hi" });
+  });
+});

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 
+	"github.com/K8squad/K8squad/internal/idemkey"
 	"github.com/K8squad/K8squad/pkg/search"
 )
 
@@ -73,16 +74,19 @@ type Handler struct {
 	store        *Store
 	searcher     search.Searcher
 	org          OrgReader
-	dispatcher   MentionDispatcher   // ISI-5108: dispatch-on-mention seam; nil ⇒ room stays coordination-free
-	hopResolver  ReplyHopResolver    // ISI-5116: reply-path loop-guard hop stamp; nil ⇒ replies unstamped
-	refResolver  TicketRefResolver   // ISI-5165: ticket-reference resolution seam; nil ⇒ references dropped
-	teamResolver ProjectTeamResolver // ISI-5198: room tenancy = project's OWNING team; nil ⇒ caller-team scope
-	projResolver ProjectUIDResolver  // ISI-5213: {projectId} slug → Project CR UID for the ticket-picker narrow; nil ⇒ raw-path compare
-	roomStream   RoomStreamPublisher // ISI-5208: live-echo committed messages onto the project SSE bus; nil ⇒ reload-only
+	dispatcher   MentionDispatcher    // ISI-5108: dispatch-on-mention seam; nil ⇒ room stays coordination-free
+	hopResolver  ReplyHopResolver     // ISI-5116: reply-path loop-guard hop stamp; nil ⇒ replies unstamped
+	refResolver  TicketRefResolver    // ISI-5165: ticket-reference resolution seam; nil ⇒ references dropped
+	teamResolver ProjectTeamResolver  // ISI-5198: room tenancy = project's OWNING team; nil ⇒ caller-team scope
+	projResolver ProjectUIDResolver   // ISI-5213: {projectId} slug → Project CR UID for the ticket-picker narrow; nil ⇒ raw-path compare
+	roomStream   RoomStreamPublisher  // ISI-5208: live-echo committed messages onto the project SSE bus; nil ⇒ reload-only
+	idem         *idemkey.ReplayCache // ISI-7907: short-window post-message replay cache; always set by the constructors
 }
 
 // NewHandler creates the discussion HTTP handler group.
-func NewHandler(store *Store) *Handler { return &Handler{store: store} }
+func NewHandler(store *Store) *Handler {
+	return &Handler{store: store, idem: idemkey.NewReplayCache(idemkey.DefaultWindow)}
+}
 
 // NewHandlerWithDeps creates the discussion HTTP handler with additional dependencies for mention
 // search (ISI-4926): `searcher` is the work-item FTS read model (pkg/search — the same searcher
@@ -90,7 +94,7 @@ func NewHandler(store *Store) *Handler { return &Handler{store: store} }
 // the mentions route then degrades to whatever sources are wired, mirroring the documented-501
 // discipline of the sibling read models without unmounting the discussion group.
 func NewHandlerWithDeps(store *Store, searcher search.Searcher, org OrgReader) *Handler {
-	return &Handler{store: store, searcher: searcher, org: org}
+	return &Handler{store: store, searcher: searcher, org: org, idem: idemkey.NewReplayCache(idemkey.DefaultWindow)}
 }
 
 // TeamAgent is one agent on the caller's Team as the mention composer renders it: the mention
@@ -403,6 +407,30 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	// links into the payload. This is a LINK, not a dispatch — it merges alongside the hop above and
 	// never emits a MentionDispatch (see stampTicketRefs). Unknown/out-of-project refs are dropped.
 	req.Payload = h.stampTicketRefs(r.Context(), projectID, auth, req.References, req.Payload)
+
+	// ISI-7907 (ISI-7893 Layer 4): an optional client Idempotency-Key collapses a
+	// duplicate post — a double-clicked composer, an at-least-once retry — to ONE
+	// stored message within the replay window. This specifically closes the discussion
+	// "new message id per click" hole: a replay returns the ORIGINAL message and runs
+	// NEITHER a second PostMessage NOR a second @-mention dispatch / SSE echo. The key
+	// is scoped by (principal, thread) under the Team fence so one caller's key can
+	// never replay another's message, and the same literal key in a different thread
+	// stays independent. Over-long keys are a 400 (bounded-memory guard); an absent
+	// key (or an unwired cache) bypasses replay entirely (unchanged behaviour).
+	idemKey := r.Header.Get(idemkey.Header)
+	if len(idemKey) > idemkey.MaxKeyLen {
+		writeError(w, http.StatusBadRequest, "Idempotency-Key too long")
+		return
+	}
+	scope := ""
+	if idemKey != "" && h.idem != nil {
+		scope = idemkey.KeyOf(auth.Principal, "discussion-message:"+teamID.String()+":"+threadID.String(), idemKey)
+		if status, body, ok := h.idem.Get(scope); ok {
+			idemkey.ServeJSON(w, status, body, true)
+			return
+		}
+	}
+
 	msg, err := h.store.PostMessage(r.Context(), projectID, teamID, threadID, auth, req.Body, parentID, req.Audience, req.Kind, req.Payload)
 	if err != nil {
 		writeStoreErr(w, err)
@@ -426,7 +454,18 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	if h.roomStream != nil && auth.RunID == nil {
 		h.roomStream.PublishMessageCreated(projectID, msg)
 	}
-	writeJSON(w, http.StatusCreated, msg)
+	// Serialize once so the SAME bytes are both served now and stored for replay
+	// (ISI-7907). A marshal failure falls back to the plain writer rather than failing
+	// a write that already committed + dispatched.
+	body, merr := json.Marshal(msg)
+	if merr != nil {
+		writeJSON(w, http.StatusCreated, msg)
+		return
+	}
+	if scope != "" {
+		h.idem.Put(scope, http.StatusCreated, body)
+	}
+	idemkey.ServeJSON(w, http.StatusCreated, body, false)
 }
 
 // retractMessage soft-retracts a message (§7.4). Author-or-admin only; there is no hard-delete route.

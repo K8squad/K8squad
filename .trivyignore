@@ -121,9 +121,9 @@ CVE-2026-78667
 CVE-2026-97031
 
 # --- kubectl v1.36.6 + docker:29-cli toolchain (staggered latest: shortest unblock paths) ---
-# CVE-2026-78669   expires:2026-11-26   justification:HIGH x/net HTTP/2 DoS (fix 0.60.0); kubectl v1.36.6 still vendors x/net 0.56.0 and docker:29-cli buildx/compose plugins 0.58/0.59 (verified 2026-10-29), helm/gh/dtctl clean after bumps; fix rides next kubectl patch / docker-cli release / plugin refresh
+# CVE-2026-78669   expires:2026-12-11   renewed:2026-11-27(ISI-7907,upstream-fix-still-pending,security-to-reverify)   justification:HIGH x/net HTTP/2 DoS (fix 0.60.0); kubectl v1.36.6 still vendors x/net 0.56.0 and docker:29-cli buildx/compose plugins 0.58/0.59 (verified 2026-10-29), helm/gh/dtctl clean after bumps; fix rides next kubectl patch / docker-cli release / plugin refresh
 CVE-2026-78669
-# CVE-2026-17106   expires:2026-11-26   justification:HIGH github.com/moby/go-archive arbitrary-file (v0.2.0, fix 0.3.0); docker:29-cli binary still vendors 0.2.0 (trivy-verified 2026-10-29), fix rides next docker-cli release
+# CVE-2026-17106   expires:2026-12-11   renewed:2026-11-27(ISI-7907,upstream-fix-still-pending,security-to-reverify)   justification:HIGH github.com/moby/go-archive arbitrary-file (v0.2.0, fix 0.3.0); docker:29-cli binary still vendors 0.2.0 (trivy-verified 2026-10-29), fix rides next docker-cli release
 CVE-2026-17106
 
 # --- ISI-5768/6822: clusterctl v1.9.6 static binary — vendored module CVEs (kubernetes-sigs/cluster-api) ---
@@ -243,18 +243,18 @@ CVE-2026-32283
 # 0.56.0), helm v3.22.1 (0.60.0, newest 3.x - helm 4 is a separate major decision), docker:29-cli
 # buildx/compose plugins (0.59.0), clusterctl v1.9.5 (0.33.0 - CAPI 1.9 EOL, line upgrade is its
 # own tracked decision, see the ISI-5768/6822 section above).
-# CVE-2026-78661   expires:2026-11-26   justification:HIGH x/net (fix 0.62.0) vendored in kubectl v1.36.6 (0.56.0), helm v3.22.1 (0.60.0, newest 3.x), docker:29-cli plugins (0.59.0), clusterctl v1.9.5 (0.33.0); no pinned-line upstream release vendors 0.62.0 yet (verified 2026-11-10), fix rides upstream line upgrades
+# CVE-2026-78661   expires:2026-12-11   renewed:2026-11-27(ISI-7907,upstream-fix-still-pending,security-to-reverify)   justification:HIGH x/net (fix 0.62.0) vendored in kubectl v1.36.6 (0.56.0), helm v3.22.1 (0.60.0, newest 3.x), docker:29-cli plugins (0.59.0), clusterctl v1.9.5 (0.33.0); no pinned-line upstream release vendors 0.62.0 yet (verified 2026-11-10), fix rides upstream line upgrades
 CVE-2026-78661
 #
 # terraform 1.9.8 (last 1.9.x patch) vendors golang-jwt/jwt/v4 v4.4.2 (CVE-2025-30204, fix
 # 4.5.2); go.sum verified 2026-11-10: v1.10.5 still ships 4.5.1, the first 4.5.2 carrier is
 # terraform v1.13.0 - clearing this requires leaving the catalog 1.9 line, a deliberate line
 # upgrade decision (own issue), not a .trivyignore-sized renewal.
-# CVE-2025-30204   expires:2026-11-26   justification:HIGH golang-jwt/jwt/v4 v4.4.2 vendored in terraform 1.9.8 static binary (last 1.9.x); fix 4.5.2 first ships in terraform v1.13 (go.sum verified 2026-11-10), catalog tag 1.9 tracks the 1.9 line, fix rides deliberate terraform line upgrade decision
+# CVE-2025-30204   expires:2026-12-11   renewed:2026-11-27(ISI-7907,upstream-fix-still-pending,security-to-reverify)   justification:HIGH golang-jwt/jwt/v4 v4.4.2 vendored in terraform 1.9.8 static binary (last 1.9.x); fix 4.5.2 first ships in terraform v1.13 (go.sum verified 2026-11-10), catalog tag 1.9 tracks the 1.9 line, fix rides deliberate terraform line upgrade decision
 CVE-2025-30204
 #
 # marp-cli's own dependency spec resolves basic-ftp ^5.0.2 -> 5.3.1 (CVE-2026-102990, fix 6.2.1
 # is a major-version jump); marp-cli 4.5.1 (latest) still declares ^5.0.2 and locks 5.3.1
 # (package-lock verified 2026-11-10) - no fixed upstream release exists to bump to.
-# CVE-2026-102990   expires:2026-11-26   justification:HIGH basic-ftp 5.3.1 resolved by marp-cli dep spec ^5.0.2 (fix 6.2.1 = major bump); marp-cli 4.5.1 latest still resolves 5.3.1 (lockfile verified 2026-11-10), fix rides upstream marp-cli dependency refresh
+# CVE-2026-102990   expires:2026-12-11   renewed:2026-11-27(ISI-7907,upstream-fix-still-pending,security-to-reverify)   justification:HIGH basic-ftp 5.3.1 resolved by marp-cli dep spec ^5.0.2 (fix 6.2.1 = major bump); marp-cli 4.5.1 latest still resolves 5.3.1 (lockfile verified 2026-11-10), fix rides upstream marp-cli dependency refresh
 CVE-2026-102990

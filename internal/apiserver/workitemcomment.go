@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/internal/idemkey"
 	"github.com/K8squad/K8squad/pkg/coord"
 )
 
@@ -55,7 +56,15 @@ type postCommentRequest struct {
 }
 
 // workItemCommentHandler answers POST /api/work-items/{id}/comments.
-func workItemCommentHandler(store WorkItemCommenter) http.HandlerFunc {
+//
+// idem (ISI-7907 / ISI-7893 Layer 4) is the process-local short-window replay cache.
+// When the caller supplies an Idempotency-Key header, a replay within the window
+// returns the ORIGINAL persisted comment and performs NO second insert (and so no
+// second ISI-4495 re-dispatch) — the backend half of the duplicate-comment guard
+// whose console half is WS-A/WS-B's disabled-during-run composer. An absent header
+// behaves exactly as before. A nil cache (DB-less/dev wiring) also degrades to the
+// pre-idempotency behaviour.
+func workItemCommentHandler(store WorkItemCommenter, idem *idemkey.ReplayCache) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth, ok := discussion.AuthFromContext(r.Context())
 		if !ok || auth.Principal == "" {
@@ -91,13 +100,44 @@ func workItemCommentHandler(store WorkItemCommenter) http.HandlerFunc {
 		// Team, ISI-3921/ISI-4132).
 		teamID := authTeamScope(r)
 
+		// ISI-7907: an optional client Idempotency-Key collapses a duplicate POST
+		// (double-clicked composer, an at-least-once retry) to ONE insert within the
+		// replay window. The key is scoped by (principal, item) under the Team fence so
+		// one caller's key can never replay another's comment, and the same literal key
+		// on a different ticket stays independent. Over-long keys are a 400 (a
+		// bounded-memory guard); an absent key (or an unwired cache) bypasses replay
+		// entirely (unchanged behaviour). On a hit we serve the ORIGINAL bytes and run
+		// NO store write — and so no second ISI-4495 re-dispatch.
+		idemKey := r.Header.Get(idemkey.Header)
+		if len(idemKey) > idemkey.MaxKeyLen {
+			writeJSONError(w, http.StatusBadRequest, "Idempotency-Key too long")
+			return
+		}
+		scope := ""
+		if idemKey != "" && idem != nil {
+			scope = idemkey.KeyOf(auth.Principal, "work-item-comment:"+teamID+":"+id, idemKey)
+			if status, body, ok := idem.Get(scope); ok {
+				idemkey.ServeJSON(w, status, body, true)
+				return
+			}
+		}
+
 		comment, err := store.AppendHumanComment(r.Context(), id, teamID, auth.Principal, req.Body, req.References)
 		if mapWorkItemWriteError(w, err) {
 			return
 		}
 		// 201 with the persisted comment (+ the ISI-4495 re-trigger outcome when
 		// the comment re-dispatched the item — additive fields the composer uses
-		// for its "agent re-triggered" feedback; older readers ignore them).
-		writeJSON(w, http.StatusCreated, comment)
+		// for its "agent re-triggered" feedback; older readers ignore them). Marshal
+		// once so the SAME bytes are both served now and stored for replay.
+		body, merr := json.Marshal(comment)
+		if merr != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to encode comment")
+			return
+		}
+		if scope != "" {
+			idem.Put(scope, http.StatusCreated, body)
+		}
+		idemkey.ServeJSON(w, http.StatusCreated, body, false)
 	}
 }
