@@ -156,6 +156,7 @@ func TestCRDHasContextBudgetRule(t *testing.T) {
 // the Toolchain validating webhook (the Run toolchain guard chains onto
 // the existing run validating path), and phase-lifecycle (ISI-4431 E3)
 // adds the Role validating webhook (activePhases + coordinatorMode).
+// ISI-7946 WS-A adds the Role MUTATING webhook (mrole-orgchart: derived reports-to label mirror).
 func TestWebhookManifestsFailClosed(t *testing.T) {
 	yaml := loadCRD(t, "../../config/webhook/manifests.yaml")
 	for _, name := range []string{
@@ -166,6 +167,7 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 		"votelconfig-v1alpha1.ksquad.io",
 		"vmcpserver-v1alpha1.ksquad.io",
 		"vrole-v1alpha1.ksquad.io",
+		"mrole-orgchart.ksquad.io",
 		"vskill-crossrefs.ksquad.io",
 		"vtoolchain-v1alpha1.ksquad.io",
 	} {
@@ -176,6 +178,6 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 	assert.NotContains(t, yaml, "name: vteam.kb.io")
 	assert.NotContains(t, yaml, "name: vagent.kb.io")
 	assert.NotContains(t, yaml, "name: vrun.kb.io")
-	assert.Equal(t, 13, strings.Count(yaml, "failurePolicy: Fail"),
+	assert.Equal(t, 14, strings.Count(yaml, "failurePolicy: Fail"),
 		"every mutating and validating webhook must fail closed")
 }

@@ -50,6 +50,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /mutate-ksquad-io-v1alpha1-role
+  failurePolicy: Fail
+  name: mrole-orgchart.ksquad.io
+  rules:
+  - apiGroups:
+    - ksquad.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - roles
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /mutate-ksquad-io-v1alpha1-run
   failurePolicy: Fail
   name: mrun-attribution.ksquad.io

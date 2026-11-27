@@ -239,6 +239,9 @@ func (v *CrossRefValidator) ValidateTeam(ctx context.Context, team *ksquadv1alph
 			}
 		}
 	}
+	if v.on(GuardTeamOrgChart) {
+		errs = append(errs, v.validateTeamOrgChart(ctx, team)...)
+	}
 	return errs
 }
 
