@@ -65,9 +65,11 @@ import {
 import {
   buildRunComments,
   displayName,
+  isRunningState,
   runCommentKey,
   type RunComment,
 } from "@/lib/tickets/runComments";
+import { KillRun } from "@/components/KillRun";
 import { buildFeed } from "@/lib/tickets/feedView";
 import {
   ActivityGroupChip,
@@ -1251,6 +1253,8 @@ function Composer({
   dispatchWatch,
   dispatchAgent,
   reTriggerAgent,
+  runId,
+  runState,
 }: {
   // The ticket's project (namespace/name slug) — scopes the `#`-picker's work-item
   // search to this project (ISI-5214), reusing the discussion mentions endpoint.
@@ -1274,6 +1278,10 @@ function Composer({
   // picks no agent — it just re-enters the dispatch lane). Empty ⇒ the ladder still
   // seeds, the card header just carries no name.
   reTriggerAgent: string;
+  // ISI-7905: thread's current run id and state so the composer can derive whether
+  // an ambient run is live and lock the submit button + render KillRun.
+  runId: string;
+  runState: string;
 }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState<ComposerStatus>({ kind: "idle" });
@@ -1316,6 +1324,16 @@ function Composer({
   const caretRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const mentions = useRef(createDiscussionClient()).current;
+  // ISI-7905 Layer 1: optimistic lock — set on submit, cleared when a live run is
+  // observed or after a 10s timeout (so a no-op comment never permanently wedges).
+  const [runOptimistic, setRunOptimistic] = useState(false);
+  const runOptimisticTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const threadRunActive = runId !== "" && isRunningState(runState);
+  const watchRunActive =
+    dispatchWatch !== null &&
+    dispatchWatch.state !== "succeeded" &&
+    dispatchWatch.state !== "failed";
+  const runActive = runOptimistic || threadRunActive || watchRunActive;
   // `@` → the client-side agent roster; `#` → the fetched work-item rows.
   const suggestions = !mentionOpen
     ? []
@@ -1362,6 +1380,24 @@ function Composer({
       alive = false;
     };
   }, [canComment]);
+  // ISI-7905: clear the optimistic lock early when a live run is observed.
+  useEffect(() => {
+    if (!runOptimistic) return;
+    if (threadRunActive || watchRunActive) {
+      setRunOptimistic(false);
+      if (runOptimisticTimer.current !== null) {
+        clearTimeout(runOptimisticTimer.current);
+        runOptimisticTimer.current = null;
+      }
+    }
+  }, [runOptimistic, threadRunActive, watchRunActive]);
+  // Cleanup the timeout on unmount.
+  useEffect(() => {
+    return () => {
+      if (runOptimisticTimer.current !== null)
+        clearTimeout(runOptimisticTimer.current);
+    };
+  }, []);
 
   if (!canComment) {
     return (
@@ -1397,9 +1433,13 @@ function Composer({
 
   const posting = status.kind === "posting";
   const assigningBusy = posting || assigning;
-  const submitDisabled = posting || text.trim() === "";
+  const submitDisabled = posting || text.trim() === "" || runActive;
   const submitAssignDisabled =
-    assigningBusy || text.trim() === "" || assignee === "" || assignUnavailable;
+    assigningBusy ||
+    text.trim() === "" ||
+    assignee === "" ||
+    assignUnavailable ||
+    runActive;
 
   /**
    * The comment half — shared by plain Comment and Comment-&-assign. Returns the
@@ -1470,7 +1510,16 @@ function Composer({
 
   async function submit() {
     const value = text.trim();
-    if (value === "" || assigningBusy) return;
+    if (value === "" || assigningBusy || runActive) return;
+    // ISI-7905 Layer 1: set optimistic lock immediately so the button stays
+    // disabled between POST returning and the dispatch being observed.
+    setRunOptimistic(true);
+    if (runOptimisticTimer.current !== null)
+      clearTimeout(runOptimisticTimer.current);
+    runOptimisticTimer.current = setTimeout(
+      () => setRunOptimistic(false),
+      10_000,
+    );
     // ISI-6290: an ARMED dropdown pick is the user's EXPLICIT agent choice — it
     // wins over every heuristic below. Before this guard the primary Comment
     // submit ignored the armed pick entirely, so the comment alone decided the
@@ -1548,7 +1597,13 @@ function Composer({
    */
   async function submitAssign() {
     const value = text.trim();
-    if (value === "" || assignee === "" || assigningBusy || assignUnavailable) {
+    if (
+      value === "" ||
+      assignee === "" ||
+      assigningBusy ||
+      assignUnavailable ||
+      runActive
+    ) {
       return;
     }
     const comment = await postComment(value);
@@ -1758,6 +1813,20 @@ function Composer({
         >
           {assignErr}
         </p>
+      )}
+      {/* ISI-7905 Layer 2+3: while a run is confirmed live, show the run-aware
+          message and an inline interrupt control. Only when threadRunActive or
+          watchRunActive (a confirmed run), not for the pure optimistic window. */}
+      {(threadRunActive || watchRunActive) && (
+        <div
+          className="ksq-composer__run-active"
+          data-testid="detail-composer-run-active"
+        >
+          <p className="ksq-notice" role="status">
+            An agent run is in progress — wait for it to finish or interrupt it
+          </p>
+          <KillRun workItem={workItemId} />
+        </div>
       )}
       {/* ISI-4881 (S3) composer status line — reuses the .ksq-notice role="status"
           pattern (same as "▶ Agent re-triggered"). Board answer OQ1: surface = BOTH
@@ -2517,6 +2586,8 @@ function TicketBody({
             dispatchWatch={dispatchWatch}
             dispatchAgent={dispatch?.agent ?? ""}
             reTriggerAgent={thread.requestedAgent ?? thread.assignee ?? ""}
+            runId={thread.runId}
+            runState={thread.state}
           />
         </div>
       </footer>
