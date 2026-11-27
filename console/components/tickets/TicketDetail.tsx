@@ -1435,7 +1435,11 @@ function Composer({
   const assigningBusy = posting || assigning;
   const submitDisabled = posting || text.trim() === "" || runActive;
   const submitAssignDisabled =
-    assigningBusy || text.trim() === "" || assignee === "" || assignUnavailable || runActive;
+    assigningBusy ||
+    text.trim() === "" ||
+    assignee === "" ||
+    assignUnavailable ||
+    runActive;
 
   /**
    * The comment half — shared by plain Comment and Comment-&-assign. Returns the
@@ -1510,8 +1514,12 @@ function Composer({
     // ISI-7905 Layer 1: set optimistic lock immediately so the button stays
     // disabled between POST returning and the dispatch being observed.
     setRunOptimistic(true);
-    if (runOptimisticTimer.current !== null) clearTimeout(runOptimisticTimer.current);
-    runOptimisticTimer.current = setTimeout(() => setRunOptimistic(false), 10_000);
+    if (runOptimisticTimer.current !== null)
+      clearTimeout(runOptimisticTimer.current);
+    runOptimisticTimer.current = setTimeout(
+      () => setRunOptimistic(false),
+      10_000,
+    );
     // ISI-6290: an ARMED dropdown pick is the user's EXPLICIT agent choice — it
     // wins over every heuristic below. Before this guard the primary Comment
     // submit ignored the armed pick entirely, so the comment alone decided the
@@ -1589,7 +1597,13 @@ function Composer({
    */
   async function submitAssign() {
     const value = text.trim();
-    if (value === "" || assignee === "" || assigningBusy || assignUnavailable || runActive) {
+    if (
+      value === "" ||
+      assignee === "" ||
+      assigningBusy ||
+      assignUnavailable ||
+      runActive
+    ) {
       return;
     }
     const comment = await postComment(value);

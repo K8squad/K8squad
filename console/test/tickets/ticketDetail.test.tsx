@@ -586,7 +586,11 @@ describe("TicketDetail", () => {
   });
 
   it("keeps the honest gap copy when the endpoint isn't wired (POST 404)", async () => {
-    routeFetch({ role: "contributor", postStatus: 404, thread: COMMENT_THREAD });
+    routeFetch({
+      role: "contributor",
+      postStatus: 404,
+      thread: COMMENT_THREAD,
+    });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     await waitFor(() =>
@@ -607,7 +611,11 @@ describe("TicketDetail", () => {
   });
 
   it("surfaces an inline error on a non-404 4xx and keeps the composer usable", async () => {
-    routeFetch({ role: "contributor", postStatus: 400, thread: COMMENT_THREAD });
+    routeFetch({
+      role: "contributor",
+      postStatus: 400,
+      thread: COMMENT_THREAD,
+    });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
 
     await waitFor(() =>
@@ -644,9 +652,7 @@ describe("TicketDetail", () => {
     // Run-active notice and KillRun arm button are visible.
     expect(screen.getByTestId("detail-composer-run-active")).toBeTruthy();
     expect(screen.getByTestId("kill-arm")).toBeTruthy();
-    expect(
-      screen.getByText(/An agent run is in progress/),
-    ).toBeTruthy();
+    expect(screen.getByText(/An agent run is in progress/)).toBeTruthy();
   });
 
   it("clicking submit while a run is active does not post a comment", async () => {
