@@ -24,24 +24,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// SetupRoleWebhookWithManager registers the Role validating webhook with the
-// manager (phase-lifecycle, ISI-4431 E3 / NFR-3). The webhook mirrors the
-// CRD's item/enum rules (defense in depth for clusters where CEL/OpenAPI
-// surfaced errors are undesired) and adds the friendly-message checks the
-// generated schema states tersely: unknown phase strings in activePhases and
-// coordinatorMode set without coordinator=true.
+// SetupRoleWebhookWithManager registers the Role validating + mutating
+// webhooks with the manager (phase-lifecycle, ISI-4431 E3 / NFR-3; org-chart
+// edge, ISI-7946 WS-A). The validator mirrors the CRD's item/enum rules
+// (defense in depth for clusters where CEL/OpenAPI surfaced errors are
+// undesired) and adds the friendly-message checks the generated schema
+// states tersely: unknown phase strings in activePhases, coordinatorMode set
+// without coordinator=true, self/cross-namespace reportsTo edges, empty or
+// duplicate-stage processes. The defaulter stamps the derived
+// ksquad.io/reports-to label from spec.reportsTo (the compat mirror
+// pkg/orgops reads).
 //
-// The Role stays data-only and is NOT reconciled (NFR-3): this webhook is the
-// only server-side behavior on a Role. The one-coordinator-per-Team invariant
-// is enforced at Team admission (a Role is reusable across teams), NOT here.
+// The Role stays data-only and is NOT reconciled (NFR-3): these webhooks are
+// the only server-side behavior on a Role. The one-coordinator-per-Team and
+// hierarchy invariants are enforced at Team admission (a Role is reusable
+// across teams), NOT here.
 func SetupRoleWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr, &Role{}).
+		WithDefaulter(&Role{}).
 		WithValidator(&Role{}).
 		Complete()
 }
 
+// +kubebuilder:webhook:path=/mutate-ksquad-io-v1alpha1-role,mutating=true,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=roles,verbs=create;update,versions=v1alpha1,name=mrole-orgchart.ksquad.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-role,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=roles,verbs=create;update,versions=v1alpha1,name=vrole-v1alpha1.ksquad.io,admissionReviewVersions=v1
 
+var _ admission.Defaulter[*Role] = &Role{}
 var _ admission.Validator[*Role] = &Role{}
 
 // validRolePhases are the six middle working lifecycle phases a role may be
@@ -63,6 +71,29 @@ var validRolePhases = map[string]bool{
 var validCoordinatorModes = map[string]bool{
 	"auto":    true,
 	"propose": true,
+}
+
+// Default implements admission.CustomDefaulter: it derives the
+// ksquad.io/reports-to label from spec.reportsTo (ISI-7946 WS-A), keeping
+// pkg/orgops scope derivation and kubectl label queries working unchanged.
+// When spec.reportsTo is UNSET a pre-existing label is preserved: legacy
+// label-only charts keep deriving scopes until they migrate (the validator
+// nudges with a warning). When spec.reportsTo IS set it wins over any stale
+// label value.
+func (r *Role) Default(_ context.Context, obj *Role) error {
+	if obj == nil {
+		return fmt.Errorf("expected a Role object but got %T", obj)
+	}
+	if obj.Spec.ReportsTo == nil || obj.Spec.ReportsTo.Name == "" {
+		return nil
+	}
+	labels := obj.Labels
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	labels[LabelReportsTo] = obj.Spec.ReportsTo.Name
+	obj.Labels = labels
+	return nil
 }
 
 // ValidateCreate implements admission.Validator.
@@ -119,6 +150,60 @@ func validateRole(r *Role) (admission.Warnings, error) {
 	if spec.CoordinatorMode != "" && !validCoordinatorModes[spec.CoordinatorMode] {
 		return warnings, fmt.Errorf(
 			"spec.coordinatorMode %q is not one of auto, propose", spec.CoordinatorMode)
+	}
+
+	// Org-chart edge (ISI-7946 WS-A): reject the self-edge and the
+	// cross-namespace shape here — the Team-level graph checks cannot see
+	// them. A dangling manager (a Role that does not exist) is a Team
+	// admission concern (GuardTeamOrgChart), not a Role one: Roles are
+	// reusable and may be applied before their manager.
+	if spec.ReportsTo != nil {
+		if spec.ReportsTo.Name == "" {
+			return warnings, fmt.Errorf("spec.reportsTo.name is required when reportsTo is set")
+		}
+		if spec.ReportsTo.Name == r.Name {
+			return warnings, fmt.Errorf(
+				"spec.reportsTo.name %q equals the Role's own name: a role cannot report to itself", r.Name)
+		}
+		if spec.ReportsTo.Namespace != "" && spec.ReportsTo.Namespace != r.Namespace {
+			return warnings, fmt.Errorf(
+				"spec.reportsTo.namespace %q must be empty or the Role's own namespace %q: reporting edges are namespace-local", spec.ReportsTo.Namespace, r.Namespace)
+		}
+	}
+
+	// Manager process (ISI-7946 WS-A): an explicitly empty process is a
+	// config error (mirrors the CRD MinItems=1) and duplicate stage names
+	// make the ordered pipeline ambiguous (mirrors the listMapKey). Stages
+	// naming Roles outside the team and delegation cycles are Team
+	// admission concerns (GuardTeamOrgChart).
+	if spec.Process != nil {
+		if len(spec.Process) == 0 {
+			return warnings, fmt.Errorf(
+				"spec.process must not be empty: a manager process is an ordered list of stages (remove the field entirely for a role without a process)")
+		}
+		seen := make(map[string]bool, len(spec.Process))
+		for _, st := range spec.Process {
+			if st.Stage == "" {
+				return warnings, fmt.Errorf("spec.process stage names must be non-empty")
+			}
+			if st.RoleRef.Name == "" {
+				return warnings, fmt.Errorf(
+					"spec.process stage %q must name the Role that executes it (roleRef.name)", st.Stage)
+			}
+			if seen[st.Stage] {
+				return warnings, fmt.Errorf(
+					"spec.process stage %q is defined twice: stage names must be unique", st.Stage)
+			}
+			seen[st.Stage] = true
+		}
+	}
+
+	// Legacy label nudge: a ksquad.io/reports-to label without spec.reportsTo
+	// still works (compat — Default preserves it), but it predates the model
+	// edge; warn so authors migrate to spec.reportsTo.
+	if r.Labels[LabelReportsTo] != "" && (spec.ReportsTo == nil || spec.ReportsTo.Name == "") {
+		warnings = append(warnings, fmt.Sprintf(
+			"metadata.labels[%s]=%q predates spec.reportsTo; migrate the edge to spec.reportsTo (the label is a derived mirror)", LabelReportsTo, r.Labels[LabelReportsTo]))
 	}
 
 	return warnings, nil

@@ -142,3 +142,112 @@ func TestRoleActivePhasesEnumFailsClosed(t *testing.T) {
 	assert.NotContains(t, got, "done", "terminal lanes must not be admissible activePhases")
 	assert.NotContains(t, got, "todo", "intake lanes must not be admissible activePhases")
 }
+
+// ISI-7946 WS-A: org-chart edge + manager process validation on the Role
+// webhook, and the Default() label mirror.
+
+func TestRoleReportsToSelfEdgeRejected(t *testing.T) {
+	ctx := context.Background()
+	r := roleWith(RoleSpec{ReportsTo: &ObjectRef{Name: "role-x"}})
+	_, err := r.ValidateCreate(ctx, r)
+	require.Error(t, err, "a role cannot report to itself")
+	assert.Contains(t, err.Error(), "reportsTo")
+}
+
+func TestRoleReportsToCrossNamespaceRejected(t *testing.T) {
+	ctx := context.Background()
+	r := roleWith(RoleSpec{ReportsTo: &ObjectRef{Name: "other", Namespace: "other-ns"}})
+	_, err := r.ValidateCreate(ctx, r)
+	require.Error(t, err, "reporting edges are namespace-local")
+	assert.Contains(t, err.Error(), "namespace")
+}
+
+func TestRoleReportsToValidManagerAdmits(t *testing.T) {
+	ctx := context.Background()
+	r := roleWith(RoleSpec{ReportsTo: &ObjectRef{Name: "architect"}})
+	w, err := r.ValidateCreate(ctx, r)
+	require.NoError(t, err)
+	assert.Empty(t, w)
+}
+
+func TestRoleProcessValidation(t *testing.T) {
+	ctx := context.Background()
+	// empty process (present but zero stages) is a config error
+	r := roleWith(RoleSpec{Process: []ProcessStage{}})
+	_, err := r.ValidateCreate(ctx, r)
+	require.Error(t, err, "an explicitly empty process must be rejected")
+	assert.Contains(t, err.Error(), "process")
+
+	// duplicate stage names make the ordered pipeline ambiguous
+	r2 := roleWith(RoleSpec{Process: []ProcessStage{
+		{Stage: "code", RoleRef: ObjectRef{Name: "coder"}},
+		{Stage: "code", RoleRef: ObjectRef{Name: "reviewer"}},
+	}})
+	_, err = r2.ValidateCreate(ctx, r2)
+	require.Error(t, err, "duplicate stage names must be rejected")
+	assert.Contains(t, err.Error(), "process")
+
+	// a well-formed manager process admits (eng mgr code->review->test)
+	r3 := roleWith(RoleSpec{Process: []ProcessStage{
+		{Stage: "code", RoleRef: ObjectRef{Name: "coder"}},
+		{Stage: "review", RoleRef: ObjectRef{Name: "reviewer"}},
+		{Stage: "test", RoleRef: ObjectRef{Name: "tester"}},
+	}})
+	w, err := r3.ValidateCreate(ctx, r3)
+	require.NoError(t, err)
+	assert.Empty(t, w)
+}
+
+func TestRoleLegacyReportsToLabelWarns(t *testing.T) {
+	ctx := context.Background()
+	r := roleWith(RoleSpec{})
+	r.Labels = map[string]string{LabelReportsTo: "architect"}
+	w, err := r.ValidateCreate(ctx, r)
+	require.NoError(t, err, "legacy label-only chart must stay admissible (compat)")
+	require.NotEmpty(t, w, "a warning must nudge migration to spec.reportsTo")
+	assert.Contains(t, w[0], "reportsTo")
+}
+
+func TestRoleDefaultDerivesReportsToLabel(t *testing.T) {
+	ctx := context.Background()
+	// spec set → label derived
+	r := roleWith(RoleSpec{ReportsTo: &ObjectRef{Name: "architect"}})
+	require.NoError(t, r.Default(ctx, r))
+	assert.Equal(t, "architect", r.Labels[LabelReportsTo])
+	// spec unset → legacy label preserved
+	r2 := roleWith(RoleSpec{})
+	r2.Labels = map[string]string{LabelReportsTo: "ceo"}
+	require.NoError(t, r2.Default(ctx, r2))
+	assert.Equal(t, "ceo", r2.Labels[LabelReportsTo])
+	// spec wins over a stale label
+	r3 := roleWith(RoleSpec{ReportsTo: &ObjectRef{Name: "boss"}})
+	r3.Labels = map[string]string{LabelReportsTo: "stale"}
+	require.NoError(t, r3.Default(ctx, r3))
+	assert.Equal(t, "boss", r3.Labels[LabelReportsTo])
+}
+
+// TestRoleOrgChartCRDShape is the golden CRD assertion for the WS-A fields
+// (defense in depth like TestRoleActivePhasesEnumFailsClosed): reportsTo
+// and process must be compiled into the generated Role CRD, process stages
+// map-keyed, and the mutating webhook (label mirror) emitted.
+func TestRoleOrgChartCRDShape(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config", "crd", "bases", "ksquad.io_roles.yaml"))
+	require.NoError(t, err, "generated Role CRD must exist (run `make manifests`)")
+
+	var doc map[string]interface{}
+	require.NoError(t, yaml.Unmarshal(raw, &doc))
+
+	versions := doc["spec"].(map[string]interface{})["versions"].([]interface{})
+	schema := versions[0].(map[string]interface{})["schema"].(map[string]interface{})["openAPIV3Schema"].(map[string]interface{})
+	props := schema["properties"].(map[string]interface{})["spec"].(map[string]interface{})["properties"].(map[string]interface{})
+
+	_, ok := props["reportsTo"].(map[string]interface{})
+	assert.True(t, ok, "spec.reportsTo must be on the generated Role CRD")
+	process, ok := props["process"].(map[string]interface{})
+	require.True(t, ok, "spec.process must be on the generated Role CRD")
+	assert.Equal(t, "map", process["x-kubernetes-list-type"], "process stages must be map-keyed (unique stage names)")
+
+	webhookRaw, err := os.ReadFile(filepath.Join("..", "..", "config", "webhook", "manifests.yaml"))
+	require.NoError(t, err, "generated webhook manifests must exist")
+	assert.Contains(t, string(webhookRaw), "mrole-orgchart", "the Role mutating webhook (label mirror) must be in the generated manifests")
+}

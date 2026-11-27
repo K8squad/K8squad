@@ -94,6 +94,53 @@ type RoleSpec struct {
 	// +kubebuilder:validation:Enum=auto;propose
 	// +optional
 	CoordinatorMode string `json:"coordinatorMode,omitempty"`
+
+	// ReportsTo is the org-chart edge (ISI-7946 WS-A): the Role this one
+	// reports to — its manager in the squad's reporting hierarchy. The edge
+	// lives on the Role (agents resolve to theirs via spec.roleRef) and is
+	// what the Team hierarchy invariants and the routing spine build on.
+	// The legacy ksquad.io/reports-to label stays as a derived/compat
+	// mirror: the mutating Role webhook stamps it from this field and keeps
+	// a pre-existing label when the field is unset, so pkg/orgops scope
+	// derivation is unchanged. Dangling-manager and Team hierarchy checks
+	// live at Team admission (internal/webhook/v1alpha1, GuardTeamOrgChart);
+	// here only the self-edge and cross-namespace shapes are rejected.
+	// +optional
+	ReportsTo *ObjectRef `json:"reportsTo,omitempty"`
+
+	// Process is the manager's ordered stage pipeline (ISI-7946 WS-A,
+	// BMAD-style): each stage names the Role that executes it — an eng
+	// manager code->review->test, a product manager
+	// brainstorm->prd->architecture. Order is list order; stage names are
+	// unique (map-keyed). Team admission rejects stages naming Roles
+	// outside the team and delegation cycles; the Role webhook rejects an
+	// empty process and duplicate stage names.
+	// +optional
+	// +listType=map
+	// +listMapKey=stage
+	// +kubebuilder:validation:MinItems=1
+	Process []ProcessStage `json:"process,omitempty"`
+}
+
+// LabelReportsTo is the derived/compat mirror of Spec.ReportsTo — the label
+// pkg/orgops scope derivation and kubectl queries read. The mutating Role
+// webhook stamps it from spec.reportsTo. It intentionally mirrors
+// orgops.LabelReportsTo: api/v1alpha1 cannot import pkg/orgops (orgops
+// imports this package).
+const LabelReportsTo = "ksquad.io/reports-to"
+
+// ProcessStage is one stage of a manager Role's ordered Process (ISI-7946
+// WS-A): the stage name plus the Role that executes it.
+type ProcessStage struct {
+	// Stage is the stage's unique name within the Process (the map key).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Stage string `json:"stage"`
+
+	// RoleRef names the Role that executes this stage. Team admission
+	// requires it to resolve to a Role in the team's composition.
+	// +kubebuilder:validation:Required
+	RoleRef ObjectRef `json:"roleRef"`
 }
 
 // +kubebuilder:object:root=true

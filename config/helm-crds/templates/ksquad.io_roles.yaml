@@ -162,9 +162,79 @@ spec:
                   (ISI-4430 D4): the effective (primary, fallback) pair is taken from the
                   highest tier — agent, then role, then default — whose model is non-empty.
                 type: string
+              process:
+                description: |-
+                  Process is the manager's ordered stage pipeline (ISI-7946 WS-A,
+                  BMAD-style): each stage names the Role that executes it — an eng
+                  manager code->review->test, a product manager
+                  brainstorm->prd->architecture. Order is list order; stage names are
+                  unique (map-keyed). Team admission rejects stages naming Roles
+                  outside the team and delegation cycles; the Role webhook rejects an
+                  empty process and duplicate stage names.
+                items:
+                  description: |-
+                    ProcessStage is one stage of a manager Role's ordered Process (ISI-7946
+                    WS-A): the stage name plus the Role that executes it.
+                  properties:
+                    roleRef:
+                      description: |-
+                        RoleRef names the Role that executes this stage. Team admission
+                        requires it to resolve to a Role in the team's composition.
+                      properties:
+                        name:
+                          description: Name of the referenced object.
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace of the referenced object. Empty means the referring object's
+                            own namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    stage:
+                      description: Stage is the stage's unique name within the Process
+                        (the map key).
+                      minLength: 1
+                      type: string
+                  required:
+                  - roleRef
+                  - stage
+                  type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - stage
+                x-kubernetes-list-type: map
               promptRef:
                 description: PromptRef references the prompt / behavior definition
                   for this role.
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              reportsTo:
+                description: |-
+                  ReportsTo is the org-chart edge (ISI-7946 WS-A): the Role this one
+                  reports to — its manager in the squad's reporting hierarchy. The edge
+                  lives on the Role (agents resolve to theirs via spec.roleRef) and is
+                  what the Team hierarchy invariants and the routing spine build on.
+                  The legacy ksquad.io/reports-to label stays as a derived/compat
+                  mirror: the mutating Role webhook stamps it from this field and keeps
+                  a pre-existing label when the field is unset, so pkg/orgops scope
+                  derivation is unchanged. Dangling-manager and Team hierarchy checks
+                  live at Team admission (internal/webhook/v1alpha1, GuardTeamOrgChart);
+                  here only the self-edge and cross-namespace shapes are rejected.
                 properties:
                   name:
                     description: Name of the referenced object.

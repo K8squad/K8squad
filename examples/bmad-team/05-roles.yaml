@@ -1,8 +1,9 @@
 # One Role per BMAD function (arch §5.1). Each carries:
 #   - promptRef      → its behavior ConfigMap (04-prompts.yaml)
 #   - defaultSkills  → Skills granted to any Agent assuming the role
-#   - labels         → the reporting hierarchy (ksquad.io/reports-to), since the
-#                      CRD model has no manager edge
+#   - spec.reportsTo → the reporting hierarchy edge (ISI-7946 WS-A); the
+#                      ksquad.io/reports-to label is its derived mirror, stamped
+#                      by the mutating Role webhook at admission
 #   - runtimeClassHint → sandbox posture for execution-heavy roles (gvisor)
 #
 # Skill wiring: every role gets `bmad` and `task-io` (the union baseline — a
@@ -45,8 +46,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: product-manager
-    ksquad.io/reports-to: ceo
 spec:
+  reportsTo:
+    name: ceo
   promptRef:
     name: product-manager-prompt
   defaultSkills:
@@ -66,8 +68,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: architect
-    ksquad.io/reports-to: ceo
 spec:
+  reportsTo:
+    name: ceo
   promptRef:
     name: architect-prompt
   defaultSkills:
@@ -82,8 +85,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: ux-designer
-    ksquad.io/reports-to: ceo
 spec:
+  reportsTo:
+    name: ceo
   promptRef:
     name: ux-designer-prompt
   defaultSkills:
@@ -98,8 +102,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: brainstormer
-    ksquad.io/reports-to: product-manager
 spec:
+  reportsTo:
+    name: product-manager
   promptRef:
     name: brainstormer-prompt
   defaultSkills:
@@ -113,8 +118,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: challenger
-    ksquad.io/reports-to: product-manager
 spec:
+  reportsTo:
+    name: product-manager
   promptRef:
     name: challenger-prompt
   defaultSkills:
@@ -128,8 +134,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: content-writer
-    ksquad.io/reports-to: product-manager
 spec:
+  reportsTo:
+    name: product-manager
   promptRef:
     name: content-writer-prompt
   defaultSkills:
@@ -143,8 +150,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: code-reviewer
-    ksquad.io/reports-to: architect
 spec:
+  reportsTo:
+    name: architect
   promptRef:
     name: code-reviewer-prompt
   runtimeClassHint: gvisor
@@ -171,8 +179,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: test-architect
-    ksquad.io/reports-to: architect
 spec:
+  reportsTo:
+    name: architect
   promptRef:
     name: test-architect-prompt
   runtimeClassHint: gvisor
@@ -187,8 +196,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: coder
-    ksquad.io/reports-to: architect
 spec:
+  reportsTo:
+    name: architect
   promptRef:
     name: coder-prompt
   runtimeClassHint: gvisor
@@ -204,8 +214,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: devops-engineer
-    ksquad.io/reports-to: architect
 spec:
+  reportsTo:
+    name: architect
   promptRef:
     name: devops-engineer-prompt
   runtimeClassHint: gvisor
@@ -221,8 +232,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: observability-engineer
-    ksquad.io/reports-to: architect
 spec:
+  reportsTo:
+    name: architect
   promptRef:
     name: observability-engineer-prompt
   defaultSkills:
@@ -237,8 +249,9 @@ metadata:
   namespace: bmad-squad
   labels:
     ksquad.io/bmad-role: graphical-designer
-    ksquad.io/reports-to: ux-designer
 spec:
+  reportsTo:
+    name: ux-designer
   promptRef:
     name: graphical-designer-prompt
   defaultSkills:
