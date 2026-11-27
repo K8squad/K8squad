@@ -25,6 +25,11 @@ const ReplayHeader = "X-Idempotent-Replay"
 // DefaultWindow is how long a stored response stays replayable.
 const DefaultWindow = 10 * time.Minute
 
+// MaxKeyLen bounds a client-supplied Idempotency-Key so a hostile or buggy
+// client cannot pin unbounded memory in the scope map. A handler should reject
+// a longer key with 400 before scoping/Put; the limit lives here as one source.
+const MaxKeyLen = 255
+
 // ReplayCache maps a scoped Idempotency-Key to the stored (status, body)
 // of the first response. Safe for concurrent use; zero background work.
 type ReplayCache struct {

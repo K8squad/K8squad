@@ -13,6 +13,7 @@ import (
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/internal/idemkey"
 	"github.com/K8squad/K8squad/pkg/auth"
 	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/search"
@@ -1461,7 +1462,10 @@ func (s *Server) routes(opts Options) {
 		workItemComment.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
 		workItemComment.Use(maxBytesBody(64 << 10))
 		if opts.WorkItemComments != nil {
-			workItemComment.HandleFunc("", workItemCommentHandler(opts.WorkItemComments)).Methods(http.MethodPost)
+			// ISI-7907: one process-local replay cache for this endpoint, built once at
+			// registration so a double-clicked comment POST carrying an Idempotency-Key
+			// collapses to a single insert within the replay window.
+			workItemComment.HandleFunc("", workItemCommentHandler(opts.WorkItemComments, idemkey.NewReplayCache(idemkey.DefaultWindow))).Methods(http.MethodPost)
 		} else {
 			workItemComment.HandleFunc("", notImplemented("work-item comment", "ISI-4406: wire a coord.WorkItemWriteStore (Postgres) to enable")).
 				Methods(http.MethodPost)

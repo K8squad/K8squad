@@ -52,6 +52,13 @@ function upstreamHeaders(
   if (xff) h.set("x-forwarded-for", xff);
   const xRealIp = req.headers.get("x-real-ip");
   if (xRealIp) h.set("x-real-ip", xRealIp);
+  // ISI-7907 (ISI-7893 Layer 4): relay a client-supplied Idempotency-Key upstream so
+  // the apiserver's short-window write-dedup can collapse a duplicate POST (a
+  // double-clicked comment/composer, an at-least-once retry) to one insert. It is an
+  // opaque client token, never a BFF-asserted identity, so forwarding it is safe under
+  // the "identity only" rule above; absent ⇒ nothing added (unchanged behaviour).
+  const idempotencyKey = req.headers.get("idempotency-key");
+  if (idempotencyKey) h.set("idempotency-key", idempotencyKey);
   if (extra) for (const [k, v] of Object.entries(extra)) h.set(k, v);
   return h;
 }
