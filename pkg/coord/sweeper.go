@@ -260,6 +260,24 @@ type Sweeper struct {
 	// ticker is the injection point for the unit-tested fake clock: it returns the
 	// tick channel and a stop func. nil means a real time.Ticker at interval.
 	ticker func(d time.Duration) (<-chan time.Time, func())
+
+	// blockedSource / blockedMetrics are the Story 13.3 blocked-by gauge sampler,
+	// wired via SetBlockedSampler. When both are set the loop samples the current
+	// blocked population once per cycle (sampleBlocked) and refreshes the gauge —
+	// the way the event relay refreshes outbox_unflushed_lag. Both nil (the
+	// default) keeps the sampler off, so existing callers are unaffected.
+	blockedSource  blockedCounter
+	blockedMetrics BlockedMetrics
+}
+
+// SetBlockedSampler wires the Story 13.3 blocked-by gauge (ksquad_coord_blocked_items):
+// on every cycle the sweeper samples src.CountBlocked and sets the gauge via m.
+// Both are nil-guarded — leaving either unset keeps the sampler off (the default).
+// Call before Run. src is typically the SweepStore itself, so the gauge is sampled
+// from the same bound work_item table the reclaim scans, with no extra DB handle.
+func (sw *Sweeper) SetBlockedSampler(src blockedCounter, m BlockedMetrics) {
+	sw.blockedSource = src
+	sw.blockedMetrics = m
 }
 
 // NewSweeper wires a Sweeper over a SweepStore, scanning at the store's configured
@@ -304,6 +322,11 @@ func (sw *Sweeper) Run(ctx context.Context) error {
 // unit test can drive individual cycles deterministically.
 func (sw *Sweeper) sweepOnce(ctx context.Context) {
 	sw.metrics.IncSweepCycle()
+	// Sample the blocked-by gauge every cycle, independent of the reclaim outcome
+	// below: the blocked population is an orthogonal condition, not a function of
+	// what this cycle reclaimed, so it must refresh even on an empty or errored
+	// reclaim (which return early).
+	sw.sampleBlocked(ctx)
 	start := time.Now()
 	reclaimed, err := sw.store.ReclaimExpired(ctx)
 	sw.metrics.ObserveSweepDuration(time.Since(start).Seconds())
@@ -320,6 +343,24 @@ func (sw *Sweeper) sweepOnce(ctx context.Context) {
 	if sw.OnReclaim != nil {
 		sw.OnReclaim(ctx, reclaimed)
 	}
+}
+
+// sampleBlocked refreshes the Story 13.3 blocked-by gauge from the current blocked
+// population. No-op unless a sampler was wired via SetBlockedSampler. Best-effort:
+// a count error is surfaced to OnError and the cycle proceeds — the gauge holds its
+// last value until the next tick (the reclaim loop never depends on it).
+func (sw *Sweeper) sampleBlocked(ctx context.Context) {
+	if sw.blockedSource == nil || sw.blockedMetrics == nil {
+		return
+	}
+	n, err := sw.blockedSource.CountBlocked(ctx)
+	if err != nil {
+		if sw.OnError != nil {
+			sw.OnError(err)
+		}
+		return
+	}
+	sw.blockedMetrics.SetBlocked(n)
 }
 
 func (sw *Sweeper) newTicker(d time.Duration) (<-chan time.Time, func()) {

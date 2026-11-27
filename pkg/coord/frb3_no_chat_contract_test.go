@@ -328,6 +328,17 @@ var allowedSurface = map[string]string{
 	"PrometheusSweeperMetrics.ObserveSweepDuration": "§6.3 record one sweep-cycle duration",
 	"PrometheusSweeperMetrics.Signals":              "§6.3 emitted metric names (NFR-OBS3 cardinality proof)",
 
+	// §13.3 blocked-by gauge (ISI-2916): a bounded, periodically-sampled count of
+	// the blocked population (work_item.blocked_reason IS NOT NULL). Not an
+	// agent-to-agent channel — a read-only observability sink + its one COUNT.
+	"BlockedMetrics":                      "§13.3 blocked-by gauge sink interface",
+	"NewPrometheusBlockedMetrics":         "§13.3 constructor",
+	"PrometheusBlockedMetrics":            "§13.3 Prometheus sink for the blocked-by gauge",
+	"PrometheusBlockedMetrics.SetBlocked": "§13.3 set the current blocked-item count",
+	"PrometheusBlockedMetrics.Signals":    "§13.3 emitted metric names (NFR-OBS3 cardinality proof)",
+	"SweepStore.CountBlocked":             "§13.3 read half — count work items with blocked_reason IS NOT NULL",
+	"Sweeper.SetBlockedSampler":           "§13.3 wire the blocked-by gauge sampler onto the sweep loop",
+
 	// NFR-5 per-phase timing observability (ISI-4490 / E7). Not a chat channel:
 	// EmitPhaseTransition records a state_transition it did NOT author as a span
 	// + BOUNDED metrics (no work_item.ref label — the cardinality firewall). It
