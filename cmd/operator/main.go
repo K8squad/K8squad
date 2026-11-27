@@ -1542,6 +1542,9 @@ func main() {
 			runner = runner.WithCredentialWriter(credWriter)
 		}
 		runner = runner.WithSandboxRefObserver(rundrive.NewRunStatusSandboxWriter(mgr.GetClient()))
+		// WS-B (ISI-7956): resolve the terminal hand-off manager controller-side
+		// (WS-A reports-to edge) for every per-Run effects instance.
+		runner = runner.WithUpwardManagerResolver(rundrive.NewUpwardManagerResolver(db, mgr.GetClient()))
 
 		// §6.2 claimer (ISI-4183, M1.3 claim-back): the production caller
 		// ProdClaimer lacked — the drive loop acquired no checkout, so board
@@ -1558,7 +1561,8 @@ func main() {
 			os.Exit(1)
 		}
 
-		prodClaims := rundrive.NewProdClaims(db, rundrive.OperatorPrincipal)
+		prodClaims := rundrive.NewProdClaims(db, rundrive.OperatorPrincipal).
+			WithUpwardManagerResolver(rundrive.NewUpwardManagerResolver(db, mgr.GetClient()))
 		driver := rundrive.NewDriver(mgr.GetClient(),
 			prodClaims,
 			rundrive.NewProdPauses(resumeStore),

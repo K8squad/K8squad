@@ -50,8 +50,9 @@ const terminalSet = `('succeeded','failed','cancelled')`
 
 // ProdClaims implements Claims over the production coord schema.
 type ProdClaims struct {
-	db        *sql.DB
-	principal string
+	upwardResolver UpwardManagerResolver // WS-B (ISI-7956): manager resolution for a terminal re-entry push; nil = spine off
+	db             *sql.DB
+	principal      string
 	// claimer is the §6.2 production claim writer (prodclaim.go) the M1.3
 	// drive loop acquires through (ISI-4183): the guarded in-place checkout
 	// rewrite + todo → in_progress lane advance + claim_acquired audit +
@@ -280,6 +281,18 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 	// ticket in_progress by design.
 	if _, _, err := coord.SettleTerminalLane(ctx, tx, workItemID, runID, c.principal, toState); err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: settle: %w", event, err)
+	}
+
+	// WS-B (ISI-7956): the death-after-retry terminal path owes the same
+	// upward hand-off the machine's Terminal effect writes. Structurally this
+	// path settles only failed/cancelled (FailEnter/CancelEnter), for which
+	// the push is a silent no-op — the seam stays wired so a future
+	// succeeded-capable re-entry cannot bypass the spine.
+	if c.upwardResolver != nil && toState == "succeeded" {
+		if err := coord.PushUpwardHandoff(ctx, tx, workItemID, runID, c.principal, toState,
+			c.upwardResolver(ctx, workItemID, runID)); err != nil {
+			return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: upward handoff: %w", event, err)
+		}
 	}
 
 	// ISI-5543 retry circuit-breaker: a deterministic fail-closed terminal
@@ -810,13 +823,14 @@ func (p *ProdPauses) Record(ctx context.Context, workItemID, runID string, retry
 // (workItemRef + uid), with the optional physical SandboxBinder /
 // TaskDispatcher ports (nil = ledger-only, the honest pre-shim mode).
 type ProdRunner struct {
-	db          *sql.DB
-	principal   string
-	initiatedBy string
-	binder      coord.SandboxBinder
-	dispatcher  coord.TaskDispatcher
-	credWriter  coord.RunCredentialWriter
-	refObserver coord.SandboxRefObserver
+	upwardResolver UpwardManagerResolver // WS-B (ISI-7956): manager resolution for the terminal push; nil = spine off
+	db             *sql.DB
+	principal      string
+	initiatedBy    string
+	binder         coord.SandboxBinder
+	dispatcher     coord.TaskDispatcher
+	credWriter     coord.RunCredentialWriter
+	refObserver    coord.SandboxRefObserver
 }
 
 // NewProdRunner binds the Runner seam. binder/dispatcher may be nil.
@@ -873,6 +887,11 @@ func (r *ProdRunner) Effects(ctx context.Context, run *api.Run) (machineEffects,
 	}
 	// Topology-2 opt-in: nil credWriter leaves credential-off mode;
 	// nil refObserver leaves ref-silent mode (M1.2).
+	if r.upwardResolver != nil {
+		// WS-B (ISI-7956): resolve the manager for THIS run's work item
+		// controller-side (the WS-A reports-to edge) and opt the effects in.
+		e.WithUpwardManager(r.upwardResolver(ctx, run.Spec.WorkItemRef, string(run.UID)))
+	}
 	return e.WithRunCredentialWriter(r.credWriter).WithSandboxRefObserver(r.refObserver), nil
 }
 

@@ -138,12 +138,13 @@ type SandboxRefObserver interface {
 // sticky error — a fresh ProdEffects reconstructs nothing, so it is safe to discard
 // and rebuild on every reconcile pass (the durable markers carry the idempotency).
 type ProdEffects struct {
-	db          *sql.DB
-	ctx         context.Context
-	workItemID  string // uuid — the item every effect row belongs to
-	runID       string // uuid — the deterministic run key (sandbox_bind / a2a_dispatch / artifact / audit)
-	principal   string // who is driving (§6.5 provenance on every marker/audit row)
-	initiatedBy string // §12.4 control-plane stamp (may be empty → NULL)
+	upwardManager string // WS-B (ISI-7956): manager agent for the terminal upward hand-off; "" = spine off
+	db            *sql.DB
+	ctx           context.Context
+	workItemID    string // uuid — the item every effect row belongs to
+	runID         string // uuid — the deterministic run key (sandbox_bind / a2a_dispatch / artifact / audit)
+	principal     string // who is driving (§6.5 provenance on every marker/audit row)
+	initiatedBy   string // §12.4 control-plane stamp (may be empty → NULL)
 
 	binder      SandboxBinder       // physical warm-pool bind; nil = ledger-only
 	dispatcher  TaskDispatcher      // physical A2A shim submit; nil = ledger-only
@@ -591,6 +592,15 @@ func (e *ProdEffects) Terminal(s reconcile.Step) {
 	// in_progress. A human lane move raced ahead of the settle is respected.
 	if _, _, err := SettleTerminalLane(e.ctx, tx, e.workItemID, e.runID, e.principal, string(s)); err != nil {
 		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: settle: %w", err))
+		return
+	}
+
+	// WS-B (ISI-7956): the upward hand-off spine rides the SAME terminal
+	// transaction — marker + audit + manager wake item settle atomically with
+	// the board facts. An empty manager (root/unresolved) and a non-succeeded
+	// terminal are silent no-ops inside the push.
+	if err := PushUpwardHandoff(e.ctx, tx, e.workItemID, e.runID, e.principal, string(s), e.upwardManager); err != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: upward handoff: %w", err))
 		return
 	}
 
