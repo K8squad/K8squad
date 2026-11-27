@@ -377,6 +377,58 @@ func (s *Store) enrichPartyRounds(ctx context.Context, threadID uuid.UUID, msgs 
 }
 
 // ----------------------------------------------------------------------------
+// Thread run anchors (ISI-7869, WS-C of parent ISI-7864)
+// ----------------------------------------------------------------------------
+
+// ThreadRunAnchor pairs one run dispatched from a thread with the message that
+// dispatched it: the durable correlation the live thinking bus lacks (an SSE
+// envelope carries no thread/message id, so a fresh tab cannot place a run's
+// steps under the dispatch that triggered them). Resolved through the SAME
+// ledger join the party-round enrichment and the reply-hop resolver ride:
+// mention_dispatch.work_item_id -> coord.claim.run_id.
+type ThreadRunAnchor struct {
+	RunID           string
+	AnchorMessageID string
+}
+
+// ThreadRunAnchors lists the runs dispatched from a thread, newest dispatch
+// first, each with the message that dispatched it. Project-scoped by the
+// room's slug so a foreign thread id yields an empty slice (existence-hiding,
+// §13) and tenancy never depends on the caller. Read-only (§17.4): a pure
+// SELECT over the ledger + claim tables; it writes nothing and nothing it
+// returns re-enters coordination.
+func (s *Store) ThreadRunAnchors(ctx context.Context, projectID string, threadID uuid.UUID) ([]ThreadRunAnchor, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.run_id::text, md.message_id::text
+		  FROM discussion.mention_dispatch md
+		  JOIN coord.claim c ON c.work_item_id = md.work_item_id
+		 WHERE md.project_id = $1 AND md.thread_id = $2::uuid
+		 ORDER BY md.created_at DESC, c.run_id`, projectID, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("discussion: thread run anchors: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]bool)
+	out := make([]ThreadRunAnchor, 0, 4)
+	for rows.Next() {
+		var a ThreadRunAnchor
+		if err := rows.Scan(&a.RunID, &a.AnchorMessageID); err != nil {
+			return nil, fmt.Errorf("discussion: thread run anchors scan: %w", err)
+		}
+		// A re-drive lap re-claims the same work item: hydrate the run once.
+		if seen[a.RunID] {
+			continue
+		}
+		seen[a.RunID] = true
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("discussion: thread run anchors rows: %w", err)
+	}
+	return out, nil
+}
+
+// ----------------------------------------------------------------------------
 // Messages
 // ----------------------------------------------------------------------------
 

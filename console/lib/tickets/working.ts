@@ -147,6 +147,8 @@ export function ticketWorkingLabel(
       return `${agentName} replied`;
     case "failed":
       return `${agentName} could not respond`;
+    case "waiting":
+      return `${agentName} hasn't replied yet`;
     case "working":
       return stepVerb
         ? `${agentName} is ${stepVerb}…`
@@ -198,6 +200,8 @@ export function managerStructuringLabel(
       return `${managerName} structured the work`;
     case "failed":
       return `${managerName} couldn’t structure the work`;
+    case "waiting":
+      return `${managerName} hasn't structured the work yet`;
     case "working":
       return `${managerName} is structuring the work…`;
   }

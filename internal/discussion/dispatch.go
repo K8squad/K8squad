@@ -79,6 +79,15 @@ type MentionDispatch struct {
 	// coordinator directive. Set only when Orchestrate is true.
 	RequestBody string
 
+	// WholeRoom marks a bare-human-party BROADCAST dispatch (ISI-7770): the triggering human asked the
+	// entire room, so the run-minting half must NOT shed this dispatch at the per-discussion in-flight
+	// ceiling (ISI-5670) — it mints the item and lets the run-scheduling layer (per-endpoint FIFO gate,
+	// per-agent non-preemptive queue) sequence admission instead. False for every explicitly-targeted
+	// dispatch (@-mention, direct:, coordinator orchestration, party voice), which keep the ceiling
+	// discipline. It is the queueing answer to the "12 of 13 agents could not respond" hollow outcome:
+	// every roster agent either responds or holds a real queue position — never a silent drop.
+	WholeRoom bool
+
 	// Party, when non-nil, carries the cross-talk context + persona prompt for a party-mode voice
 	// dispatch (ISI-5586 WS-C, ADR-0027 §3.2). The facilitator (WS-D) assembles it per voice per round
 	// — persona blurb + "What Others Said This Round" + rolling <400-word summary + disagree/pass
@@ -130,15 +139,16 @@ const (
 	// that @-mentions the whole squad dispatches at most this many agents. Excess mentions are dropped.
 	maxMentionDispatchPerMessage = 5
 
-	// The whole-room broadcast cap (ISI-5265): a HUMAN party post with no @-mention wakes every eligible
-	// roster agent, and the 5-mention cap is too small for a full squad. ISI-5670 lowers this to the HARD
-	// per-discussion concurrent-run ceiling (discussion.MaxConcurrentRunsPerDiscussion, default 4) — the
-	// same limit the run-minting backstop enforces — so a legacy/degraded broadcast never even SELECTS
-	// more targets than the discussion is allowed to run in parallel. A broadcast that would exceed it
-	// dispatches the first this-many and counts the rest via `dropped` (a non-silent truncation the caller
-	// logs), never fanning out unbounded. Only the human hop-0 broadcast path uses this cap; an explicit
-	// @-mention party post still rides the smaller maxMentionDispatchPerMessage. Read at resolve time via
-	// MaxConcurrentRunsPerDiscussion() so the env/Secret override applies here too.
+	// The whole-room broadcast (ISI-5265 / ISI-7770): a HUMAN party post with no @-mention wakes every
+	// eligible roster agent. It historically rode the HARD per-discussion concurrent-run ceiling
+	// (MaxConcurrentRunsPerDiscussion, ISI-5670) as a selection cap that DROPPED the tail — the defect
+	// behind ISI-7770's "12 of 13 agents could not respond": the room UI seats the whole roster, but the
+	// agents beyond the ceiling were never dispatched at all, and their watching seats expired to a lie.
+	// The broadcast is now UNBOUNDED at selection: every eligible agent is dispatched with WholeRoom=true,
+	// and the run-scheduling layer (per-endpoint FIFO gate ISI-5594/ISI-7487 + per-agent non-preemptive
+	// queue ISI-7499) sequences admission — the queue, not a silent truncation, bounds the fan-out. Only
+	// the human hop-0 broadcast path is unbounded; an explicit @-mention party post still rides
+	// maxMentionDispatchPerMessage.
 
 	// dispatchPayloadKey is the message-payload field carrying the in-band loop-guard hop counter
 	// (plan: "a per-thread hop counter in payload"). Human posts omit it (hop 0); a dispatched run
@@ -505,22 +515,32 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 		}}, 0, false
 	}
 
-	// (5) Single-agent / broadcast path: one dispatch per resolved agent, bounded by the fan-out cap.
-	// A whole-room broadcast rides the larger squad-sized cap; a single @-mention (or a direct: post)
-	// stays on the smaller per-message cap. Either way the fan-out is bounded and excess is surfaced via
-	// `dropped`, never dispatched silently (ISI-5265 req 4).
-	dispatchCap := maxMentionDispatchPerMessage
-	if broadcast {
-		dispatchCap = MaxConcurrentRunsPerDiscussion() // ISI-5670: the per-discussion concurrent-run ceiling
+	// (5) Single-agent / broadcast path: one dispatch per resolved agent. An explicit @-mention (or a
+	// direct: post) stays on the smaller per-message rate cap, with excess surfaced via `dropped`
+	// (ISI-5265 req 4). A whole-room broadcast (ISI-7770) is NOT truncated at the selection layer: every
+	// eligible roster agent is dispatched, flagged WholeRoom so the run-minting half queues it behind the
+	// run-scheduling layer (per-endpoint FIFO gate ISI-5594/ISI-7487 + per-agent non-preemptive queue
+	// ISI-7499) instead of shedding it at the per-discussion in-flight ceiling. Selection-time truncation
+	// is what produced the "12 of 13 agents could not respond" hollow outcome: the room UI seats the
+	// whole roster, but agents beyond the ceiling were never dispatched at all.
+	if !broadcast {
+		for _, agent := range resolved {
+			if len(targets) >= maxMentionDispatchPerMessage {
+				dropped++ // rate cap: count the drop so the caller can log a non-silent truncation
+				continue
+			}
+			targets = append(targets, MentionDispatch{
+				AgentName: agent.Name, // canonical roster casing
+				HopDepth:  nextHop,
+			})
+		}
+		return targets, dropped, false
 	}
 	for _, agent := range resolved {
-		if len(targets) >= dispatchCap {
-			dropped++ // rate cap: count the drop so the caller can log a non-silent truncation
-			continue
-		}
 		targets = append(targets, MentionDispatch{
 			AgentName: agent.Name, // canonical roster casing
 			HopDepth:  nextHop,
+			WholeRoom: true, // ISI-7770: queue behind the run-scheduling layer, never shed
 		})
 	}
 	return targets, dropped, false
@@ -634,10 +654,10 @@ func DispatchMentionsFrom(ctx context.Context, dispatcher MentionDispatcher, ros
 		return
 	}
 	if dropped > 0 {
-		// Non-silent truncation (the fan-out/broadcast cap guardrail): the message @-mentioned — or, for
-		// a human party post, the room held — more dispatchable agents than the cap allows, so the tail
-		// was not dispatched. Surface it here (the sole caller) so an over-cap broadcast is visible in the
-		// logs rather than silently clipped.
+		// Non-silent truncation (the @-mention rate cap): the message @-mentioned more dispatchable
+		// agents than maxMentionDispatchPerMessage allows, so the tail was not dispatched. Surface it
+		// here (the sole caller) so an over-cap mention list is visible in the logs rather than silently
+		// clipped. (A whole-room broadcast is never truncated here — ISI-7770: it queues instead.)
 		slog.WarnContext(ctx, "discussion: mention dispatch fan-out capped",
 			"projectID", projectID, "messageID", msg.ID, "dispatched", len(targets), "dropped", dropped)
 	}

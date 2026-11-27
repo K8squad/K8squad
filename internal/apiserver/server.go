@@ -13,6 +13,7 @@ import (
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/internal/idemkey"
 	"github.com/K8squad/K8squad/pkg/auth"
 	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/search"
@@ -313,6 +314,13 @@ type Options struct {
 	// Runs is the ISI-4571 run-list and run-detail read model (global listing, project-scoped listing, run detail with steps/comments)
 	// behind the SAME §13 choke point. When nil the run routes keep the documented 501 (dev run without an informer cache).
 	Runs *RunsService
+	// ThreadRunEvents is the ISI-7869 (WS-C of parent ISI-7864) durable
+	// discussion-feed hydration read side: the mention_dispatch ledger join
+	// (implemented by *discussion.Store) that resolves a thread's dispatched
+	// runs for GET /api/projects/{projectId}/discussion/threads/{threadId}/
+	// run-events. Set together with RunEvents; nil (or a missing seam) ⇒ the
+	// route keeps the documented 501.
+	ThreadRunEvents ThreadRunAnchorReader
 	// RunEvents is the ISI-7484 durable run-event history read side: the
 	// coord.outbox entity='run' tail behind GET /api/runs/{runId}/events, so a
 	// reload / late join hydrates the Activity feed from the same journal the
@@ -1343,6 +1351,24 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodPatch)
 		}
 
+		// ISI-7869 (WS-C of parent ISI-7864): GET
+		// /api/projects/{projectId}/discussion/threads/{threadId}/run-events — the
+		// durable REST hydration tail for the discussion-room feed, so a fresh tab
+		// renders the full feed (run steps + posted comments) from the same
+		// coord.outbox journal the SSE projector live-tails — the discussion
+		// analog of the ISI-7484 run Activity fallback. Read-only; behind the
+		// same §13 choke point. Registered before the greedy board routes, like
+		// the sibling thread verbs (ROUTE ORDER MATTERS, see the work-items note
+		// below).
+		threadRunEventsRoute := s.router.Path("/api/projects/{projectId:.+}/discussion/threads/{threadId}/run-events").Subrouter()
+		threadRunEventsRoute.Use(authz)
+		if opts.ThreadRunEvents != nil && opts.RunEvents != nil {
+			threadRunEventsRoute.HandleFunc("", threadRunEventsHandler(opts.ThreadRunEvents, opts.RunEvents)).Methods(http.MethodGet)
+		} else {
+			threadRunEventsRoute.HandleFunc("", notImplemented("thread run-events hydration",
+				"ISI-7869: wire the discussion Store ledger join + an events.RunEventReader to enable")).Methods(http.MethodGet)
+		}
+
 		// ISI-7708 (parent ISI-7681 P1): POST
 		// /api/projects/{projectId}/discussion/threads/{threadId}/work-items — human-initiated
 		// ticket creation from a discussion thread (the console "Create tickets from thread"
@@ -1436,7 +1462,10 @@ func (s *Server) routes(opts Options) {
 		workItemComment.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
 		workItemComment.Use(maxBytesBody(64 << 10))
 		if opts.WorkItemComments != nil {
-			workItemComment.HandleFunc("", workItemCommentHandler(opts.WorkItemComments)).Methods(http.MethodPost)
+			// ISI-7907: one process-local replay cache for this endpoint, built once at
+			// registration so a double-clicked comment POST carrying an Idempotency-Key
+			// collapses to a single insert within the replay window.
+			workItemComment.HandleFunc("", workItemCommentHandler(opts.WorkItemComments, idemkey.NewReplayCache(idemkey.DefaultWindow))).Methods(http.MethodPost)
 		} else {
 			workItemComment.HandleFunc("", notImplemented("work-item comment", "ISI-4406: wire a coord.WorkItemWriteStore (Postgres) to enable")).
 				Methods(http.MethodPost)

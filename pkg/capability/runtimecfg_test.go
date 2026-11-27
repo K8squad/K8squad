@@ -187,9 +187,10 @@ func TestRenderOpenClawServersSection(t *testing.T) {
 	var doc struct {
 		MCP struct {
 			Servers map[string]struct {
-				Type         string   `json:"type"`
-				URL          string   `json:"url"`
-				AllowedTools []string `json:"allowedTools"`
+				Type         string            `json:"type"`
+				URL          string            `json:"url"`
+				Headers      map[string]string `json:"headers"`
+				AllowedTools []string          `json:"allowedTools"`
 			} `json:"servers"`
 		} `json:"mcp"`
 	}
@@ -197,6 +198,43 @@ func TestRenderOpenClawServersSection(t *testing.T) {
 	ep := doc.MCP.Servers["github-mcp"]
 	assert.Equal(t, "http", ep.Type)
 	assert.Equal(t, []string{"create_pull_request", "list_issues"}, ep.AllowedTools)
+	// ISI-7873: the streamable-http credential rides as an Authorization env
+	// reference (parity with the other renderers), never a literal.
+	assert.Equal(t, "Bearer ${KSQUAD_MCP_GITHUB_MCP_TOKEN}", ep.Headers["Authorization"])
+	assert.NotContains(t, string(raw), "github-token", "no secret name-as-value leakage")
+}
+
+// TestRenderOpenClawStreamableHTTPBearerParity (ISI-7873, parent ISI-7868): the
+// openclaw renderer must attach the per-run bearer credential for
+// streamable-http servers as an Authorization ${ENV} header reference,
+// mirroring RenderClaudeCode/RenderOpenCodeConfig/RenderCodex. Before this
+// parity landed the openclaw renderer shipped url-only entries, so a
+// warm-pool openclaw run called the memory MCP servers tokenless and the
+// memory edge rejected the call with the tenancy 401 — the party-run
+// blinding defect this change fixes.
+func TestRenderOpenClawStreamableHTTPBearerParity(t *testing.T) {
+	raw, err := RenderOpenClaw(scopedEndpoints())
+	require.NoError(t, err)
+
+	var doc struct {
+		MCP struct {
+			Servers map[string]struct {
+				Type    string            `json:"type"`
+				URL     string            `json:"url"`
+				Headers map[string]string `json:"headers"`
+			} `json:"servers"`
+		} `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &doc))
+	srv, ok := doc.MCP.Servers["github-mcp"]
+	require.True(t, ok, "github-mcp present")
+	assert.Equal(t, "http", srv.Type)
+	assert.Equal(t, "https://mcp.example/github", srv.URL)
+	// Credential by reference: the Authorization header names the env var the
+	// shim layers onto the runtime subprocess env (engine.go mcpCredentialEnv)
+	// — the env NAME in a ${VAR} reference, never the literal token.
+	assert.Equal(t, "Bearer ${KSQUAD_MCP_GITHUB_MCP_TOKEN}", srv.Headers["Authorization"])
+	assert.NotContains(t, string(raw), "github-token", "no secret name-as-value leakage")
 }
 
 // codexTOMLServer mirrors the codex config.toml [mcp_servers.<name>] shape for

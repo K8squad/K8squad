@@ -1,0 +1,29 @@
+-- 0046_breaker_generation_floor.sql — the DURABLE RESET BASELINE of the
+-- ISI-5543 retry circuit-breaker (ISI-7837).
+--
+-- WHY (ISI-7837 live incident, work item a11d4f7c-…): the breaker parked the
+-- ticket at 10 generations (blocked_reason =
+-- retry_circuit_breaker_max_generations_10) and NOTHING could ever clear it —
+-- r10 later SUCCEEDED, the user posted a kick-off comment (201), and the item
+-- still sat parked: DueWorkItems filters blocked_reason IS NOT NULL, so the
+-- kick-off was a silent no-op and the ticket could never mint a new run. The
+-- breaker had no reset path at all.
+--
+-- The fix: the cap now counts generations ABOVE a per-item baseline,
+-- breaker_floor. ParkWorkItem stamps the floor at park time (GREATEST of the
+-- current floor and the highest surviving generation), and the kick-off
+-- comment path (pkg/coord/workitemcomment.go) clears OUR circuit-breaker park
+-- — which resets the effective count to zero, because the floor stays. A
+-- parked ticket can always mint a NEW generation on an explicit human
+-- kick-off; autonomous churn stays bounded (the breaker re-arms at cap
+-- generations above the floor). The floor never renumbers generations: Run
+-- names must stay collision-free against surviving generations (ISI-4829).
+--
+-- DEFAULT 0 preserves the pre-0046 semantics exactly for never-parked items:
+-- the effective count is the plain highest surviving generation.
+--
+-- Forward-only (the 001 discipline): ADD COLUMN IF NOT EXISTS touches no
+-- existing row; there is no down migration, a mistake is corrected by a new
+-- file.
+ALTER TABLE coord.work_item
+    ADD COLUMN IF NOT EXISTS breaker_floor int NOT NULL DEFAULT 0;

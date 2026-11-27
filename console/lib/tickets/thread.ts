@@ -245,6 +245,14 @@ export async function fetchWorkItemThread(
 export interface PostedComment extends ThreadComment {
   /** True when this comment re-dispatched the ticket (parked → todo, ISI-4495). */
   reTriggered?: boolean;
+  /**
+   * True when this comment kicked off a retry-circuit-breaker-parked ticket
+   * (ISI-7837): the breaker park was cleared and the effective generation count
+   * reset, so the next intake sweep mints a fresh Run. The breaker parks a ticket
+   * ON "todo" (it stamps blocked_reason, never a lane move), so reTriggered can
+   * be absent while breakerReset is true — the kick-off still mints.
+   */
+  breakerReset?: boolean;
   fromState?: string;
   toState?: string;
 }
@@ -253,6 +261,7 @@ export async function postWorkItemComment(
   workItemId: string,
   body: string,
   references?: readonly TicketReference[],
+  idempotencyKey?: string,
 ): Promise<PostedComment> {
   // Only send `references` when the `#`-picker collected at least one link, so a
   // plain comment posts the exact { body } shape it always did (ISI-5214). The
@@ -266,11 +275,20 @@ export async function postWorkItemComment(
         : { workItemId: r.workItemId },
     );
   }
+  // ISI-7907: when the composer passes a stable per-submit token, relay it as the
+  // Idempotency-Key so the apiserver's short-window dedup collapses a double-clicked
+  // or retried POST to one insert (and no second ISI-4495 re-dispatch). Omitting it
+  // keeps the exact header set the comment always sent (unchanged behaviour). The BFF
+  // (console/lib/bff.ts) forwards the header upstream verbatim.
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (idempotencyKey) headers["idempotency-key"] = idempotencyKey;
   const res = await fetch(
     `/api/work-items/${encodeURIComponent(workItemId)}/comments`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: JSON.stringify(payload),
       cache: "no-store",
     },
@@ -291,6 +309,8 @@ export async function postWorkItemComment(
     createdAt: str(o, "createdAt", "CreatedAt"),
     ...(refs.length > 0 ? { references: refs } : {}),
     reTriggered: o.reTriggered === true || o.ReTriggered === true || undefined,
+    breakerReset:
+      o.breakerReset === true || o.BreakerReset === true || undefined,
     fromState: str(o, "fromState", "FromState") || undefined,
     toState: str(o, "toState", "ToState") || undefined,
   };

@@ -237,10 +237,14 @@ function shapeHistoryRow(row: unknown): RunEvent | null {
   return null;
 }
 
-export function useRunStream(runId: string) {
+export function useRunStream(runId: string, opts?: { maxEvents?: number }) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [status, setStatus] = useState<StreamStatus>("connecting");
   const esRef = useRef<EventSource | null>(null);
+  // ISI-7901: optional tail cap for consumers that only need recent rows (the
+  // discussion room's ended watch). Extracted to a primitive BEFORE the effect
+  // so the deps stay stable - an inline opts object would churn the stream.
+  const maxEvents = opts?.maxEvents;
 
   useEffect(() => {
     if (!runId) return;
@@ -286,7 +290,13 @@ export function useRunStream(runId: string) {
     // and an older hydrated row lands BEFORE newer live rows even when the
     // fetch resolves late.
     const push = (ev: RunEvent | null) => {
-      if (ev) setEvents((prev) => insertOrdered(prev, ev));
+      if (!ev) return;
+      setEvents((prev) => {
+        const next = insertOrdered(prev, ev);
+        return maxEvents !== undefined && next.length > maxEvents
+          ? next.slice(next.length - maxEvents)
+          : next;
+      });
     };
 
     // Legacy kind-stamped payloads on the default message channel.
@@ -355,7 +365,7 @@ export function useRunStream(runId: string) {
       es.close();
       esRef.current = null;
     };
-  }, [runId]);
+  }, [runId, maxEvents]);
 
   return { events, status };
 }

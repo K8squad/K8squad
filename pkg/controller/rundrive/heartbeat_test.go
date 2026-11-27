@@ -399,15 +399,30 @@ const (
 	zRun  = "22222222-2222-2222-2222-222222222222"
 )
 
-// fakeLive fakes the runLivenessChecker seam.
+// fakeLive fakes the runLivenessChecker seam (claim side) and the
+// runRunningChecker seam (holder side, ISI-7788).
 type fakeLive struct {
 	live map[string]bool
-	err  error
+	// running fakes the ISI-7788 holder-side bar (*LiveRuns.HasRunningSandbox):
+	// distinguishes "a pod exists" (live) from "a pod is Running" (running).
+	// nil falls back to live so the pre-ISI-7788 tests keep their meaning.
+	running map[string]bool
+	err     error
 }
 
 func (f *fakeLive) HasLiveSandbox(_ context.Context, runID string) (bool, error) {
 	if f.err != nil {
 		return false, f.err
+	}
+	return f.live[runID], nil
+}
+
+func (f *fakeLive) HasRunningSandbox(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	if f.running != nil {
+		return f.running[runID], nil
 	}
 	return f.live[runID], nil
 }
@@ -1067,6 +1082,53 @@ func TestHeartbeatSweepKeepsHolderWithLiveSandbox(t *testing.T) {
 	}
 }
 
+// ISI-7788: a holder whose sandbox pod EXISTS but has never gone Running
+// (a bring-up stuck Pending — image-pull backoff, capacity starvation) is
+// reclaimed past the grace: an existing-but-not-Running pod is a stuck
+// bring-up, not proof of endpoint use. The waiter proceeds. (The live case:
+// run 13d0eb38 — Claiming, sandbox never Ready — held the 1-slot
+// zai-coding-endpoint while 12 waiters starved with zero throughput.)
+func TestHeartbeatSweepReclaimsPendingPodHolderPastGrace(t *testing.T) {
+	g := NewEndpointGate(1)
+	then := time.Now().Add(-2 * time.Hour)
+	g.now = func() time.Time { return then }
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	g.Acquire("ep", "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{} // CR exists, non-terminal
+	// the pod exists (live) but never reached Running:
+	s.HolderSandbox = &fakeLive{live: map[string]bool{"holder": true},
+		running: map[string]bool{"holder": false}}
+	s.ZombieStallGrace = time.Minute
+	s.Now = func() time.Time { return then.Add(2 * time.Hour) }
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); !ok {
+		t.Fatalf("waiter still refused after the stuck-bring-up holder was reclaimed")
+	}
+}
+
+// ISI-7788: within the grace a Pending-pod holder is kept — the cold-boot
+// allowance is unchanged by the stricter bar.
+func TestHeartbeatSweepKeepsPendingPodHolderWithinGrace(t *testing.T) {
+	g := NewEndpointGate(1)
+	t0 := time.Now()
+	g.now = func() time.Time { return t0 }
+	g.Acquire("ep", "holder", 1, PriorityKey{})
+	g.Acquire("ep", "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeRunTerminalChecker{}
+	s.HolderSandbox = &fakeLive{live: map[string]bool{"holder": true},
+		running: map[string]bool{"holder": false}}
+	s.ZombieStallGrace = time.Hour
+	s.Now = func() time.Time { return t0.Add(time.Minute) }
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); ok {
+		t.Fatalf("holder evicted inside the bring-up grace")
+	}
+}
+
 // ISI-7687: within the bring-up grace a pod-less holder is kept — the cold
 // sandbox boot allowance, identical discipline to the claim-side zombie
 // gate.
@@ -1161,7 +1223,7 @@ func TestHeartbeatSweepAgentAxisStaysAgeBlind(t *testing.T) {
 	ag := &fakeAgentReclaimGate{inflight: []EvictedHolder{{Endpoint: "team/sam", RunID: "holder"}}}
 	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
 	s.AgentGate = ag
-	s.HolderTerminal = fakeRunTerminalChecker{} // CR exists, non-terminal
+	s.HolderTerminal = fakeRunTerminalChecker{}          // CR exists, non-terminal
 	s.HolderSandbox = &fakeLive{live: map[string]bool{}} // pod-less if ever asked
 	s.ZombieStallGrace = time.Minute
 	then := time.Now().Add(-2 * time.Hour)
@@ -1205,5 +1267,38 @@ func TestHeartbeatSweepHolderDefaultGraceFallback(t *testing.T) {
 	s.reclaimDeadHolders(context.Background())
 	if _, ok := g.Acquire("ep", "waiter", 1, PriorityKey{}); !ok {
 		t.Fatalf("pod-less holder past the DEFAULT grace was not reclaimed")
+	}
+}
+
+// fakeStaleBatchChecker fakes a batch checker whose RunList snapshot is STALE:
+// TerminalOrGoneAll omits the holder (the list was taken before the fresh run
+// was created), while the per-run TerminalOrGone reflects a FRESH read — the
+// ISI-7770 TOCTOU window between the sweep's snapshot and the eviction.
+type fakeStaleBatchChecker struct {
+	perRun map[string]bool
+}
+
+func (f fakeStaleBatchChecker) TerminalOrGone(_ context.Context, runID string) (bool, error) {
+	return f.perRun[runID], nil
+}
+
+func (f fakeStaleBatchChecker) TerminalOrGoneAll(_ context.Context) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+// ISI-7770: a holder absent from the batch verdicts snapshot is NOT "gone" —
+// the snapshot may predate the holder's acquisition. The sweep must re-check
+// the run per-checker before reclaiming; a fresh non-terminal CR keeps its slot.
+func TestHeartbeatSweepKeepsHolderAbsentFromStaleBatchSnapshot(t *testing.T) {
+	g := NewEndpointGate(1)
+	const ep = "https://api.z.ai/api/coding/paas/v4"
+	g.Acquire(ep, "fresh-holder", 1, PriorityKey{})
+	g.Acquire(ep, "waiter", 1, PriorityKey{})
+	s := &HeartbeatSweeper{Log: func(string, ...any) {}}
+	s.EndpointGate = g
+	s.HolderTerminal = fakeStaleBatchChecker{perRun: map[string]bool{"fresh-holder": false}}
+	s.reclaimDeadHolders(context.Background())
+	if _, ok := g.Acquire(ep, "fresh-holder", 1, PriorityKey{}); !ok {
+		t.Fatalf("fresh holder lost its slot to a stale batch snapshot (ISI-7770 race)")
 	}
 }

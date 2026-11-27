@@ -70,6 +70,14 @@ import {
   type RunComment,
 } from "@/lib/tickets/runComments";
 import { KillRun } from "@/components/KillRun";
+import { buildFeed } from "@/lib/tickets/feedView";
+import {
+  ActivityGroupChip,
+  FeedModeToggle,
+  RunStreamPanel,
+  SystemNoticeCard,
+  useFeedMode,
+} from "./FeedTreatments";
 import { runHref } from "@/lib/discussion/provenance";
 import {
   parseProgressEnvelope,
@@ -592,11 +600,20 @@ function ActivityRow({
   item,
   runMeta,
   projectId,
+  liveSteps,
+  streamRunId,
 }: {
   item: ActivityItem;
   runMeta: Map<string, RunComment>;
   // The ticket's project slug — deep-links a comment's `#` ticket refs (ISI-5214).
   projectId: string;
+  // ISI-7888: the live SSE thinking rows for the run the ticket surface is
+  // already streaming, handed to the owning agent comment's streaming panel.
+  liveSteps?: LiveThinkingRow[];
+  // The run those live rows belong to (the self-dispatch ladder's run or the
+  // ambient holding run) - only the bubble whose meta.runId matches mounts
+  // the panel.
+  streamRunId?: string;
 }) {
   if (item.kind === "event" && item.event) {
     const e = item.event;
@@ -678,7 +695,16 @@ function ActivityRow({
     const meta = runMeta.get(
       runCommentKey(item.comment.author, item.at, item.comment.body),
     );
-    return <RunCommentCard item={item} meta={meta} projectId={projectId} />;
+    return (
+      <RunCommentCard
+        item={item}
+        meta={meta}
+        projectId={projectId}
+        liveSteps={
+          streamRunId && meta?.runId === streamRunId ? liveSteps : undefined
+        }
+      />
+    );
   }
   return null;
 }
@@ -944,11 +970,15 @@ function RunCommentCard({
   item,
   meta,
   projectId,
+  liveSteps,
 }: {
   item: ActivityItem;
   meta?: RunComment;
   // Deep-links this comment's `#` ticket references to the in-console ticket (ISI-5214).
   projectId: string;
+  // ISI-7888: live SSE steps for THIS bubble's run - mounted as the collapsed
+  // streaming bar under the body (the owning agent comment only).
+  liveSteps?: LiveThinkingRow[];
 }) {
   const comment = item.comment!;
   const author = displayName(comment.author);
@@ -1099,6 +1129,22 @@ function RunCommentCard({
         )}
 
         <ProgressBody body={comment.body ?? ""} />
+
+        {/* ISI-7888 (design ISI-7861 para-4 #4): the streaming panel rides the
+            OWNING agent comment - a collapsed bar ("Live: agent working... step
+            N", pulse dot while in flight) expanding to the newest-first step
+            list, hydrated from the ISI-7484 durable store (live rows
+            in-session, GET /api/runs/{id}/events replay after - no second
+            EventSource). */}
+        {meta?.runId && (
+          <RunStreamPanel
+            runId={meta.runId}
+            running={meta.running}
+            liveSteps={liveSteps ?? []}
+            agentName={author}
+            scopeId={`run.${meta.runId}`}
+          />
+        )}
 
         {/* ISI-5214: the `#`-picker ticket LINKS this comment carried, read straight
             off the wire (no render-time refetch) and deep-linked to the in-console
@@ -1523,7 +1569,14 @@ function Composer({
     // honest ladder. The comment path picks no agent; the re-triggered Run goes to
     // the ticket's requested/last agent, which the parent hands us as `reTriggerAgent`.
     // reTriggered=false (todo/backlog comment, or the live-holder guard) seeds nothing.
-    if (comment.reTriggered) onDispatched(reTriggerAgent);
+    // ISI-7837: breakerReset=true — the comment kicked off a circuit-breaker-parked
+    // ticket (the park cleared + the breaker’s generation count reset, pkg/coord
+    // AppendHumanComment) — mints too, so it seeds the SAME ladder. The breaker parks
+    // a ticket ON “todo” (it stamps blocked_reason, never a lane move), so reTriggered
+    // is absent in exactly this shape: without breakerReset here the kick-off was the
+    // silent no-op of the live incident (comment 201, no run, nothing streamed).
+    if (comment.reTriggered || comment.breakerReset)
+      onDispatched(reTriggerAgent);
     onPosted(comment);
   }
 
@@ -1963,16 +2016,21 @@ function TicketBody({
   // "working" pre-backend-fix) while the reply stayed invisible until a manual reload or
   // a new tab. Keyed on the dispatch nonce so a second nudge on the same ticket re-arms
   // it; the ref guard makes it fire exactly once per dispatch across terminal re-renders.
-  const settledFor = useRef<number | null>(null);
+  const settledFor = useRef<string>("");
   useEffect(() => {
     const at = dispatch?.at ?? null;
     if (at === null) return;
     const state = dispatchWatch?.state;
     if (state !== "succeeded" && state !== "failed") return;
-    if (settledFor.current === at) return; // already reloaded for this dispatch
-    settledFor.current = at;
+    // ISI-7863 (parent ISI-7862): keyed per FOLLOWED run, not per dispatch — the
+    // ladder re-seeds onto each re-dispatched run (fail → new run_id), and every
+    // one of them must reload the thread once on settle so its terminal rows
+    // (failure notice, final SUMMARY) materialize in the originating tab.
+    const key = `${at}:${dispatchWatch?.runId ?? ""}`;
+    if (settledFor.current === key) return; // already reloaded for this run
+    settledFor.current = key;
     onRunSettled();
-  }, [dispatchWatch?.state, dispatch?.at, onRunSettled]);
+  }, [dispatchWatch?.state, dispatchWatch?.runId, dispatch?.at, onRunSettled]);
   // ISI-7274 (parent ISI-7262 WS-2): the self-dispatch ladder's once-per-dispatch
   // reload above fires the moment the ladder freezes terminal — BEFORE the run's
   // final task-io comment (or the settle's terminal rows, which commit after the
@@ -2030,6 +2088,21 @@ function TicketBody({
       rc,
     ]),
   );
+
+  // ISI-7888 (ISI-7861 para-4): the conversation-first feed. Conversation is
+  // the default tab (per-user persisted): only human + agent comments render
+  // first-class - operator notices become collapsed system-notice cards,
+  // runs of lane/state events collapse into one activity chip each, and
+  // live thinking steps move under the owning agent comment's streaming
+  // panel. "All activity" restores the ungrouped one-row-per-event shape.
+  const [feedMode, setFeedMode] = useFeedMode();
+  const feedBlocks = useMemo(
+    () => buildFeed(activity, feedMode),
+    [activity, feedMode],
+  );
+  // The run whose live rows liveThinking holds - the self-dispatch ladder's
+  // run when one is streaming this session, else the ambient holding run.
+  const streamRunId = dispatchWatch?.runId ?? thread.runId;
 
   // ISI-5157 — scroll ergonomics for a tall ticket. The page (document) is the
   // scroll owner on this route, so the docked composer and the jump-to-bottom
@@ -2254,20 +2327,52 @@ function TicketBody({
             newest last. */}
           <section className="card" data-testid="detail-activity">
             <h2>Activity</h2>
+            {/* ISI-7888: the [ Conversation | All activity ] segmented control -
+              Conversation default, choice persisted per user (ISI-7861 para-5). */}
+            <FeedModeToggle mode={feedMode} onChange={setFeedMode} />
             {activity.length === 0 && !dispatchWatch ? (
               <p className="muted" data-testid="detail-activity-empty">
                 No activity yet.
               </p>
             ) : (
               <ul className="ksq-activity-list">
-                {activity.map((item, i) => (
-                  <ActivityRow
-                    key={`${item.kind}-${i}`}
-                    item={item}
-                    runMeta={runMeta}
-                    projectId={projectId}
-                  />
-                ))}
+                {feedBlocks.map((block, i) => {
+                  if (block.kind === "notice") {
+                    const scope = `notice.${runCommentKey(
+                      block.item.who,
+                      block.item.at,
+                      block.item.comment?.body ?? "",
+                    )}`;
+                    return (
+                      <SystemNoticeCard
+                        key={`notice-${i}`}
+                        item={block.item}
+                        scopeId={scope}
+                      />
+                    );
+                  }
+                  if (block.kind === "activity") {
+                    const first = block.items[0]?.at ?? "";
+                    const last = block.items[block.items.length - 1]?.at ?? "";
+                    return (
+                      <ActivityGroupChip
+                        key={`group-${i}`}
+                        items={block.items}
+                        scopeId={`activity.${first}.${last}`}
+                      />
+                    );
+                  }
+                  return (
+                    <ActivityRow
+                      key={`${block.item.kind}-${i}`}
+                      item={block.item}
+                      runMeta={runMeta}
+                      projectId={projectId}
+                      liveSteps={liveThinking}
+                      streamRunId={streamRunId}
+                    />
+                  );
+                })}
                 {/* ISI-4881 (S3): the placeholder run bubble lands at the tail — where
                   the real RunCommentCard eventually renders (activity is newest-last),
                   so there is no layout jump on hand-off. Appears within a frame of the

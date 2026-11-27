@@ -15,7 +15,7 @@ import (
 // telemetry mapper emits an mcp.call span (SpanKindClient) instead of bucketing
 // the call as a local `system` gen_ai.tool.call.
 func TestOpenCodeParserMCPToolServer(t *testing.T) {
-	parse := newOpenCodeParser([]string{"ksquad-memory-discussion", "mempalace"})
+	parse := newOpenCodeParser([]string{"ksquad-memory-discussion", "mempalace"}).parse
 	line := `{"type":"tool_use","part":{"tool":"ksquad-memory-discussion_post","state":{"status":"completed","input":{"body":"hi"}}}}`
 	out := parse(line)
 	require.Len(t, out, 1)
@@ -26,7 +26,7 @@ func TestOpenCodeParserMCPToolServer(t *testing.T) {
 
 // A tool that names no declared MCP server is left as a local call (no Server).
 func TestOpenCodeParserLocalToolUnchanged(t *testing.T) {
-	parse := newOpenCodeParser([]string{"mempalace"})
+	parse := newOpenCodeParser([]string{"mempalace"}).parse
 	line := `{"type":"tool_use","part":{"tool":"read","state":{"status":"completed","input":{"filePath":"/etc/hostname"}}}}`
 	out := parse(line)
 	require.Len(t, out, 1)
@@ -38,7 +38,7 @@ func TestOpenCodeParserLocalToolUnchanged(t *testing.T) {
 // A Run with no MCP servers never rewrites a tool name, even one that happens to
 // contain an underscore.
 func TestOpenCodeParserNoServersNoop(t *testing.T) {
-	parse := newOpenCodeParser(nil)
+	parse := newOpenCodeParser(nil).parse
 	line := `{"type":"tool_use","part":{"tool":"mempalace_search","state":{"status":"completed","input":{"query":"x"}}}}`
 	out := parse(line)
 	require.Len(t, out, 1)
@@ -80,7 +80,7 @@ func TestMCPServerNames(t *testing.T) {
 // An in-flight (start phase) MCP call is enriched too, so the pending span is
 // opened as an mcp.call with the right server from the first frame.
 func TestOpenCodeParserMCPToolStartPhase(t *testing.T) {
-	parse := newOpenCodeParser([]string{"mempalace"})
+	parse := newOpenCodeParser([]string{"mempalace"}).parse
 	line := `{"type":"tool_use","part":{"tool":"mempalace_search","state":{"status":"running","input":{"query":"x"}}}}`
 	out := parse(line)
 	require.Len(t, out, 1)

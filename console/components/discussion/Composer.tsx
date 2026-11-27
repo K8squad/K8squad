@@ -50,6 +50,7 @@ import {
 } from "@/components/markdown/MarkdownEditor";
 import { MentionPopover } from "./MentionPopover";
 import { SlashCommandMenu } from "./SlashCommandMenu";
+import { KillRun } from "@/components/KillRun";
 
 // The `@`-fragment matcher moved to the shared `lib/mentions` primitive (ISI-5159)
 // so the ticket composer reuses the exact same trigger semantics; re-exported here
@@ -82,6 +83,28 @@ export interface ComposerProps {
    * and `/`-prefixed text posts verbatim (the pre-WS-D behaviour).
    */
   onCommand?: (name: string) => void;
+  /**
+   * ISI-7906 (WS-B of ISI-7893, Layer 1b + 2): room-level "an agent run
+   * triggered here is live" bit, derived by DiscussionRoom from
+   * `hasActiveWork(working)` (lib/discussion/working.ts). True ⇒ the submit
+   * button stays disabled with run-aware copy and the interrupt affordance
+   * shows — the discussion surface does NOT dedupe human double-clicks server
+   * side (each click mints a NEW message id, so dispatch idempotency on
+   * (MessageID, AgentName) does not catch it), so the composer is the lock.
+   * Absent/false ⇒ the composer posts normally.
+   */
+  activeRun?: boolean;
+  /**
+   * ISI-7906 (WS-B, Layer 3): the live run's work-item id, resolved by
+   * DiscussionRoom from the overview presence feed joined to the active working
+   * watch by agent name (lib/discussion/working.ts#resolveActiveRunWorkItem) —
+   * the minted run id never reaches the console, so this is the FE-side
+   * correlation. When present the interrupt reuses `<KillRun>`; when absent (an
+   * agent turn is live but its run has not been identified yet) the interrupt
+   * renders DISABLED with a tooltip rather than hiding it, so there is never a
+   * "no way to stop it" dead end. Only meaningful while `activeRun` is true.
+   */
+  interruptWorkItem?: string | null;
 }
 
 const MENTION_DEBOUNCE_MS = 200;
@@ -93,8 +116,18 @@ export function Composer({
   directTargets,
   searchMentions,
   onCommand,
+  activeRun,
+  interruptWorkItem,
 }: ComposerProps) {
   const [body, setBody] = useState("");
+  // ISI-7906 (WS-B, Layer 1): a real in-flight "sending" lock. Set true before
+  // `await onPost`, cleared in `finally` — disables the submit button for the
+  // duration of the post round-trip so a rapid multi-click fires exactly ONE
+  // message/dispatch (the pre-fix gate at `disabled` was blank-input only, and
+  // `submit()` set no flag). The handoff to `activeRun` is seamless: `onPost`
+  // (DiscussionRoom#post) awaits the write THEN seeds the working watch, so by
+  // the time `sending` clears a dispatched run already holds the button down.
+  const [sending, setSending] = useState(false);
   const [audience, setAudience] = useState<Audience>({ kind: "party" });
   const [suggestions, setSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionLoading, setMentionLoading] = useState(false);
@@ -127,7 +160,12 @@ export function Composer({
     audience,
     references: refs,
   };
-  const disabled = !canSubmit(input);
+  // ISI-7906 (WS-B, Layers 1+2): the button is disabled for a blank body (the
+  // original gate), while a post is in flight (`sending`), AND while a run this
+  // room triggered is still live (`activeRun`). A slash command still runs off
+  // the open command menu's keyboard path even when the button is down.
+  const runBusy = sending || Boolean(activeRun);
+  const disabled = !canSubmit(input) || runBusy;
 
   // Debounced mention query: fires only while a live trigger fragment is open.
   // A `#` trigger scopes the shown suggestions to work_item (ticket) rows.
@@ -291,11 +329,26 @@ export function Composer({
       }
     }
     if (!canSubmit(input)) return;
-    await onPost(buildPostBody(input));
-    setBody("");
-    setRefs([]);
-    setMentionOpen(false);
-    setCommandOpen(false);
+    // ISI-7906 (WS-B, Layer 1): guard against a re-entrant submit (a second
+    // click that raced the disable, or an Enter while the POST is in flight) and
+    // hold the lock across the whole round-trip. Cleared in `finally` so a
+    // failed post re-enables the composer (the button does not wedge on error),
+    // while a successful post that dispatched a run hands the lock to `activeRun`.
+    if (sending) return;
+    setSending(true);
+    try {
+      await onPost(buildPostBody(input));
+      setBody("");
+      setRefs([]);
+      setMentionOpen(false);
+      setCommandOpen(false);
+    } catch {
+      // A failed post keeps the body (the clears above are skipped) so the human
+      // can retry; the finally still re-enables the composer so it never wedges
+      // on error (ISI-7906 Layer 1). Error surfacing stays the caller's job.
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -359,10 +412,47 @@ export function Composer({
           className="ksq-composer__submit"
           data-testid="composer-submit"
           disabled={disabled}
+          aria-describedby={activeRun ? "composer-run-status" : undefined}
+          title={
+            activeRun
+              ? "An agent run is in progress — wait for it to finish or interrupt it."
+              : undefined
+          }
         >
-          {parentId ? "Reply" : "Post"}
+          {sending ? "Posting…" : parentId ? "Reply" : "Post"}
         </button>
       </div>
+      {/* ISI-7906 (WS-B, Layers 2+3) — while a run this room triggered is live,
+          the submit button stays disabled (above) and this region explains why
+          and offers the interrupt. The interrupt reuses the work-item-scoped
+          <KillRun> when the run's work-item id has been resolved from the
+          overview feed; until then it renders DISABLED with a tooltip rather
+          than hiding — never a "no way to stop it" dead end (plan §7). */}
+      {activeRun ? (
+        <div
+          id="composer-run-status"
+          className="ksq-composer__run-status"
+          data-testid="composer-run-status"
+          role="status"
+        >
+          <span className="ksq-composer__run-msg">
+            An agent run is in progress — wait for it to finish or interrupt it.
+          </span>
+          {interruptWorkItem ? (
+            <KillRun workItem={interruptWorkItem} />
+          ) : (
+            <button
+              type="button"
+              className="ksq-composer__interrupt-pending"
+              data-testid="composer-interrupt-pending"
+              disabled
+              title="Interrupt will be available once the live run is identified."
+            >
+              Interrupt
+            </button>
+          )}
+        </div>
+      ) : null}
       {composeMode === "write" && commandOpen ? (
         <SlashCommandMenu
           commands={commands}

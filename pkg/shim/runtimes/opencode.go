@@ -99,6 +99,7 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 	if lc.ModelRoute.Endpoint != "" {
 		modelFlag = capability.OpenCodeBYOProviderID + "/" + model
 	}
+	openCodeParser := newOpenCodeParser(mcpServerNames(lc.MCPEndpoints))
 	spec := ExecSpec{
 		Path: "opencode",
 		Args: []string{"run", "--print-logs", "--format=json", "--model", modelFlag},
@@ -115,7 +116,12 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 		// synthesizes each step's true model latency from opencode's own
 		// step_start→step_finish event timestamps, so the llm.call span
 		// reflects real request duration instead of a microsecond point.
-		Parse:      newOpenCodeParser(mcpServerNames(lc.MCPEndpoints)),
+		// ISI-7755: Finalize is paired with Parse via the shared parser
+		// state; it emits the final assistant text as MessageKindDeliverable
+		// after stdout EOF so the deliverable is in-band rather than relying
+		// solely on the engine's terminal backstop.
+		Parse:      openCodeParser.parse,
+		Finalize:   openCodeParser.finalize,
 		WorkDir:    lc.WorkDir,
 		SettleLine: openCodeSettleLine,
 	}
@@ -275,6 +281,14 @@ type openCodeLineMeta struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
+// openCodeParserState is the per-run state shared between the stateful line
+// parser and its post-EOF finalize hook (ISI-7755). Both are created together
+// by newOpenCodeParser and must come from the same call.
+type openCodeParserState struct {
+	parse    func(line string) []Progress
+	finalize func() []Progress
+}
+
 // newOpenCodeParser returns a per-run stateful stdout parser (ISI-4718). It
 // wraps the stateless parseOpenCodeLine and, when opencode's step-finish part
 // omits a scalar `duration` (v1.18.27 does), synthesizes the step's true model
@@ -289,9 +303,18 @@ type openCodeLineMeta struct {
 // telemetry mapper's wall-clock step-clock fallback (ISI-4238) still applies —
 // so this is strictly additive: accurate when opencode reports timing, no worse
 // than before when it does not.
-func newOpenCodeParser(mcpServers []string) func(line string) []Progress {
+//
+// ISI-7755: the parser also tracks the last assistant text message across all
+// steps. The finalize hook emits it as MessageKindDeliverable after stdout EOF,
+// so the deliverable is guaranteed to be in the event stream before the engine's
+// terminal backstop fires. This is more reliable than relying on the backstop
+// alone: the finalize runs in the scan goroutine and emits atomically before
+// the scanned channel closes, whereas the backstop fires after runner.Run()
+// returns and can be lost if the sandbox pod is terminated in that window.
+func newOpenCodeParser(mcpServers []string) openCodeParserState {
 	var stepStartMS int64 // step_start timestamp of the in-flight step; 0 = none
-	return func(line string) []Progress {
+	var lastText string   // last assistant text seen; promoted to deliverable on finalize
+	parseFn := func(line string) []Progress {
 		var meta openCodeLineMeta
 		_ = json.Unmarshal([]byte(line), &meta) // best-effort; non-JSON → zero meta
 		if meta.Type == "step_start" && meta.Timestamp > 0 {
@@ -311,8 +334,34 @@ func newOpenCodeParser(mcpServers []string) func(line string) []Progress {
 			}
 			stepStartMS = 0 // next step measures from its own step_start
 		}
+		// ISI-7755: track the last assistant text message so finalize can
+		// tag it as MessageKindDeliverable after stdout EOF. Capture
+		// MessageKindThinking messages only (thinking = agent text that hasn't
+		// been classified yet); a deliverable or error that the stateless parser
+		// already tagged (e.g. opencode's error frame) is left as-is.
+		for _, p := range progs {
+			if p.Kind == a2a.EventMessage && p.Message != nil &&
+				p.Message.Kind == a2a.MessageKindThinking && p.Message.Text != "" {
+				lastText = p.Message.Text
+			}
+		}
 		return progs
 	}
+	finalizeFn := func() []Progress {
+		if lastText == "" {
+			return nil
+		}
+		return []Progress{{
+			Kind: a2a.EventMessage,
+			Message: &a2a.MessagePayload{
+				Role:  "agent",
+				Text:  lastText,
+				Trust: "untrusted",
+				Kind:  a2a.MessageKindDeliverable,
+			},
+		}}
+	}
+	return openCodeParserState{parse: parseFn, finalize: finalizeFn}
 }
 
 // mcpServerNames extracts the MCP server keys from the Run's endpoint set. These

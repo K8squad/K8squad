@@ -2578,3 +2578,213 @@
   gap: 8px;
   padding: 4px 0;
 }
+
+/* ---- ISI-7888 - ISI-7861: conversation-first feed treatments ----
+ * The feed is a conversation, not a log: human/agent comments stay
+ * first-class (the existing .ksq-runcomment cards, untouched); system output
+ * rides the darker inset token, smaller type, mono timestamps - never the
+ * comment card fill, never an avatar. Color roles reuse the locked console
+ * tokens only: amber (--ksq-phase-implementation) = run-failure/attention;
+ * green (--status-running) = live; no new palette. */
+
+.ksq-feed-toggle {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 0 0 14px;
+  background: var(--inset, var(--canvas));
+}
+
+.ksq-feed-toggle__opt {
+  padding: 5px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+
+.ksq-feed-toggle__opt--active {
+  background: var(--surface);
+  color: var(--text-1);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+/* System-notice card (para-4 #3) - compact muted one-liner, amber tick. */
+.ksq-notice {
+  list-style: none;
+  margin: 6px 0;
+}
+
+.ksq-notice__toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 3px);
+  background: var(--inset, var(--canvas));
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.85em;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ksq-notice__tick {
+  color: var(--ksq-phase-implementation);
+}
+
+.ksq-notice__headline {
+  color: var(--text-1);
+  font-weight: 500;
+}
+
+.ksq-notice__time {
+  margin-left: auto;
+}
+
+.ksq-notice__body {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-top: 0;
+  border-radius: 0 0 calc(var(--radius) - 3px) calc(var(--radius) - 3px);
+  background: var(--inset, var(--canvas));
+  font-size: 0.9em;
+}
+
+.ksq-notice__runlink {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--accent);
+}
+
+/* Activity group (para-4 #5) - the faintest weight: one muted chip. */
+.ksq-activity-group {
+  list-style: none;
+  margin: 4px 0;
+}
+
+.ksq-activity-group__toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.ksq-activity-group__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-idle);
+  align-self: center;
+}
+
+.ksq-activity-group__events {
+  list-style: none;
+  margin: 4px 0 4px 14px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+/* Streaming panel (para-4 #4) - collapsed bar on the owning agent comment. */
+.ksq-runstream {
+  margin: 8px 0 2px;
+}
+
+.ksq-runstream__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--inset, var(--canvas));
+  color: var(--text-2);
+  font: inherit;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+
+.ksq-runstream__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--status-idle);
+}
+
+.ksq-runstream__dot--live {
+  background: var(--status-running);
+  animation: ksq-runstream-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes ksq-runstream-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.ksq-runstream__label {
+  color: var(--text-2);
+}
+
+.ksq-runstream__steps {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 3px);
+  background: var(--inset, var(--canvas));
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.ksq-runstream__step {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 2px 0;
+  font-size: 0.8em;
+  color: var(--text-2);
+}
+
+.ksq-runstream__step-time {
+  flex: none;
+}
+
+/* Narrow (<720px, para-6): single column, one-line affordances, inline
+ * expansion - no modals, no side drawers. */
+@media (max-width: 719px) {
+  .ksq-notice__toggle,
+  .ksq-activity-group__toggle,
+  .ksq-runstream__toggle {
+    flex-wrap: wrap;
+  }
+
+  .ksq-runstream__steps {
+    max-height: 200px;
+  }
+}
+
+/* prefers-reduced-motion (para-6): instant expands and a static pulse dot. */
+@media (prefers-reduced-motion: reduce) {
+  .ksq-runstream__dot--live {
+    animation: none;
+  }
+}

@@ -28,8 +28,15 @@
 
 import type { Message } from "./types";
 
-/** The lifecycle of one dispatch working entry surfaced in the room. */
-export type WorkingPhase = "working" | "replied" | "failed";
+/**
+ * The lifecycle of one dispatch working entry surfaced in the room. ISI-7772
+ * splits the old terminal failure claim: a timed-out seat with NO proof the
+ * run actually failed is `waiting` (an honest "hasn't replied yet" — the
+ * agent may never have been dispatched at all); `failed` stays reserved for
+ * surfaces that can PROVE the run failed (the ticket ladder's real run
+ * state).
+ */
+export type WorkingPhase = "working" | "replied" | "failed" | "waiting";
 
 /**
  * One tracked dispatch: a specific agent the human's post @-mentioned, and the
@@ -46,6 +53,13 @@ export interface DispatchWatch {
   phase: WorkingPhase;
   /** Epoch ms when the watch was seeded — the clock the failure timeout reads. */
   since: number;
+  /**
+   * ISI-7772 (humane failure surface): the agent's REAL live-run state off
+   * the overview presence feed, stamped by applyLivePresence. "queued"
+   * (waiting for an endpoint slot) renders its own honest seat copy instead
+   * of the generic working label. Meaningful only while phase is "working".
+   */
+  live?: "queued" | "running";
 }
 
 /** A minimal roster row (name + optional status) — the dispatch-eligibility input. */
@@ -282,11 +296,52 @@ export function applyAuthorReply(
 }
 
 /**
- * Expire `working` watches older than `timeoutMs` to `failed` ("agent could not
- * respond"), so the room never leaves a working indicator spinning forever when
- * a run dies or never posts back (ISI-5174 AC3). Pure in `now`: the caller owns
- * the clock (a component timer), which keeps this trivially testable. Input list
- * is not mutated.
+ * ISI-7772 (humane failure surface): the per-agent presence map
+ * applyLivePresence reads — keyed by agent name (any case), each entry naming
+ * that agent's current live-run state. "queued" includes runs waiting for an
+ * endpoint slot (WaitingForEndpointSlot), the state a serialized multi-seat
+ * fan-out leaves later seats in.
+ */
+export interface LivePresenceMap {
+  /** Per-agent live-run presence keyed by agent name (any case). */
+  [agentName: string]: { state: "queued" | "running" } | undefined;
+}
+
+/**
+ * Stamp each `working` watch with the agent's REAL live-run state from the
+ * per-agent presence map the room already holds (lib/overview liveRuns — the
+ * same feed watchStillLive probes). A queued seat renders its own honest copy
+ * ("queued behind the endpoint gate…"); absence from the map clears the stamp
+ * (unknown state). Input list is not mutated.
+ */
+export function applyLivePresence(
+  existing: readonly DispatchWatch[],
+  byName: Readonly<LivePresenceMap> | null | undefined,
+): DispatchWatch[] {
+  if (!byName) return existing.slice();
+  return existing.map((w) => {
+    if (w.phase !== "working") return w;
+    const p = byName[w.agentName] ?? byName[w.agentName.toLowerCase()];
+    const live = p ? p.state : undefined;
+    if (w.live === live) return w;
+    return { ...w, live };
+  });
+}
+
+/**
+ * Expire `working` watches older than `timeoutMs` to `waiting` ("agent hasn't
+ * replied yet"), so the room never leaves a working indicator spinning forever
+ * when a run dies or never posts back (ISI-5174 AC3). Pure in `now`: the caller
+ * owns the clock (a component timer), which keeps this trivially testable.
+ * Input list is not mutated.
+ *
+ * ISI-7772 (humane failure surface): the timeout is NOT proof of failure — a
+ * never-dispatched agent and a dead run time out identically, and the room
+ * cannot tell them apart — so the seat now states the honest thing ("hasn't
+ * replied yet") instead of blaming the agent with a "could not respond"
+ * failure claim it never had evidence for. Provable failure stays the ticket
+ * ladder's job (real run state) and the thread's failure notice (ISI-7772
+ * server side).
  *
  * ISI-7483 (queued ≠ failed): a wall-clock timeout alone cannot distinguish "the
  * run died" from "the run is honestly QUEUED" — a multi-seat dispatch serialized
@@ -319,7 +374,7 @@ export function expireStale(
   return existing.map((w) => {
     if (w.phase !== "working" || now - w.since < timeoutMs) return w;
     if (stillLive?.(w) === true) return w; // provably queued/running — keep waiting honestly
-    return { ...w, phase: "failed" as const };
+    return { ...w, phase: "waiting" as const, live: undefined };
   });
 }
 
@@ -337,4 +392,33 @@ export function groupByMessage(
 /** True when any watch is still active — the room-level "something is working" bit. */
 export function hasActiveWork(watches: readonly DispatchWatch[]): boolean {
   return watches.some((w) => w.phase === "working");
+}
+
+/**
+ * ISI-7906 (WS-B of ISI-7893, interrupt affordance): resolve the work-item id of
+ * a still-live dispatched run so the composer's interrupt (components/KillRun,
+ * work-item scoped) has a target. The minted run id never reaches the console —
+ * dispatch is a server-side decision keyed by (messageId, agent) AFTER the post
+ * commits (see header + internal/discussion/dispatch.go) — so the FE-side
+ * correlation is the active working watch joined to the per-agent overview
+ * presence feed by agent NAME (any case), the SAME map applyLivePresence /
+ * watchStillLive read. Returns the first active watch's resolved work-item id,
+ * or undefined when no live run exposes one yet; the caller then renders the
+ * interrupt DISABLED with a tooltip rather than hiding it, so the room never
+ * dead-ends with "a run is live and no way to stop it".
+ */
+export function resolveActiveRunWorkItem(
+  watches: readonly DispatchWatch[],
+  byName:
+    | Readonly<Record<string, { workItem?: string } | undefined>>
+    | null
+    | undefined,
+): string | undefined {
+  if (!byName) return undefined;
+  for (const w of watches) {
+    if (w.phase !== "working") continue;
+    const p = byName[w.agentName] ?? byName[w.agentName.toLowerCase()];
+    if (p?.workItem) return p.workItem;
+  }
+  return undefined;
 }

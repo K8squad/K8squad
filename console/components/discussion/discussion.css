@@ -328,6 +328,32 @@
   cursor: not-allowed;
 }
 
+/* ISI-7906 (WS-B of ISI-7893) — run-aware composer lock: the explanatory copy +
+   interrupt shown below the row while a run this room triggered is live. */
+.ksq-composer__run-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+.ksq-composer__run-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ksq-composer__interrupt-pending {
+  background: transparent;
+  color: var(--muted, #6b7280);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
 /* ISI-4929: @-mention popover (§4.3) + direct-audience chip (§4.2). */
 .ksq-chip--direct {
   font-size: 11px;
@@ -540,8 +566,15 @@ a.ksq-ticket-chip:hover {
 .ksq-working--failed {
   color: var(--status-blocked);
 }
+/* ISI-7772: the honest timed-out seat — muted, no failure hue (the room cannot
+ * prove failure at timeout, so it must not paint one). */
+.ksq-working--waiting {
+  color: var(--text-2);
+  font-style: italic;
+}
 .ksq-working__check,
-.ksq-working__warn {
+.ksq-working__warn,
+.ksq-working__wait {
   font-family: var(--font-mono);
   font-weight: 600;
 }

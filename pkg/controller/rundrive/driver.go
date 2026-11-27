@@ -499,6 +499,16 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		if r.AgentGate != nil {
 			r.AgentGate.Release(runID)
 		}
+		// ISI-7788: the endpoint twin of the release above. A run whose item
+		// went terminal through any path the driver's release sites missed
+		// (projector force-fail, reaper force-fail, a fail-closed park from
+		// another leader) must not keep its BYO endpoint permit past the
+		// absorbing pass: a Failed run held a single-slot endpoint for
+		// 11h44m while its waiter sat "exempt from zombie reap". Idempotent
+		// and nil-safe like the agent release.
+		if r.EndpointGate != nil {
+			r.EndpointGate.ReleaseByRun(runID)
+		}
 		noopTick = true
 		return ctrl.Result{}, nil // absorbing (AC5): the projector has it
 	}
@@ -756,7 +766,16 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	}
 	opts := reconcile.Options{Durable: true, Fence: store.Fence(), MaxPasses: r.maxPasses()}
 	if laps > 0 {
-		next := laps + 1 // retry lap N: a genuine new agent attempt (fresh task id)
+		// ISI-7763: laps is the count of ACCEPTED retry enters (the
+		// retry_lap_entered audit rows LapsUsed counts), so retry enter #N
+		// dispatches as lap N — run_id#lapN, a genuine new agent attempt
+		// with its own at-most-once marker (the bare run_id stays lap 0,
+		// the original dispatch; a crash re-drive re-derives the same id
+		// and reattaches). The previous laps+1 skipped an id and, with the
+		// pre-ISI-7763 marker-based counter wedged at zero, meant no retry
+		// lap EVER carried a fresh task id — every re-drive reattached the
+		// original dispatch marker and burned the retry budget on no-ops.
+		next := laps
 		opts.Lap = &next
 	}
 	if err := reconcile.Reconcile(effects, store, opts); err != nil {
@@ -803,6 +822,15 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			// forever behind a corpse BYO-endpoint holder).
 			return r.bindGoneDeathPath(ctx, &run, cs)
 		}
+		if IsEgressBlocked(err) {
+			// ISI-7705: the dispatch-time egress guard tripped — an
+			// external-FQDN BYO endpoint is unreachable from the proxy-less
+			// sandbox behind the namespace's egress NetworkPolicy. This is
+			// DETERMINISTIC (config, not transient), so terminalize and park
+			// like the fail-closed breaker, with the durable condition.
+			finalStep = reconcile.StepFailed
+			return r.egressBlockedFail(ctx, &run, runID, store.Fence(), err)
+		}
 		if contextasm.IsFailClosed(err) {
 			finalStep = reconcile.StepFailed
 			return r.failClosedPark(ctx, &run, runID, store.Fence(), err)
@@ -848,6 +876,16 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			// ISI-7538: the sticky effects error is the gone-sandbox
 			// death signal (see the sibling branch above).
 			return r.bindGoneDeathPath(ctx, &run, cs)
+		}
+		if IsEgressBlocked(err) {
+			// ISI-7705: the dispatch effect's egress guard failed fast
+			// (external BYO FQDN + proxy-less sandbox + egress policy).
+			// Deterministic — re-dispatch cannot succeed until the operator
+			// carries the proxy env (or the netpol posture changes) — so
+			// terminalize + park with the durable condition, exactly like the
+			// fail-closed breaker below.
+			finalStep = reconcile.StepFailed
+			return r.egressBlockedFail(ctx, &run, runID, store.Fence(), err)
 		}
 		if contextasm.IsFailClosed(err) {
 			// ISI-5543: the dispatch effect's context assembly failed closed
@@ -925,10 +963,88 @@ func (r *Driver) failClosedPark(ctx context.Context, run *api.Run, runID string,
 		// Absorb — the committed terminal step stops the drive on the next pass.
 		return ctrl.Result{}, nil
 	}
+	// ISI-7788: a fail-closed/egress-blocked park is terminal — release the
+	// BYO endpoint permit now. The run never reaches the dispatcher's OnDone
+	// and the parked item does not re-drive THIS Run, so the permit would
+	// otherwise leak to the sweep backstop (which never fires while the
+	// projector phase lags). Idempotent; nil-safe.
+	if r.EndpointGate != nil {
+		r.EndpointGate.ReleaseByRun(runID)
+	}
 	slog.WarnContext(ctx, "rundrive: run failed closed (non-retryable); parked work item — not re-dispatching",
 		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
 		"blocked_reason", reason, "cause", cause.Error())
 	return ctrl.Result{}, nil
+}
+
+// ConditionSandboxEgressBlocked is the fail-fast marker the driver stamps on a
+// Run whose resolved BYO model endpoint is an external FQDN the sandbox cannot
+// reach (no effective KSQUAD_SANDBOX_*_PROXY for the host + egress-policed
+// namespace) (ISI-7705): True means the run was terminated AT DISPATCH with a
+// durable, non-null cause (this condition + the park's audit rows) instead of
+// hanging ~134s on TCP SYN retries into an a2a follow_error →
+// zombie_no_sandbox (ISI-7686). The projector's Ready condition is unaffected
+// (a different condition type survives its SetStatusCondition merge).
+const ConditionSandboxEgressBlocked = "SandboxEgressBlocked"
+
+// egressBlockedFail is the ISI-7705 terminal for the dispatch-time egress
+// guard (IsEgressBlocked): stamp the SandboxEgressBlocked condition on the Run
+// — the durable, non-null evidence on the CR the ISI-7691 acceptance asks for
+// — then FailClosedPark the work item (step → failed + run_failed_entered /
+// work_item_parked audit rows + board comment, blocked_reason =
+// sandbox_egress_blocked). The failure is DETERMINISTIC (operator proxy-env /
+// netpol posture, not a transient fault): re-dispatch would hang the same
+// ~134s and settle follow_error again, so the park stops the re-mint loop the
+// way the ISI-5543 breaker does. Fence-guarded: ok=false means another path
+// settled this generation first — a clean absorb.
+func (r *Driver) egressBlockedFail(ctx context.Context, run *api.Run, runID string, fence int64, cause error) (ctrl.Result, error) {
+	const reason = "sandbox_egress_blocked"
+	r.stampEgressBlocked(ctx, run, cause)
+	ok, err := r.Claims.FailClosedPark(ctx, run.Spec.WorkItemRef, runID, fence, reason)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("rundrive: park egress-blocked run %s: %w", runID, err)
+	}
+	if !ok {
+		// Fence moved / already terminal: another path settled this generation.
+		// Absorb — the committed terminal step stops the drive on the next pass.
+		return ctrl.Result{}, nil
+	}
+	// ISI-7788: a fail-closed/egress-blocked park is terminal — release the
+	// BYO endpoint permit now. The run never reaches the dispatcher's OnDone
+	// and the parked item does not re-drive THIS Run, so the permit would
+	// otherwise leak to the sweep backstop (which never fires while the
+	// projector phase lags). Idempotent; nil-safe.
+	if r.EndpointGate != nil {
+		r.EndpointGate.ReleaseByRun(runID)
+	}
+	slog.WarnContext(ctx, "rundrive: run failed fast at dispatch — external BYO model endpoint unreachable from proxy-less sandbox behind egress NetworkPolicy; parked work item — not re-dispatching",
+		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
+		"blocked_reason", reason, "cause", cause.Error())
+	return ctrl.Result{}, nil
+}
+
+// stampEgressBlocked surfaces the ISI-7705 fail-fast cause as the
+// SandboxEgressBlocked Run condition (idempotent — meta.SetStatusCondition is a
+// no-op when it already holds). Best-effort like the endpoint-slot wait stamp:
+// the park below is the mechanism, so a status hiccup must not turn the
+// terminal into a reconcile error. NotFound means the Run left mid-flight.
+func (r *Driver) stampEgressBlocked(ctx context.Context, run *api.Run, cause error) {
+	patched := run.DeepCopy()
+	changed := meta.SetStatusCondition(&patched.Status.Conditions, metav1.Condition{
+		Type:               ConditionSandboxEgressBlocked,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "ProxylessExternalEndpoint",
+		Message:            cause.Error(),
+		LastTransitionTime: metav1.Now(),
+	})
+	if !changed {
+		return
+	}
+	if err := r.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil && !apierrors.IsNotFound(err) {
+		slog.WarnContext(ctx, "rundrive: could not surface SandboxEgressBlocked condition on the Run (terminal park continues regardless)",
+			"run.id", string(run.UID), "err", err.Error())
+	}
 }
 
 // abandonInvalidRef is the ISI-4354 terminal path for an unparseable
@@ -1229,6 +1345,18 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 			// Fence moved under us (another leader reclaimed): re-read next pass.
 			return ctrl.Result{RequeueAfter: continueDelay}, nil
 		}
+		// ISI-7788: a retry lap entered BEFORE the run ever dispatched (the
+		// durable step never got past claiming_sandbox — the sandbox
+		// claim-failure requeue path) releases the BYO endpoint permit for
+		// the backoff window: a never-dispatched holder is not using the
+		// endpoint, and the kept permit starved the queue behind a
+		// non-dispatching holder on a 1-slot endpoint. The next lap re-acquires
+		// through the gate's queue like any waiter. A run that HAS dispatched
+		// (in-flight step) still keeps the permit — its next lap re-attaches
+		// the follow and no other run may jump that lap's backoff queue.
+		if r.EndpointGate != nil && !inFlightStep(cs.Step) {
+			r.EndpointGate.ReleaseByRun(runID)
+		}
 		return ctrl.Result{RequeueAfter: r.BackoffFor(run, laps+1)}, nil
 	}
 	if _, err := r.Claims.FailEnter(ctx, run.Spec.WorkItemRef, runID, cs.Fence); err != nil {
@@ -1237,9 +1365,10 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 	// ISI-5037 defensive release: a terminally failed run never reaches the
 	// dispatcher's OnDone, so its BYO endpoint permit would leak and queue
 	// every later run on that endpoint forever. Idempotent; nil-safe. (The
-	// retry path above deliberately KEEPS the permit: the same run
-	// re-acquires it as a no-op on the next lap, so no other run can jump a
-	// lap's backoff queue.)
+	// retry path KEEPS the permit for a run that HAS dispatched: the same
+	// run re-acquires it as a no-op on the next lap, so no other run can jump
+	// a lap's backoff queue; a pre-dispatch retry releases it instead,
+	// ISI-7788.)
 	if r.EndpointGate != nil {
 		r.EndpointGate.ReleaseByRun(runID)
 	}

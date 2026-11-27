@@ -85,7 +85,8 @@ const P: Record<NavIconId, string> = {
   // Instrumentation Score (ISI-7750): a gauge — semicircular dial over a
   // baseline with a needle reading off-center — the report-only conformance
   // score affordance, distinct from the waveform (otel) glyph.
-  instscore: "M5 19a9 9 0 1114 0M12 15l3.5-5.5M12 17a1.4 1.4 0 100-2.8 1.4 1.4 0 000 2.8z",
+  instscore:
+    "M5 19a9 9 0 1114 0M12 15l3.5-5.5M12 17a1.4 1.4 0 100-2.8 1.4 1.4 0 000 2.8z",
   close: "M6 6l12 12M18 6L6 18",
 };
 

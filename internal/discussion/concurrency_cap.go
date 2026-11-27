@@ -11,10 +11,13 @@
 //
 // So a degraded path — no coordinator, an explicit broadcast, a facilitator directive that slipped back
 // to the old one-run-per-team-agent shape — could still fan a whole squad out in parallel. This cap is
-// the backstop that holds REGARDLESS of which dispatch path runs: at most MaxConcurrentRunsPerDiscussion
-// in-flight runs per discussion thread, enforced at the single run-minting chokepoint every path funnels
-// through (internal/mentiondispatch.DispatchMention), and mirrored onto the broadcast SELECTION cap so a
-// party broadcast never even picks more targets than the discussion is allowed to run.
+// the backstop for every EXPLICITLY-targeted dispatch: at most MaxConcurrentRunsPerDiscussion in-flight
+// runs per discussion thread, enforced at the single run-minting chokepoint those paths funnel through
+// (internal/mentiondispatch.DispatchMention). Since ISI-7770 the whole-room party broadcast (a human
+// bare-party post) is deliberately exempt: selection is UNBOUNDED (every eligible agent, WholeRoom=true)
+// and bypasses the shed, flowing into the run-scheduling layer — the per-endpoint FIFO gate plus the
+// per-agent non-preemptive queue — which sequences admission so the tail QUEUES instead of being
+// silently dropped.
 
 package discussion
 
@@ -53,7 +56,9 @@ func resolveMaxConcurrentRunsFromEnv(raw string) int {
 }
 
 // MaxConcurrentRunsPerDiscussion returns the configured hard per-discussion concurrent-run cap (default
-// DefaultMaxConcurrentRunsPerDiscussion, override MaxConcurrentRunsEnv). Both the run-minting backstop
-// (internal/mentiondispatch) and the broadcast selection cap (resolveMentionTargets) read it, so the two
-// are always the SAME limit (ISI-5670 req 1+2).
+// DefaultMaxConcurrentRunsPerDiscussion, override MaxConcurrentRunsEnv). Only the run-minting backstop
+// (internal/mentiondispatch) reads it — it sheds every EXPLICITLY-targeted dispatch at this ceiling
+// (ISI-5670). Since ISI-7770 the whole-room broadcast no longer mirrors it onto selection: selection is
+// unbounded (WholeRoom bypasses the shed) and the per-endpoint FIFO gate + per-agent non-preemptive
+// queue sequence admission, so the tail queues instead of being dropped.
 func MaxConcurrentRunsPerDiscussion() int { return maxConcurrentRunsPerDiscussion }

@@ -194,25 +194,32 @@ func TestResolveBroadcastExcludesPausedAgents(t *testing.T) {
 	}
 }
 
-// --- ISI-5265 + ISI-5670: broadcast fan-out capped at the per-discussion ceiling, non-silent drop ----
+// --- ISI-5265 + ISI-7770: whole-room broadcast is never truncated at selection --------------
 
-func TestResolveBroadcastRateCap(t *testing.T) {
-	// ISI-5670: a bare-party broadcast selects at most the HARD per-discussion concurrent-run limit, so a
-	// legacy/degraded fan-out never even picks more targets than the discussion is allowed to run.
+func TestResolveBroadcastWholeRoomNotTruncated(t *testing.T) {
+	// ISI-7770: a bare-party broadcast selects EVERY eligible roster agent. The old ISI-5670 selection
+	// cap dropped the tail at resolve time — the "12 of 13 agents could not respond" hollow outcome —
+	// while the room UI seats the whole roster. The fan-out now flows into the run-scheduling queue
+	// (per-endpoint FIFO gate + per-agent non-preemptive queue) instead of being silently clipped.
 	limit := MaxConcurrentRunsPerDiscussion()
 	const over = 4
 	roster := make([]TeamAgent, 0, limit+over)
 	for i := 0; i < limit+over; i++ {
-		// Distinct multi-rune names so a full squad exceeds the broadcast cap.
+		// Distinct multi-rune names so a full squad exceeds the old broadcast cap.
 		roster = append(roster, TeamAgent{Name: "agent-" + string(rune('a'+i)), Status: "working"})
 	}
 	msg := agentMsg("all hands", "party", "", nil)
 	targets, dropped, _ := resolveMentionTargets(msg, roster)
-	if len(targets) != limit {
-		t.Fatalf("broadcast dispatched %d, want cap of %d", len(targets), limit)
+	if len(targets) != limit+over {
+		t.Fatalf("broadcast dispatched %d, want all %d eligible agents", len(targets), limit+over)
 	}
-	if dropped != over {
-		t.Fatalf("broadcast dropped = %d, want %d (non-silent truncation)", dropped, over)
+	if dropped != 0 {
+		t.Fatalf("broadcast dropped = %d, want 0 (whole-room fan-out is never truncated)", dropped)
+	}
+	for _, tg := range targets {
+		if !tg.WholeRoom {
+			t.Fatalf("broadcast target %q WholeRoom = false, want true (queue, never shed)", tg.AgentName)
+		}
 	}
 }
 
