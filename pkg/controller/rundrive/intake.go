@@ -526,6 +526,25 @@ func (i *Intake) sweep(ctx context.Context) {
 		}
 	}
 
+	// ISI-7959 (ISI-7946 WS-D): the per-pass stage-owner routing index —
+	// team uid → resolution — computed lazily, ONCE per team per tick (never
+	// per item): resolveStageOwnerRouting (intake_routing.go) walks the
+	// composition's Agent/Role CRs; an unresolved chart logs its reason here
+	// exactly once per pass before the legacy selection takes over.
+	routingByUID := make(map[string]stageOwnerRouting)
+	stageOwner := func(team api.Team) stageOwnerRouting {
+		if r, ok := routingByUID[string(team.UID)]; ok {
+			return r
+		}
+		r := i.resolveStageOwnerRouting(ctx, team)
+		if r.agent == "" {
+			i.logf("rundrive.intake: team %s/%s resolves no WS-D stage-owner routing (%s); legacy selection applies",
+				team.Namespace, team.Name, r.reason)
+		}
+		routingByUID[string(team.UID)] = r
+		return r
+	}
+
 	created := 0
 	dispatched := 0
 	for _, item := range items {
@@ -593,7 +612,57 @@ func (i *Intake) sweep(ctx context.Context) {
 		}
 
 		var runsToCreate []api.Run
-		if item.RequestedAgent != "" {
+		// ISI-7959 (ISI-7946 WS-D): hierarchy + process-aware selection. The
+		// orchestrator DRIVES each work item downward to the stage owner —
+		// the report whose Role owns the current stage of the owning (root)
+		// manager's Process — replacing the blind Agents[0]/fan-out default.
+		// Precedence:
+		//   1. an explicit requested_agent still on the team — the human is
+		//      the TOP of the chain (plan rev 3 board clarifications): a
+		//      pre-run pick is a decision, not blindness; one single-agent
+		//      Run, exactly as before;
+		//   2. the WS-D stage owner (stageOwner memoizes
+		//      resolveStageOwnerRouting, intake_routing.go): ONE Run pushed
+		//      to the composition agent holding the Role that owns the root
+		//      manager's first Process stage — work is actively pushed to a
+		//      stage owner, never left to sweep. Intake is the process ENTRY,
+		//      so the current stage here is stage one (WS-C's engine advances
+		//      stages on completion hand-offs; until it lands, every intake
+		//      enters at the first stage). A STALE requested agent (off-team)
+		//      is driven to the stage owner, not the blind Agents[0] fallback;
+		//   3. the legacy selection — the stale requested-agent fallback to
+		//      Agents[0] and the ISI-4927 fan-out — for a stale request on a
+		//      team whose chart/process does not resolve: config, not code,
+		//      gates the stronger drive, so a process-less team keeps today's
+		//      behavior bit-for-bit.
+		if item.RequestedAgent != "" && teamHasAgent(team, item.RequestedAgent) {
+			// Precedence 1: one Run for the human's explicit agent choice.
+			run, err := i.buildRunForAgent(ctx, item, team, highestGen[item.ID], item.RequestedAgent, false)
+			if err != nil {
+				i.logf("rundrive.intake: work item %s not dispatched (agent %s): %v", item.ID, item.RequestedAgent, err)
+				continue
+			}
+			runsToCreate = []api.Run{*run}
+			dispatched++
+		} else if r := stageOwner(team); r.agent != "" {
+			// Precedence 2 (WS-D): drive the item to the stage owner.
+			if item.RequestedAgent != "" {
+				i.logf("rundrive.intake: work item %s requested agent %q no longer in team %s/%s composition; driving to stage owner %s instead",
+					item.ID, item.RequestedAgent, team.Namespace, team.Name, r.agent)
+			}
+			run, err := i.buildRunForAgent(ctx, item, team, highestGen[item.ID], r.agent, false)
+			if err != nil {
+				i.logf("rundrive.intake: work item %s not dispatched (stage owner %s): %v", item.ID, r.agent, err)
+				continue
+			}
+			runsToCreate = []api.Run{*run}
+			dispatched++
+			i.logf("rundrive.intake: work item %s driven to stage owner %s (stage %q of root Role %s's process, team %s/%s)",
+				item.ID, r.agent, r.stage, r.root, team.Namespace, team.Name)
+		} else if item.RequestedAgent != "" {
+			// Precedence 3: legacy selection (no stage-owner routing). A valid
+			// requested agent never reaches here (precedence 1), so this is the
+			// stale-choice path, unchanged.
 			// Single-agent behaviour: one Run for the requested agent — but
 			// only if it is STILL a member of the composition (§7.4 defensive
 			// check): the composition can change between dispatch and this
