@@ -270,8 +270,8 @@ func upwardKindFromChanges(kinds []string) string {
 // (no db) so the template is unit-testable.
 func renderUpwardBrief(kind, agent, runID, workItemID string, changes, artifactLines []string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Upward hand-off (%s) from agent %s.\n", kind, agent))
-	b.WriteString(fmt.Sprintf("Run %s succeeded on work item %s; the parent ticket needs a decision.\n", runID, workItemID))
+	fmt.Fprintf(&b, "Upward hand-off (%s) from agent %s.\n", kind, agent)
+	fmt.Fprintf(&b, "Run %s succeeded on work item %s; the parent ticket needs a decision.\n", runID, workItemID)
 	if len(changes) > 0 {
 		b.WriteString("What changed:\n")
 		b.WriteString(strings.Join(changes, "\n"))
