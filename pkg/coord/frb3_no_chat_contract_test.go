@@ -162,6 +162,8 @@ var allowedSurface = map[string]string{
 	// provenance-tagged artifact row + state change — the sanctioned handoff, not
 	// a chat channel.
 	"ProdHandoffWriter":              "§2.8 structured handoff artifact writer bound to the prod schema",
+	"PushUpwardHandoff":              "ISI-7956 WS-B upward hand-off spine: at-most-once marker + upward_handoff_pushed audit (§6.5) + manager wake work item (§6.1)",
+	"ProdEffects.WithUpwardManager":  "ISI-7956 WS-B: opt a ProdEffects instance into the terminal upward hand-off push",
 	"NewProdHandoffWriter":           "§2.8 constructor",
 	"ProdHandoffWriter.WriteHandoff": "§2.8 write the handoff artifact + state change (comment+state, §6.1)",
 	"HandoffWriteResult":             "§2.8 outcome of a handoff write (artifact id + state)",
